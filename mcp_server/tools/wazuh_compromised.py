@@ -18,6 +18,7 @@ from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS
 from mcp_server.wazuh.time_utils import _parse_time_window, _auto_bucket_interval, _duration_minutes
+from mcp_server.tools.wazuh_email import _extract_emails_from_doc
 from mcp_server.core.validators import ValidAgentName, ValidKeyword
 
 class WazuhCompromisedEmailsAnalysisInput(BaseModel):
@@ -143,15 +144,23 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
             max_batch_scanned = 20000  # per-batch cap to prevent runaway
 
             while batch_scanned < max_batch_scanned:
-                data = await _wazuh_indexer_multi_email_search(
-                    emails=batch,
-                    agent_name=params.agent_name,
-                    size=page_size,
-                    search_after=search_after,
-                    since=since_str,
-                    until=until_str,
-                    keyword=params.keyword,
-                )
+                body = {
+                    "size": page_size,
+                    "query": {"bool": {"filter": [
+                        {"range": {"@timestamp": {"gte": since_str, "lt": until_str,
+                                                       "format": "strict_date_optional_time"}}},
+                        {"bool": {"should": [{"match": {"data.account": e}} for e in batch],
+                                   "minimum_should_match": 1}},
+                    ]}},
+                    "sort": [{"@timestamp": "asc"}, {"_id": "asc"}],
+                }
+                if params.agent_name:
+                    body["query"]["bool"]["filter"].append({"match": {"agent.name": params.agent_name}})
+                if params.keyword:
+                    body["query"]["bool"]["filter"].append({"query_string": {"query": params.keyword, "lenient": True}})
+                if search_after:
+                    body["search_after"] = search_after
+                data = await _wazuh_indexer_post(body)
                 if "error" in data:
                     # Accumulate partial results
                     break
@@ -203,9 +212,13 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
     netra_results: dict[str, dict] = {}
     if params.enrich_with_netra:
         enrich_count = min(len(top_ips), 10)
+        netra_key = os.environ.get(NETRA_API_KEY_ENV, "")
         for ip, _ in top_ips[:enrich_count]:
             try:
-                raw = await _netra_request(f"/analysis/{ip}")
+                netra_resp = await _api_call("get", f"https://yourdreams.gov:8013/api/v1/analysis/{ip}",
+                    headers={"X-API-Key": netra_key, "Accept": "application/json"},
+                    verify=NETRA_VERIFY_SSL)
+                raw = netra_resp.json()
                 data = raw.get("data", {})
                 results = data.get("results", {})
                 ts = results.get("threat_score", {})

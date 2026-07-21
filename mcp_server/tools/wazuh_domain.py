@@ -108,16 +108,54 @@ async def _wazuh_domain_lookup_full_scan(
     Uses the shared ``_full_scan_paginate`` loop internally.
     """
     async def _fetch_page(ps: int, sa):
-        return await _wazuh_indexer_domain_search(
-            domain=params.domain,
-            agent_name=params.agent_name,
-            size=ps,
-            search_after=sa,
-            since=since_str,
-            until=until_str,
-            include_full_log=False,
-            keyword=params.keyword,
-        )
+        body = {
+            "size": ps,
+            "query": {"bool": {"filter": [
+                {"range": {"@timestamp": {"gte": since_str, "lt": until_str,
+                                               "format": "strict_date_optional_time"}}},
+                {"query_string": {"query": f"data.domain: {params.domain}", "lenient": True}},
+            ]}},
+            "sort": [{"@timestamp": "asc"}, {"_id": "asc"}],
+        }
+        if params.agent_name:
+            body["query"]["bool"]["filter"].append({"match": {"agent.name": params.agent_name}})
+        if params.keyword:
+            body["query"]["bool"]["filter"].append({"query_string": {"query": params.keyword, "lenient": True}})
+        if sa:
+            body["search_after"] = sa
+        return await _wazuh_indexer_post(body)
+
+    async def _full_scan_paginate(max_scanned, fetch_page, initial_sa, redact=True):
+        """Generic pagination loop. Returns {total_scanned, pages, exhausted, all_docs, ...}."""
+        total_scanned = 0
+        pages = []
+        all_docs = []
+        sa = initial_sa
+        while total_scanned < max_scanned:
+            page_size = min(1000, max_scanned - total_scanned)
+            data = await fetch_page(page_size, sa)
+            if "error" in data:
+                return {"_error": data["error"], "total_scanned": total_scanned, "pages": pages}
+            hits = data.get("hits", {})
+            hit_list = hits.get("hits", [])
+            docs = [h.get("_source", h) for h in hit_list]
+            if redact:
+                docs = _redact_alert_data(docs, bypass=False)
+            if not docs:
+                break
+            total_scanned += len(docs)
+            pages.append(docs)
+            all_docs.extend(docs)
+            last_sort = hit_list[-1].get("sort") if hit_list else None
+            if len(docs) < page_size or last_sort is None:
+                break
+            sa = last_sort
+        exhausted = total_scanned < max_scanned or (len(hit_list) if hit_list else 0) < page_size
+        total_val = data.get("hits", {}).get("total", {}).get("value", total_scanned)
+        total_relation = data.get("hits", {}).get("total", {}).get("relation", "eq")
+        return {"total_scanned": total_scanned, "pages": pages, "exhausted": exhausted,
+                "all_docs": all_docs, "sample_docs": all_docs[:10],
+                "total_val": total_val, "total_relation": total_relation}
 
     result = await _full_scan_paginate(
         params.max_scanned, _fetch_page, initial_search_after, redact=True,
@@ -314,16 +352,22 @@ async def wazuh_domain_lookup(params: WazuhDomainLookupInput) -> str:
         )
 
     try:
-        data = await _wazuh_indexer_domain_search(
-            domain=params.domain,
-            agent_name=params.agent_name,
-            size=params.limit,
-            search_after=search_after,
-            since=since_str,
-            until=until_str,
-            include_full_log=params.include_full_log,
-            keyword=params.keyword,
-        )
+        body = {
+            "size": params.limit,
+            "query": {"bool": {"filter": [
+                {"range": {"@timestamp": {"gte": since_str, "lt": until_str,
+                                               "format": "strict_date_optional_time"}}},
+                {"query_string": {"query": f"data.domain: {params.domain}", "lenient": True}},
+            ]}},
+            "sort": [{"@timestamp": "asc"}, {"_id": "asc"}],
+        }
+        if params.agent_name:
+            body["query"]["bool"]["filter"].append({"match": {"agent.name": params.agent_name}})
+        if params.keyword:
+            body["query"]["bool"]["filter"].append({"query_string": {"query": params.keyword, "lenient": True}})
+        if search_after:
+            body["search_after"] = search_after
+        data = await _wazuh_indexer_post(body)
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
         return _handle_api_error(e, context="wazuh_domain_lookup")
 

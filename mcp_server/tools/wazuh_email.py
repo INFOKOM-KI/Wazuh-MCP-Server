@@ -16,6 +16,26 @@ from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
 from mcp_server.wazuh.time_utils import _parse_time_window
 
+# Email extraction helper (shared with wazuh_compromised.py)
+_EMAIL_PATTERN = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE)
+
+
+def _extract_emails_from_doc(doc: dict) -> list[str]:
+    """Extract email addresses from alert document fields."""
+    emails: list[str] = []
+    seen = set()
+    for field in ("data.account", "data.email", "data.srcuser", "data.dstuser", "full_log"):
+        val = doc
+        for key in field.split("."):
+            val = val.get(key, "") if isinstance(val, dict) else ""
+        if isinstance(val, str):
+            for m in _EMAIL_PATTERN.findall(val):
+                e = m.lower()
+                if e not in seen:
+                    seen.add(e)
+                    emails.append(e)
+    return emails
+
 class WazuhEmailLookupInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
@@ -125,15 +145,23 @@ async def wazuh_email_lookup(params: WazuhEmailLookupInput) -> str:
     page_size = 1000
     try:
         while total_scanned < params.max_scanned:
-            data = await _wazuh_indexer_email_search(
-                agent_name=params.agent_name,
-                size=page_size,
-                search_after=search_after,
-                since=since_str,
-                until=until_str,
-                rule_groups=rule_group_list,
-                keyword=params.keyword,
-            )
+            body = {
+                "size": page_size,
+                "query": {"bool": {"filter": [
+                    {"range": {"@timestamp": {"gte": since_str, "lt": until_str,
+                                                   "format": "strict_date_optional_time"}}},
+                ]}},
+                "sort": [{"@timestamp": "asc"}, {"_id": "asc"}],
+            }
+            if params.agent_name:
+                body["query"]["bool"]["filter"].append({"match": {"agent.name": params.agent_name}})
+            if rule_group_list:
+                body["query"]["bool"]["filter"].append({"terms": {"rule.groups": rule_group_list}})
+            if params.keyword:
+                body["query"]["bool"]["filter"].append({"query_string": {"query": params.keyword, "lenient": True}})
+            if search_after:
+                body["search_after"] = search_after
+            data = await _wazuh_indexer_post(body)
             if "error" in data:
                 error_msg = data["error"]
                 # If already collected some data, return partial results. (Aul Adjust)
