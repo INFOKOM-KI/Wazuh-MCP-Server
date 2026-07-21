@@ -882,7 +882,9 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
         if not params.include_threat_intel:
             return None
         try:
-            return await _greynoise_community_request(params.srcip)
+            headers = {"accept": "application/json", "User-Agent": "blue-team-mcp/1.0.0"}
+            resp = await _api_call("get", f"https://api.greynoise.io/v3/community/{params.srcip}", headers=headers)
+            return resp.json()
         except Exception:
             return None
 
@@ -1743,7 +1745,11 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             # Argus
             if os.environ.get(ARGUS_API_KEY_ENV):
                 try:
-                    argus_data = await _argus_request("/api/v1/lookup", {"ip_address": ip})
+                    argus_key = os.environ[ARGUS_API_KEY_ENV]
+                    argus_resp = await _api_call("post", "https://argus.tangerangkota.go.id/api/v1/lookup",
+                        headers={"X-API-Key": argus_key, "Content-Type": "application/json"},
+                        json={"ip_address": ip})
+                    argus_data = argus_resp.json()
                     result["argus"] = {
                         "overall_score": argus_data.get("overall_score"),
                         "sources": list(argus_data.get("sources", {}).keys()) if isinstance(argus_data.get("sources"), dict) else [],

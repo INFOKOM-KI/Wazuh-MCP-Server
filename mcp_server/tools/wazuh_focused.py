@@ -179,15 +179,23 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
                 source_fields.append(f)
 
     try:
-        data = await _wazuh_indexer_search(
-            index_pattern=_WAZUH_INDEX_PATTERNS["alerts"],
-            agent_name=params.agent_name,
-            size=params.sample_size,
-            srcip=params.src_ip,
-            since=since_str,
-            until=until_str,
-            fields=source_fields,
-        )
+        body = {
+            "size": params.sample_size,
+            "_source": source_fields,
+            "query": {"bool": {"filter": [
+                {"range": {"@timestamp": {"gte": since_str, "lt": until_str,
+                                               "format": "strict_date_optional_time"}}},
+            ]}},
+            "sort": [{"@timestamp": "asc"}, {"_id": "asc"}],
+        }
+        if params.agent_name:
+            body["query"]["bool"]["filter"].append({"match": {"agent.name": params.agent_name}})
+        if params.src_ip:
+            body["query"]["bool"]["filter"].append({"bool": {"should": [
+                {"match": {"data.srcip": params.src_ip}},
+                {"match_phrase": {"full_log": params.src_ip}},
+            ], "minimum_should_match": 1}})
+        data = await _wazuh_indexer_post(body, index_pattern=_WAZUH_INDEX_PATTERNS["alerts"])
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
         return _handle_api_error(e, context="wazuh_alert_focused_crawl")
 
