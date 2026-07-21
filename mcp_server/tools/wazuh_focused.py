@@ -4,7 +4,7 @@
 Wazuh focused crawl tool — surgical alert retrieval
 """
 from __future__ import annotations
-import json, re
+import json, re, ipaddress
 from typing import Optional, Literal, Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,

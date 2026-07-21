@@ -11,6 +11,18 @@ from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 
+
+def _check_no_scripts(obj, path: str = "root") -> None:
+    """Reject scripted aggregations — security boundary against injection."""
+    if isinstance(obj, dict):
+        if "script" in obj:
+            raise ValueError(f"Scripted aggregation rejected at {path}")
+        for k, v in obj.items():
+            _check_no_scripts(v, f"{path}.{k}")
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            _check_no_scripts(v, f"{path}[{i}]")
+
 class DslQueryInput(BaseModel):
     """Input model for wazuh_alert_dsl_query - structured OpenSearch DSL, aggregation-only.
 

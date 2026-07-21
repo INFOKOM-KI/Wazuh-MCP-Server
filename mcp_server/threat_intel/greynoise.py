@@ -8,6 +8,8 @@ import json
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
 
+import httpx
+
 from mcp_server import mcp
 from mcp_server.core.http_client import _api_call, ValidPublicIp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
@@ -20,8 +22,15 @@ async def greynoise_ip_context(ip: ValidPublicIp, response_format: Literal["mark
     """Check if an IP is a known internet scanner or business service (free, no auth)."""
     _audit_log("greynoise_ip_context", {"ip": ip})
     headers = {"accept": "application/json", "User-Agent": "blue-team-mcp/1.0.0"}
-    resp = await _api_call("get", f"{GREYNOISE_COMMUNITY_BASE_URL}/{ip}", headers=headers)
-    raw = resp.json()
+    try:
+        resp = await _api_call("get", f"{GREYNOISE_COMMUNITY_BASE_URL}/{ip}", headers=headers)
+        raw = resp.json()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raw = {"ip": ip, "noise": False, "riot": False,
+                   "classification": "unknown", "message": "No data in GreyNoise Community dataset"}
+        else:
+            raise
     if response_format == "json":
         return _truncate_if_needed(json.dumps(raw, indent=2))
     lines = [f"# GreyNoise Community — {ip}", "",

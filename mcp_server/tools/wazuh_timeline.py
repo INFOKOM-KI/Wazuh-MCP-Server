@@ -6,6 +6,7 @@ Wazuh alert timeline tool — time-bucketed aggregation
 from __future__ import annotations
 import json, re
 from typing import Optional, Literal
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _BYPASS_REDACTION_DESC, _RESPONSE_FORMAT_DESC, _AGENT_NAME_DESC)
