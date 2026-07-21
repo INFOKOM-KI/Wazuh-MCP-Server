@@ -19,7 +19,10 @@ from mcp.server.fastmcp import FastMCP
 _SERVER_NAME = os.environ.get("BLUE_TEAM_MCP_SERVER_NAME", "blue_team_mcp").strip().lower()
 if os.environ.get("BLUE_TEAM_MCP_SERVER_NAME", "").strip() and os.environ.get("BLUE_TEAM_MCP_SERVER_NAME", "").strip() != _SERVER_NAME:
     logger.warning("BLUE_TEAM_MCP_SERVER_NAME normalized to '%s'.", _SERVER_NAME)
-mcp = FastMCP(_SERVER_NAME)
+
+_MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
+_MCP_PORT = int(os.environ.get("MCP_PORT", "8000"))
+mcp = FastMCP(_SERVER_NAME, host=_MCP_HOST, port=_MCP_PORT)
 
 # Threat Intelligence API keys
 ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")

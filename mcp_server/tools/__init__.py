@@ -30,4 +30,4 @@ def register_all_tools() -> None:
         ioc_tools,             # 1 tool
     )
 
-    logger.info("75 tools + 2 resources registered - 100%% modular architecture.")
+    logger.info("79 tools + 2 resources registered.")
