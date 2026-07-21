@@ -13,7 +13,7 @@ from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _AGENT_NAME_DESC, _SINCE_DESC, _UNTIL_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.redact import _redact_alert_data
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS
+from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _encode_cursor, _decode_cursor
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.core.validators import ValidAgentName, ValidKeyword
 

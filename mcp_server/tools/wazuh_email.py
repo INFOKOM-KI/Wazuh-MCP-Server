@@ -7,6 +7,7 @@ from __future__ import annotations
 import json, re
 from typing import Optional, Literal
 from collections import Counter
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC)

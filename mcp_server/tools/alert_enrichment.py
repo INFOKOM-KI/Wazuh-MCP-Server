@@ -895,6 +895,9 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
 
     docs = _redact_alert_data(docs, bypass=params.bypass_redaction)
 
+    if not docs:
+        return "# Threat Card — `" + params.srcip + "`\n\n**No alerts found** for this IP in the selected time window."
+
     # Extract common data
     rule_counts: Counter[str] = Counter()
     rule_descs: dict[str, str] = {}

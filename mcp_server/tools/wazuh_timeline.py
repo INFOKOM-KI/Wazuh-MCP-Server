@@ -135,16 +135,30 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
         rule_group_list = [g.strip() for g in params.rule_groups.split(",") if g.strip()]
 
     try:
-        data = await _wazuh_indexer_aggregate(
-            bucket_interval=bucket_interval,
-            since=since_str,
-            until=until_str,
-            agent_name=params.agent_name,
-            rule_groups=rule_group_list,
-            rule_level_min=params.rule_level_min,
-            keyword=params.keyword,
-            geo_country=params.geo_country if hasattr(params, 'geo_country') else None,
-        )
+        body = {
+            "size": 0,
+            "query": {"bool": {"filter": [
+                {"range": {"@timestamp": {"gte": since_str, "lt": until_str,
+                                               "format": "strict_date_optional_time"}}},
+            ]}},
+            "aggs": {"over_time": {"date_histogram": {
+                "field": "@timestamp",
+                "fixed_interval": bucket_interval,
+                "min_doc_count": 0,
+                "extended_bounds": {"min": since_str, "max": until_str},
+            }}},
+        }
+        if params.agent_name:
+            body["query"]["bool"]["filter"].append({"match": {"agent.name": params.agent_name}})
+        if rule_group_list:
+            body["query"]["bool"]["filter"].append({"terms": {"rule.groups": rule_group_list}})
+        if params.rule_level_min is not None:
+            body["query"]["bool"]["filter"].append({"range": {"rule.level": {"gte": params.rule_level_min}}})
+        if params.keyword:
+            body["query"]["bool"]["filter"].append({"query_string": {"query": params.keyword, "default_field": "full_log", "lenient": True}})
+        if params.geo_country if hasattr(params, 'geo_country') else None:
+            body["query"]["bool"]["filter"].append({"match": {"GeoLocation.country_name": params.geo_country}})
+        data = await _wazuh_indexer_post(body)
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
         return _handle_api_error(e, context="wazuh_alert_timeline")
 

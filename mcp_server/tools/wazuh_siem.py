@@ -17,7 +17,7 @@ from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.wazuh.auth import _wazuh_api_get
-from mcp_server.wazuh.indexer import _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import _WAZUH_INDEX_PATTERNS, _encode_cursor, _decode_cursor
 
 # blueteam_wazuh_get_rules
 class WazuhRulesInput(BaseModel):
@@ -381,7 +381,7 @@ async def blueteam_wazuh_alerts(agent_name: Optional[str] = None, srcip: Optiona
     _audit_log("blueteam_wazuh_alerts", {})
     p = Path(_WAZUH_ALERTS_PATH)
     if not p.exists():
-        from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
+        from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _encode_cursor, _decode_cursor
         if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
             return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set. "
                               "Set these to enable automatic indexer fallback, or use blueteam_wazuh_manager_logs."}, indent=2)
@@ -452,7 +452,7 @@ async def blueteam_wazuh_indexer_search(agent_name: Optional[str] = None, srcip:
                                          response_format: str = "json") -> str:
     """Query Wazuh Indexer (OpenSearch) for alerts/events with cursor pagination."""
     _audit_log("blueteam_wazuh_indexer_search", {})
-    from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS
+    from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _encode_cursor, _decode_cursor
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
         return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."}, indent=2)
     must = []
