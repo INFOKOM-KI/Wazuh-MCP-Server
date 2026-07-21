@@ -56,7 +56,7 @@ async def blueteam_wazuh_geo_distribution(params: GeoDistributionInput) -> str:
        ``blueteam_wazuh_geo_distribution(since="2026-07-17T00:00:00Z", until="2026-07-18T00:00:00Z")``
     """
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
-        return {"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."}
+        return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."})
 
     since_iso, until_iso = _parse_time_window(params.since, params.until)
 

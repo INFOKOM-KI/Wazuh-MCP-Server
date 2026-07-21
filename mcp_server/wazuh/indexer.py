@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Wazuh Indexer (OpenSearch) query helpers - _search, _msearch.
+Wazuh Indexer (OpenSearch) query helpers - _search, _msearch, cursor pagination.
 """
 from __future__ import annotations
-import json, logging
+import base64, json, logging
 from typing import Dict, Optional, List
 import httpx
 
@@ -73,3 +73,18 @@ async def _wazuh_indexer_msearch(bodies: list[dict], index_pattern: Optional[str
     except Exception as e:
         logger.warning("_msearch failed (%s) — fallback to individual calls", e)
         return [_MSEARCH_FALLBACK_ERROR] * len(bodies)
+
+
+# Cursor pagination (base64-encoded JSON)
+def _encode_cursor(data: dict) -> str:
+    """Encode a dict as a base64 cursor string for pagination tokens."""
+    return base64.urlsafe_b64encode(json.dumps(data, separators=(",", ":")).encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str) -> dict | None:
+    """Decode a base64 cursor string back to a dict. Returns None on invalid input."""
+    try:
+        padded = cursor + "=" * (4 - len(cursor) % 4)
+        return json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return None
