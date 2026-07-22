@@ -89,6 +89,7 @@ BLUETEAM_REDACT_UAS = os.environ.get("BLUETEAM_REDACT_UAS", "true").lower() in (
 BLUETEAM_AUDIT_LOG = os.environ.get("BLUETEAM_AUDIT_LOG", "")
 BLUETEAM_RATE_LIMIT = int(os.environ.get("BLUETEAM_RATE_LIMIT", "0"))
 _INVESTIGATION_HISTORY_FILE = os.environ.get("BLUETEAM_INVESTIGATION_HISTORY", "")
+BLUETEAM_EXPORT_DIR = os.environ.get("BLUETEAM_EXPORT_DIR", "/var/log/blue-team-mcp/exports")
 
 # Startup validation
 _MISSING_CRITICAL: list[str] = []

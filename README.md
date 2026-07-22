@@ -11,7 +11,7 @@ Where Kali Linux gives Claude offensive tools (nmap, gobuster, sqlmap), this giv
 
 ## Architecture
 
-`main.py` (with the `mcp_server/` package) is a **modular MCP server** with 79 tools spanning host forensics, Wazuh SIEM, threat intelligence, Sangfor blocklist integration, alert enrichment, 3-Sum APT correlation engine, MITRE ATT&CK, threat hunting, domain investigation, and IOC extraction. It supports two transports:
+`main.py` (with the `mcp_server/` package) is a **modular MCP server** with 80 tools spanning host forensics, Wazuh SIEM, threat intelligence, Sangfor blocklist integration, alert enrichment, 3-Sum APT correlation engine, MITRE ATT&CK, threat hunting, domain investigation, and IOC extraction. It supports two transports:
 
 | Transport | Use case | MCP client connection |
 |---|---|---|
@@ -21,7 +21,7 @@ Where Kali Linux gives Claude offensive tools (nmap, gobuster, sqlmap), this giv
 ```
                           ┌──────────────────────────────────┐
                           │     main.py                     │
-                          │     79 tools · modular · 2 transports  │
+                          │     80 tools · modular · 2 transports  │
                           │                                  │
                           │  ┌────────────────────────────┐  │
                           │  │ Host Forensics (26 tools)  │  │
@@ -84,7 +84,7 @@ Where Kali Linux gives Claude offensive tools (nmap, gobuster, sqlmap), this giv
 
 | File | Tools | When to use |
 |---|---|---|
-| `main.py` + `mcp_server/` | **All 79 tools** | **Recommended** — full capabilities, credential stripping, PII redaction |
+| `main.py` + `mcp_server/` | **All 80 tools** | **Recommended** — full capabilities, credential stripping, PII redaction |
 
 ---
 
@@ -651,6 +651,30 @@ ls -lh /var/log/blue-team-mcp/
 
 ---
 
+## Bulk Data Strategy — 3-Tier Retrieval
+
+For large datasets (90+ days, 1M+ alerts), use the tiered approach to avoid
+overloading the MCP transport:
+
+| Tier | Tool | Coverage | Response size | Use case |
+|---|---|---|---|---|
+| **1 — Stats** | `wazuhAlertAggregateAnalysis`, `blueteamBaselineProfile`, `blueteamCalendarHeatmap`, `blueteamWazuhGeoDistribution` | ALL documents | ~2KB | "What happened?" — trends, top IPs, severity breakdown |
+| **2 — Sample** | `blueteamWazuhIndexerSearch` with `max_scanned=10000` | First N documents with total count | ~500KB | "Show me representative alerts" |
+| **3 — Export** | `blueteamWazuhExport` | ALL documents → server-side JSONL file | File path + stats | "I need every document for forensic analysis" |
+
+**Tier 1 handles 90% of SOC workflows instantly.** Tier 3 streams documents
+directly to disk via OpenSearch scroll API — no in-memory accumulation, safe
+for millions of documents. The LLM receives the file path and reads slices
+with `blueteamReadSyslog`.
+
+```
+1. Run Tier 1 first — get the big picture in 2KB
+2. If suspicious, drill down with Tier 2 — get sample documents
+3. For forensic dumps, use Tier 3 — server-side export to file
+```
+
+---
+
 ## Available Tools
 
 All tools below are registered across the `mcp_server/` package. Tools not requiring a specific API key work out of the box; optional API keys unlock additional capabilities as noted.
@@ -785,6 +809,7 @@ All tools below are registered across the `mcp_server/` package. Tools not requi
 | Tool | Description |
 |------|-------------|
 | `blueteam_investigate_ip` | One-call IP triage: alert profile + timeline + geo + agent breakdown |
+| `blueteam_wazuh_export` | 🆕 Server-side export — streams ALL matching alerts to JSONL file via scroll API |
 
 ### Fail2Ban
 | Tool | Description |
@@ -931,7 +956,7 @@ export BLUETEAM_RATE_LIMIT=60
 
 | File | Role |
 |---|---|
-| `main.py` + `mcp_server/` | **Primary** — all 79 tools, both transports (stdio / Streamable HTTP) |
+| `main.py` + `mcp_server/` | **Primary** — all 80 tools, both transports (stdio / Streamable HTTP) |
 
 ### Legacy Naming Debt
 
