@@ -64,6 +64,11 @@ class FocusedCrawlInput(BaseModel):
         description="Comma-separated additional _source fields to retrieve beyond defaults. "
                     "Example: 'data.url,data.domain,data.user_agent'.",
     )
+    keyword: Optional[str] = Field(
+        default=None,
+        max_length=1024,
+        description="Optional keyword/phrase to search in alert full_log and rule description.",
+    )
     response_format: Literal["markdown", "json"] = Field(
         default="markdown",
         description="'markdown' (default) for human-readable alert summaries, 'json' for structured data.",
@@ -195,6 +200,11 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
                 {"match": {"data.srcip": params.src_ip}},
                 {"match_phrase": {"full_log": params.src_ip}},
             ], "minimum_should_match": 1}})
+        if params.keyword:
+            parts = [f'{f}: ({params.keyword})^{b}' if b else f'{f}: ({params.keyword})'
+                     for f, b in _KEYWORD_SEARCH_FIELDS]
+            body["query"]["bool"]["filter"].append(
+                {"query_string": {"query": " OR ".join(parts), "default_operator": "AND", "lenient": True}})
         data = await _wazuh_indexer_post(body, index_pattern=_WAZUH_INDEX_PATTERNS["alerts"])
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
         return _handle_api_error(e, context="wazuh_alert_focused_crawl")
