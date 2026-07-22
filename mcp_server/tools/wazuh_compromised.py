@@ -177,7 +177,7 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
                     # Also extract emails from this doc for association
                     doc_emails = _extract_emails_from_doc(doc)
                     # Intersect with our target list
-                    matched = doc_emails & set(params.emails)
+                    matched = set(doc_emails) & set(params.emails)
                     if not matched:
                         continue
 

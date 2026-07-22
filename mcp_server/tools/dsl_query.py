@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from typing import Optional, Literal, Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD
+from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, CHARACTER_LIMIT
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 
