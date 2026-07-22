@@ -43,7 +43,7 @@ THREATFOX_BASE_URL = os.environ.get("THREATFOX_BASE_URL", "https://threatfox-api
 ABUSEIPDB_BASE_URL = os.environ.get("ABUSEIPDB_BASE_URL", "https://api.abuseipdb.com/api/v2")
 VIRUSTOTAL_BASE_URL = os.environ.get("VIRUSTOTAL_BASE_URL", "https://www.virustotal.com/api/v3")
 NETRA_BASE_URL = os.environ.get("NETRA_BASE_URL", "https://netra.fbi.gov:8013/api/v1")
-ARGUS_BASE_URL = os.environ.get("ARGUS_BASE_URL", "https://argus.fbi.gov")
+ARGUS_BASE_URL = os.environ.get("ARGUS_BASE_URL", "http://localhost:8088/lookup-jobs")
 RDAP_BASE_URL = os.environ.get("RDAP_BASE_URL", "https://rdap.org")
 CRTSH_BASE_URL = os.environ.get("CRTSH_BASE_URL", "https://crt.sh")
 

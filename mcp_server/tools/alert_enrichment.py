@@ -1748,13 +1748,15 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             if os.environ.get(ARGUS_API_KEY_ENV):
                 try:
                     argus_key = os.environ[ARGUS_API_KEY_ENV]
-                    argus_resp = await _api_call("post", f"{ARGUS_BASE_URL}/api/v1/lookup",
+                    argus_resp = await _api_call("post", ARGUS_BASE_URL,
                         headers={"X-API-Key": argus_key, "Content-Type": "application/json"},
-                        json={"ip_address": ip})
+                        json={"observable": ip})
                     argus_data = argus_resp.json()
+                    argus_reports = argus_data.get("results", {}).get("argus_reports", {}).get("results", {})
                     result["argus"] = {
-                        "overall_score": argus_data.get("overall_score"),
-                        "sources": list(argus_data.get("sources", {}).keys()) if isinstance(argus_data.get("sources"), dict) else [],
+                        "overall_score": argus_reports.get("scores", 0),
+                        "sources": [k for k in argus_data.get("results", {}).keys()
+                                    if argus_data["results"][k].get("success")],
                     }
                 except Exception:
                     result["argus"] = {"error": "lookup_failed"}
@@ -2132,15 +2134,27 @@ async def argus_ip_lookup(ip: ValidPublicIp, response_format: str = "markdown") 
         return json.dumps({"error": "ARGUS_API_KEY must be set."})
     try:
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "accept": "application/json"}
-        resp = await _api_call("post", f"{ARGUS_BASE_URL}/api/v1/lookup", client_name="argus", verify=ARGUS_VERIFY_SSL,
-                                headers=headers, json={"ip_address": ip})
+        resp = await _api_call("post", ARGUS_BASE_URL, client_name="argus", verify=ARGUS_VERIFY_SSL,
+                                headers=headers, json={"observable": ip})
         if not resp.content:
             return json.dumps({"error": "Argus API returned empty response"})
         raw = resp.json()
         if response_format == "json":
             return _truncate_if_needed(json.dumps(raw, indent=2))
         results = raw.get("results", {})
-        return _truncate_if_needed(f"# Argus — {ip}\n\n- **Overall Score**: {raw.get('overall_score','?')}\n- **Sources**: {', '.join(results.keys())}")
+        argus_reports = results.get("argus_reports", {}).get("results", {})
+        abuse = results.get("abuseipdb", {}).get("results", {})
+        score = argus_reports.get("scores", 0)
+        sources = [k for k in results.keys() if results[k].get("success")]
+        lines = [f"# Argus — {ip}", "",
+                 f"- **Score**: {score}",
+                 f"- **Sources**: {', '.join(sources)}",
+                 ""]
+        if abuse:
+            lines.append(f"- **AbuseIPDB Confidence**: {abuse.get('abuseConfidenceScore', 0)}%")
+            lines.append(f"- **ISP**: {abuse.get('isp', '?')}")
+            lines.append(f"- **Country**: {abuse.get('countryName', '?')}")
+        return _truncate_if_needed("\n".join(lines))
     except Exception as e:
         return _handle_api_error(e, context="argus")
 
