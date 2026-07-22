@@ -9,19 +9,17 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from mcp_server import mcp, THREATFOX_API_KEY_ENV
+from mcp_server import mcp, THREATFOX_API_KEY_ENV, THREATFOX_BASE_URL, THREATFOX_CACHE_TTL
 from mcp_server.core.http_client import _api_call, _handle_api_error, _is_private_or_reserved
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 
 logger = logging.getLogger("blue_team_mcp.threatfox")
-THREATFOX_BASE_URL = "https://threatfox-api.abuse.ch/api/v1/"
 
 # Startup validation - warn if key missing
 if not os.environ.get(THREATFOX_API_KEY_ENV):
     logger.warning("%s not set — threatfox_ioc_search will return an error at call time. "
                    "Get a free key at https://threatfox.abuse.ch/api", THREATFOX_API_KEY_ENV)
 
-THREATFOX_CACHE_TTL = int(os.environ.get("THREATFOX_CACHE_TTL", "900"))
 _threatfox_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _THREATFOX_CACHE_MAXSIZE = 1000
 

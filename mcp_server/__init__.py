@@ -29,13 +29,23 @@ ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")
 VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
 CROWDSEC_API_KEY_ENV = "CROWDSEC_API_KEY"
 CROWDSEC_CACHE_TTL = int(os.environ.get("CROWDSEC_CACHE_TTL", "900"))
-GREYNOISE_COMMUNITY_BASE_URL = "https://api.greynoise.io/v3/community"
+GREYNOISE_COMMUNITY_BASE_URL = os.environ.get("GREYNOISE_BASE_URL", "https://api.greynoise.io/v3/community")
 NETRA_API_KEY_ENV = "NETRA_API_KEY"
 NETRA_VERIFY_SSL = os.environ.get("NETRA_VERIFY_SSL", "false").lower() in ("1", "true", "yes")
 ARGUS_API_KEY_ENV = "ARGUS_API_KEY"
 ARGUS_VERIFY_SSL = os.environ.get("ARGUS_VERIFY_SSL", "false").lower() in ("1", "true", "yes")
 THREATFOX_API_KEY_ENV = "THREATFOX_API_KEY"
 THREATFOX_CACHE_TTL = int(os.environ.get("THREATFOX_CACHE_TTL", "900"))
+
+# External API Base URLs (all overridable via env vars)
+CROWDSEC_BASE_URL = os.environ.get("CROWDSEC_BASE_URL", "https://cti.api.crowdsec.net")
+THREATFOX_BASE_URL = os.environ.get("THREATFOX_BASE_URL", "https://threatfox-api.abuse.ch/api/v1/")
+ABUSEIPDB_BASE_URL = os.environ.get("ABUSEIPDB_BASE_URL", "https://api.abuseipdb.com/api/v2")
+VIRUSTOTAL_BASE_URL = os.environ.get("VIRUSTOTAL_BASE_URL", "https://www.virustotal.com/api/v3")
+NETRA_BASE_URL = os.environ.get("NETRA_BASE_URL", "https://netra.fbi.gov.gov:8013/api/v1")
+ARGUS_BASE_URL = os.environ.get("ARGUS_BASE_URL", "https://argus.fbi.gov")
+RDAP_BASE_URL = os.environ.get("RDAP_BASE_URL", "https://rdap.org")
+CRTSH_BASE_URL = os.environ.get("CRTSH_BASE_URL", "https://crt.sh")
 
 # Wazuh Manager API
 WAZUH_API_URL = os.environ.get("WAZUH_API_URL", "").rstrip("/")

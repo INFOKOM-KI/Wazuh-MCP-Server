@@ -10,7 +10,8 @@ from collections import Counter
 from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC,
-                        _AGENT_NAME_DESC, _SINCE_DESC, _UNTIL_DESC)
+                        _AGENT_NAME_DESC, _SINCE_DESC, _UNTIL_DESC,
+                        RDAP_BASE_URL, CRTSH_BASE_URL)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _encode_cursor, _decode_cursor
@@ -532,7 +533,7 @@ async def blueteam_whois_lookup(params: WhoisLookupInput) -> str:
     domain = params.domain.strip().lower().rstrip(".")
 
     try:
-        resp = await _api_call("get", f"https://rdap.org/domain/{domain}",
+        resp = await _api_call("get", f"{RDAP_BASE_URL}/domain/{domain}",
                                client_name="http", verify=True,
                                headers={"Accept": "application/json",
                                         "User-Agent": "blue-team-mcp/1.0.0"})
@@ -676,7 +677,7 @@ async def blueteam_crtsh_lookup(params: CrtshLookupInput) -> str:
     domain = params.domain.strip().lower().rstrip(".")
 
     try:
-        resp = await _api_call("get", f"https://crt.sh/?q=%25.{domain}&output=json",
+        resp = await _api_call("get", f"{CRTSH_BASE_URL}/?q=%25.{domain}&output=json",
                                client_name="http", verify=True,
                                headers={"User-Agent": "blue-team-mcp/1.0.0"})
         entries = resp.json()
