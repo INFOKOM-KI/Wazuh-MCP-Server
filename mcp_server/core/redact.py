@@ -58,8 +58,14 @@ def _hash_email_for_audit(email: str) -> str:
 
 
 def _mask_domain(domain: str) -> str:
-    """Mask subdomain part, keep parent domain + TLD visible."""
+    """Mask subdomain part, keep TLD visible. Internal/parent domains fully masked."""
     parts = domain.rstrip(".").split(".")
+    if len(parts) < 2:
+        return domain
+    # Internal TLDs — mask the entire domain
+    if parts[-1] in ("local", "internal", "corp", "lan", "home", "test"):
+        return parts[0][0] + "*" * (len(parts[0]) - 1) + "." + parts[-1] if len(parts) == 2 else \
+               parts[0][0] + "*" * (len(parts[0]) - 2) + parts[0][-1] + ".***." + parts[-1]
     if len(parts) < 3:
         return domain
     sub = parts[0]
