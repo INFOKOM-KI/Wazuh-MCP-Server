@@ -2193,6 +2193,8 @@ async def sangfor_blocklist_check(params: SangforBlocklistCheckInput) -> str:
         headers = {"Authorization": f"Bearer {SANGFOR_BLOCKLIST_TOKEN}", "accept": "application/json"}
         resp = await _api_call("get", f"{SANGFOR_BLOCKLIST_URL}/check/{params.ip}", headers=headers)
         raw = resp.json()
+        if isinstance(raw, list):
+            raw = {"blocked": len(raw) > 0, "entries": raw}
         if params.response_format == "json":
             return _truncate_if_needed(json.dumps(raw, indent=2))
         blocked = raw.get("blocked", False)
@@ -2214,6 +2216,8 @@ async def sangfor_blocklist_list(params: SangforBlocklistListInput) -> str:
         headers = {"Authorization": f"Bearer {SANGFOR_BLOCKLIST_TOKEN}", "accept": "application/json"}
         resp = await _api_call("get", f"{SANGFOR_BLOCKLIST_URL}/list?limit={params.limit}", headers=headers)
         raw = resp.json()
+        if isinstance(raw, list):
+            raw = {"blocked": len(raw) > 0, "count": len(raw), "entries": raw}
         if params.response_format == "json":
             return _truncate_if_needed(json.dumps(raw, indent=2))
         items = raw if isinstance(raw, list) else raw.get("data", [])
