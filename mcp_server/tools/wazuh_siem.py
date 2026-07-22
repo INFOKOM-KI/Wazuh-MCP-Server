@@ -386,11 +386,12 @@ async def blueteam_wazuh_alerts(agent_name: Optional[str] = None, srcip: Optiona
             return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set. "
                               "Set these to enable automatic indexer fallback, or use blueteam_wazuh_manager_logs."}, indent=2)
         search_after = None
+        since_iso, until_iso = _parse_time_window(since or "24h", until)
         if cursor:
             decoded = _decode_cursor(cursor)
             if decoded:
                 search_after = decoded.get("search_after")
-        must = [{"range": {"@timestamp": {"gte": since or "now-24h", "lt": until or "now", "format": "strict_date_optional_time"}}}]
+        must = [{"range": {"@timestamp": {"gte": since_iso, "lt": until_iso, "format": "strict_date_optional_time"}}}]
         if agent_name: must.append({"match": {"agent.name": agent_name}})
         if srcip:
             must.append({"bool": {"should": [{"match": {"data.srcip": srcip}}, {"match_phrase": {"full_log": srcip}}], "minimum_should_match": 1}})
