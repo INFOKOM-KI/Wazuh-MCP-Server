@@ -93,7 +93,7 @@ async def blueteam_wazuh_geo_distribution(params: GeoDistributionInput) -> str:
     buckets = aggs.get("by_country", {}).get("buckets", [])
 
     if params.response_format == "json":
-        return {
+        return json.dumps({
             "window": {"since": since_iso, "until": until_iso},
             "total_alerts_with_geo": total_with_geo,
             "countries": [
@@ -102,7 +102,7 @@ async def blueteam_wazuh_geo_distribution(params: GeoDistributionInput) -> str:
                  "top_rules": [r["key"] for r in b.get("top_rules", {}).get("buckets", [])]}
                 for b in buckets
             ],
-        }
+        }, indent=2, ensure_ascii=False)
 
     lines = [
         f"# 🌍 Attack Geography — `{since_iso}` → `{until_iso}`",
