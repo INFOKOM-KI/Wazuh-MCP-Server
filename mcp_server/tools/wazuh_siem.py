@@ -453,18 +453,16 @@ async def blueteam_wazuh_indexer_search(agent_name: Optional[str] = None, srcip:
     """Query Wazuh Indexer (OpenSearch) for alerts/events with cursor pagination."""
     _audit_log("blueteam_wazuh_indexer_search", {})
     from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _encode_cursor, _decode_cursor
+    from mcp_server.wazuh.time_utils import _parse_time_window
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
         return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."}, indent=2)
+    since_iso, until_iso = _parse_time_window(since, until)
     must = []
     if agent_name: must.append({"match": {"agent.name": agent_name}})
     if srcip:
         must.append({"bool": {"should": [{"match": {"data.srcip": srcip}}, {"match": {"data.srcip2": srcip}}, {"match": {"srcip": srcip}}, {"match_phrase": {"full_log": srcip}}], "minimum_should_match": 1}})
-    if since or until:
-        tr = {}
-        if since: tr["gte"] = since
-        if until: tr["lt"] = until
-        tr["format"] = "strict_date_optional_time"
-        must.append({"range": {"@timestamp": tr}})
+    tr = {"format": "strict_date_optional_time", "gte": since_iso, "lt": until_iso}
+    must.append({"range": {"@timestamp": tr}})
     if keyword:
         parts = [f'{f}: ({keyword})^{b}' if b else f'{f}: ({keyword})' for f, b in _KEYWORD_SEARCH_FIELDS]
         must.append({"query_string": {"query": " OR ".join(parts), "default_operator": "AND", "lenient": True}})
