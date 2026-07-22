@@ -10,11 +10,9 @@ from typing import Literal
 
 import httpx
 
-from mcp_server import mcp
+from mcp_server import mcp, GREYNOISE_COMMUNITY_BASE_URL
 from mcp_server.core.http_client import _api_call, ValidPublicIp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-
-GREYNOISE_COMMUNITY_BASE_URL = "https://api.greynoise.io/v3/community"
 
 
 @mcp.tool(name="greynoise_ip_context", annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True})

@@ -8,15 +8,11 @@ import json, logging, time, os
 from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
-from mcp_server import CROWDSEC_API_KEY_ENV
-from mcp_server import CROWDSEC_CACHE_TTL
-
-from mcp_server import mcp, CROWDSEC_API_KEY_ENV, CROWDSEC_CACHE_TTL
+from mcp_server import mcp, CROWDSEC_API_KEY_ENV, CROWDSEC_CACHE_TTL, CROWDSEC_BASE_URL
 from mcp_server.core.http_client import _api_call, _handle_api_error, _is_private_or_reserved, ValidPublicIp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 
 logger = logging.getLogger("blue_team_mcp.crowdsec")
-CROWDSEC_BASE_URL = "https://cti.api.crowdsec.net"
 _crowdsec_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _CROWDSEC_CACHE_MAXSIZE = 1000
 

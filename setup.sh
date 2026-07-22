@@ -71,10 +71,20 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 
 # Argus Threat Intelligence (optional — TangerangKota-CSIRT)
 # export ARGUS_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
-# export ARGUS_BASE_URL="https://argus.tangerangkota.go.id"
+# export ARGUS_BASE_URL="https://argus.fbi.gov"
 # export ARGUS_VERIFY_SSL="false"         # set to "true" for production / trusted CA
 
 # GreyNoise Community — no API key needed; greynoise_ip_context works out of the box.
+
+# External API Base URLs (defaults shown — override for self-hosted mirrors or proxies)
+# export GREYNOISE_BASE_URL="https://api.greynoise.io/v3/community"
+# export CROWDSEC_BASE_URL="https://cti.api.crowdsec.net"
+# export THREATFOX_BASE_URL="https://threatfox-api.abuse.ch/api/v1/"
+# export ABUSEIPDB_BASE_URL="https://api.abuseipdb.com/api/v2"
+# export VIRUSTOTAL_BASE_URL="https://www.virustotal.com/api/v3"
+# export NETRA_BASE_URL="https://netra.fbi.gov:8013/api/v1"
+# export RDAP_BASE_URL="https://rdap.org"
+# export CRTSH_BASE_URL="https://crt.sh"
 
 # Caching TTLs (seconds — defaults shown)
 # export CROWDSEC_CACHE_TTL="900"
@@ -162,6 +172,15 @@ export NETRA_VERIFY_SSL="${NETRA_VERIFY_SSL:-false}"
 export ARGUS_API_KEY="${ARGUS_API_KEY:-}"
 export ARGUS_BASE_URL="${ARGUS_BASE_URL:-}"
 export ARGUS_VERIFY_SSL="${ARGUS_VERIFY_SSL:-false}"
+# External API Base URLs
+export GREYNOISE_BASE_URL="${GREYNOISE_BASE_URL:-https://api.greynoise.io/v3/community}"
+export CROWDSEC_BASE_URL="${CROWDSEC_BASE_URL:-https://cti.api.crowdsec.net}"
+export THREATFOX_BASE_URL="${THREATFOX_BASE_URL:-https://threatfox-api.abuse.ch/api/v1/}"
+export ABUSEIPDB_BASE_URL="${ABUSEIPDB_BASE_URL:-https://api.abuseipdb.com/api/v2}"
+export VIRUSTOTAL_BASE_URL="${VIRUSTOTAL_BASE_URL:-https://www.virustotal.com/api/v3}"
+export NETRA_BASE_URL="${NETRA_BASE_URL:-https://yourdreams.gov:8013/api/v1}"
+export RDAP_BASE_URL="${RDAP_BASE_URL:-https://rdap.org}"
+export CRTSH_BASE_URL="${CRTSH_BASE_URL:-https://crt.sh}"
 # Sangfor blocklist
 export SANGFOR_BLOCKLIST_URL="${SANGFOR_BLOCKLIST_URL:-}"
 export SANGFOR_BLOCKLIST_TOKEN="${SANGFOR_BLOCKLIST_TOKEN:-}"

@@ -110,13 +110,3 @@ _BLOCKMODE_SEVERITY: dict[str, str] = {
 # Correlation engine throttle state
 _last_eval_time: float = 0.0
 _last_eval_result: Optional[Dict[str, Any]] = None
-
-
-# CrowdSec CTI cache
-CROWDSEC_BASE_URL = "https://cti.api.crowdsec.net"
-_crowdsec_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-CROWDSEC_CACHE_TTL = 900
-
-# Other external API base URLs
-GREYNOISE_COMMUNITY_BASE_URL = "https://api.greynoise.io/v3/community"
-NETRA_BASE_URL = "https://yourdreams.gov:8013/api/v1"

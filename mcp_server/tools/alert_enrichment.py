@@ -12,7 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC,
                         CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV,
-                        ABUSEIPDB_API_KEY, VIRUSTOTAL_API_KEY)
+                        ABUSEIPDB_API_KEY, VIRUSTOTAL_API_KEY,
+                        GREYNOISE_COMMUNITY_BASE_URL, ABUSEIPDB_BASE_URL,
+                        VIRUSTOTAL_BASE_URL, ARGUS_BASE_URL)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call, _get_client
@@ -883,7 +885,7 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
             return None
         try:
             headers = {"accept": "application/json", "User-Agent": "blue-team-mcp/1.0.0"}
-            resp = await _api_call("get", f"https://api.greynoise.io/v3/community/{params.srcip}", headers=headers)
+            resp = await _api_call("get", f"{GREYNOISE_COMMUNITY_BASE_URL}/{params.srcip}", headers=headers)
             return resp.json()
         except Exception:
             return None
@@ -1746,7 +1748,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             if os.environ.get(ARGUS_API_KEY_ENV):
                 try:
                     argus_key = os.environ[ARGUS_API_KEY_ENV]
-                    argus_resp = await _api_call("post", "https://argus.tangerangkota.go.id/api/v1/lookup",
+                    argus_resp = await _api_call("post", f"{ARGUS_BASE_URL}/api/v1/lookup",
                         headers={"X-API-Key": argus_key, "Content-Type": "application/json"},
                         json={"ip_address": ip})
                     argus_data = argus_resp.json()
@@ -1761,7 +1763,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
                 try:
                     client = await _get_client("http")
                     resp = await client.get(
-                        "https://api.abuseipdb.com/api/v2/check",
+                        f"{ABUSEIPDB_BASE_URL}/check",
                         headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
                         params={"ipAddress": ip, "maxAgeInDays": "90"},
                     )
@@ -1779,7 +1781,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
                 try:
                     client = await _get_client("http")
                     resp = await client.get(
-                        f"https://www.virustotal.com/api/v3/ip_addresses/{ip}",
+                        f"{VIRUSTOTAL_BASE_URL}/ip_addresses/{ip}",
                         headers={"x-apikey": VIRUSTOTAL_API_KEY, "Accept": "application/json"},
                     )
                     resp.raise_for_status()
@@ -2054,7 +2056,7 @@ async def blueteam_lookup_ip_abuseipdb(ip: ValidPublicIp, max_age_days: int = 90
         return json.dumps({"error": "ABUSEIPDB_API_KEY not set."})
     try:
         client = await _get_client("http")
-        resp = await client.get("https://api.abuseipdb.com/api/v2/check",
+        resp = await client.get(f"{ABUSEIPDB_BASE_URL}/check",
                                  headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
                                  params={"ipAddress": ip, "maxAgeInDays": str(max_age_days)})
         resp.raise_for_status()
@@ -2079,7 +2081,7 @@ async def blueteam_lookup_hash_virustotal(hash: str, response_format: str = "mar
         return json.dumps({"error": "VIRUSTOTAL_API_KEY not set."})
     try:
         client = await _get_client("http")
-        resp = await client.get(f"https://www.virustotal.com/api/v3/files/{hash}",
+        resp = await client.get(f"{VIRUSTOTAL_BASE_URL}/files/{hash}",
                                  headers={"x-apikey": VIRUSTOTAL_API_KEY, "Accept": "application/json"})
         resp.raise_for_status()
         data = resp.json().get("data", {}).get("attributes", {})
@@ -2104,7 +2106,7 @@ async def blueteam_lookup_domain_virustotal(domain: str, response_format: str = 
         return json.dumps({"error": "VIRUSTOTAL_API_KEY not set."})
     try:
         client = await _get_client("http")
-        resp = await client.get(f"https://www.virustotal.com/api/v3/domains/{domain}",
+        resp = await client.get(f"{VIRUSTOTAL_BASE_URL}/domains/{domain}",
                                  headers={"x-apikey": VIRUSTOTAL_API_KEY, "Accept": "application/json"})
         resp.raise_for_status()
         data = resp.json().get("data", {}).get("attributes", {})
@@ -2272,7 +2274,7 @@ async def blueteam_unified_threat_score(params: UnifiedThreatScoreInput) -> str:
             from mcp_server import ABUSEIPDB_API_KEY
             if not ABUSEIPDB_API_KEY: return 0.0, {}
             h = {"Key":ABUSEIPDB_API_KEY,"Accept":"application/json"}
-            r = await _api_call("get",f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}&maxAgeInDays=90",headers=h)
+            r = await _api_call("get",f"{ABUSEIPDB_BASE_URL}/check?ipAddress={ip}&maxAgeInDays=90",headers=h)
             d = r.json().get("data",{})
             s = d.get("abuseConfidenceScore",0)/100.0
             return s, {"confidence":d.get("abuseConfidenceScore",0),"total_reports":d.get("totalReports",0)}

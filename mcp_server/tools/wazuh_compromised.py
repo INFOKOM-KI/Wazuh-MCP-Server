@@ -11,7 +11,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC,
-                        NETRA_API_KEY_ENV, NETRA_VERIFY_SSL, _AGENT_NAME_DESC,
+                        NETRA_API_KEY_ENV, NETRA_VERIFY_SSL, NETRA_BASE_URL, _AGENT_NAME_DESC,
                         _SINCE_DESC, _RESPONSE_FORMAT_DESC, _UNTIL_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.redact import _redact_alert_data
@@ -215,7 +215,7 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
         netra_key = os.environ.get(NETRA_API_KEY_ENV, "")
         for ip, _ in top_ips[:enrich_count]:
             try:
-                netra_resp = await _api_call("get", f"https://yourdreams.gov:8013/api/v1/analysis/{ip}",
+                netra_resp = await _api_call("get", f"{NETRA_BASE_URL}/analysis/{ip}",
                     headers={"X-API-Key": netra_key, "Accept": "application/json"},
                     verify=NETRA_VERIFY_SSL)
                 raw = netra_resp.json()
