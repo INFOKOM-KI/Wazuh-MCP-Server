@@ -71,7 +71,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 
 # Argus Threat Intelligence (optional — TangerangKota-CSIRT)
 # export ARGUS_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
-# export ARGUS_BASE_URL="https://argus.fbi.gov"
+# export ARGUS_BASE_URL="http://<host>:<port>/lookup-jobs"  # full endpoint
 # export ARGUS_VERIFY_SSL="false"         # set to "true" for production / trusted CA
 
 # GreyNoise Community — no API key needed; greynoise_ip_context works out of the box.
@@ -170,7 +170,7 @@ export THREATFOX_CACHE_TTL="${THREATFOX_CACHE_TTL:-900}"
 export NETRA_API_KEY="${NETRA_API_KEY:-}"
 export NETRA_VERIFY_SSL="${NETRA_VERIFY_SSL:-false}"
 export ARGUS_API_KEY="${ARGUS_API_KEY:-}"
-export ARGUS_BASE_URL="${ARGUS_BASE_URL:-https://argus.fbi.gov}"
+export ARGUS_BASE_URL="${ARGUS_BASE_URL:-http://<host>:<port>/lookup-jobs}"
 export ARGUS_VERIFY_SSL="${ARGUS_VERIFY_SSL:-false}"
 # External API Base URLs
 export GREYNOISE_BASE_URL="${GREYNOISE_BASE_URL:-https://api.greynoise.io/v3/community}"
