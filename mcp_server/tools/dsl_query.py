@@ -4,7 +4,7 @@
 DSL query tool - raw OpenSearch aggregation queries
 """
 from __future__ import annotations
-import json
+import json, re
 from typing import Optional, Literal, Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, CHARACTER_LIMIT
