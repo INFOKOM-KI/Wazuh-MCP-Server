@@ -449,9 +449,17 @@ async def blueteam_wazuh_alerts(agent_name: Optional[str] = None, srcip: Optiona
 )
 async def blueteam_wazuh_indexer_search(agent_name: Optional[str] = None, srcip: Optional[str] = None,
                                          since: Optional[str] = None, until: Optional[str] = None,
-                                         limit: int = 500, keyword: Optional[str] = None,
+                                         limit: int = 500, max_scanned: int = 0,
+                                         cursor: Optional[str] = None, keyword: Optional[str] = None,
                                          response_format: str = "json") -> str:
-    """Query Wazuh Indexer (OpenSearch) for alerts/events with cursor pagination."""
+    """Query Wazuh Indexer (OpenSearch) for alerts/events with cursor pagination.
+
+    Set max_scanned > 0 for auto-pagination (server fetches up to N documents
+    across multiple pages in a single call). Pass cursor from previous
+    response to continue where you left off.
+
+    Returns total matching documents so you know if data was truncated.
+    """
     _audit_log("blueteam_wazuh_indexer_search", {})
     from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _encode_cursor, _decode_cursor
     from mcp_server.wazuh.time_utils import _parse_time_window
@@ -467,11 +475,51 @@ async def blueteam_wazuh_indexer_search(agent_name: Optional[str] = None, srcip:
     if keyword:
         parts = [f'{f}: ({keyword})^{b}' if b else f'{f}: ({keyword})' for f, b in _KEYWORD_SEARCH_FIELDS]
         must.append({"query_string": {"query": " OR ".join(parts), "default_operator": "AND", "lenient": True}})
-    body = {"size": min(limit, 10000), "sort": [{"@timestamp": {"order": "asc"}}], "query": {"bool": {"must": must}} if must else {"match_all": {}}}
-    raw = await _wazuh_indexer_post(body)
-    if "error" in raw: return json.dumps(raw, indent=2)
-    hits = raw.get("hits", {})
-    docs = [h.get("_source", h) for h in hits.get("hits", [])]
-    total = hits.get("total", {})
-    total_val = total.get("value", 0) if isinstance(total, dict) else total
-    return _truncate_if_needed(json.dumps({"total": {"value": total_val}, "count": len(docs), "documents": docs}, indent=2))
+
+    search_after = None
+    if cursor:
+        decoded = _decode_cursor(cursor)
+        if decoded:
+            search_after = decoded.get("search_after")
+
+    all_docs = []
+    total_scanned = 0
+    total_val = 0
+    total_relation = "eq"
+    page_size = min(limit, 10000)
+    effective_max = max_scanned if max_scanned > 0 else page_size
+
+    while total_scanned < effective_max:
+        body = {"size": min(page_size, effective_max - total_scanned),
+                "sort": [{"@timestamp": {"order": "asc"}}],
+                "query": {"bool": {"must": must}} if must else {"match_all": {}}}
+        if search_after:
+            body["search_after"] = search_after
+        raw = await _wazuh_indexer_post(body)
+        if "error" in raw:
+            if all_docs: break  # partial results on error
+            return json.dumps(raw, indent=2)
+        hits = raw.get("hits", {})
+        hit_list = hits.get("hits", [])
+        docs = [h.get("_source", h) for h in hit_list]
+        total = hits.get("total", {})
+        total_val = total.get("value", 0) if isinstance(total, dict) else total
+        total_relation = total.get("relation", "eq") if isinstance(total, dict) else "eq"
+        if not docs:
+            break
+        all_docs.extend(docs)
+        total_scanned += len(docs)
+        last_sort = hit_list[-1].get("sort") if hit_list else None
+        if len(docs) < page_size or last_sort is None:
+            break
+        search_after = last_sort
+
+    next_cursor = _encode_cursor({"search_after": search_after}) if search_after and total_scanned < total_val else None
+    has_more = next_cursor is not None
+    return _truncate_if_needed(json.dumps({
+        "total": {"value": total_val, "relation": total_relation},
+        "retrieved": total_scanned,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+        "documents": all_docs,
+    }, indent=2, ensure_ascii=False))
