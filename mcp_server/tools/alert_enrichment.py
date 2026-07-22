@@ -2040,7 +2040,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
 import os, json, re
 from mcp_server.core.http_client import _api_call, _get_client, _handle_api_error, ValidPublicIp
 from mcp_server.core.audit import _audit_log
-from mcp_server.core.constants import _BLOCKMODE_SEVERITY, _KNOWN_ATTACK_CHAINS, MITRE_TACTIC_TO_CATEGORY, NETRA_BASE_URL
+from mcp_server.core.constants import _BLOCKMODE_SEVERITY, _KNOWN_ATTACK_CHAINS, MITRE_TACTIC_TO_CATEGORY
 
 
 # AbuseIPDB
