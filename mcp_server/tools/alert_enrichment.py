@@ -2167,17 +2167,35 @@ async def argus_ip_lookup(ip: ValidPublicIp, response_format: str = "markdown") 
 async def netra_ip_analysis(ip: ValidPublicIp, response_format: str = "markdown", bypass_redaction: bool = False) -> str:
     """Query Netra Threat Intelligence for IP analysis."""
     _audit_log("netra_ip_analysis", {"ip": ip})
-    from mcp_server import NETRA_API_KEY_ENV, NETRA_VERIFY_SSL
+    from mcp_server import NETRA_API_KEY_ENV, NETRA_VERIFY_SSL, NETRA_BASE_URL
     api_key = os.environ.get(NETRA_API_KEY_ENV, "")
     if not api_key:
         return json.dumps({"error": "NETRA_API_KEY not set."})
     try:
         headers = {"X-API-Key": api_key, "accept": "application/json"}
-        resp = await _api_call("get", f"{NETRA_BASE_URL}/ip/{ip}", headers=headers)
+        resp = await _api_call("get", f"{NETRA_BASE_URL}/analysis/{ip}", headers=headers)
         raw = resp.json()
         if response_format == "json":
             return _truncate_if_needed(json.dumps(raw, indent=2))
-        return _truncate_if_needed(f"# Netra — {ip}\n\n- **Reputation**: {raw.get('reputation','unknown')}")
+        data = raw.get("data", {}).get("results", {})
+        ts = data.get("threat_score", {})
+        ai = data.get("ai_insight", {})
+        ipapi = data.get("ipapi", {}).get("results", {})
+        score = ts.get("score", 0)
+        level = ts.get("level", "?")
+        sources_ok = ts.get("sources_available", [])
+        sources_fail = ts.get("sources_failed", [])
+        lines = [f"# Netra — {ip}", "",
+                 f"- **Score**: {score} ({level})",
+                 f"- **Sources OK**: {', '.join(sources_ok) if sources_ok else 'none'}",
+                 f"- **Sources Failed**: {', '.join(sources_fail) if sources_fail else 'none'}",
+                 ""]
+        if ipapi:
+            lines.append(f"- **ISP**: {ipapi.get('isp', '?')}")
+            lines.append(f"- **Country**: {ipapi.get('country', '?')} ({ipapi.get('city', '?')})")
+        if ai.get("success"):
+            lines.append(f"- **AI Insight**: {ai.get('insight', '?')[:200]}")
+        return _truncate_if_needed("\n".join(lines))
     except Exception as e:
         return _handle_api_error(e, context="netra")
 
@@ -2190,7 +2208,11 @@ class SangforBlocklistCheckInput(BaseModel):
 
 class SangforBlocklistListInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    limit: int = Field(default=100, ge=1, le=1000)
+    limit: int = Field(default=100, ge=1, le=1000000)
+    date_start: str = Field(default="", max_length=19,
+                            description="Start date YYYY-MM-DD HH:MM:SS. Defaults to 30 days ago.")
+    date_end: str = Field(default="", max_length=19,
+                          description="End date YYYY-MM-DD HH:MM:SS. Defaults to now.")
     response_format: str = Field(default="markdown")
 
 @mcp.tool(
