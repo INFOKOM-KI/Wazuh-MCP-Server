@@ -332,7 +332,9 @@ class AggregateAnalysisInput(BaseModel):
     @classmethod
     def validate_mode(cls, v):
         if v.strip().lower() not in ("topology","anomaly","correlation","trend","summary"):
-            raise ValueError("mode must be: topology, anomaly, correlation, trend, summary")
+            raise ValueError("mode must be: topology, anomaly, correlation, trend, summary. "
+                             "For top rules/srcips/agents by keyword, use blueteamWazuhIndexerSearch "
+                             "or wazuhAlertFocusedCrawl instead.")
         return v.strip().lower()
 
 
