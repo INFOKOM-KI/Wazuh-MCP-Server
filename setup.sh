@@ -119,7 +119,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_ALLOW_UNTRUNCATED="false"
 
 # Sangfor Blocklist Integration (optional — set SANGFOR_BLOCKLIST_TOKEN to enable sangfor_blocklist_* tools)
-# export SANGFOR_BLOCKLIST_URL="http://172.16.9.148:8088/blocklist"
+# export SANGFOR_BLOCKLIST_URL="http://sangfor.local:8088/blocklist"
 # export SANGFOR_BLOCKLIST_TOKEN="your_sangfor_bearer_token"
 # export SANGFOR_BLOCKLIST_TIMEOUT="15"
 # export SANGFOR_BLOCKLIST_VERIFY_SSL="false"   # set to "true" for production / trusted CA
@@ -170,7 +170,7 @@ export THREATFOX_CACHE_TTL="${THREATFOX_CACHE_TTL:-900}"
 export NETRA_API_KEY="${NETRA_API_KEY:-}"
 export NETRA_VERIFY_SSL="${NETRA_VERIFY_SSL:-false}"
 export ARGUS_API_KEY="${ARGUS_API_KEY:-}"
-export ARGUS_BASE_URL="${ARGUS_BASE_URL:-}"
+export ARGUS_BASE_URL="${ARGUS_BASE_URL:-https://argus.fbi.gov}"
 export ARGUS_VERIFY_SSL="${ARGUS_VERIFY_SSL:-false}"
 # External API Base URLs
 export GREYNOISE_BASE_URL="${GREYNOISE_BASE_URL:-https://api.greynoise.io/v3/community}"
@@ -178,7 +178,7 @@ export CROWDSEC_BASE_URL="${CROWDSEC_BASE_URL:-https://cti.api.crowdsec.net}"
 export THREATFOX_BASE_URL="${THREATFOX_BASE_URL:-https://threatfox-api.abuse.ch/api/v1/}"
 export ABUSEIPDB_BASE_URL="${ABUSEIPDB_BASE_URL:-https://api.abuseipdb.com/api/v2}"
 export VIRUSTOTAL_BASE_URL="${VIRUSTOTAL_BASE_URL:-https://www.virustotal.com/api/v3}"
-export NETRA_BASE_URL="${NETRA_BASE_URL:-https://yourdreams.gov:8013/api/v1}"
+export NETRA_BASE_URL="${NETRA_BASE_URL:-https://netra.fbi.gov:8013/api/v1}"
 export RDAP_BASE_URL="${RDAP_BASE_URL:-https://rdap.org}"
 export CRTSH_BASE_URL="${CRTSH_BASE_URL:-https://crt.sh}"
 # Sangfor blocklist
