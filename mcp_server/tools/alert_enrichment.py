@@ -2126,15 +2126,16 @@ async def blueteam_lookup_domain_virustotal(domain: str, response_format: str = 
 async def argus_ip_lookup(ip: ValidPublicIp, response_format: str = "markdown") -> str:
     """Query Argus Threat Intelligence (TangerangKota-CSIRT) aggregating 7 sources."""
     _audit_log("argus_ip_lookup", {"ip": ip})
-    from mcp_server import ARGUS_API_KEY_ENV, ARGUS_VERIFY_SSL
+    from mcp_server import ARGUS_API_KEY_ENV, ARGUS_VERIFY_SSL, ARGUS_BASE_URL
     api_key = os.environ.get(ARGUS_API_KEY_ENV, "")
-    base_url = os.environ.get("ARGUS_BASE_URL", "")
-    if not api_key or not base_url:
-        return json.dumps({"error": "ARGUS_API_KEY and ARGUS_BASE_URL must be set."})
+    if not api_key:
+        return json.dumps({"error": "ARGUS_API_KEY must be set."})
     try:
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "accept": "application/json"}
-        resp = await _api_call("post", f"{base_url}/api/v1/lookup", client_name="argus", verify=ARGUS_VERIFY_SSL,
+        resp = await _api_call("post", f"{ARGUS_BASE_URL}/api/v1/lookup", client_name="argus", verify=ARGUS_VERIFY_SSL,
                                 headers=headers, json={"ip_address": ip})
+        if not resp.content:
+            return json.dumps({"error": "Argus API returned empty response"})
         raw = resp.json()
         if response_format == "json":
             return _truncate_if_needed(json.dumps(raw, indent=2))
