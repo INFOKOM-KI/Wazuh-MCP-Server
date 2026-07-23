@@ -382,6 +382,7 @@ async def blueteam_wazuh_alerts(agent_name: Optional[str] = None, srcip: Optiona
     p = Path(_WAZUH_ALERTS_PATH)
     if not p.exists():
         from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _encode_cursor, _decode_cursor
+        from mcp_server.wazuh.time_utils import _parse_time_window
         if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
             return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set. "
                               "Set these to enable automatic indexer fallback, or use blueteam_wazuh_manager_logs."}, indent=2)
