@@ -22,7 +22,9 @@ class GeoDistributionInput(BaseModel):
     until: Optional[str] = Field(default=None, max_length=30,
         description="End of time window. Defaults to now.")
     top_n: int = Field(default=15, ge=3, le=50,
-        description="Number of top countries to return.")
+        description="Number of top countries/cities to return.")
+    granularity: Literal["country", "city"] = Field(
+        default="country", description="Aggregate by country_name or city_name.")
     response_format: Literal["markdown", "json"] = Field(
         default="markdown", description="'markdown' or 'json'.")
     bypass_redaction: bool = Field(
@@ -60,16 +62,20 @@ async def blueteam_wazuh_geo_distribution(params: GeoDistributionInput) -> str:
 
     since_iso, until_iso = _parse_time_window(params.since, params.until)
 
+    is_city = params.granularity == "city"
+    geo_field = "GeoLocation.city_name" if is_city else "GeoLocation.country_name"
+    geo_label = "City" if is_city else "Country"
+
     body = {
         "size": 0,
         "query": {"bool": {"filter": [
             {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                        "format": "strict_date_optional_time"}}},
-            {"exists": {"field": "GeoLocation.country_name"}},
+            {"exists": {"field": geo_field}},
         ]}},
         "aggs": {
-            "by_country": {
-                "terms": {"field": "GeoLocation.country_name", "size": params.top_n,
+            "by_geo": {
+                "terms": {"field": geo_field, "size": params.top_n,
                           "order": {"_count": "desc"}},
                 "aggs": {
                     "unique_ips": {
@@ -81,7 +87,7 @@ async def blueteam_wazuh_geo_distribution(params: GeoDistributionInput) -> str:
                     },
                 },
             },
-            "total_with_geo": {"value_count": {"field": "GeoLocation.country_name"}},
+            "total_with_geo": {"value_count": {"field": geo_field}},
         },
     }
     raw = await _wazuh_indexer_post(body)
@@ -90,14 +96,15 @@ async def blueteam_wazuh_geo_distribution(params: GeoDistributionInput) -> str:
 
     aggs = raw.get("aggregations", {})
     total_with_geo = aggs.get("total_with_geo", {}).get("value", 0)
-    buckets = aggs.get("by_country", {}).get("buckets", [])
+    buckets = aggs.get("by_geo", {}).get("buckets", [])
 
     if params.response_format == "json":
         return json.dumps({
             "window": {"since": since_iso, "until": until_iso},
+            "granularity": params.granularity,
             "total_alerts_with_geo": total_with_geo,
-            "countries": [
-                {"country": b["key"], "alerts": b["doc_count"],
+            geo_label.lower() + "s": [
+                {"name": b["key"], "alerts": b["doc_count"],
                  "unique_ips": b.get("unique_ips", {}).get("value", 0),
                  "top_rules": [r["key"] for r in b.get("top_rules", {}).get("buckets", [])]}
                 for b in buckets
@@ -105,11 +112,12 @@ async def blueteam_wazuh_geo_distribution(params: GeoDistributionInput) -> str:
         }, indent=2, ensure_ascii=False)
 
     lines = [
-        f"# 🌍 Attack Geography — `{since_iso}` → `{until_iso}`",
+        f"# {'🏙️' if is_city else '🌍'} Attack Geography — `{since_iso}` → `{until_iso}`",
         "",
+        f"**Granularity**: {geo_label}",
         f"**Alerts with GeoIP data**: {total_with_geo:,}",
         "",
-        "| Country | Alerts | Unique IPs | Top Rules |",
+        f"| {geo_label} | Alerts | Unique IPs | Top Rules |",
         "|---------|--------|------------|-----------|",
     ]
     for b in buckets:

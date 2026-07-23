@@ -29,6 +29,7 @@ def register_all_tools() -> None:
         threat_hunt,           # 1 tool (11 templates)
         ioc_tools,             # 1 tool
         wazuh_export,          # 1 tool (scroll-based export)
+        wazuh_scanning,        # 4 tools (vulnerability, syscheck, compliance, geo heatmap)
     )
 
-    logger.info("80 tools + 2 resources registered.")
+    logger.info("84 tools + 2 resources registered.")

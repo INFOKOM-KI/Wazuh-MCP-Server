@@ -157,7 +157,7 @@ fi
 # Wrapper scripts
 echo "[5/7] Creating MCP server wrapper scripts..."
 
-# Main wrapper: mcp-server-blueteam (all 80 tools)
+# Main wrapper: mcp-server-blueteam (all 84 tools)
 cat > /usr/local/bin/mcp-server-blueteam << 'EOF'
 #!/usr/bin/env bash
 # Wrapper - Claude Desktop calls this via SSH (MAESTRO-compliant)
@@ -270,7 +270,7 @@ echo "  ThreatFox needs a free key — https://threatfox.abuse.ch/api"
 echo ""
 echo "Wrapper entry points installed:"
 echo ""
-echo "  mcp-server-blueteam    — All 80 tools (Wazuh, threat intel, host forensics,"
+echo "  mcp-server-blueteam    — All 84 tools (Wazuh, threat intel, host forensics,"
 echo "                            Sangfor blocklist, 3-Sum correlation, curated reports,"
 echo "                            CrowdSec, GreyNoise, ThreatFox)"
 echo "  mcp-server-crowdsec    — DEPRECATED — redirects to mcp-server-blueteam"

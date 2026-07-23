@@ -19,10 +19,11 @@ _WAZUH_INDEX_PATTERNS = {"alerts": "wazuh-alerts-*", "events": "wazuh-events-*",
 _KEYWORD_SEARCH_FIELDS: list[tuple[str, int]] = [
     ("full_log", 3), ("rule.description", 2), ("rule.info", 2),
     ("data.srcip", 2), ("data.srcip2", 2), ("srcip", 2),
+    ("rule.cve", 2), ("data.command", 1), ("data.protocol", 1),
     ("data.url", 0), ("data.domain", 0), ("data.user_agent", 0), ("data.referrer", 0),
 ]
 _SRCIP_FIELD_PATHS: list[str] = [
-    "data.srcip.keyword", "data.src_ip.keyword", "data.client_ip.keyword",
+    "data.srcip.keyword", "data.srcip", "data.src_ip.keyword", "data.client_ip.keyword",
     "data.remote_ip.keyword", "data.source_ip.keyword", "data.ip.keyword", "srcip.keyword",
 ]
 _MSEARCH_FALLBACK_ERROR: dict = {"error": "_msearch_failed"}
