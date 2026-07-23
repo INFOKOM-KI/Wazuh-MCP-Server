@@ -4,7 +4,7 @@
 ThreatFox IOC Search — abuse.ch threat intelligence integration
 """
 from __future__ import annotations
-import json, logging, time, os, re
+import json, logging, time, os, re, asyncio
 from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -22,6 +22,11 @@ if not os.environ.get(THREATFOX_API_KEY_ENV):
 
 _threatfox_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _THREATFOX_CACHE_MAXSIZE = 1000
+
+# Rate limiter: 10 req/sec, max 3 concurrent (semaphore)
+_threatfox_semaphore = asyncio.Semaphore(3)
+_threatfox_last_request = 0.0
+_THREATFOX_MIN_INTERVAL = 0.1  # 100ms = 10 req/sec
 
 # Patterns for detecting IOC type (used for SSRF guard scoping)
 _IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
@@ -61,21 +66,29 @@ async def _threatfox_request(search_term: str, exact_match: bool = False) -> dic
     """
     cache_key = f"{search_term}:{exact_match}"
     now = time.monotonic()
+    global _threatfox_last_request
     if cache_key in _threatfox_cache:
         expiry, data = _threatfox_cache[cache_key]
         if now < expiry:
             return data
         del _threatfox_cache[cache_key]
 
-    headers = {
-        "Auth-Key": _get_threatfox_api_key(),
-        "accept": "application/json",
-        "User-Agent": "blue-team-mcp/1.0.0 (TangerangKota-CSIRT)",
-        "Content-Type": "application/json",
-    }
-    body = {"query": "search_ioc", "search_term": search_term, "exact_match": exact_match}
-    resp = await _api_call("post", THREATFOX_BASE_URL, headers=headers, json=body)
-    data = resp.json()
+    # Rate limit: max 3 concurrent, 10 req/sec
+    async with _threatfox_semaphore:
+        elapsed = time.monotonic() - _threatfox_last_request
+        if elapsed < _THREATFOX_MIN_INTERVAL:
+            await asyncio.sleep(_THREATFOX_MIN_INTERVAL - elapsed)
+
+        headers = {
+            "Auth-Key": _get_threatfox_api_key(),
+            "accept": "application/json",
+            "User-Agent": "blue-team-mcp/1.0.0 (TangerangKota-CSIRT)",
+            "Content-Type": "application/json",
+        }
+        body = {"query": "search_ioc", "search_term": search_term, "exact_match": exact_match}
+        resp = await _api_call("post", THREATFOX_BASE_URL, headers=headers, json=body)
+        data = resp.json()
+        _threatfox_last_request = time.monotonic()
     if len(_threatfox_cache) >= _THREATFOX_CACHE_MAXSIZE:
         _threatfox_cache.pop(next(iter(_threatfox_cache)))  # LRU eviction
     _threatfox_cache[cache_key] = (now + THREATFOX_CACHE_TTL, data)
