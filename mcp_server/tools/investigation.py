@@ -325,6 +325,11 @@ class AggregateAnalysisInput(BaseModel):
     rule_level_min: Optional[int] = Field(default=None, ge=1, le=16)
     keyword: ValidKeyword = Field(default=None, max_length=1024)
     top_n: int = Field(default=10, ge=3, le=50)
+    rule_cis: ValidRuleGroups = Field(default=None, description="Filter by CIS benchmark (e.g. '1.1.1,2.2.2')")
+    rule_pci_dss: ValidRuleGroups = Field(default=None, description="Filter by PCI DSS requirement")
+    rule_gdpr: ValidRuleGroups = Field(default=None, description="Filter by GDPR article")
+    rule_hipaa: ValidRuleGroups = Field(default=None, description="Filter by HIPAA control")
+    rule_nist_800_53: ValidRuleGroups = Field(default=None, description="Filter by NIST 800-53 control")
     response_format: str = Field(default="markdown")
     bypass_redaction: bool = Field(default=False)
 
@@ -354,6 +359,17 @@ async def wazuh_alert_aggregate_analysis(params: AggregateAnalysisInput) -> str:
         groups = [g.strip() for g in params.rule_groups.split(",") if g.strip()]
         if groups: filters.append({"terms": {"rule.groups": groups}})
     if params.rule_level_min is not None: filters.append({"range": {"rule.level": {"gte": params.rule_level_min}}})
+    compliance_fields = []
+    for field, param in [("rule.cis", params.rule_cis), ("rule.pci_dss", params.rule_pci_dss),
+                          ("rule.gdpr", params.rule_gdpr), ("rule.hipaa", params.rule_hipaa),
+                          ("rule.nist_800_53", params.rule_nist_800_53)]:
+        if param:
+            vals = [v.strip() for v in param.split(",") if v.strip()]
+            if vals:
+                filters.append({"terms": {field: vals}})
+            else:
+                filters.append({"exists": {"field": field}})
+                compliance_fields.append(field)
     if params.keyword:
         k = params.keyword.strip()
         parts = [f'{f}: ({k})^{b}' if b else f'{f}: ({k})' for f, b in _KEYWORD_SEARCH_FIELDS[:8]]
@@ -364,6 +380,9 @@ async def wazuh_alert_aggregate_analysis(params: AggregateAnalysisInput) -> str:
                      "top_agents": {"terms": {"field": "agent.name.keyword", "size": params.top_n}},
                      "severity_bands": {"range": {"field": "rule.level",
                          "ranges": [{"key":"low","to":5},{"key":"medium","from":5,"to":10},{"key":"high","from":10}]}}}}
+    # Add compliance breakdown aggregations if any compliance fields active
+    for cf in compliance_fields:
+        body["aggs"][f"compliance_{cf.split('.')[-1]}"] = {"terms": {"field": cf, "size": 20}}
     raw = await _wazuh_indexer_post(body)
     if "error" in raw: return json.dumps(raw, indent=2)
     aggs = raw.get("aggregations", {})
