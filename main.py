@@ -12,7 +12,7 @@ import os
 def main() -> None:
     # Parse args first — set env vars BEFORE importing mcp_server
     # so FastMCP picks up correct host/port at construction time.
-    parser = argparse.ArgumentParser(description="blue_team_mcp (84 tools)")
+    parser = argparse.ArgumentParser(description="blue_team_mcp (85 tools)")
     parser.add_argument("--transport", choices=["stdio","streamable_http","http"],
                         default=os.environ.get("MCP_TRANSPORT","stdio"))
     parser.add_argument("--host", default=os.environ.get("MCP_HOST","127.0.0.1"))
@@ -27,7 +27,7 @@ def main() -> None:
 
     register_all_tools()
 
-    logger.info("84 tools + 2 resources. Starting %s on %s:%s",
+    logger.info("85 tools + 2 resources. Starting %s on %s:%s",
                 args.transport, args.host, args.port)
     if args.transport in ("streamable_http", "http"):
         mcp.run(transport="streamable-http")

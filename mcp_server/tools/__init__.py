@@ -30,6 +30,7 @@ def register_all_tools() -> None:
         ioc_tools,             # 1 tool
         wazuh_export,          # 1 tool (scroll-based export)
         wazuh_scanning,        # 4 tools (vulnerability, syscheck, compliance, geo heatmap)
+        semantic_search,       # 1 tool (BM25 semantic search)
     )
 
-    logger.info("84 tools + 2 resources registered.")
+    logger.info("85 tools + 2 resources registered.")
