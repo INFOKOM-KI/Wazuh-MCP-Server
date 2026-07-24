@@ -111,15 +111,14 @@ _STATIC_RULE_CORPUS: list[dict] = [
 ]
 
 # Live corpus builder (calls Wazuh API for full rule set)
-_bm25_index: _BM25 | None = None
-_bm25_corpus: list[dict] = []
-_bm25_live_loaded = False
-
-
 def _build_bm25_from_corpus(corpus: list[dict]) -> _BM25:
     """Build BM25 index from a rule corpus."""
     texts = [f"{r['id']} {r['desc']} {r['groups']}" for r in corpus]
     return _BM25(texts)
+
+_bm25_index: _BM25 = _build_bm25_from_corpus(_STATIC_RULE_CORPUS)
+_bm25_corpus: list[dict] = _STATIC_RULE_CORPUS
+_bm25_live_loaded = False
 
 
 async def _try_load_live_corpus():
@@ -160,9 +159,11 @@ class SemanticSearchInput(BaseModel):
                        description="Natural language query (English or Indonesian).")
     since: str | None = Field(default="24h", max_length=30)
     until: str | None = Field(default=None, max_length=30)
-    top_k: int = Field(default=10, ge=3, le=30)
-    search_alerts: bool = Field(default=False,
-                                 description="If true, also search actual alerts matching top rules.")
+    source: Literal["rules", "alerts"] = Field(default="rules",
+        description="rules = BM25 on Wazuh rule descriptions (fast). alerts = BM25 on actual alert documents (deep).")
+    top_k: int = Field(default=10, ge=3, le=50)
+    max_scanned: int = Field(default=5000, ge=100, le=50000,
+        description="Max alerts to scan when source='alerts'.")
     response_format: Literal["markdown", "json"] = Field(default="markdown")
 
 
@@ -179,16 +180,21 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
 
     **Worked Examples**
 
-    1. *Find rules about brute force*:
-       ``blueteam_semantic_search(query="brute force SSH login attempt")``
+    1. *Find rules about brute force (fast)*:
+       ``blueteam_semantic_search(query="brute force SSH", source="rules")``
 
-    2. *Indonesian: serangan web*:
-       ``blueteam_semantic_search(query="serangan webshell pada server")``
+    2. *Search actual alerts for webshell activity (deep)*:
+       ``blueteam_semantic_search(query="serangan webshell", source="alerts", since="7d")``
 
-    3. *Search and fetch matching alerts*:
-       ``blueteam_semantic_search(query="ransomware encryption", search_alerts=true, since="7d")``
+    3. *Deep search with more scanned alerts*:
+       ``blueteam_semantic_search(query="ransomware", source="alerts", max_scanned=20000, since="30d")``
     """
-    _audit_log("blueteam_semantic_search", {"query": params.query, "top_k": params.top_k})
+    _audit_log("blueteam_semantic_search", {"query": params.query, "source": params.source, "top_k": params.top_k})
+
+    if params.source == "alerts":
+        return await _semantic_search_alerts(params)
+
+    # source="rules"
     await _try_load_live_corpus()
     results = _bm25_index.score(params.query)[:params.top_k]
 
@@ -198,66 +204,113 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
                      "groups": _bm25_corpus[idx]["groups"],
                      "bm25_score": round(score, 4)}
                    for idx, score in results]
-        if not params.search_alerts:
-            return json.dumps({"query": params.query, "matches": matches}, indent=2, ensure_ascii=False)
-        # Also fetch alerts
-        rule_ids = [m["rule_id"] for m in matches[:5]]
-        return await _search_alerts_for_rules(rule_ids, params.since, params.until, matches)
+        return json.dumps({"query": params.query, "source": "rules", "matches": matches},
+                          indent=2, ensure_ascii=False)
 
-    lines = [f"# 🔍 Semantic Search — `{params.query}`", "",
-             f"**Top {len(results)} matching rules**:", "",
+    lines = [f"# 🔍 Semantic Search - `{params.query}`", "",
+             f"**Source**: rules | **Top {len(results)} matches**:", "",
              "| Rule ID | BM25 Score | Description | Groups |",
              "|---------|-----------|-------------|--------|"]
     for idx, score in results[:params.top_k]:
         r = _bm25_corpus[idx]
         lines.append(f"| `{r['id']}` | {score:.3f} | {r['desc'][:60]} | {r['groups'][:40]} |")
     lines.append("")
-
-    if not params.search_alerts:
-        lines.append("*Gunakan `blueteamWazuhIndexerSearch` dengan rule ID dari hasil di atas untuk melihat alert terkait.*")
-        return _truncate_if_needed("\n".join(lines))
-
-    # Search actual alerts for top matching rule ID
-    rule_ids = [_bm25_corpus[idx]["id"] for idx, _ in results[:5]]
-    return await _search_alerts_for_rules(rule_ids, params.since, params.until,
-                                           [{"rule_id": _bm25_corpus[idx]["id"],
-                                             "description": _bm25_corpus[idx]["desc"],
-                                             "score": round(score, 4)}
-                                            for idx, score in results[:5]])
+    lines.append("*Gunakan `blueteamWazuhIndexerSearch` dengan rule ID dari hasil di atas untuk melihat alert terkait.*")
+    return _truncate_if_needed("\n".join(lines))
 
 
-async def _search_alerts_for_rules(rule_ids: list[str], since: str | None,
-                                    until: str | None, matches: list[dict]) -> str:
-    """Fetch alert counts for specific rule IDs."""
+async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
+    """Fetch alerts from indexer, build ephemeral BM25, rank and return top-K."""
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
-        s = json.dumps({"error": "Indexer not configured", "matches": matches}, indent=2, ensure_ascii=False)
-        return _truncate_if_needed(s)
-    since_iso, until_iso = _parse_time_window(since, until)
-    body = {"size": 0,
-            "query": {"bool": {"filter": [
-                {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
-                                           "format": "strict_date_optional_time"}}},
-                {"terms": {"rule.id.keyword": rule_ids}},
-            ]}},
-            "aggs": {"by_rule": {"terms": {"field": "rule.id.keyword", "size": len(rule_ids)}},
-                     "top_srcips": {"terms": {"field": "data.srcip.keyword", "size": 10}}}}
-    raw = await _wazuh_indexer_post(body)
-    if "error" in raw:
-        return json.dumps({"error": raw["error"], "matches": matches}, indent=2, ensure_ascii=False)
-    aggs = raw.get("aggregations", {})
-    total = raw.get("hits", {}).get("total", {}).get("value", 0)
-    lines = [f"# 🔍 Semantic Search — Alert Results", "",
-             f"**Total matching alerts**: {total:,}", "",
-             "## By Rule", "| Rule ID | Alerts | Description |",
-             "|---------|--------|-------------|"]
-    by_rule = {b["key"]: b["doc_count"] for b in aggs.get("by_rule", {}).get("buckets", [])}
-    for m in matches:
-        cnt = by_rule.get(m["rule_id"], 0)
-        lines.append(f"| `{m['rule_id']}` | {cnt:,} | {m['description'][:50]} |")
+        return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."}, indent=2)
+
+    since_iso, until_iso = _parse_time_window(params.since, params.until)
+    page_size = min(1000, params.max_scanned)
+    all_docs: list[dict] = []
+    total_val = 0
+    search_after = None
+
+    while len(all_docs) < params.max_scanned:
+        body = {"size": min(page_size, params.max_scanned - len(all_docs)),
+                "_source": ["@timestamp", "rule.id", "rule.description", "rule.level",
+                            "rule.groups", "data.srcip", "data.url", "data.domain",
+                            "agent.name", "full_log"],
+                "sort": [{"@timestamp": {"order": "desc"}}, {"_id": "asc"}],
+                "query": {"bool": {"must": [
+                    {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
+                                                   "format": "strict_date_optional_time"}}}]}}}
+        if search_after:
+            body["search_after"] = search_after
+        raw = await _wazuh_indexer_post(body)
+        if "error" in raw:
+            break
+        hits = raw.get("hits", {})
+        hit_list = hits.get("hits", [])
+        docs = [h.get("_source", h) for h in hit_list]
+        if not docs:
+            break
+        all_docs.extend(docs)
+        total_val = hits.get("total", {}).get("value", len(all_docs)) if isinstance(hits.get("total"), dict) else len(all_docs)
+        last_sort = hit_list[-1].get("sort") if hit_list else None
+        if len(docs) < page_size or last_sort is None:
+            break
+        search_after = last_sort
+
+    if not all_docs:
+        return _truncate_if_needed(f"# 🔍 Semantic Search — `{params.query}`\n\n**Source**: alerts | **Scanned**: 0 documents\n\n✅ No alerts found in this time window.")
+
+    # Build ephemeral BM25 from alert text fields
+    corpus: list[str] = []
+    for d in all_docs:
+        parts = [
+            str(d.get("rule", {}).get("description", "")),
+            str(d.get("rule", {}).get("groups", "")),
+            str(d.get("data", {}).get("url", "")),
+            str(d.get("data", {}).get("domain", "")),
+            str(d.get("full_log", ""))[:500],
+        ]
+        corpus.append(" ".join(parts))
+
+    bm25_alerts = _BM25(corpus)
+    results = bm25_alerts.score(params.query)[:params.top_k]
+
+    if params.response_format == "json":
+        top_docs = []
+        for idx, score in results:
+            d = all_docs[idx]
+            rule = d.get("rule", {})
+            data = d.get("data", {})
+            top_docs.append({
+                "bm25_score": round(score, 4),
+                "@timestamp": d.get("@timestamp", "?"),
+                "rule_id": rule.get("id", "?"),
+                "rule_description": str(rule.get("description", ""))[:80],
+                "srcip": data.get("srcip", ""),
+                "url": data.get("url", ""),
+                "domain": data.get("domain", ""),
+                "agent": d.get("agent", {}).get("name", ""),
+            })
+        return json.dumps({
+            "query": params.query, "source": "alerts",
+            "scanned": len(all_docs), "total_available": total_val,
+            "matches": top_docs,
+        }, indent=2, ensure_ascii=False)
+
+    lines = [f"# 🔍 Semantic Search - `{params.query}`", "",
+             f"**Source**: alerts | **Scanned**: {len(all_docs):,} | **Total available**: {total_val:,}",
+             "", "| # | BM25 | Time | Rule | IP | Detail |",
+             "|---|------|------|------|----|--------|"]
+    for rank, (idx, score) in enumerate(results, 1):
+        d = all_docs[idx]
+        rule = d.get("rule", {})
+        data = d.get("data", {})
+        ts = str(d.get("@timestamp", "?"))[:16]
+        rid = rule.get("id", "?")
+        ip = data.get("srcip", "-")
+        detail = (data.get("url") or data.get("domain") or
+                  str(rule.get("description", ""))[:50])
+        lines.append(f"| {rank} | {score:.3f} | {ts} | `{rid}` | `{ip}` | {detail} |")
     lines.append("")
-    top_ips = aggs.get("top_srcips", {}).get("buckets", [])
-    if top_ips:
-        lines.append("## Top Source IPs")
-        for b in top_ips[:10]:
-            lines.append(f"- `{b['key']}`: {b['doc_count']:,} alerts")
+    if len(all_docs) < total_val:
+        lines.append(f"*Scanned {len(all_docs):,} of {total_val:,} alerts. Increase max_scanned for deeper search.*")
     return _truncate_if_needed("\n".join(lines))
