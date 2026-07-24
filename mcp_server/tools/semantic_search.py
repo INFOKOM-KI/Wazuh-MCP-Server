@@ -65,7 +65,7 @@ def _tokenize(text: str) -> list[str]:
 
 
 # Wazuh Rule Corpus
-# Static fallback corpus — used when Wazuh API is unavailable.
+# Static fallback corpus - used when Wazuh API is unavailable.
 # Replaced by live rules on first successful API call.
 _STATIC_RULE_CORPUS: list[dict] = [
     # Auth / Brute Force
@@ -161,9 +161,8 @@ class SemanticSearchInput(BaseModel):
     until: str | None = Field(default=None, max_length=30)
     source: Literal["rules", "alerts"] = Field(default="rules",
         description="rules = BM25 on Wazuh rule descriptions (fast). alerts = BM25 on actual alert documents (deep).")
-    top_k: int = Field(default=10, ge=3, le=50)
-    max_scanned: int = Field(default=5000, ge=100, le=50000,
-        description="Max alerts to scan when source='alerts'.")
+    top_k: int = Field(default=10, ge=3, le=100,
+        description="Number of results to return.")
     response_format: Literal["markdown", "json"] = Field(default="markdown")
 
 
@@ -186,8 +185,9 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
     2. *Search actual alerts for webshell activity (deep)*:
        ``blueteam_semantic_search(query="serangan webshell", source="alerts", since="7d")``
 
-    3. *Deep search with more scanned alerts*:
-       ``blueteam_semantic_search(query="ransomware", source="alerts", max_scanned=20000, since="30d")``
+    3. *Deep search with auto-scaled scanning*:
+       ``blueteam_semantic_search(query="ransomware", source="alerts", since="30d")``
+       (Auto-scans up to 50K alerts, reports total available)
     """
     _audit_log("blueteam_semantic_search", {"query": params.query, "source": params.source, "top_k": params.top_k})
 
@@ -220,18 +220,34 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
 
 
 async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
-    """Fetch alerts from indexer, build ephemeral BM25, rank and return top-K."""
+    """Fetch alerts, get total count, auto-scale scan, build ephemeral BM25, rank top-K."""
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
         return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."}, indent=2)
 
     since_iso, until_iso = _parse_time_window(params.since, params.until)
-    page_size = min(1000, params.max_scanned)
+
+    # Step 1: Get total count (size:0, instant)
+    count_body = {"size": 0, "query": {"bool": {"must": [
+        {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
+                               "format": "strict_date_optional_time"}}}]}}}
+    raw_count = await _wazuh_indexer_post(count_body)
+    total_val = raw_count.get("hits", {}).get("total", {}).get("value", 0) if isinstance(
+        raw_count.get("hits", {}).get("total"), dict) else 0
+
+    _MAX_SCAN = 50000
+    if total_val <= _MAX_SCAN:
+        max_scan = total_val
+    else:
+        max_scan = _MAX_SCAN
+
+    # Step 2: Fetch documents
+    page_size = min(1000, max_scan)
     all_docs: list[dict] = []
     total_val = 0
     search_after = None
 
-    while len(all_docs) < params.max_scanned:
-        body = {"size": min(page_size, params.max_scanned - len(all_docs)),
+    while len(all_docs) < max_scan:
+        body = {"size": min(page_size, max_scan - len(all_docs)),
                 "_source": ["@timestamp", "rule.id", "rule.description", "rule.level",
                             "rule.groups", "data.srcip", "data.url", "data.domain",
                             "agent.name", "full_log"],
@@ -312,5 +328,5 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
         lines.append(f"| {rank} | {score:.3f} | {ts} | `{rid}` | `{ip}` | {detail} |")
     lines.append("")
     if len(all_docs) < total_val:
-        lines.append(f"*Scanned {len(all_docs):,} of {total_val:,} alerts. Increase max_scanned for deeper search.*")
+        lines.append(f"*Scanned {len(all_docs):,} of {total_val:,} alerts. Narrow time window for full coverage.*")
     return _truncate_if_needed("\n".join(lines))
