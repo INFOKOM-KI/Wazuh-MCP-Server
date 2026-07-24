@@ -866,44 +866,205 @@ All tools below are registered across the `mcp_server/` package. Tools not requi
 
 ---
 
-## Example Prompts
+## Example Prompts / Contoh Prompt
 
-Once connected via Claude Desktop, you can ask:
+Once connected via Claude Desktop, you can ask / Setelah terkoneksi:
+
+### 🔍 Investigation & Triage / Investigasi & Triase
 
 ```
-"Check the last 2 hours of auth.log and tell me if there are any brute force
- attempts. Group by source IP."
+"A new alert came in from 103.166.210.53. Investigate this IP comprehensively."
+→ blueteam_investigate_ip(srcip="103.166.210.53", since="24h")
 
-"Show me all listening ports. Are any unexpected services running?"
+"Ada alert baru dari IP 103.166.210.53. Selidiki IP ini secara menyeluruh."
+→ blueteam_investigate_ip(srcip="103.166.210.53", since="24h")
 
-"Here are 5 IPs from my nginx access log: 1.2.3.4, 5.6.7.8, 9.10.11.12,
- 13.14.15.16, 200.1.2.3 — look them all up on AbuseIPDB."
+"Show me all alerts from agent TheZoo-host4 in the last hour."
+→ blueteam_wazuh_alerts(agent_name="TheZoo-host4", since="1h", limit=100)
 
-"Run a Lynis audit and give me the top 5 highest priority hardening items."
+"Tampilkan semua alert dari agen TheZoo-host4 dalam 1 jam terakhir."
+→ blueteam_wazuh_alerts(agent_name="TheZoo-host4", since="1h", limit=100)
+```
 
-"Check for any SUID binaries that aren't in the standard list of expected ones."
+### 🧠 Semantic Search / Pencarian Semantik
 
-"Who is currently logged into this server, and when did they log in?"
+```
+"Find Wazuh rules related to credential theft and show matching alerts."
+→ blueteam_semantic_search(query="credential theft", source="rules")
 
-"Scan all user cron jobs and flag anything that looks suspicious."
+"Cari rule Wazuh yang berkaitan dengan serangan webshell."
+→ blueteam_semantic_search(query="serangan webshell pada server", source="rules")
 
-"Hash /usr/bin/sshd and check it against VirusTotal."
+"Search actual alerts for ransomware activity in the last 7 days."
+→ blueteam_semantic_search(query="ransomware encryption", source="alerts", since="7d")
 
-"Check the CrowdSec reputation of 185.220.101.1 — does it have known attack
- behaviors or associated CVEs?"
+"Cari alert yang mengandung indikasi perjudian dalam 30 hari terakhir."
+→ blueteam_semantic_search(query="judi online gambling", source="alerts", since="30d")
+```
 
-"Is 71.6.135.131 a known internet scanner? Check with GreyNoise and tell me
- if it's noise I can ignore or something to investigate."
+### 📊 Aggregate Analysis / Analisis Agregat
 
-"Triage these 5 IPs from my firewall logs against both GreyNoise and CrowdSec.
- Filter out known scanners and business services, then prioritize the rest
- by reputation."
+```
+"Show me the attack topology for the last 24 hours — top IPs, rules, agents."
+→ wazuh_alert_aggregate_analysis(mode="topology", since="24h", top_n=30)
 
-"Search the Wazuh indexer for all alerts from agent HYDRA-DC in the last 24 hours.
- Use cursor pagination to iterate through all results — don't stop at the first page."
+"Tampilkan tren serangan 7 hari terakhir — anomali, korelasi, summary."
+→ wazuh_alert_aggregate_analysis(mode="trend", since="7d")
 
-"List every Wazuh agent across the fleet. We have over 1,500 endpoints, so use
- cursor pagination to enumerate them all — then group by OS and status."
+"What's the baseline alert volume? Is 4,821 alerts per hour normal?"
+→ blueteam_baseline_profile(metric="alert_volume", window="7d")
+
+"Apakah 4.821 alert per jam itu normal? Cek baseline."
+→ blueteam_baseline_profile(metric="alert_volume", window="7d")
+
+"Show a calendar heatmap of attacks for the last 30 days."
+→ blueteam_calendar_heatmap(days=30)
+```
+
+### 🌍 Geo Analysis / Analisis Geografis
+
+```
+"Show top attacking countries in the last 24 hours."
+→ blueteam_wazuh_geo_distribution(since="24h", top_n=15)
+
+"Tampilkan kota asal serangan terbanyak."
+→ blueteam_wazuh_geo_distribution(since="24h", granularity="city")
+
+"Generate a geo heatmap with coordinates for the last 7 days."
+→ blueteam_wazuh_geo_heatmap(since="7d", response_format="json")
+```
+
+### 🔬 Threat Hunting / Perburuan Ancaman
+
+```
+"Hunt for encoded PowerShell commands in the last 24 hours."
+→ blueteam_threat_hunt(template="encoded_powershell", since="24h")
+
+"Cari indikasi credential dumping — Mimikatz, LSASS, procdump."
+→ blueteam_threat_hunt(template="credential_dumping", since="7d")
+
+"Check for lateral movement from a specific IP."
+→ blueteam_threat_hunt(template="lateral_movement", srcip="10.0.0.55", since="3d")
+
+"Deteksi C2 beaconing — koneksi berkala ke server musuh."
+→ blueteam_threat_hunt(template="c2_beacon", since="24h")
+```
+
+### 🛡️ Threat Intelligence / Intelijen Ancaman
+
+```
+"Look up 185.220.101.1 on CrowdSec, ThreatFox, and AbuseIPDB."
+→ crowdsec_ip_reputation(ip="185.220.101.1")
+→ threatfox_ioc_search(search_term="185.220.101.1")
+
+"Get a unified threat score for 103.166.210.53 from all sources."
+→ blueteam_unified_threat_score(ip="103.166.210.53")
+
+"Check 5 IPs against CrowdSec in bulk."
+→ crowdsec_ip_reputation_bulk(ips=["1.2.3.4","5.6.7.8","9.10.11.12","13.14.15.16","200.1.2.3"])
+
+"Check if 71.6.135.131 is a known internet scanner with GreyNoise."
+→ greynoise_ip_context(ip="71.6.135.131")
+
+"Extract all IOCs from this alert text."
+→ blueteam_extract_iocs(text="{alert_full_log}")
+```
+
+### 🌐 Domain Investigation / Investigasi Domain
+
+```
+"Look up who owns evil-c2.net via RDAP."
+→ blueteam_whois_lookup(domain="evil-c2.net")
+
+"Cari semua subdomain dan sibling domain dari tangerangkota.go.id via crt.sh."
+→ blueteam_crtsh_lookup(domain="tangerangkota.go.id")
+
+"Search all Wazuh alerts for a specific domain."
+→ wazuh_domain_lookup(domain="tangerangkota.go.id", since="7d")
+```
+
+### 🏥 Host Forensics / Forensik Host
+
+```
+"Check the last 2 hours of auth.log for brute force attempts."
+→ blueteam_read_auth_log(filter="Failed password", lines=200)
+
+"Show all listening ports. Any unexpected services?"
+→ blueteam_list_listening_ports()
+
+"Cek semua user yang sedang login sekarang."
+→ blueteam_who_is_logged_in()
+
+"Find all SUID binaries that aren't standard."
+→ blueteam_find_suid_files()
+
+"Run a Lynis hardening audit and give me the top 5 items."
+→ blueteam_lynis_audit()
+
+"Hash /usr/bin/sshd and check against VirusTotal."
+→ blueteam_hash_file(path="/usr/bin/sshd")
+→ blueteam_lookup_hash_virustotal(hash="{result}")
+```
+
+### 🔐 Vulnerability & Compliance / Kerentanan & Kepatuhan
+
+```
+"Show all CVE findings in the last 30 days."
+→ blueteam_wazuh_vulnerabilities(since="30d")
+
+"Tampilkan temuan CVE critical saja."
+→ blueteam_wazuh_vulnerabilities(severity="Critical", since="90d")
+
+"Show File Integrity Monitoring events for /etc/* in the last 24h."
+→ blueteam_wazuh_syscheck(path_filter="/etc/*", since="24h")
+
+"Tampilkan ringkasan kepatuhan CIS."
+→ blueteam_wazuh_compliance(framework="cis", since="30d")
+
+"Check PCI DSS compliance status across all agents."
+→ blueteam_wazuh_compliance(framework="pci_dss", since="90d")
+```
+
+### 📡 Bulk Data & Export / Data Masal & Ekspor
+
+```
+"Export all alerts for the last 7 days to a JSONL file."
+→ blueteam_wazuh_export(since="7d")
+
+"Ekspor semua alert 90 hari untuk investigasi forensik."
+→ blueteam_wazuh_export(since="90d")
+
+"Enumerate all 1,500 Wazuh agents with cursor pagination."
+→ blueteam_wazuh_agents(limit=100, cursor={next_cursor})
+
+"Search the indexer with keyword and iterate through all results."
+→ blueteam_wazuh_indexer_search(keyword="locked OR brute", since="24h", max_scanned=10000)
+```
+
+### 🧪 APT Detection / Deteksi APT
+
+```
+"Run 3-Sum correlation for the last hour with threat intel enrichment."
+→ three_sum_correlation(time_window_minutes=60, follow_up="threat_intel")
+
+"Jalankan 3-Sum deteksi APT dengan window 24 jam."
+→ three_sum_correlation(time_window_minutes=1440, engine_a_enabled=true, engine_b_enabled=true)
+
+"Analyze attack chain progression for IP 103.166.210.53."
+→ blueteam_attack_chain(srcip="103.166.210.53", since="7d")
+
+"Detect C2 beaconing pattern for a suspicious IP."
+→ blueteam_beacon_detect(srcip="185.220.101.1", since="24h")
+```
+
+### 🔎 MITRE ATT&CK / Taktik MITRE
+
+```
+"What MITRE techniques map to Credential Access?"
+→ blueteam_mitre_lookup(tactic="Credential Access")
+
+"Apa itu T1003? Jelaskan tekniknya."
+→ blueteam_mitre_lookup(technique_id="T1003")
 ```
 
 ---
