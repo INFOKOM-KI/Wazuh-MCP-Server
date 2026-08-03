@@ -78,6 +78,10 @@ class WazuhDomainLookupInput(BaseModel):
                     "When None (default), returns a single page with next_cursor for"
                     "manual pagination. include_full_log is forced to False in this mode.",
     )
+    bypass_redaction: bool = Field(
+        default=False,
+        description="Bypass PII redaction for audit investigations (Layer 1 credentials stay masked).",
+    )
 
     @field_validator("domain")
     @classmethod
@@ -126,7 +130,7 @@ async def _wazuh_domain_lookup_full_scan(
             body["search_after"] = sa
         return await _wazuh_indexer_post(body)
 
-    async def _full_scan_paginate(max_scanned, fetch_page, initial_sa, redact=True):
+    async def _full_scan_paginate(max_scanned, fetch_page, initial_sa, redact=True, bypass=False):
         """Generic pagination loop. Returns {total_scanned, pages, exhausted, all_docs, ...}."""
         total_scanned = 0
         pages = []
@@ -141,7 +145,7 @@ async def _wazuh_domain_lookup_full_scan(
             hit_list = hits.get("hits", [])
             docs = [h.get("_source", h) for h in hit_list]
             if redact:
-                docs = _redact_alert_data(docs, bypass=False)
+                docs = _redact_alert_data(docs, bypass=bypass)
             if not docs:
                 break
             total_scanned += len(docs)
@@ -160,6 +164,7 @@ async def _wazuh_domain_lookup_full_scan(
 
     result = await _full_scan_paginate(
         params.max_scanned, _fetch_page, initial_search_after, redact=True,
+        bypass=params.bypass_redaction,
     )
     if result.get("_error"):
         return json.dumps({"error": result["_error"]}, indent=2)
@@ -381,7 +386,7 @@ async def wazuh_domain_lookup(params: WazuhDomainLookupInput) -> str:
     total_relation = total.get("relation", "eq") if isinstance(total, dict) else "eq"
     hit_list = hits.get("hits", [])
     docs = [h.get("_source", h) for h in hit_list]
-    docs = _redact_alert_data(docs, bypass=False)
+    docs = _redact_alert_data(docs, bypass=params.bypass_redaction)
 
     # Build next cursor
     next_cursor = None

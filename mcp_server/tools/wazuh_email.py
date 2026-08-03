@@ -86,6 +86,10 @@ class WazuhEmailLookupInput(BaseModel):
         description="Free-text keyword search to further narrow email results. "
                     "Same syntax as blueteam_wazuh_indexer_search.",
     )
+    bypass_redaction: bool = Field(
+        default=False,
+        description="Bypass PII redaction for audit investigations (Layer 1 credentials stay masked).",
+    )
 
 
 
@@ -173,7 +177,7 @@ async def wazuh_email_lookup(params: WazuhEmailLookupInput) -> str:
             hits = data.get("hits", {})
             hit_list = hits.get("hits", [])
             docs = [h.get("_source", h) for h in hit_list]
-            docs = _redact_alert_data(docs, bypass=False)
+            docs = _redact_alert_data(docs, bypass=params.bypass_redaction)
             if not docs:
                 break
 

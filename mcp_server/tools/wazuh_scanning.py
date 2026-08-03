@@ -266,6 +266,8 @@ class GeoHeatmapInput(BaseModel):
     srcip: str | None = Field(default=None, max_length=45)
     top_n: int = Field(default=30, ge=3, le=100)
     response_format: Literal["markdown", "json"] = Field(default="markdown")
+    bypass_redaction: bool = Field(default=False,
+        description="Accepted for API consistency. Heatmap returns aggregates only (no raw PII).")
 
 
 @mcp.tool(name="blueteam_wazuh_geo_heatmap",

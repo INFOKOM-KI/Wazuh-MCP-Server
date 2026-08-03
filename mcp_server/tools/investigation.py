@@ -421,6 +421,8 @@ class ThreeSumCorrelationInput(BaseModel):
     cidr_normalize: bool = Field(default=False)
     exclude_srcips: list[str] = Field(default=[])
     follow_up: str = Field(default="none")
+    bypass_redaction: bool = Field(default=False,
+        description="Accepted for API consistency. 3-Sum returns computed scores, not raw alert PII.")
     multi_resolution: bool = Field(default=False)
     cross_agent: bool = Field(
         default=False,
