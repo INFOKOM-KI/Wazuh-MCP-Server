@@ -16,6 +16,7 @@ from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         GREYNOISE_COMMUNITY_BASE_URL, ABUSEIPDB_BASE_URL,
                         VIRUSTOTAL_BASE_URL, ARGUS_BASE_URL)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
+from mcp_server.core.http_client import ValidPublicIp
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call, _get_client
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
@@ -770,7 +771,7 @@ class ThreatCardInput(BaseModel):
     """Input model for blueteam_threat_card."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
-    srcip: str = Field(
+    srcip: ValidPublicIp = Field(
         ...,
         min_length=7,
         max_length=45,
