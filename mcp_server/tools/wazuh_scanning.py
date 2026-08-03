@@ -224,10 +224,15 @@ async def blueteam_wazuh_compliance(params: ComplianceInput) -> str:
     else:
         return json.dumps({"error": f"Unknown framework '{params.framework}'. Valid: all, {', '.join(COMPLIANCE_FIELDS)}"}, indent=2)
     aggs = {}
+    if len(frameworks) > 1:
+        # framework="all" -> OR the exists filters (alerts with ANY compliance mapping)
+        filters.append({"bool": {"should": [{"exists": {"field": COMPLIANCE_FIELDS[fw]}}
+                                             for fw in frameworks],
+                                    "minimum_should_match": 1}})
+    else:
+        filters.append({"exists": {"field": COMPLIANCE_FIELDS[frameworks[0]]}})
     for fw in frameworks:
-        field = COMPLIANCE_FIELDS[fw]
-        filters.append({"exists": {"field": field}})
-        aggs[f"by_{fw}"] = {"terms": {"field": field, "size": params.top_n}}
+        aggs[f"by_{fw}"] = {"terms": {"field": COMPLIANCE_FIELDS[fw], "size": params.top_n}}
     body = {"size": 0, "query": {"bool": {"filter": filters}}, "aggs": aggs}
     raw = await _wazuh_indexer_post(body)
     if "error" in raw:

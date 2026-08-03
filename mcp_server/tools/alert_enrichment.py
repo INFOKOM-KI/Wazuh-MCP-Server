@@ -2266,7 +2266,7 @@ async def sangfor_blocklist_list(params: SangforBlocklistListInput) -> str:
 # Unified Threat Confidence Scoring
 class UnifiedThreatScoreInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    ip: str = Field(..., min_length=7, max_length=45, description="Public IP to score.")
+    ip: ValidPublicIp = Field(..., min_length=7, max_length=45, description="Public IP to score.")
     response_format: str = Field(default="markdown", description="'markdown' or 'json'.")
 
     @field_validator("ip")
