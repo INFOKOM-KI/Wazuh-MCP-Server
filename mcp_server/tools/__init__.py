@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Dynamic tool registration — 68 tools across 14 modules.
+Dynamic tool registration - 68 tools across 14 modules.
 Each module's @mcp.tool decorator auto-registers with the shared FastMCP instance.
-One import per module — zero manual registry.
+One import per module - zero manual registry.
 """
 from mcp_server import mcp, logger
 
@@ -31,6 +31,7 @@ def register_all_tools() -> None:
         wazuh_export,          # 1 tool (scroll-based export)
         wazuh_scanning,        # 4 tools (vulnerability, syscheck, compliance, geo heatmap)
         semantic_search,       # 1 tool (BM25 semantic search)
+        report_export,         # 1 tool (docx/xlsx/pptx report export)
     )
 
-    logger.info("85 tools + 2 resources registered.")
+    logger.info("86 tools + 2 resources registered.")

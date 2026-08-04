@@ -20,8 +20,9 @@ def _audit_log(tool_name: str, params: dict, result_preview: str = "") -> None:
         entry = {
             "ts": datetime.utcnow().isoformat() + "Z",
             "tool": tool_name,
-            "params": {k: str(v)[:100] for k, v in params.items() if k not in ("api_key", "key")},
-            "result_preview": (result_preview or "")[:200],
+            "params": {k: _redact_alert_data(str(v)[:100])
+                        for k, v in params.items() if k not in ("api_key", "key")},
+            "result_preview": _redact_alert_data((result_preview or "")[:200]),
             "redaction_bypassed": params.get("bypass_redaction", False),
         }
         with open(BLUETEAM_AUDIT_LOG, "a") as f:

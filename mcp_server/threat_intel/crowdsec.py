@@ -4,7 +4,7 @@
 CrowdSec CTI — single + bulk IP reputation
 """
 from __future__ import annotations
-import json, logging, time, os
+import json, logging, time, os, asyncio
 from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
@@ -16,6 +16,11 @@ logger = logging.getLogger("blue_team_mcp.crowdsec")
 _crowdsec_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _CROWDSEC_CACHE_MAXSIZE = 1000
 
+# Rate limiter: max 3 concurrent, 100ms gap = 10 req/sec (matches ThreatFox)
+_crowdsec_semaphore = asyncio.Semaphore(3)
+_crowdsec_last_request = 0.0
+_CROWDSEC_MIN_INTERVAL = 0.1
+
 
 def _get_crowdsec_api_key() -> str:
     key = os.environ.get(CROWDSEC_API_KEY_ENV)
@@ -25,17 +30,24 @@ def _get_crowdsec_api_key() -> str:
 
 
 async def _crowdsec_request(path: str) -> dict[str, Any]:
+    global _crowdsec_last_request
     now = time.monotonic()
     if path in _crowdsec_cache:
         expiry, data = _crowdsec_cache[path]
         if now < expiry:
             return data
         del _crowdsec_cache[path]
-    headers = {"x-api-key": _get_crowdsec_api_key(), "accept": "application/json",
-               "User-Agent": "blue-team-mcp/1.0.0 (TangerangKota-CSIRT)"}
-    url = f"{CROWDSEC_BASE_URL}{path}"
-    resp = await _api_call("get", url, headers=headers)
-    data = resp.json()
+    # Rate limit: max 3 concurrent, 10 req/sec (cache hits skip limiter)
+    async with _crowdsec_semaphore:
+        elapsed = time.monotonic() - _crowdsec_last_request
+        if elapsed < _CROWDSEC_MIN_INTERVAL:
+            await asyncio.sleep(_CROWDSEC_MIN_INTERVAL - elapsed)
+        headers = {"x-api-key": _get_crowdsec_api_key(), "accept": "application/json",
+                   "User-Agent": "blue-team-mcp/1.0.0 (TangerangKota-CSIRT)"}
+        url = f"{CROWDSEC_BASE_URL}{path}"
+        resp = await _api_call("get", url, headers=headers)
+        data = resp.json()
+        _crowdsec_last_request = time.monotonic()
     if len(_crowdsec_cache) >= _CROWDSEC_CACHE_MAXSIZE:
         _crowdsec_cache.pop(next(iter(_crowdsec_cache)))  # LRU eviction
     _crowdsec_cache[path] = (now + CROWDSEC_CACHE_TTL, data)

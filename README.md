@@ -11,7 +11,7 @@ Where Kali Linux gives Claude offensive tools (nmap, gobuster, sqlmap), this giv
 
 ## Architecture
 
-`main.py` (with the `mcp_server/` package) is a **modular MCP server** with 85 tools spanning host forensics, Wazuh SIEM, threat intelligence, Sangfor blocklist integration, alert enrichment, 3-Sum APT correlation engine, MITRE ATT&CK, threat hunting, domain investigation, and IOC extraction. It supports two transports:
+`main.py` (with the `mcp_server/` package) is a **modular MCP server** with 86 tools spanning host forensics, Wazuh SIEM, threat intelligence, Sangfor blocklist integration, alert enrichment, 3-Sum APT correlation engine, MITRE ATT&CK, threat hunting, domain investigation, and IOC extraction. It supports two transports:
 
 | Transport | Use case | MCP client connection |
 |---|---|---|
@@ -21,7 +21,7 @@ Where Kali Linux gives Claude offensive tools (nmap, gobuster, sqlmap), this giv
 ```
                           ┌──────────────────────────────────┐
                           │     main.py                     │
-                          │     85 tools · modular · 2 transports  │
+                          │     86 tools · modular · 2 transports  │
                           │                                  │
                           │  ┌────────────────────────────┐  │
                           │  │ Host Forensics (26 tools)  │  │
@@ -84,7 +84,7 @@ Where Kali Linux gives Claude offensive tools (nmap, gobuster, sqlmap), this giv
 
 | File | Tools | When to use |
 |---|---|---|
-| `main.py` + `mcp_server/` | **All 85 tools** | **Recommended** — full capabilities, credential stripping, PII redaction |
+| `main.py` + `mcp_server/` | **All 86 tools** | **Recommended** — full capabilities, credential stripping, PII redaction |
 
 ---
 
@@ -820,6 +820,7 @@ All tools below are registered across the `mcp_server/` package. Tools not requi
 | `blueteam_wazuh_compliance` | 🆕 Compliance framework summary (CIS, PCI DSS, GDPR, HIPAA, NIST 800-53) |
 | `blueteam_wazuh_geo_heatmap` | 🆕 Attack coordinate + city-level geo heatmap for visualization |
 | `blueteam_semantic_search` | 🆕 BM25 semantic search — natural language queries against Wazuh rules |
+| `blueteam_export_report` | 🆕 SOC report deliverables — generate .docx / .xlsx / .pptx via officecli |
 
 ### Fail2Ban
 | Tool | Description |
@@ -1127,7 +1128,7 @@ export BLUETEAM_RATE_LIMIT=60
 
 | File | Role |
 |---|---|
-| `main.py` + `mcp_server/` | **Primary** — all 85 tools, both transports (stdio / Streamable HTTP) |
+| `main.py` + `mcp_server/` | **Primary** — all 86 tools, both transports (stdio / Streamable HTTP) |
 
 ### Legacy Naming Debt
 
