@@ -163,6 +163,10 @@ class SemanticSearchInput(BaseModel):
         description="rules = BM25 on Wazuh rule descriptions (fast). alerts = BM25 on actual alert documents (deep).")
     top_k: int = Field(default=10, ge=3, le=100,
         description="Number of results to return.")
+    srcip: str | None = Field(default=None, max_length=45,
+        description="Optional exact source-IP filter. When set with source='alerts', BM25 ranks "
+                    "ONLY alerts from this IP (exact field filter on data.srcip — the IP itself "
+                    "is NOT added to the BM25 corpus).")
     response_format: Literal["markdown", "json"] = Field(default="markdown")
 
 
@@ -188,6 +192,10 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
     3. *Deep search with auto-scaled scanning*:
        ``blueteam_semantic_search(query="ransomware", source="alerts", since="30d")``
        (Auto-scans up to 50K alerts, reports total available)
+
+    4. *Hybrid: rank alerts semantically but only from one attacker IP*:
+       ``blueteam_semantic_search(query="webshell", source="alerts", srcip="117.247.110.24", since="7d")``
+       (Exact data.srcip filter — the IP stays OUT of the BM25 corpus)
     """
     _audit_log("blueteam_semantic_search", {"query": params.query, "source": params.source, "top_k": params.top_k})
 
@@ -226,10 +234,20 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
 
     since_iso, until_iso = _parse_time_window(params.since, params.until)
 
-    # Step 1: Get total count (size:0, instant)
-    count_body = {"size": 0, "query": {"bool": {"must": [
+    # Shared must-clauses: time range + optional EXACT srcip filter (IP stays out of BM25 corpus)
+    must: list[dict] = [
         {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
-                               "format": "strict_date_optional_time"}}}]}}}
+                                   "format": "strict_date_optional_time"}}},
+    ]
+    if params.srcip:
+        must.append({"bool": {"should": [
+            {"match": {"data.srcip": params.srcip.strip()}},
+            {"match": {"data.srcip2": params.srcip.strip()}},
+            {"match": {"srcip": params.srcip.strip()}},
+        ], "minimum_should_match": 1}})
+
+    # Step 1: Get total count (size:0, instant)
+    count_body = {"size": 0, "query": {"bool": {"must": must}}}
     raw_count = await _wazuh_indexer_post(count_body)
     total_val = raw_count.get("hits", {}).get("total", {}).get("value", 0) if isinstance(
         raw_count.get("hits", {}).get("total"), dict) else 0
@@ -252,9 +270,7 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
                             "rule.groups", "data.srcip", "data.url", "data.domain",
                             "agent.name", "full_log"],
                 "sort": [{"@timestamp": {"order": "desc"}}, {"_id": "asc"}],
-                "query": {"bool": {"must": [
-                    {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
-                                                   "format": "strict_date_optional_time"}}}]}}}
+                "query": {"bool": {"must": must}}}
         if search_after:
             body["search_after"] = search_after
         raw = await _wazuh_indexer_post(body)
