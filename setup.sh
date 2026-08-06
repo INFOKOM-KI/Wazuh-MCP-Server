@@ -141,6 +141,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_INVESTIGATION_HISTORY="/var/log/blue-team-mcp/investigation_history.jsonl"
 # export BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES="10000"
 # export BLUETEAM_EXPORT_DIR="/var/log/blue-team-mcp/exports"
+# export MITRE_ATTACK_STIX="https://raw.githubusercontent.com/mitre-attack/attack-stix-data/refs/heads/master/enterprise-attack/enterprise-attack.json"  # public repo mitre attack
 # export BLUETEAM_AUDIT_LOG="/var/log/blue-team-mcp/audit.log"
 # export BLUETEAM_RATE_LIMIT="0"
 
@@ -157,7 +158,7 @@ fi
 # Wrapper scripts
 echo "[5/7] Creating MCP server wrapper scripts..."
 
-# Main wrapper: mcp-server-blueteam (all 86 tools)
+# Main wrapper: mcp-server-blueteam (all 87 tools)
 cat > /usr/local/bin/mcp-server-blueteam << 'EOF'
 #!/usr/bin/env bash
 # Wrapper - Claude Desktop calls this via SSH (MAESTRO-compliant)
@@ -191,6 +192,7 @@ export SANGFOR_BLOCKLIST_VERIFY_SSL="${SANGFOR_BLOCKLIST_VERIFY_SSL:-false}"
 export BLUETEAM_INVESTIGATION_HISTORY="${BLUETEAM_INVESTIGATION_HISTORY:-}"
 export BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES="${BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES:-10000}"
 export BLUETEAM_EXPORT_DIR="${BLUETEAM_EXPORT_DIR:-/var/log/blue-team-mcp/exports}"
+export MITRE_ATTACK_STIX="${MITRE_ATTACK_STIX:-https://raw.githubusercontent.com/mitre-attack/attack-stix-data/refs/heads/master/enterprise-attack/enterprise-attack.json}"
 export BLUETEAM_AUDIT_LOG="${BLUETEAM_AUDIT_LOG:-}"
 export BLUETEAM_RATE_LIMIT="${BLUETEAM_RATE_LIMIT:-0}"
 # Data masking (six-layer pipeline)
@@ -270,7 +272,7 @@ echo "  ThreatFox needs a free key — https://threatfox.abuse.ch/api"
 echo ""
 echo "Wrapper entry points installed:"
 echo ""
-echo "  mcp-server-blueteam    — All 86 tools (Wazuh, threat intel, host forensics,"
+echo "  mcp-server-blueteam    — All 87 tools (Wazuh, threat intel, host forensics,"
 echo "                            Sangfor blocklist, 3-Sum correlation, curated reports,"
 echo "                            CrowdSec, GreyNoise, ThreatFox)"
 echo "  mcp-server-crowdsec    — DEPRECATED — redirects to mcp-server-blueteam"

@@ -32,6 +32,7 @@ def register_all_tools() -> None:
         wazuh_scanning,        # 4 tools (vulnerability, syscheck, compliance, geo heatmap)
         semantic_search,       # 1 tool (BM25 semantic search)
         report_export,         # 1 tool (docx/xlsx/pptx report export)
+        stix_correlation,      # 1 tool (MITRE ATT&CK STIX correlation)
     )
 
-    logger.info("86 tools + 2 resources registered.")
+    logger.info("87 tools + 2 resources registered.")
