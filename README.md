@@ -1227,6 +1227,7 @@ operator explicitly asks.
    (current vs baseline Z-score anomaly).
 3. CORRELATION / APT — three_sum_correlation(use_attack_graph=true): campaign-level
    detection with cluster-aware intersection, PPR suspicion boost, confirmed-IOC bonus.
+   The LangGraph workflows (group 7) inherit this mode by default.
 4. IOC INTELLIGENCE — blueteam_extract_iocs, blueteam_ioc_lifecycle (time-decay ranked
    store), blueteam_stix_killchain (per-srcip ATT&CK chain), blueteam_stix_analyze.
 5. GRAPH ENGINEERING — blueteam_attack_graph (campaign clusters, hub/bridge IOCs,
@@ -1237,7 +1238,8 @@ operator explicitly asks.
    sangfor_blocklist_check/list, blueteam_unified_threat_score.
 7. LANGGRAPH WORKFLOWS — blueteam_investigation_workflow (extract→enrich→correlate→
    graph→killchain→baseline→report/verdict), blueteam_playbook_run (alert-driven
-   template hunt + investigation, retries with fallback template).
+   template hunt + investigation, retries with fallback template). Both default
+   use_attack_graph=true — cluster-aware Engine A with PPR + confirmed bonuses.
 8. HOST FORENSICS — blueteam_read_auth_log/syslog/web_log, blueteam_journalctl,
    blueteam_list_processes/connections/listening_ports/users/cron_jobs,
    blueteam_hash_file, blueteam_capture_traffic, blueteam_find_suid_files,
@@ -1277,7 +1279,9 @@ operator explicitly asks.
 - Default redaction is shape-based; under BLUETEAM_REDACTION_POLICY=protect_victim,
   victim emails/subdomains/IPs are masked and attacker IOCs stay visible.
 - NEVER call bypass_redaction=True or redaction_policy="raw" unless the operator
-  explicitly requests forensic output (hard-gated behind BLUETEAM_ALLOW_FORENSIC_BYPASS).
+  explicitly requests forensic output — hard-gated behind BLUETEAM_ALLOW_FORENSIC_BYPASS
+  AND, when BLUETEAM_FORENSIC_TOKEN is set, it also requires forensic_token=<token>
+  (which only the operator holds).
 - For forensic sessions that must see official emails/subdomains, prefer
   redaction_policy="protect_victim" with reveal_owned=true — other masking stays on.
 - Layer 1 (credentials) is never bypassable, including inside attacker payloads.
