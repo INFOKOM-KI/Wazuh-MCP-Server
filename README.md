@@ -1350,9 +1350,12 @@ LANGKAH 7 — Sorting & kalkulasi BM25 seluruh serangan:
   - blueteam_alert_compare(srcip_a=<ip>, srcip_b=<ip>)  [bandingkan attacker]
 
 LANGKAH 8 — Analisa khusus wp2shell (exploit/kerentanan):
-  - blueteam_threat_hunt(template="web_shells", since="24h", response_format="json")
-  - blueteam_wazuh_indexer_search(since="24h", keyword="wp2shell", max_scanned=50000)
-  - blueteam_semantic_search(query="wp2shell", source="alerts", since="24h")
+  CATATAN: template threat-hunt bersifat teknik-agnostik dan TIDAK terkunci ke rule atau
+  eksploit spesifik Wazuh — gunakan pencarian KONTEN (keyword/semantic search) sebagai
+  sumber UTAMA; hasil template hanya pelengkap.
+  - blueteam_wazuh_indexer_search(since="24h", keyword="wp2shell", max_scanned=50000)   [UTAMA]
+  - blueteam_semantic_search(query="wp2shell", source="alerts", since="24h")            [UTAMA]
+  - blueteam_threat_hunt(template="web_shells", since="24h", response_format="json")    [pelengkap]
   - wazuh_alert_focused_crawl(src_ip=<ip>, keyword="wp2shell", since="24h")
 
 LANGKAH 9 — Analisa 3-Sum + BM25 seluruh serangan:

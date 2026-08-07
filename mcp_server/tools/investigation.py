@@ -562,23 +562,40 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
     # ENGINE A - Multi-IoC Risk Thresholding
     if data.engine_a_enabled:
         async def _fetch_srcips(label, groups, score):
+            """Engine A srcips per category. Falls back to single-field terms when the
+            multi_terms aggregation is unavailable (older index versions) and surfaces
+            the degradation instead of silently returning empty."""
+            warning = None
             body = {"size": 0, "query": _build_filter(groups),
                     "aggs": {"unique_srcips": {
                         "multi_terms": {"terms": [{"field": f} for f in _SRCIP_FIELD_PATHS],
                                          "size": 10000}}}}
             raw = await _wazuh_indexer_post(body)
-            if "error" in raw:
-                return (label, [])
+            if "error" in raw or not raw.get("aggregations", {}).get("unique_srcips"):
+                # multi_terms unsupported / empty -> fall back to the first srcip field
+                warning = (f"multi_terms agg unavailable or empty for '{label}' "
+                           f"(index may not support it) - fell back to {_SRCIP_FIELD_PATHS[0]}")
+                raw = await _wazuh_indexer_post({
+                    "size": 0, "query": _build_filter(groups),
+                    "aggs": {"unique_srcips": {"terms": {"field": _SRCIP_FIELD_PATHS[0], "size": 10000}}}})
+                if "error" in raw:
+                    return (label, [], warning + " ; single-field fallback also failed")
             buckets = raw.get("aggregations", {}).get("unique_srcips", {}).get("buckets", [])
             entries = []
             for b in buckets:
-                key = b["key"]
+                key = b.get("key")
                 ip = next((v for v in key if v is not None), "0.0.0.0") if isinstance(key, list) else key
-                entries.append((ip, score))
-            return (label, entries)
+                if ip and ip != "0.0.0.0":
+                    entries.append((ip, score))
+            return (label, entries, warning)
 
         fetched = await asyncio.gather(*[_fetch_srcips(l, g, s) for l, g, s in labels])
-        srcips_by_label = {l: e for l, e in fetched}
+        srcips_by_label = {}
+        engine_a_warnings: list[str] = []
+        for l, e, w in fetched:
+            srcips_by_label[l] = e
+            if w:
+                engine_a_warnings.append(w)
 
         triggers, stats = evaluate_engine_a(
             srcips_by_label.get(data.category_a_label, []),
@@ -595,6 +612,8 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
         )
         register_attacker_ips([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
         record_iocs([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
+        if engine_a_warnings:
+            stats["warnings"] = engine_a_warnings  # surfaced, never silent
         engine_a_results = (triggers, stats)
 
     # ENGINE B - 3-Source Volumetric Z-Score
@@ -622,9 +641,20 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             return raw.get("aggregations", {}).get("over_time", {}).get("buckets", [])
 
         async def _count_lockouts():
-            """Account-lockout volume signal (advisory metadata, never a scoring input)."""
-            lock_filter = _build_filter(data.category_b_groups)["bool"]["filter"] + [
-                {"match": {"data.error": "locked"}}]
+            """Account-lockout volume signal (advisory metadata, never a scoring input).
+
+            Multi-field content match (rule-agnostic): Wazuh decoders store lock events
+            in different fields, so match "locked" across the common ones + full_log.
+            """
+            lock_filter = _build_filter(data.category_b_groups)["bool"]["filter"] + [{
+                "bool": {"should": [
+                    {"match": {"data.error": "locked"}},
+                    {"match": {"data.data.error": "locked"}},
+                    {"match_phrase": {"full_log": "account is locked"}},
+                    {"match_phrase": {"full_log": "account locked"}},
+                    {"match_phrase": {"full_log": "locked out"}},
+                    {"match": {"data.zimbra_error": "locked"}},
+                ], "minimum_should_match": 1}}]
             body = {"size": 0, "query": {"bool": {"filter": lock_filter}}}
             raw = await _wazuh_indexer_post(body)
             if "error" in raw:

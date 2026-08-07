@@ -42,7 +42,8 @@ async def _get_client(
 async def _api_call(method: str, url: str, *, client_name: str = "http", verify: bool = True, **kw) -> httpx.Response:
     """Unified async HTTP helper. Returns raw response - caller calls .json() or .text.
 
-    Retries once on 5xx server errors and network failures with 200ms backoff.
+    Retries once on 5xx server errors, network failures (200ms backoff), and
+    429 rate limits (honors Retry-After when present).
     """
     client = await _get_client(client_name, verify=verify)
     last_exc: Exception | None = None
@@ -52,6 +53,15 @@ async def _api_call(method: str, url: str, *, client_name: str = "http", verify:
             resp.raise_for_status()
             return resp
         except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429 and attempt == 0:
+                retry_after = e.response.headers.get("Retry-After")
+                try:
+                    delay = min(float(retry_after), 30.0) if retry_after else 1.0
+                except ValueError:
+                    delay = 1.0
+                await asyncio.sleep(delay)
+                last_exc = e
+                continue
             if e.response.status_code >= 500 and attempt == 0:
                 await asyncio.sleep(0.2)
                 last_exc = e
