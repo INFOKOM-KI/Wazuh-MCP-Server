@@ -1291,6 +1291,98 @@ Deployment tip: run the MCP server with
 `BLUETEAM_REDACTION_POLICY=protect_victim BLUETEAM_OWNED_DOMAINS=<your-domain>` and paste the
 prompt block above into the LLM client's system prompt.
 
+## Contoh Prompt SOC — Laporan Serangan 24 Jam (Bahasa Indonesia)
+
+Prompt lengkap berikut memetakan **setiap** permintaan ke tool MCP yang konkret, sehingga
+seluruh fungsi platform (92 tools + 4 resources) benar-benar terpanggil. Salin ke LLM lokal
+yang terhubung ke server ini.
+
+```text
+Anda adalah analis SOC TangerangKota-CSIRT. Gunakan tool MCP Blue Team Wazuh secara
+disiplin: baca schema tiap tool SEBELUM memanggil, dan jangan mengarang nama parameter.
+Lingkup waktu: 24 jam terakhir (since="24h"; untuk 3-Sum gunakan time_window_minutes=1440).
+Mode privasi: redaction_policy="protect_victim" + reveal_owned=true agar email/subdomain
+dinas terlihat untuk forensik; JANGAN pernah bypass_redaction/raw tanpa perintah operator.
+
+LANGKAH 1 — Inventaris seluruh serangan 24 jam (Wazuh):
+  - blueteam_wazuh_alerts(since="24h", limit=500)
+  - blueteam_wazuh_indexer_search(since="24h", max_scanned=50000, response_format="json")
+  - wazuh_alert_aggregate_analysis(mode="summary", since="24h", response_format="json")
+  - blueteam_wazuh_alert_summarize(since="24h")
+
+LANGKAH 2 — Subdomain kota tangerang paling banyak diserang + ip attacker + exploit payload:
+  - wazuh_domain_lookup(domain="tangerangkota.go.id", since="24h", max_scanned=50000,
+        redaction_policy="protect_victim", reveal_owned=true, response_format="json")
+  - blueteam_extract_iocs(text=<full_log>, response_format="json")  [ip + payload]
+
+LANGKAH 3 — Ekstrak SELURUH IOC:
+  - blueteam_extract_iocs() untuk setiap alert utama
+  - blueteam_ioc_lifecycle(kind="ip", since_days=1) dan kind="url"/"hash"
+
+LANGKAH 4 — IP publik berstatus authentication success + analisa Argus:
+  - blueteam_wazuh_indexer_search(since="24h", keyword="authentication success", max_scanned=50000)
+  - argus_ip_lookup(ip=<ip>, response_format="json") untuk setiap IP
+  - blueteam_unified_threat_score(ip=<ip>)  [gabungan CrowdSec + ThreatFox + AbuseIPDB]
+
+LANGKAH 5 — Analisa tiap ip attacker dengan ThreatFox + Argus + perbandingan 3-Sum APT:
+  - threatfox_ioc_search_bulk(search_terms=[<ip attacker>])
+  - argus_ip_lookup(ip=<ip>) per IP
+  - crowdsec_ip_reputation_bulk(ips=[<ip attacker>])
+  - blueteam_lookup_ip_abuseipdb(ip=<ip>)
+  - greynoise_ip_context(ip=<ip>)
+  - netra_ip_analysis(ip=<ip>)
+  - three_sum_correlation(time_window_minutes=1440, use_attack_graph=true,
+        follow_up="threat_intel", response_format="json")   [cluster-aware APT]
+  - blueteam_attack_graph(window_days=1)      [campaign clusters + suspicion rank]
+  - blueteam_campaign_watch(window_days=1)    [pertumbuhan cluster]
+  - blueteam_baseline_drift(window="24h")     [anomali vs baseline]
+
+LANGKAH 6 — Email dinas berstatus locked + analisa ip penyebab:
+  - blueteam_wazuh_indexer_search(since="24h", keyword="locked", max_scanned=50000)
+  - wazuh_email_lookup(since="24h", redaction_policy="protect_victim", reveal_owned=true)
+  - blueteam_compromised_emails_analysis(emails=[<email dinas locked>])
+  - three_sum_correlation(...) → baca engine_b.stats.account_lockouts_observed
+  - argus_ip_lookup + threatfox_ioc_search untuk tiap ip penyebab lock
+
+LANGKAH 7 — Sorting & kalkulasi BM25 seluruh serangan:
+  - blueteam_semantic_search(query="<ringkasan serangan>", source="alerts", since="24h",
+        response_format="json")
+  - blueteam_alert_compare(srcip_a=<ip>, srcip_b=<ip>)  [bandingkan attacker]
+
+LANGKAH 8 — Analisa khusus wp2shell (exploit/kerentanan):
+  - blueteam_threat_hunt(template="web_shells", since="24h", response_format="json")
+  - blueteam_wazuh_indexer_search(since="24h", keyword="wp2shell", max_scanned=50000)
+  - blueteam_semantic_search(query="wp2shell", source="alerts", since="24h")
+  - wazuh_alert_focused_crawl(src_ip=<ip>, keyword="wp2shell", since="24h")
+
+LANGKAH 9 — Analisa 3-Sum + BM25 seluruh serangan:
+  - three_sum_correlation(time_window_minutes=1440, use_attack_graph=true)
+  - blueteam_semantic_search(query="<tema serangan>", source="alerts", since="24h")
+  - blueteam_wazuh_alert_compare untuk ip dengan skor tertinggi
+
+LANGKAH 10 — MITRE ATT&CK:
+  - blueteam_stix_killchain(srcip=<ip attacker>, since="24h") untuk tiap ip utama
+  - blueteam_stix_analyze(technique_id=<id teknik teratas>)
+  - blueteam_attack_graph(window_days=1)  [suspicion-ranked unconfirmed IOCs]
+
+LANGKAH 11 — Analisa lanjutan & pelaporan lengkap:
+  - blueteam_wazuh_geo_heatmap(since="24h")   [visualisasi geo]
+  - blueteam_calendar_heatmap(since="24h")    [pola terjadwal]
+  - blueteam_alert_timeline(since="24h") + wazuh_attack_velocity(window_str="24h")
+  - blueteam_mark_investigated(srcip=<ip>, verdict=...) untuk ip terkonfirmasi
+  - blueteam_investigation_history + blueteam_false_positive_tracker(rule_id=...)
+  - blueteam_export_report(format="docx", path=<path>, title="Laporan SOC 24 Jam",
+        docx_sections=[...])   [laporan deliverable]
+
+VERIFIKASI AKHIR — pastikan seluruh tool di atas benar-benar TERPANGGIL dan hasilnya
+disertakan; jangan lewati tool mana pun. Laporkan hasil lengkap dalam satu dokumen.
+```
+
+Deployment tip: jalankan server dengan
+`BLUETEAM_REDACTION_POLICY=protect_victim BLUETEAM_OWNED_DOMAINS=tangerangkota.go.id`
+agar email/subdomain dinas ter-mask, dan gunakan `reveal_owned=true` hanya pada sesi
+forensik yang memang perlu melihat nilai aslinya.
+
 ## Requirements
 
 **Defender Host:**
