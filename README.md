@@ -1255,6 +1255,16 @@ operator explicitly asks.
 - Detect APT: three_sum_correlation(use_attack_graph=true) → blueteam_campaign_watch →
   blueteam_baseline_drift.
 
+## Schema discipline (anti-hallucination)
+
+- READ each tool's input schema (exposed via the MCP protocol) BEFORE calling — never
+  invent parameter names.
+- three_sum_correlation uses time_window_minutes (not since/until) for the window.
+- Host-forensics log tools (blueteam_read_*_log, blueteam_journalctl) return plain text
+  and do not accept response_format.
+- When a call is rejected with extra_forbidden, drop the extra parameter and re-read the
+  tool's schema instead of retrying the same arguments.
+
 ## Privacy rules
 
 - Default redaction is shape-based; under BLUETEAM_REDACTION_POLICY=protect_victim,

@@ -259,6 +259,45 @@ def check_closure(source: str, lines: list[str]) -> list[dict]:
 
 
 # Runner
+def check_unexpected_kwargs(source: str, lines: list[str]) -> list[dict]:
+    """KWARG — call-site keyword args must exist in the callee's signature.
+
+    Catches `params=params` passed to a local helper whose signature has no
+    `params` param (the wazuh_domain._full_scan_paginate TypeError class).
+    pyflakes misses this for closure-defined callees, so the gate checks it.
+    """
+    tree = ast.parse(source)
+    # {func_name: set(param_names)} for ALL functions (module-level + nested).
+    # Name collisions union the params (conservative: fewer false positives).
+    sigs: dict[str, set[str]] = {}
+    catchall: set[str] = set()  # functions with **kwargs — any kwarg legal
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            params = {a.arg for a in node.args.args} | {a.arg for a in node.args.kwonlyargs}
+            if node.args.kwarg is not None:
+                catchall.add(node.name)
+            sigs[node.name] = sigs.get(node.name, set()) | params
+    issues: list[dict] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        callee = node.func.id
+        if callee not in sigs or callee in catchall:
+            continue
+        if any(kw.arg is None for kw in node.keywords):  # **expr at call site
+            continue
+        for kw in node.keywords:
+            if kw.arg is not None and kw.arg not in sigs[callee]:
+                issues.append({
+                    "check": "KWARG",
+                    "line": node.lineno,
+                    "func": callee,
+                    "field": kw.arg,
+                    "context": f"unexpected keyword argument '{kw.arg}' for {callee}()",
+                })
+    return issues
+
+
 CHECKS = [
     ('Unbound locals (missing params.)', check_unbound),
     ('Drift (params.x + bare x = bug)', check_drift),
@@ -266,6 +305,7 @@ CHECKS = [
     ('Eager evaluation order', check_order),
     ('Missing runtime imports', check_imports),
     ('Closure free variable leaks', check_closure),
+    ('Unexpected keyword args (KWARG)', check_unexpected_kwargs),
 ]
 
 

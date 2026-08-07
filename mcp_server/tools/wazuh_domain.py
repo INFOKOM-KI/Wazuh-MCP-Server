@@ -172,7 +172,7 @@ async def _wazuh_domain_lookup_full_scan(
 
     result = await _full_scan_paginate(
         params.max_scanned, _fetch_page, initial_search_after, redact=True,
-        params=params,
+        bypass=params.bypass_redaction,
     )
     if result.get("_error"):
         return json.dumps({"error": result["_error"]}, indent=2)
