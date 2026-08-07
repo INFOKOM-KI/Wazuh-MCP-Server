@@ -6,14 +6,17 @@ DSL query tool - raw OpenSearch aggregation queries
 from __future__ import annotations
 import json, re
 from typing import Optional, Literal, Any
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, CHARACTER_LIMIT
+from mcp_server import mcp, logger, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, CHARACTER_LIMIT
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.redact import _redact_alert_data
+from mcp_server.core.http_client import _handle_api_error
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 
 
 def _check_no_scripts(obj, path: str = "root") -> None:
-    """Reject scripted aggregations — security boundary against injection."""
+    """Reject scripted aggregations - security boundary against injection."""
     if isinstance(obj, dict):
         if "script" in obj:
             raise ValueError(f"Scripted aggregation rejected at {path}")
@@ -29,7 +32,7 @@ class DslQueryInput(BaseModel):
     Two input paths (mutually exclusive):
     1. **Structured (preferred)**: pass ``aggs`` (and optionally ``query``) as native JSON
        objects. Pydantic validates the shape; the server serializes to the OpenSearch wire
-       format. No JSON-in-JSON escaping — safe for LLM callers.
+       format. No JSON-in-JSON escaping - safe for LLM callers.
     2. **Raw string (deprecated)**: pass ``query_json`` as a pre-serialized DSL string.
        Requires correct double-escaping for nested quotes. Use only for backward compat.
     """
@@ -38,7 +41,7 @@ class DslQueryInput(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def coerce_string_params(cls, data: Any) -> Any:
-        """Auto-parse JSON-string params — MCP clients sometimes send args as raw JSON strings."""
+        """Auto-parse JSON-string params - MCP clients sometimes send args as raw JSON strings."""
         if isinstance(data, str):
             import json as _json
             try:
@@ -117,10 +120,18 @@ class DslQueryInput(BaseModel):
             _check_no_scripts(v, "aggs")
         return v
 
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, v: Optional[dict]) -> Optional[dict]:
+        """Reject scripted queries in the structured path - same boundary as aggs."""
+        if v is not None:
+            _check_no_scripts(v, "query")
+        return v
+
     @field_validator("query_json")
     @classmethod
     def validate_dsl(cls, v: Optional[str]) -> Optional[str]:
-        """Parse the JSON and enforce size: 0 — no document hits allowed. Deprecated path."""
+        """Parse the JSON and enforce size: 0 - no document hits allowed. Deprecated path."""
         if v is None:
             return v
         try:
@@ -174,12 +185,12 @@ async def wazuh_alert_dsl_query(params: DslQueryInput) -> str:
 
     This is an **aggregation-only** escape hatch for analytical questions that
     don't fit the pre-built ``wazuh_alert_aggregate_analysis`` modes. The input
-    DSL must use ``"size": 0`` — raw document retrieval is rejected at validation
+    DSL must use ``"size": 0`` - raw document retrieval is rejected at validation
     time. Scripted aggregations are also blocked for security.
 
     **Two input paths** (mutually exclusive):
     - **Structured (preferred)**: pass ``params.aggs`` (and optionally ``params.query``)
-      as native JSON objects. The server serializes to the OpenSearch wire format —
+      as native JSON objects. The server serializes to the OpenSearch wire format -
       no JSON-in-JSON escaping required. Safe for LLM callers.
     - **Raw string (deprecated)**: pass ``params.query_json`` as a pre-serialized DSL
       string. Requires correct double-escaping for nested quotes.
@@ -238,6 +249,6 @@ async def wazuh_alert_dsl_query(params: DslQueryInput) -> str:
         if isinstance(data.get("error"), str):
             return f"# DSL Query Error\n\n**Error**: {data['error']}\n\n**Detail**: {data.get('detail', 'N/A')}"
         aggs = data.get("aggregations", data.get("aggs", {}))
-        return f"# DSL Query Result\n\n**Index**: {params.index_pattern}\n\n```json\n{json.dumps(aggs, indent=2, default=str)[:CHARACTER_LIMIT]}\n```"
+        return f"# DSL Query Result\n\n**Index**: {params.index_pattern}\n\n```json\n{json.dumps(_redact_alert_data(aggs), indent=2, default=str)[:CHARACTER_LIMIT]}\n```"
 
-    return _truncate_if_needed(json.dumps(data, indent=2, default=str))
+    return _truncate_if_needed(json.dumps(_redact_alert_data(data), indent=2, default=str))

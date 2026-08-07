@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Host forensics tools — 23 tools for log reading, network, capture, files, hardening, users, processes
+Host forensics tools - 23 tools for log reading, network, capture, files, hardening, users, processes
 """
 from __future__ import annotations
-import json, os, re
-from pathlib import Path
+import json, os, re, shutil, hashlib
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from mcp_server import mcp, MAX_LOG_LINES
-from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.audit import _audit_log, _truncate_if_needed, _check_rate_limit
 from mcp_server.core.redact import _redact_alert_data
-from mcp_server.core.subprocess import _run, _run_async, _sanitize_regex, _validate_path, _validate_bpf_filter, _tail_file, ALLOWED_PATH_PREFIXES, CAPTURE_OUTPUT_DIR, MAX_GREP_PATTERN_LENGTH, TIMEOUT
+from mcp_server.core.subprocess import _run, _run_async, _sanitize_regex, _validate_path, _validate_bpf_filter, _tail_file, _tool_not_found, ALLOWED_PATH_PREFIXES, CAPTURE_OUTPUT_DIR, MAX_GREP_PATTERN_LENGTH, TIMEOUT
 
 class LogInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -43,14 +43,15 @@ async def blueteam_read_auth_log(params: LogInput) -> str:
         if params.grep:
             cmd += ["--grep", params.grep]
         r = _run(cmd)
-        return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
+        return _redact_alert_data(r["stdout"] or r["stderr"], params=params)
 
     content = _tail_file(log_path, params.lines)
     if params.grep:
         safe_grep = _sanitize_regex(params.grep)
-        params.lines = [l for l in content.splitlines() if re.search(safe_grep, l, re.IGNORECASE)]
-        return "\n".join(params.lines) if params.lines else f"No params.lines matched filter: {params.grep}"
-    return content
+        matched = [l for l in content.splitlines() if re.search(safe_grep, l, re.IGNORECASE)]
+        return _redact_alert_data("\n".join(matched), params=params) if matched \
+            else f"No lines matched filter: {params.grep}"
+    return _redact_alert_data(content, params=params)
 
 @mcp.tool(
     name="blueteam_read_syslog",
@@ -73,14 +74,14 @@ async def blueteam_read_syslog(params: LogInput) -> str:
             if params.grep:
                 safe_grep = _sanitize_regex(params.grep)
                 lines = [l for l in content.splitlines() if re.search(safe_grep, l, re.IGNORECASE)]
-                return _redact_alert_data("\n".join(lines), bypass=params.bypass_redaction) if lines else f"No matches for: {params.grep}"
-            return _redact_alert_data(content, bypass=params.bypass_redaction)
+                return _redact_alert_data("\n".join(lines), params=params) if lines else f"No matches for: {params.grep}"
+            return _redact_alert_data(content, params=params)
     # Fallback to journalctl
     cmd = ["journalctl", "-n", str(params.lines), "--no-pager"]
     if params.grep:
         cmd += ["--grep", params.grep]
     r = _run(cmd)
-    return r["stdout"] or r["stderr"]
+    return _redact_alert_data(r["stdout"] or r["stderr"], params=params)
 
 class WebLogInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -130,8 +131,8 @@ async def blueteam_read_web_log(params: WebLogInput) -> str:
     if params.grep:
         safe_grep = _sanitize_regex(params.grep)
         filtered = [l for l in content.splitlines() if re.search(safe_grep, l, re.IGNORECASE)]
-        return _redact_alert_data("\n".join(filtered) if filtered else f"No matches for: {params.grep}", bypass=params.bypass_redaction)
-    return _redact_alert_data(content, bypass=params.bypass_redaction)
+        return _redact_alert_data("\n".join(filtered) if filtered else f"No matches for: {params.grep}", params=params)
+    return _redact_alert_data(content, params=params)
 
 class JournalInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -166,7 +167,7 @@ async def blueteam_journalctl(params: JournalInput) -> str:
     if params.grep:
         cmd += ["--grep", params.grep]
     r = _run(cmd)
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], params=params)
 
 # NETWORK MONITORING
 @mcp.tool(
@@ -262,7 +263,7 @@ async def blueteam_capture_traffic(params: CaptureInput) -> str:
         # Redact internal RFC1918 IPs from stdout text output.
         # Connection metadata contains internal endpoint IPs; mask them without altering
         # the packet-capture file itself (which is forensic evidence and always unredacted).
-        result = _redact_alert_data(result, bypass=params.bypass_redaction)
+        result = _redact_alert_data(result, params=params)
     _audit_log("blueteam_capture_traffic", {"interface": params.interface, "count": params.count}, result[:200])
     return result
 
@@ -322,7 +323,7 @@ async def blueteam_hash_file(params: HashFileInput) -> str:
             "modified": datetime.fromtimestamp(p.stat().st_mtime).isoformat(),
         }, indent=2)
         _audit_log("blueteam_hash_file", {"path": params.path, "algorithm": algo}, result[:200])
-        return _redact_alert_data(result, bypass=params.bypass_redaction)
+        return _redact_alert_data(result, params=params)
     except PermissionError:
         return json.dumps({"error": f"Permission denied reading {params.path}"})
     except Exception as e:
@@ -402,7 +403,7 @@ async def blueteam_rootkit_scan(params: RootkitInput) -> str:
     else:
         return json.dumps({"error": f"Unknown params.tool '{params.tool}'. Use 'rkhunter' or 'chkrootkit'"})
 
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], params=params)
 
 
 # SYSTEM HARDENING

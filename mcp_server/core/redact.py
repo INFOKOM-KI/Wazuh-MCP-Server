@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-PII redaction pipeline 6 layers. Layer 1 (credentials) NEVER bypassable.
+PII redaction pipeline 6 layers. Layer 1 (credentials) Never bypassable.
+
+Three redaction policies (BLUETEAM_REDACTION_POLICY env / per-call param):
+  - "full" (default):   shape-based masking - emails, private IPs, ALL domains,
+                        paths, UAs. Registered attacker IOCs are exempt.
+  - "protect_victim":   mask ONLY victim-owned indicators - emails/domains at
+                        owned domains (BLUETEAM_OWNED_DOMAINS), private IPs,
+                        paths, identity fields, agent names. Attacker domains,
+                        attacker emails and payload contents stay intact.
+  - "raw":              Layer 1 credential strip ONLY. Hard-gated behind
+                        BLUETEAM_ALLOW_FORENSIC_BYPASS (default false).
 """
 from __future__ import annotations
 import hashlib, os, re, logging
@@ -9,7 +19,11 @@ from typing import Any
 from collections import Counter
 
 from mcp_server import (BLUETEAM_REDACT_PII, BLUETEAM_REDACT_EMAILS, BLUETEAM_REDACT_DOMAINS,
-                         BLUETEAM_REDACT_LOCATIONS, BLUETEAM_REDACT_UAS)
+                         BLUETEAM_REDACT_LOCATIONS, BLUETEAM_REDACT_UAS,
+                         BLUETEAM_ALLOW_FORENSIC_BYPASS, BLUETEAM_REDACTION_POLICY,
+                         BLUETEAM_OWNED_DOMAINS, BLUETEAM_FORENSIC_TOKEN)
+from mcp_server.core.attacker_registry import is_attacker_ioc
+from mcp_server.core import metrics
 
 logger = logging.getLogger("blue_team_mcp.redact")
 
@@ -19,6 +33,32 @@ _REDACT_SALT = os.environ.get(
 )
 
 _REDACT_EMAIL_RE = re.compile(r"([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})")
+
+# Owned parent domains (victim infrastructure) - mask these subdomains/emails
+_OWNED_DOMAINS: set[str] = {d.strip().lower().rstrip(".")
+                            for d in BLUETEAM_OWNED_DOMAINS.split(",") if d.strip()}
+
+# Identity fields masked under protect_victim (victim accounts, not attacker srcip)
+_IDENTITY_KEYS = ("account", "srcuser", "dstuser", "user", "username")
+
+_POLICIES = ("full", "protect_victim", "raw")
+
+# Layer 7 (protect_victim): bare hostname/agent-name candidates in aggregation
+# bucket "key" values and hostname-context dict keys. Narrow pattern - lowercase
+# single-label, must contain a digit or hyphen - so common words ("web", "high",
+# rule descriptions, countries) and CVE-style tokens never get masked.
+_HOSTNAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_HOSTNAME_CONTEXT_KEYS = ("host", "hostname", "server", "node", "host_name")
+
+
+def _is_hostname_candidate(v: str) -> bool:
+    if not (3 <= len(v) <= 63):
+        return False
+    if not _HOSTNAME_RE.match(v):
+        return False
+    if v.isalpha():
+        return False  # require a digit or hyphen - "web" / "admin" pass through
+    return True
 
 # Layer 1: Credential stripping (MANDATORY, never configurable)
 _CREDENTIAL_STRIP_RULES: list[tuple[re.Pattern, str]] = [
@@ -62,7 +102,7 @@ def _mask_domain(domain: str) -> str:
     parts = domain.rstrip(".").split(".")
     if len(parts) < 2:
         return domain
-    # Internal TLDs — mask the entire domain
+    # Internal TLDs - mask the entire domain
     if parts[-1] in ("local", "internal", "corp", "lan", "home", "test"):
         return parts[0][0] + "*" * (len(parts[0]) - 1) + "." + parts[-1] if len(parts) == 2 else \
                parts[0][0] + "*" * (len(parts[0]) - 2) + parts[0][-1] + ".***." + parts[-1]
@@ -76,109 +116,245 @@ def _mask_domain(domain: str) -> str:
     return f"{masked}." + ".".join(parts[1:])
 
 
+def _mask_username(v: str) -> str:
+    """Mask a username/account value, keeping first/last char + forensic hash."""
+    if len(v) <= 1:
+        return "***"
+    return f"{v[0]}***{v[-1]} [h:{_hash_email_for_audit(v)}]"
+
+
+def _is_owned_domain(domain: str) -> bool:
+    """True if domain is owned infrastructure (exact or subdomain of owned parent)."""
+    d = (domain or "").strip().lower().rstrip(".")
+    return any(d == o or d.endswith("." + o) for o in _OWNED_DOMAINS)
+
+
+def _should_mask_domain(domain: str, policy: str, reveal_owned: bool = False) -> bool:
+    """Layer 4 decision: mask this domain under the active policy?"""
+    if policy == "raw":
+        return False
+    if is_attacker_ioc(domain):
+        return False  # registered attacker IOC - never mask
+    if reveal_owned and _is_owned_domain(domain):
+        return False  # forensic: owned-domain values exposed unmasked
+    if policy == "protect_victim":
+        return _is_owned_domain(domain)
+    return True  # full: shape-based (legacy)
+
+
+def _should_mask_email(email: str, policy: str, reveal_owned: bool = False) -> bool:
+    """Layer 2 decision: mask this email under the active policy?"""
+    if policy == "raw":
+        return False
+    if is_attacker_ioc(email):
+        return False
+    domain = email.rsplit("@", 1)[-1] if "@" in email else email
+    if is_attacker_ioc(domain):
+        return False
+    if reveal_owned and _is_owned_domain(domain):
+        return False  # forensic: owned-domain emails exposed unmasked
+    if policy == "protect_victim":
+        return _is_owned_domain(domain)
+    return True  # full
+
+
+def _should_mask_ip(ip: str, policy: str) -> bool:
+    """Layer 3 decision: mask this (private) IP under the active policy?"""
+    if policy == "raw":
+        return False
+    if is_attacker_ioc(ip):
+        return False  # registered attacker IP - never mask
+    return True
+
+
+def _resolve_policy(bypass: bool, params: Any, policy: str | None) -> str:
+    """Resolve the effective redaction policy for one call.
+
+    Precedence: explicit policy arg > params.redaction_policy field >
+    params.bypass_redaction / bypass flag > BLUETEAM_REDACTION_POLICY env.
+    """
+    if policy is not None:
+        if policy not in _POLICIES:
+            raise ValueError(f"redaction_policy must be one of {_POLICIES}, got {policy!r}")
+        return policy
+    if params is not None:
+        p = getattr(params, "redaction_policy", None)
+        if p is not None:
+            return _resolve_policy(False, None, p)
+        if getattr(params, "bypass_redaction", False):
+            return "raw"
+    if bypass:
+        return "raw"
+    return BLUETEAM_REDACTION_POLICY
+
+
+def _strip_credentials(data: Any) -> Any:
+    """Layer 1 only - recursive credential strip (raw policy path)."""
+    if isinstance(data, str):
+        for pattern, replacement in _CREDENTIAL_STRIP_RULES:
+            data = pattern.sub(replacement, data)
+        return data
+    if isinstance(data, dict):
+        return {k: _strip_credentials(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_strip_credentials(item) for item in data]
+    return data
+
+
 # Main redaction pipeline
-def _redact_alert_data(data: Any, *, bypass: bool = False) -> Any:
+def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
+                       policy: str | None = None, reveal_owned: bool = False,
+                       forensic_token: str | None = None) -> Any:
     """Apply 6-layer PII and credential masking. Layer 1 NEVER bypassable.
 
+    Policies:
+      - "full": shape-based masking (legacy default).
+      - "protect_victim": mask victim-owned indicators only; attacker IOCs,
+        attacker domains/emails and payload contents stay intact.
+      - "raw": Layer 1 credential strip only - HARD-GATED behind
+        BLUETEAM_ALLOW_FORENSIC_BYPASS (default false).
+
+    reveal_owned (forensic): expose emails/subdomains at owned domains
+    (BLUETEAM_OWNED_DOMAINS) unmasked while all other masking stays on.
+    Layer 1 credentials remain masked. Ignored under policy="raw".
+
     Layers:
-      1. Credential stripping (MANDATORY — never configurable)
+      1. Credential stripping (MANDATORY - never configurable)
       2. Email redaction (BLUETEAM_REDACT_EMAILS)
       3. Internal IP masking (BLUETEAM_REDACT_PII)
       4. Domain/hostname masking (BLUETEAM_REDACT_DOMAINS)
       5. Log location masking (BLUETEAM_REDACT_LOCATIONS)
       6. User-agent truncation (BLUETEAM_REDACT_UAS)
+      7. Hostname/agent-name masking (protect_victim, bucket-key contexts)
     """
-    if bypass:
-        logger.warning("REDACTION BYPASSED — raw PII/internal IPs exposed to caller")
+    pol = _resolve_policy(bypass, params, policy)
+    reveal = reveal_owned or (getattr(params, "reveal_owned", False) if params is not None else False)
+
+    if pol == "raw":
+        if not BLUETEAM_ALLOW_FORENSIC_BYPASS:
+            metrics.record_gate_failure()
+            raise ValueError(
+                "bypass_redaction / redaction_policy='raw' requested but "
+                "BLUETEAM_ALLOW_FORENSIC_BYPASS is not enabled. "
+                "Set BLUETEAM_ALLOW_FORENSIC_BYPASS=true to allow forensic raw output."
+            )
+        if BLUETEAM_FORENSIC_TOKEN:
+            caller_token = forensic_token or (getattr(params, "forensic_token", None) if params is not None else None)
+            if not caller_token or caller_token != BLUETEAM_FORENSIC_TOKEN:
+                metrics.record_gate_failure()
+                raise ValueError(
+                    "raw/forensic bypass requires the operator forensic token "
+                    "(BLUETEAM_FORENSIC_TOKEN). Pass forensic_token=<token>."
+                )
+        logger.warning("REDACTION BYPASSED (raw) - Layer 1 credential strip only")
+        return _strip_credentials(data)
+
+    if pol == "protect_victim":
+        logger.debug("redaction policy=protect_victim")
 
     if isinstance(data, str):
         # Layer 1: Credential stripping (ALWAYS)
         for pattern, replacement in _CREDENTIAL_STRIP_RULES:
             data = pattern.sub(replacement, data)
 
-        if not bypass:
-            # Layer 2: Email redaction
-            if BLUETEAM_REDACT_EMAILS:
-                def _redact_email(m: re.Match) -> str:
-                    local, domain = m.group(1), m.group(2)
-                    full_email = f"{local}@{domain}"
-                    forensic_hash = _hash_email_for_audit(full_email)
-                    if len(local) <= 2:
-                        rlocal = local[0] + "*" * (len(local) - 1)
-                    else:
-                        rlocal = local[0] + "*" * max(1, len(local) - 2) + local[-1]
-                    return f"{rlocal}@{domain} [h:{forensic_hash}]"
-                data = _REDACT_EMAIL_RE.sub(_redact_email, data)
+        if BLUETEAM_REDACT_EMAILS:
+            def _redact_email(m: re.Match) -> str:
+                local, domain = m.group(1), m.group(2)
+                full_email = f"{local}@{domain}"
+                if not _should_mask_email(full_email, pol, reveal):
+                    return m.group(0)  # attacker / non-owned — keep intact
+                forensic_hash = _hash_email_for_audit(full_email)
+                if len(local) <= 2:
+                    rlocal = local[0] + "*" * (len(local) - 1)
+                else:
+                    rlocal = local[0] + "*" * max(1, len(local) - 2) + local[-1]
+                return f"{rlocal}@{domain} [h:{forensic_hash}]"
+            data = _REDACT_EMAIL_RE.sub(_redact_email, data)
 
-            # Layer 3: Internal IP masking
-            if BLUETEAM_REDACT_PII:
-                def _redact_internal_ip(m: re.Match) -> str:
-                    ip = m.group(0)
-                    octets = ip.split(".")
-                    if octets[0] == "10":
-                        return f"10.{'***'}.{'***'}.{octets[3]}"
-                    elif octets[0] == "172" and 16 <= int(octets[1]) <= 31:
-                        return f"172.{octets[1]}.{'***'}.{octets[3]}"
-                    elif octets[0] == "192" and octets[1] == "168":
-                        return f"192.168.{'***'}.{octets[3]}"
-                    elif octets[0] == "127":
-                        return f"127.{'***'}.{'***'}.{octets[3]}"
-                    elif octets[0] == "169" and octets[1] == "254":
-                        return f"169.254.{'***'}.{octets[3]}"
+        if BLUETEAM_REDACT_PII:
+            def _redact_internal_ip(m: re.Match) -> str:
+                ip = m.group(0)
+                if not _should_mask_ip(ip, pol):
                     return ip
-                data = re.sub(
-                    r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
-                    r"172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|"
-                    r"192\.168\.\d{1,3}\.\d{1,3}|"
-                    r"127\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
-                    r"169\.254\.\d{1,3}\.\d{1,3})\b",
-                    _redact_internal_ip, data,
-                )
-                data = re.sub(r"\b::1\b", "<LOOPBACK_REDACTED>", data)
+                octets = ip.split(".")
+                if octets[0] == "10":
+                    return f"10.{'***'}.{'***'}.{octets[3]}"
+                elif octets[0] == "172" and 16 <= int(octets[1]) <= 31:
+                    return f"172.{octets[1]}.{'***'}.{octets[3]}"
+                elif octets[0] == "192" and octets[1] == "168":
+                    return f"192.168.{'***'}.{octets[3]}"
+                elif octets[0] == "127":
+                    return f"127.{'***'}.{'***'}.{octets[3]}"
+                elif octets[0] == "169" and octets[1] == "254":
+                    return f"169.254.{'***'}.{octets[3]}"
+                return ip
+            data = re.sub(
+                r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
+                r"172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|"
+                r"192\.168\.\d{1,3}\.\d{1,3}|"
+                r"127\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
+                r"169\.254\.\d{1,3}\.\d{1,3})\b",
+                _redact_internal_ip, data,
+            )
+            data = re.sub(r"\b::1\b", "<LOOPBACK_REDACTED>", data)
 
-            # Layer 4: Domain masking
-            if BLUETEAM_REDACT_DOMAINS:
-                data = re.sub(
-                    r"(?<![@\w])([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
-                    r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*"
-                    r"\.(?:[a-zA-Z]{2,}|xn--[a-zA-Z0-9]+))\b",
-                    lambda m: _mask_domain(m.group(1)), data,
-                )
+        if BLUETEAM_REDACT_DOMAINS:
+            data = re.sub(
+                r"(?<![@\w])([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+                r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*"
+                r"\.(?:[a-zA-Z]{2,}|xn--[a-zA-Z0-9]+))\b",
+                lambda m: _mask_domain(m.group(1)) if _should_mask_domain(m.group(1), pol, reveal)
+                else m.group(0),
+                data,
+            )
 
-            # Layer 5: Location masking in full_log
-            if BLUETEAM_REDACT_LOCATIONS:
-                def _redact_log_path(m: re.Match) -> str:
-                    path = m.group(0)
-                    parts = path.rstrip("/").split("/")
-                    leaf = parts[-1] if len(parts) > 1 else path
-                    path_hash = hashlib.sha256(f"{_REDACT_SALT}:{path}".encode()).hexdigest()[:6]
-                    return f".../{leaf} [h:{path_hash}]"
-                data = re.sub(r"/(?:[a-zA-Z0-9._-]+/){2,}[a-zA-Z0-9._-]+", _redact_log_path, data)
+        if BLUETEAM_REDACT_LOCATIONS:
+            def _redact_log_path(m: re.Match) -> str:
+                path = m.group(0)
+                parts = path.rstrip("/").split("/")
+                leaf = parts[-1] if len(parts) > 1 else path
+                path_hash = hashlib.sha256(f"{_REDACT_SALT}:{path}".encode()).hexdigest()[:6]
+                return f".../{leaf} [h:{path_hash}]"
+            data = re.sub(r"/(?:[a-zA-Z0-9._-]+/){2,}[a-zA-Z0-9._-]+", _redact_log_path, data)
 
-            # Layer 6: UA truncation
-            if BLUETEAM_REDACT_UAS:
-                if len(data) > 80 and re.search(r"Mozilla|Chrome|Safari|Firefox|curl|wget|python", data):
-                    data = data[:80] + "..."
+        if BLUETEAM_REDACT_UAS:
+            if len(data) > 80 and re.search(r"Mozilla|Chrome|Safari|Firefox|curl|wget|python", data):
+                data = data[:80] + "..."
 
         return data
 
     if isinstance(data, dict):
         result: dict[str, Any] = {}
         for k, v in data.items():
-            if not bypass:
-                if k == "domain" and isinstance(v, str) and BLUETEAM_REDACT_DOMAINS:
-                    v = _mask_domain(v)
-                elif k == "location" and isinstance(v, str) and BLUETEAM_REDACT_LOCATIONS:
-                    parts = v.rstrip("/").split("/")
-                    leaf = parts[-1] if len(parts) > 1 else v
-                    path_hash = hashlib.sha256(f"{_REDACT_SALT}:{v}".encode()).hexdigest()[:6]
-                    v = f".../{leaf} [h:{path_hash}]"
-                elif k == "user_agent" and isinstance(v, str) and BLUETEAM_REDACT_UAS and len(v) > 80:
-                    v = v[:80] + "..."
-            result[k] = _redact_alert_data(v, bypass=bypass)
+            if k == "domain" and isinstance(v, str) and BLUETEAM_REDACT_DOMAINS \
+                    and _should_mask_domain(v, pol, reveal):
+                v = _mask_domain(v)
+            elif k == "location" and isinstance(v, str) and BLUETEAM_REDACT_LOCATIONS:
+                parts = v.rstrip("/").split("/")
+                leaf = parts[-1] if len(parts) > 1 else v
+                path_hash = hashlib.sha256(f"{_REDACT_SALT}:{v}".encode()).hexdigest()[:6]
+                v = f".../{leaf} [h:{path_hash}]"
+            elif k == "user_agent" and isinstance(v, str) and BLUETEAM_REDACT_UAS and len(v) > 80:
+                v = v[:80] + "..."
+            masked_v = _redact_alert_data(v, policy=pol, reveal_owned=reveal)
+            # protect_victim: mask victim identity fields, agent names, and
+            # hostname-shaped aggregation bucket keys (payload fields like
+            # data.url / full_log keep attacker content intact via the layers above)
+            if pol == "protect_victim":
+                if k in _IDENTITY_KEYS and isinstance(masked_v, str) and masked_v and BLUETEAM_REDACT_PII:
+                    masked_v = _mask_username(masked_v)
+                elif k == "agent" and isinstance(masked_v, dict) \
+                        and isinstance(masked_v.get("name"), str) and BLUETEAM_REDACT_PII:
+                    masked_v = {**masked_v, "name": _mask_username(masked_v["name"])}
+                elif k == "key" and isinstance(masked_v, str) and _is_hostname_candidate(masked_v):
+                    masked_v = _mask_username(masked_v)  # aggregation bucket hostname
+                elif k in _HOSTNAME_CONTEXT_KEYS and isinstance(masked_v, str) \
+                        and _is_hostname_candidate(masked_v) and BLUETEAM_REDACT_PII:
+                    masked_v = _mask_username(masked_v)
+            result[k] = masked_v
         return result
 
     if isinstance(data, list):
-        return [_redact_alert_data(item, bypass=bypass) for item in data]
+        return [_redact_alert_data(item, policy=pol, reveal_owned=reveal) for item in data]
 
     return data

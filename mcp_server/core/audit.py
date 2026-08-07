@@ -10,10 +10,12 @@ from datetime import datetime
 from mcp_server import CHARACTER_LIMIT, BLUETEAM_AUDIT_LOG, BLUETEAM_ALLOW_UNTRUNCATED, BLUETEAM_RATE_LIMIT
 
 from mcp_server.core.redact import _redact_alert_data
+from mcp_server.core import metrics
 
 # Audit logging
 def _audit_log(tool_name: str, params: dict, result_preview: str = "") -> None:
     """Append audit entry to BLUETEAM_AUDIT_LOG if configured."""
+    metrics.record_call(tool_name)
     if not BLUETEAM_AUDIT_LOG:
         return
     try:
@@ -55,7 +57,7 @@ def _truncate_if_needed(text: str, *, bypass: bool = False) -> str:
     truncated = text[:CHARACTER_LIMIT]
     return (
         truncated
-        + f"\n\n... [truncated — response exceeds {CHARACTER_LIMIT} characters. "
+        + f"\n\n... [truncated - response exceeds {CHARACTER_LIMIT} characters. "
         "Use a smaller limit per page (e.g. limit=50) or iterate with the next_cursor "
         "to process results incrementally.]"
     )
@@ -82,15 +84,17 @@ def _check_rate_limit() -> bool:
         _rate_limit_count = 0
         _rate_limit_reset_time = now + 60
     _rate_limit_count += 1
-    return _rate_limit_count <= BLUETEAM_RATE_LIMIT
+    allowed = _rate_limit_count <= BLUETEAM_RATE_LIMIT
+    if not allowed:
+        metrics.record_rate_limit_hit()
+    return allowed
 
 
 # Response pipeline decorator
 # For tools returning structured data (dict/list). Automates: redact -> json.dumps -> truncate -> audit
 # String-returning tools should use _audit_log() + _truncate_if_needed() directly.
-
 def response_pipeline(tool_name: str):
-    """Decorator: auto-applies redact → json.dumps → truncate → audit.
+    """Decorator: auto-applies redact -> json.dumps -> truncate -> audit.
 
     For async tool handlers that return structured data (dict/list).
     String-returning tools should call _audit_log()/_truncate_if_needed() directly.
@@ -98,14 +102,16 @@ def response_pipeline(tool_name: str):
     def decorator(func):
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
+            _t0 = time.monotonic()
             result = await func(*args, **kwargs)
+            metrics.record_timing(tool_name, (time.monotonic() - _t0) * 1000)
             params = args[0] if args else None
 
             bypass_redact = getattr(params, "bypass_redaction", False) if params is not None else False
             bypass_char = getattr(params, "bypass_character_limit", False) if params is not None else False
 
             if isinstance(result, (dict, list)):
-                result = _redact_alert_data(result, bypass=bypass_redact)
+                result = _redact_alert_data(result, params=params)
                 result = json.dumps(result, indent=2, ensure_ascii=False)
 
             result_str = result if isinstance(result, str) else str(result)

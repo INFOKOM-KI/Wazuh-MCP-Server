@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-CrowdSec CTI — single + bulk IP reputation
+CrowdSec CTI - single + bulk IP reputation
 """
 from __future__ import annotations
 import json, logging, time, os, asyncio
@@ -92,9 +92,14 @@ class CrowdsecIpReputationBulkInput(BaseModel):
     @field_validator("ips")
     @classmethod
     def validate_ips(cls, v):
+        import ipaddress
         for ip in v:
-            try: __import__("ipaddress").ip_address(ip.strip())
-            except ValueError: raise ValueError(f"Invalid IP: {ip}")
+            try:
+                addr = ipaddress.ip_address(ip.strip())
+            except ValueError:
+                raise ValueError(f"Invalid IP: {ip}")
+            if addr.is_private:
+                raise ValueError(f"'{ip.strip()}' is a private/reserved IP - bulk lookup accepts public IPs only.")
         return v
 
 
@@ -105,7 +110,7 @@ async def crowdsec_ip_reputation_bulk(params: CrowdsecIpReputationBulkInput) -> 
 
     async def _lookup_one(ip: str) -> dict:
         try:
-            raw = await _crowdsec_request(f"/v2/smoke/{ip}")
+            raw = await _crowdsec_request(f"/v2/smoke/{ip.strip()}")
             return {"ip": ip, "reputation": raw.get("reputation","unknown"),
                     "behaviors": raw.get("behaviors",[]), "cves": raw.get("cves",[])}
         except Exception as e:

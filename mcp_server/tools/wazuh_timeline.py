@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Wazuh alert timeline tool — time-bucketed aggregation
+Wazuh alert timeline tool - time-bucketed aggregation
 """
 from __future__ import annotations
 import json, re
@@ -9,8 +9,10 @@ from typing import Optional, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
-                        _BYPASS_REDACTION_DESC, _RESPONSE_FORMAT_DESC, _AGENT_NAME_DESC)
+                        _BYPASS_REDACTION_DESC, _RESPONSE_FORMAT_DESC, _AGENT_NAME_DESC,
+                        _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
+from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _handle_api_error
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window, _auto_bucket_interval, _duration_minutes
@@ -66,6 +68,12 @@ class WazuhAlertTimelineInput(BaseModel):
     bypass_redaction: bool = Field(
         default=False, description=_BYPASS_REDACTION_DESC,
     )
+    redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
+        default=None,
+        description=_REDACTION_POLICY_DESC,
+    )
+    reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
 
 
     @field_validator("bucket")
@@ -94,7 +102,7 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
 
     Instead of fetching individual alert documents, this tool asks the Indexer to
     params.bucket alert counts by time interval (per minute, per 15 minutes, per hour, etc.)
-    directly on the server — fast, even across millions of documents.
+    directly on the server - fast, even across millions of documents.
 
     Each params.bucket includes:
     - Total alert count
@@ -178,6 +186,7 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
         )
 
     total_alerts = sum(b.get("doc_count", 0) for b in buckets)
+    buckets = _redact_alert_data(buckets)  # mask victim emails/IPs/domains in bucket keys
 
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps({
@@ -214,7 +223,7 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
     dur_str = f"{_duration_minutes(since_str, until_str):.0f} min" if _duration_minutes(since_str, until_str) < 120 else f"{_duration_minutes(since_str, until_str) / 60:.1f}h"
     lines: list[str] = [
         f"# Alert Timeline — Last {dur_str}",
-        f"**Window**: {since_str} → {until_str}  |  **Bucket**: {bucket_interval}  |  **Total alerts**: {total_alerts:,}",
+        f"**Window**: {since_str} -> {until_str}  |  **Bucket**: {bucket_interval}  |  **Total alerts**: {total_alerts:,}",
         "",
         "| Time (UTC) | Total | Low (≤4) | Med (5-9) | High (≥10) | Top Rule | Top Src IP |",
         "|------------|-------|----------|-----------|------------|----------|-----------|",

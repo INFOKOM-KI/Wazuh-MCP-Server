@@ -35,7 +35,7 @@ async def blueteam_mark_investigated(params: MarkInvestigatedInput) -> str:
     """Record an IP investigation verdict in the persistent JSONL history.
 
     Appends a timestamped entry to BLUETEAM_INVESTIGATION_HISTORY. This is the
-    only tool that writes investigation state — all other tools (curated reports,
+    only tool that writes investigation state - all other tools (curated reports,
     threat cards, beacon detection) are read-only.
 
     **Required**: BLUETEAM_INVESTIGATION_HISTORY env var set to a writable path.
@@ -49,6 +49,8 @@ async def blueteam_mark_investigated(params: MarkInvestigatedInput) -> str:
        ``blueteam_mark_investigated(srcip="8.8.8.8", verdict="false_positive", notes="Google DNS — scanner noise")``
     """
     _audit_log("blueteam_mark_investigated", {"srcip": params.srcip, "verdict": params.verdict})
+    if params.verdict == "true_positive":
+        register_attacker_ioc(params.srcip, source="verdict")  # confirmed attacker - keep IOC unmasked
     if not _INVESTIGATION_HISTORY_FILE:
         return json.dumps({"error": "BLUETEAM_INVESTIGATION_HISTORY env var not set.",
                            "detail": "Set this to a writable JSONL file path for investigation persistence."}, indent=2)
@@ -58,12 +60,10 @@ async def blueteam_mark_investigated(params: MarkInvestigatedInput) -> str:
         "verdict": params.verdict,
         "notes": params.notes[:1024],
     }
-    try:
-        with open(_INVESTIGATION_HISTORY_FILE, "a") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        return json.dumps({"status": "recorded", "entry": entry}, indent=2)
-    except Exception as e:
-        return json.dumps({"error": f"Failed to write history: {e}"}, indent=2)
+    if not _append_history(entry):
+        return json.dumps({"error": "Failed to write history file.",
+                           "detail": f"Check {_INVESTIGATION_HISTORY_FILE} is writable."}, indent=2)
+    return json.dumps({"status": "recorded", "entry": entry}, indent=2)
 
 
 class FalsePositiveTrackerInput(BaseModel):
@@ -214,24 +214,29 @@ def _read_history() -> dict[str, dict]:
     return history
 
 
-def _write_history(srcip: str, verdict: str, summary: dict) -> None:
-    """Append an investigation entry to the history file."""
+def _append_history(entry: dict) -> bool:
+    """Append an investigation entry to the history file, tail-truncating to max entries."""
     if not _INVESTIGATION_HISTORY_FILE:
-        return
+        return False
     try:
-        entry = {"ts": datetime.utcnow().isoformat() + "Z", "srcip": srcip,
-                 "verdict": verdict, "summary": summary}
         with open(_INVESTIGATION_HISTORY_FILE, "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        # Tail-truncate if over max entries
         if _INVESTIGATION_HISTORY_MAX_ENTRIES > 0:
             with open(_INVESTIGATION_HISTORY_FILE) as f:
                 lines = f.readlines()
             if len(lines) > _INVESTIGATION_HISTORY_MAX_ENTRIES:
                 with open(_INVESTIGATION_HISTORY_FILE, "w") as f:
                     f.writelines(lines[-_INVESTIGATION_HISTORY_MAX_ENTRIES:])
+        return True
     except Exception:
-        pass
+        return False
+
+
+def _write_history(srcip: str, verdict: str, summary: dict) -> None:
+    """Append an investigation entry to the history file."""
+    entry = {"ts": datetime.utcnow().isoformat() + "Z", "srcip": srcip,
+             "verdict": verdict, "summary": summary}
+    _append_history(entry)
 
 
 class InvestigationHistoryInput(BaseModel):
@@ -295,13 +300,43 @@ async def blueteam_investigation_history(params: InvestigationHistoryInput) -> s
     )
 
 
+# Graph-integration scoring constants (Engine A)
+_PPR_BOOST_FACTOR = 5.0      # total += ppr_score * factor
+_CONFIRMED_BONUS = 2.0       # flat bonus for registry-confirmed attacker IOCs
+_GRAPH_MAX_IOCS = 500
+
+async def _build_cluster_context() -> dict:
+    """Attack-graph context for Engine A: cluster_map, ppr_scores, confirmed_ips.
+
+    Built from the IOC store + attacker registry (store-backed, no indexer needed):
+      - cluster_map: {ip: {cluster member IPs}} for multi-node co-occurrence clusters
+      - ppr_scores: personalized-PageRank suspicion scores (confirmed-seeded)
+      - confirmed_ips: registry-confirmed attacker IOCs
+    """
+    from mcp_server.core.attack_graph import (build_attack_graph, extract_clusters,
+                                              suspicion_rank)
+    G = await build_attack_graph(since_days=30, min_count=1,
+                                 max_iocs=_GRAPH_MAX_IOCS, include_stix=False)
+    cluster_map: dict[str, set[str]] = {}
+    for comp in extract_clusters(G):
+        members = set(comp)
+        for m in members:
+            cluster_map[m] = members
+    ranked = suspicion_rank(G, top_n=_GRAPH_MAX_IOCS)
+    ppr_scores = {r["ioc"]: r["score"] for r in ranked if r.get("kind") == "ip"}
+    confirmed_ips = {n for n, d in G.nodes(data=True) if d.get("confirmed")}
+    return {"cluster_map": cluster_map, "ppr_scores": ppr_scores,
+            "confirmed_ips": confirmed_ips}
+
+
 # Wazuh Indexer index patterns (OpenSearch)
 # Correlation tools (hand-migrated)
 import json, asyncio, time, math
 from datetime import datetime, timedelta
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _WAZUH_INDEXER_MAX_SIZE,
-                        CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV, _INVESTIGATION_HISTORY_FILE)
+                        CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV, _INVESTIGATION_HISTORY_FILE,
+                        _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.http_client import _api_call, _handle_api_error
 from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY, _last_eval_time, _last_eval_result
@@ -309,6 +344,8 @@ from mcp_server.core.validators import ValidAgentName, ValidRuleGroups, ValidKey
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _wazuh_indexer_msearch, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _SRCIP_FIELD_PATHS
 from mcp_server.wazuh.time_utils import _parse_time_window, _auto_bucket_interval, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
+from mcp_server.core.attacker_registry import register_attacker_ioc, register_attacker_ips
+from mcp_server.core.ioc_store import record_iocs
 from mcp_server.correlation.engine import response_pipeline
 from mcp_server.correlation.three_sum_core import (evaluate_engine_a, evaluate_engine_b, format_evaluation_dict,
     normalize_srcip_to_cidr, DEFAULT_THRESHOLD_SCORE, DEFAULT_Z_THRESHOLD, DEFAULT_WINDOW_MINUTES)
@@ -331,6 +368,12 @@ class AggregateAnalysisInput(BaseModel):
     rule_hipaa: ValidRuleGroups = Field(default=None, description="Filter by HIPAA control")
     rule_nist_800_53: ValidRuleGroups = Field(default=None, description="Filter by NIST 800-53 control")
     response_format: str = Field(default="markdown")
+    redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
+        default=None,
+        description=_REDACTION_POLICY_DESC,
+    )
+    reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
     bypass_redaction: bool = Field(default=False)
 
     @field_validator("mode")
@@ -421,8 +464,23 @@ class ThreeSumCorrelationInput(BaseModel):
     cidr_normalize: bool = Field(default=False)
     exclude_srcips: list[str] = Field(default=[])
     follow_up: str = Field(default="none")
+    use_attack_graph: bool = Field(default=False,
+        description="Consume the attack graph: cluster-aware category intersection "
+                    "(campaign-level APT detection - a cluster spanning all 3 categories "
+                    "triggers even when no single IP does), PPR suspicion boost, and "
+                    "registry-confirmed IOC bonus.")
+    engine_b_sparse_floor: int = Field(default=3, ge=0,
+        description="Engine B sparse-category guard: sources with fewer total events than "
+                    "this floor contribute Z=0 (prevents single-event spikes in quiet "
+                    "categories from driving detections). 0 disables.")
     bypass_redaction: bool = Field(default=False,
         description="Accepted for API consistency. 3-Sum returns computed scores, not raw alert PII.")
+    redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
+        default=None,
+        description=_REDACTION_POLICY_DESC,
+    )
+    reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
     multi_resolution: bool = Field(default=False)
     cross_agent: bool = Field(
         default=False,
@@ -442,11 +500,11 @@ _three_sum_global_throttle = {"time": 0.0, "result": None}
 async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
     """Evaluate 3-Sum APT detection across 3 Wazuh alert categories.
 
-    **Engine A — Multi-IoC Risk Thresholding**: Finds source IPs appearing in
+    **Engine A - Multi-IoC Risk Thresholding**: Finds source IPs appearing in
     all 3 alert categories, sums per-category risk scores, and flags those
     exceeding ``threshold_score``.
 
-    **Engine B — 3-Source Volumetric Z-Score**: Queries per-minute alert
+    **Engine B - 3-Source Volumetric Z-Score**: Queries per-minute alert
     counts for all 3 categories, computes rolling μ/σ, and flags buckets
     where all 3 simultaneously exceed ``z_score_threshold``.
 
@@ -497,6 +555,9 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
 
     engine_a_results = None
     engine_b_results = None
+    ctx = None
+    if data.use_attack_graph:
+        ctx = await _build_cluster_context()
 
     # ENGINE A - Multi-IoC Risk Thresholding
     if data.engine_a_enabled:
@@ -526,7 +587,14 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             threshold_score=data.threshold_score,
             exclude_srcips=list(exclude_set) if exclude_set else None,
             cidr_normalize=data.cidr_normalize,
+            cluster_map=ctx["cluster_map"] if ctx else None,
+            ppr_scores=ctx["ppr_scores"] if ctx else None,
+            ppr_boost_factor=_PPR_BOOST_FACTOR if ctx else 0.0,
+            confirmed_ips=ctx["confirmed_ips"] if ctx else None,
+            confirmed_bonus=_CONFIRMED_BONUS if ctx else 0.0,
         )
+        register_attacker_ips([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
+        record_iocs([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
         engine_a_results = (triggers, stats)
 
     # ENGINE B - 3-Source Volumetric Z-Score
@@ -553,16 +621,30 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
                 return []
             return raw.get("aggregations", {}).get("over_time", {}).get("buckets", [])
 
-        buckets_a, buckets_b, buckets_c = await asyncio.gather(
+        async def _count_lockouts():
+            """Account-lockout volume signal (advisory metadata, never a scoring input)."""
+            lock_filter = _build_filter(data.category_b_groups)["bool"]["filter"] + [
+                {"match": {"data.error": "locked"}}]
+            body = {"size": 0, "query": {"bool": {"filter": lock_filter}}}
+            raw = await _wazuh_indexer_post(body)
+            if "error" in raw:
+                return 0
+            total = raw.get("hits", {}).get("total", {})
+            return total.get("value", 0) if isinstance(total, dict) else total
+
+        buckets_a, buckets_b, buckets_c, lockouts = await asyncio.gather(
             _fetch_time_buckets(data.category_a_groups),
             _fetch_time_buckets(data.category_b_groups),
             _fetch_time_buckets(data.category_c_groups),
+            _count_lockouts(),
         )
 
         anomalies, b_stats = evaluate_engine_b(
             buckets_a, buckets_b, buckets_c,
             z_score_threshold=data.z_score_threshold,
+            sparse_floor=data.engine_b_sparse_floor,
         )
+        b_stats["account_lockouts_observed"] = lockouts  # advisory, not a scoring input
         engine_b_results = (anomalies, b_stats)
 
     # UNIFIED SCORING
@@ -592,6 +674,7 @@ async def _enrich_ips(ips: list[str]) -> dict[str, dict]:
     Best-effort — individual failures are surfaced inline but never block
     the overall enrichment pass.
     """
+    register_attacker_ips(ips, source="enrichment")  # queried IOCs are attacker candidates — keep unmasked
     async def _crowdsec_one(ip: str) -> dict | None:
         try:
             raw = await _crowdsec_request(f"/v2/smoke/{ip}")
@@ -652,7 +735,7 @@ class InvestigateIpInput(BaseModel):
                  "idempotentHint": True, "openWorldHint": False},
 )
 async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
-    """Run a comprehensive IP investigation — alert profile, timeline, and geo.
+    """Run a comprehensive IP investigation - alert profile, timeline, and geo.
 
     Combines three indexer queries in parallel:
     1. Alert count + top rules (like alert summarization)
@@ -745,7 +828,7 @@ async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
 
     # Build markdown report
     lines = [
-        f"# 🔎 IP Investigation — `{srcip}`",
+        f"# 🔎 IP Investigation - `{srcip}`",
         "",
         f"**Window**: `{since_iso}` → `{until_iso}`",
         f"**Total alerts**: {total:,}",

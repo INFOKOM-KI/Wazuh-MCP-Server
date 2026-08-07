@@ -4,7 +4,7 @@
 Wazuh compromised emails analysis tool
 """
 from __future__ import annotations
-import json, re, os
+import json, re, os, asyncio, logging
 from typing import Optional, Literal
 from collections import Counter
 import httpx
@@ -15,7 +15,7 @@ from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _SINCE_DESC, _RESPONSE_FORMAT_DESC, _UNTIL_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.redact import _redact_alert_data
-from mcp_server.core.http_client import _api_call
+from mcp_server.core.http_client import _api_call, _handle_api_error
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS
 from mcp_server.wazuh.time_utils import _parse_time_window, _auto_bucket_interval, _duration_minutes
 from mcp_server.tools.wazuh_email import _extract_emails_from_doc

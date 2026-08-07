@@ -14,11 +14,12 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Tuple, Optional
 
-# MITRE ATT&CK tactic → 3-Sum category mapping
+# MITRE ATT&CK tactic -> 3-Sum category mapping
 MITRE_TACTIC_TO_CATEGORY: Dict[str, str] = {
     "Reconnaissance":          "A",
     "Resource Development":    "A",
     "Discovery":               "A",
+    "Lateral Movement":        "B",
     "Initial Access":          "B",
     "Credential Access":       "B",
     "Privilege Escalation":    "B",

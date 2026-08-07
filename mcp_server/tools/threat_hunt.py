@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Threat hunting query templates — named DSL templates for common adversary techniques.
+Threat hunting query templates - named DSL templates for common adversary techniques.
 """
 from __future__ import annotations
 import json
@@ -9,6 +9,7 @@ from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.redact import _redact_alert_data
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.core.validators import ValidAgentName
@@ -16,10 +17,9 @@ from mcp_server.core.validators import ValidAgentName
 # Threat Hunting Templates
 # Each template is a function (query_body, description) that builds an OpenSearch
 # DSL aggregation query given time window, optional agent, and optional srcip.
-
 _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
     "encoded_powershell": {
-        "description": "Base64-encoded PowerShell commands — common in fileless malware and C2 stagers.",
+        "description": "Base64-encoded PowerShell commands - common in fileless malware and C2 stagers.",
         "mitre": "T1059.001 / T1027",
         "query": lambda since, until, agent, srcip: {
             "size": 0,
@@ -35,7 +35,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
         },
     },
     "lsass_access": {
-        "description": "Process access to LSASS — credential dumping via Mimikatz, procdump, or task manager.",
+        "description": "Process access to LSASS - credential dumping via Mimikatz, procdump, or task manager.",
         "mitre": "T1003.001",
         "query": lambda since, until, agent, srcip: {
             "size": 0,
@@ -50,7 +50,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
         },
     },
     "kerberoasting": {
-        "description": "Kerberos TGS-REQ for service principals — SPN scanning / Kerberoasting.",
+        "description": "Kerberos TGS-REQ for service principals - SPN scanning / Kerberoasting.",
         "mitre": "T1558.003",
         "query": lambda since, until, agent, srcip: {
             "size": 0,
@@ -65,7 +65,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
         },
     },
     "suspicious_scheduled_tasks": {
-        "description": "Scheduled task creation — persistence via schtasks, at, or cron. Look for random task names.",
+        "description": "Scheduled task creation - persistence via schtasks, at, or cron. Look for random task names.",
         "mitre": "T1053",
         "query": lambda since, until, agent, srcip: {
             "size": 0,
@@ -96,7 +96,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
         },
     },
     "suspicious_parent": {
-        "description": "Office/browser spawning shell/script interpreter — macro-based malware delivery.",
+        "description": "Office/browser spawning shell/script interpreter - macro-based malware delivery.",
         "mitre": "T1204.002 / T1059",
         "query": lambda since, until, agent, srcip: {
             "size": 0,
@@ -111,7 +111,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
         },
     },
     "dns_tunneling": {
-        "description": "Abnormally long DNS queries — potential DNS tunneling / exfiltration.",
+        "description": "Abnormally long DNS queries - potential DNS tunneling / exfiltration.",
         "mitre": "T1048.001 / T1572",
         "query": lambda since, until, agent, srcip: {
             "size": 0,
@@ -127,7 +127,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
         },
     },
     "credential_dumping": {
-        "description": "Credential dumping tools — Mimikatz, comsvcs.dll, reg save SAM, /etc/shadow access.",
+        "description": "Credential dumping tools - Mimikatz, comsvcs.dll, reg save SAM, /etc/shadow access.",
         "mitre": "T1003",
         "query": lambda since, until, agent, srcip: {
             "size": 0,
@@ -142,7 +142,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
         },
     },
     "lateral_movement": {
-        "description": "Lateral movement — psexec, wmiexec, smbexec, winrm, SSH from unusual sources.",
+        "description": "Lateral movement - psexec, wmiexec, smbexec, winrm, SSH from unusual sources.",
         "mitre": "T1021 / T1570",
         "query": lambda since, until, agent, srcip: {
             "size": 0,
@@ -157,7 +157,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
         },
     },
     "c2_beacon": {
-        "description": "Regular-interval outbound connections — C2 beaconing detection. Use with 24h+ window.",
+        "description": "Regular-interval outbound connections - C2 beaconing detection. Use with 24h+ window.",
         "mitre": "T1071 / T1095",
         "query": lambda since, until, agent, srcip: {
             "size": 0,
@@ -173,7 +173,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
         },
     },
     "web_shells": {
-        "description": "Web shell detection — suspicious PHP/ASP/JSP files, POST to unusual paths.",
+        "description": "Web shell detection - suspicious PHP/ASP/JSP files, POST to unusual paths.",
         "mitre": "T1505.003",
         "query": lambda since, until, agent, srcip: {
             "size": 0,
@@ -273,7 +273,7 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
         return json.dumps(raw, indent=2)
 
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
-    aggs = raw.get("aggregations", {})
+    aggs = _redact_alert_data(raw.get("aggregations", {}))
 
     if params.response_format == "json":
         return json.dumps({
@@ -287,7 +287,7 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
 
     # Build markdown summary
     lines = [
-        f"# 🔍 Threat Hunt — `{params.template}`",
+        f"# 🔍 Threat Hunt - `{params.template}`",
         "",
         f"**MITRE**: {tmpl['mitre']}",
         f"**Description**: {tmpl['description']}",
@@ -364,6 +364,6 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
         lines.append("")
 
     if total == 0:
-        lines.append("✅ **No matches found** — this technique was not detected in the window.")
+        lines.append("**No matches found** — this technique was not detected in the window.")
 
     return _truncate_if_needed("\n".join(lines))

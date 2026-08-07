@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-3-Sum APT detection — pure computation module (stdlib only)
-Hard Rule 11 (CLAUDE.md): this module MUST remain pure-computation — ``math``,
+3-Sum APT detection - pure computation module (stdlib only)
+Hard Rule 11 (CLAUDE.md): this module MUST remain pure-computation - ``math``,
 ``typing``, ``ipaddress`` only. Never import ``httpx``, ``pydantic``, ``mcp``,
-or ``logging``. All API/orchestration logic lives in ``engine.py`` and
-``investigation.py``.
+or ``logging``. All API/orchestration logic lives in ``engine.py`` and ``investigation.py``.
 """
 from __future__ import annotations
 import ipaddress
 from typing import Any
 
-# Default thresholds (conservative — per CLAUDE.md Hard Rule 10)
+# Default thresholds
 DEFAULT_THRESHOLD_SCORE: int = 10
 DEFAULT_Z_THRESHOLD: float = 2.5
 DEFAULT_WINDOW_MINUTES: int = 10080  # 7 days
@@ -19,7 +18,7 @@ DEFAULT_WINDOW_MINUTES: int = 10080  # 7 days
 # Non-networked decoder fallback IPs (syscheck, auditd, vulnerability-detector)
 _EXCLUDE_IP_FALLBACKS: set[str] = {"0.0.0.0", "unknown", ""}
 
-# Active Response wrapper rule IDs — these duplicate the underlying alert
+# Active Response wrapper rule IDs - these duplicate the underlying alert
 _DEDUP_WRAPPER_RULES: set[str] = {"606029", "651"}
 
 
@@ -48,25 +47,26 @@ def evaluate_engine_a(
     threshold_score: int = DEFAULT_THRESHOLD_SCORE,
     exclude_srcips: list[str] | None = None,
     cidr_normalize: bool = False,
+    cluster_map: dict[str, set[str]] | None = None,
+    ppr_scores: dict[str, float] | None = None,
+    ppr_boost_factor: float = 0.0,
+    confirmed_ips: set[str] | None = None,
+    confirmed_bonus: float = 0.0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Engine A — Multi-IoC Risk Thresholding.
+    """Engine A - Multi-IoC Risk Thresholding (graph-integrated).
 
     Finds source IPs appearing in all 3 alert categories, sums their per-category
     risk scores, and returns those exceeding ``threshold_score``.
 
-    Args:
-        srcips_a: Category A (recon) entries as ``[(ip, score), ...]``.
-        srcips_b: Category B (access anomaly) entries.
-        srcips_c: Category C (c2/exfil) entries.
-        threshold_score: Minimum combined score to trigger (default 10).
-        exclude_srcips: Operational suppression list — IPs to skip.
-        cidr_normalize: If True, group IPs by /24 before intersection.
-
-    Returns:
-        ``(triggers, stats)`` where *triggers* is a list of dicts with keys
-        ``ip``, ``score_a``, ``score_b``, ``score_c``, ``total`` and *stats*
-        is a dict with ``total_unique_a``, ``total_unique_b``, ``total_unique_c``,
-        ``intersection_count``, ``triggers_count``.
+    Graph integration (all optional, pure data — see ``investigation.py`` for the
+    orchestrator that builds them from ``core/attack_graph.py``):
+      - ``cluster_map``: {ip: {cluster member IPs}}. When given, an IP's category
+        coverage is the MAX over itself and its cluster members — a campaign
+        cluster spanning all 3 categories triggers even when no single IP does.
+      - ``ppr_scores`` / ``ppr_boost_factor``: adds ``ppr * factor`` to the total
+        for IPs ranked by suspicion propagation (0.0 disables).
+      - ``confirmed_ips`` / ``confirmed_bonus``: adds a flat bonus for
+        registry-confirmed attacker IOCs (0.0 disables).
     """
     exclude_set: set[str] = set(exclude_srcips or []) | _EXCLUDE_IP_FALLBACKS
 
@@ -89,30 +89,47 @@ def evaluate_engine_a(
     map_b = _build_map(srcips_b)
     map_c = _build_map(srcips_c)
 
-    # 3-way intersection
-    common_ips = set(map_a) & set(map_b) & set(map_c)
+    def _coverage(cat_map: dict[str, int], ip: str) -> int:
+        """Category score for ip: max over itself + cluster members."""
+        score = cat_map.get(ip, 0)
+        if cluster_map:
+            for member in cluster_map.get(ip, ()):
+                score = max(score, cat_map.get(member, 0))
+        return score
+
+    # Candidates: IPs directly observed in any category this window
+    candidates = set(map_a) | set(map_b) | set(map_c)
+    confirmed = confirmed_ips or set()
 
     triggers: list[dict[str, Any]] = []
-    for ip in sorted(common_ips):
-        score_a = map_a.get(ip, 0)
-        score_b = map_b.get(ip, 0)
-        score_c = map_c.get(ip, 0)
+    spanning = 0
+    for ip in sorted(candidates):
+        score_a = _coverage(map_a, ip)
+        score_b = _coverage(map_b, ip)
+        score_c = _coverage(map_c, ip)
+        if score_a > 0 and score_b > 0 and score_c > 0:
+            spanning += 1  # cluster (or single IP) spans all 3 categories
         total = score_a + score_b + score_c
+        if ppr_scores and ppr_boost_factor:
+            total += ppr_scores.get(ip, 0.0) * ppr_boost_factor
+        if confirmed_bonus and ip in confirmed:
+            total += confirmed_bonus
         if total >= threshold_score:
             triggers.append({
                 "ip": ip,
                 "score_a": score_a,
                 "score_b": score_b,
                 "score_c": score_c,
-                "total": total,
+                "total": round(total, 2),
             })
 
     stats = {
         "total_unique_a": len(map_a),
         "total_unique_b": len(map_b),
         "total_unique_c": len(map_c),
-        "intersection_count": len(common_ips),
+        "intersection_count": spanning,
         "triggers_count": len(triggers),
+        "cluster_aware": bool(cluster_map),
     }
     return triggers, stats
 
@@ -122,11 +139,17 @@ def evaluate_engine_b(
     buckets_b: list[dict[str, Any]],
     buckets_c: list[dict[str, Any]],
     z_score_threshold: float = DEFAULT_Z_THRESHOLD,
+    sparse_floor: int = 0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Engine B — 3-Source Volumetric Z-Score.
+    """Engine B - 3-Source Volumetric Z-Score (sparse-guard aware).
 
     Computes rolling μ/σ across three time-bucketed alert sources and flags
     buckets where all three simultaneously exceed the Z-threshold.
+
+    ``sparse_floor``: per-source total-event floor. A source whose window total
+    is below the floor contributes Z = 0 for every bucket (its signal is too
+    sparse to be statistically meaningful - prevents single-event spikes in
+    quiet categories from driving detections). 0 disables the guard.
 
     Args:
         buckets_a: Category A (recon) time buckets with ``doc_count``.
@@ -166,6 +189,15 @@ def evaluate_engine_b(
     z_a = _z_scores(counts_a, stats_a)
     z_b = _z_scores(counts_b, stats_b)
     z_c = _z_scores(counts_c, stats_c)
+
+    # Sparse-category guard: sources below the total-event floor contribute Z=0
+    if sparse_floor > 0:
+        if sum(counts_a) < sparse_floor:
+            z_a = [0.0] * len(z_a)
+        if sum(counts_b) < sparse_floor:
+            z_b = [0.0] * len(z_b)
+        if sum(counts_c) < sparse_floor:
+            z_c = [0.0] * len(z_c)
 
     # Find buckets where ALL THREE Z-scores exceed threshold simultaneously
     min_len = min(len(z_a), len(z_b), len(z_c))
@@ -262,6 +294,52 @@ def format_evaluation_dict(
     }
 
     return result
+
+
+def evaluate_baseline_drift(
+    baseline_counts: list[int],
+    current_counts: list[int],
+    z_score_threshold: float = DEFAULT_Z_THRESHOLD,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Baseline-drift anomaly detection — current buckets vs a historical baseline.
+
+    Computes \u03bc/\u03c3 over the baseline series, Z-scores each current bucket against
+    it, and flags buckets where Z >= threshold. Pure computation (stdlib only).
+
+    Args:
+        baseline_counts: Per-bucket alert counts from the historical window.
+        current_counts: Per-bucket alert counts from the current window.
+        z_score_threshold: Z threshold (conservative default 2.5 per Hard Rule 10).
+
+    Returns:
+        ``(anomalies, stats)`` where *anomalies* is a list of dicts with ``bucket``,
+        ``count``, ``z_score`` and *stats* carries baseline \u03bc/\u03c3, totals and
+        ``anomaly_count``. Zero-variance baselines yield Z = 0 (\u03c3 = 0 guard).
+    """
+    n = len(current_counts)
+    if n < 2 or not baseline_counts:
+        return [], {"status": "insufficient_data", "buckets": n}
+    mean = sum(baseline_counts) / len(baseline_counts)
+    variance = sum((v - mean) ** 2 for v in baseline_counts) / len(baseline_counts)
+    stddev = variance ** 0.5
+    if stddev <= 0.0001:
+        z_scores = [0.0] * n  # \u03c3 = 0 guard — no variance, no anomaly
+    else:
+        z_scores = [(c - mean) / stddev for c in current_counts]
+    anomalies = [
+        {"bucket": i, "count": c, "z_score": round(z_scores[i], 2)}
+        for i, c in enumerate(current_counts) if z_scores[i] >= z_score_threshold
+    ]
+    stats = {
+        "baseline_mean": round(mean, 2),
+        "baseline_stddev": round(stddev, 2),
+        "z_score_threshold": z_score_threshold,
+        "baseline_total": sum(baseline_counts),
+        "current_total": sum(current_counts),
+        "buckets": n,
+        "anomaly_count": len(anomalies),
+    }
+    return anomalies, stats
 
 
 def compute_time_decay_weight(

@@ -13,6 +13,7 @@ from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _BYPASS_REDACTION_DESC, _INVESTIGATION_HISTORY_FILE)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.correlation.engine import response_pipeline
+from mcp_server.correlation.three_sum_core import evaluate_baseline_drift, DEFAULT_Z_THRESHOLD
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.core.validators import ValidAgentName, ValidRuleGroups, ValidKeyword
@@ -373,3 +374,119 @@ async def blueteam_calendar_heatmap(params: CalendarHeatmapInput) -> str:
                  f"({matrix[peak_day_idx][peak_hour]:,} alerts)")
 
     return _truncate_if_needed("\n".join(lines))
+
+
+class BaselineDriftInput(BaseModel):
+    """Input model for blueteam_baseline_drift."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    window: str = Field(default="24h", max_length=30,
+        description="Current window to test (ISO 8601 or relative, e.g. '24h', '7d').")
+    baseline_window: Optional[str] = Field(default=None, max_length=30,
+        description="Baseline window length. Defaults to the same length as `window`, "
+                    "immediately preceding it (e.g. current 24h vs previous 24h).")
+    agent_name: ValidAgentName = Field(default=None, max_length=64,
+        description="Optional agent name filter.")
+    rule_groups: ValidRuleGroups = Field(default=None,
+        description="Optional comma-separated rule groups filter (e.g. 'authentication_failures').")
+    z_score_threshold: float = Field(default=DEFAULT_Z_THRESHOLD, ge=1.0, le=5.0,
+        description="Z threshold for anomaly flagging (conservative default 2.5).")
+    top_n: int = Field(default=10, ge=1, le=50,
+        description="Max anomalous buckets to report.")
+    response_format: Literal["markdown", "json"] = Field(
+        default="markdown", description="'markdown' (default) or 'json'.")
+
+
+@response_pipeline("blueteam_baseline_drift")
+@mcp.tool(
+    name="blueteam_baseline_drift",
+    annotations={"readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False},
+)
+async def blueteam_baseline_drift(params: BaselineDriftInput) -> dict:
+    """Detect alert-volume anomalies: current window vs a historical baseline via Z-score.
+
+    Computes μ/σ over the baseline window's per-bucket counts and Z-scores each
+    current-window bucket against it (reuses three_sum_core.evaluate_baseline_drift).
+    Buckets with Z >= z_score_threshold are flagged as anomalies. Zero-variance
+    baselines yield Z = 0 (σ = 0 guard).
+
+    **Required Permissions**: Wazuh Indexer read access.
+
+    **Worked Examples**
+
+    1. *Is the last 24h anomalous vs the previous 24h?*:
+       ``blueteam_baseline_drift(window="24h")``
+
+    2. *Auth-failure spike on one agent*:
+       ``blueteam_baseline_drift(window="6h", agent_name="thezoo-prod", rule_groups="authentication_failures")``
+
+    3. *7-day window, stricter threshold*:
+       ``blueteam_baseline_drift(window="7d", z_score_threshold=3.0, response_format="json")``
+    """
+    if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
+        return {"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."}
+
+    from datetime import timedelta as _td
+    current_since, current_until = _parse_time_window(params.window, None)
+    if params.baseline_window:
+        base_since, base_until = _parse_time_window(params.baseline_window, params.window)
+    else:
+        # baseline = the same-length window immediately preceding the current one
+        try:
+            c_since = datetime.fromisoformat(current_since.replace("Z", "+00:00").rstrip("Z"))
+            c_until = datetime.fromisoformat(current_until.replace("Z", "+00:00").rstrip("Z"))
+        except ValueError:
+            return {"error": "Could not parse current window for baseline derivation."}
+        span = c_until - c_since
+        base_until = (c_since - _td(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        base_since = (c_since - span).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    extra_filters: list[dict] = []
+    if params.agent_name:
+        extra_filters.append({"match": {"agent.name": params.agent_name.strip()}})
+    if params.rule_groups:
+        groups = [g.strip() for g in params.rule_groups.split(",") if g.strip()]
+        if groups:
+            extra_filters.append({"bool": {"should": [
+                {"terms": {"rule.groups": groups}},
+                {"terms": {"rule.groups.keyword": groups}},
+            ], "minimum_should_match": 1}})
+
+    from mcp_server.wazuh.time_utils import _duration_minutes, _auto_bucket_interval
+    bucket_interval = _auto_bucket_interval(_duration_minutes(current_since, current_until))
+
+    async def _fetch_window(since: str, until: str) -> list[int]:
+        body = {"size": 0,
+                "query": {"bool": {"filter": [
+                    {"range": {"@timestamp": {"gte": since, "lt": until,
+                                               "format": "strict_date_optional_time"}}},
+                    *extra_filters,
+                ]}},
+                "aggs": {"over_time": {"date_histogram": {
+                    "field": "@timestamp", "fixed_interval": bucket_interval,
+                    "min_doc_count": 0,
+                    "extended_bounds": {"min": since, "max": until}}}}}
+        raw = await _wazuh_indexer_post(body)
+        if "error" in raw:
+            return []
+        return [b.get("doc_count", 0) for b in raw.get("aggregations", {})
+                .get("over_time", {}).get("buckets", [])]
+
+    baseline_counts = await _fetch_window(base_since, base_until)
+    current_counts = await _fetch_window(current_since, current_until)
+    if not current_counts:
+        return {"error": "Current window query returned no buckets — check Wazuh Indexer connectivity."}
+
+    anomalies, stats = evaluate_baseline_drift(baseline_counts, current_counts,
+                                               z_score_threshold=params.z_score_threshold)
+    result = {
+        "window": {"current": {"since": current_since, "until": current_until},
+                   "baseline": {"since": base_since, "until": base_until}},
+        "bucket_interval": bucket_interval,
+        "anomalies": anomalies[:params.top_n],
+        "stats": stats,
+    }
+    if stats.get("status") == "insufficient_data":
+        result["message"] = ("Insufficient data for baseline drift "
+                             f"({stats.get('buckets', 0)} current buckets, baseline empty).")
+    return result

@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Wazuh domain lookup tool — search alerts by domain name
+Wazuh domain lookup tool - search alerts by domain name
 """
 from __future__ import annotations
 import json, re
 from typing import Optional, Literal
 from collections import Counter
-from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
+import httpx
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
-                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC,
+                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC,
                         _AGENT_NAME_DESC, _SINCE_DESC, _UNTIL_DESC,
                         RDAP_BASE_URL, CRTSH_BASE_URL)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
+from mcp_server.core.http_client import _api_call, _handle_api_error
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _encode_cursor, _decode_cursor
 from mcp_server.wazuh.time_utils import _parse_time_window
@@ -82,6 +84,12 @@ class WazuhDomainLookupInput(BaseModel):
         default=False,
         description="Bypass PII redaction for audit investigations (Layer 1 credentials stay masked).",
     )
+    redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
+        default=None,
+        description=_REDACTION_POLICY_DESC,
+    )
+    reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
 
     @field_validator("domain")
     @classmethod
@@ -97,7 +105,7 @@ class WazuhDomainLookupInput(BaseModel):
             v,
         ):
             raise ValueError(
-                "Invalid domain format — must be a valid domain name (e.g. example.com)"
+                "Invalid domain format - must be a valid domain name (e.g. example.com)"
             )
         return v
 
@@ -164,7 +172,7 @@ async def _wazuh_domain_lookup_full_scan(
 
     result = await _full_scan_paginate(
         params.max_scanned, _fetch_page, initial_search_after, redact=True,
-        bypass=params.bypass_redaction,
+        params=params,
     )
     if result.get("_error"):
         return json.dumps({"error": result["_error"]}, indent=2)
@@ -319,7 +327,7 @@ async def wazuh_domain_lookup(params: WazuhDomainLookupInput) -> str:
     - **Full-scan** (set ``params.max_scanned`` to an integer ≥1000): Auto-paginates
       internally across ALL matching pages and returns an aggregated summary
       (global top IPs, top rule groups, top rules).  Set ``params.max_scanned`` high
-      enough to cover the time window — the scan stops when the indexer is
+      enough to cover the time window - the scan stops when the indexer is
       exhausted or the ceiling is hit.
 
     Args:
@@ -386,7 +394,7 @@ async def wazuh_domain_lookup(params: WazuhDomainLookupInput) -> str:
     total_relation = total.get("relation", "eq") if isinstance(total, dict) else "eq"
     hit_list = hits.get("hits", [])
     docs = [h.get("_source", h) for h in hit_list]
-    docs = _redact_alert_data(docs, bypass=params.bypass_redaction)
+    docs = _redact_alert_data(docs, params=params)
 
     # Build next cursor
     next_cursor = None
@@ -440,7 +448,7 @@ async def wazuh_domain_lookup(params: WazuhDomainLookupInput) -> str:
     total_display = f"{total_val:,}" + ("+" if total_relation == "gte" else "")
     page_info = f"Page ({len(docs)} of {total_display})"
     lines: list[str] = [
-        f"# Wazuh Domain Lookup — {params.domain}",
+        f"# Wazuh Domain Lookup - {params.domain}",
         "",
         f"**Total matches**: {total_display}",
         f"**{page_info}**",
@@ -516,7 +524,7 @@ async def blueteam_whois_lookup(params: WhoisLookupInput) -> str:
 
     Queries the IANA RDAP bootstrap service for domain ownership, registrar,
     nameservers, and registration dates. RDAP is the modern, structured
-    replacement for WHOIS — returns JSON instead of free-text.
+    replacement for WHOIS - returns JSON instead of free-text.
 
     Use this to attribute domains seen in Wazuh alerts, check if a domain
     was recently registered (common in phishing), or find related nameservers.
@@ -665,7 +673,7 @@ async def blueteam_crtsh_lookup(params: CrtshLookupInput) -> str:
     This is a powerful pivoting technique: find sibling domains an attacker
     registered alongside the one you're investigating.
 
-    **No API key required** — crt.sh is a free, public Certificate Transparency log.
+    **No API key required** - crt.sh is a free, public Certificate Transparency log.
 
     **Worked Examples**
 

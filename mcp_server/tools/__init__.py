@@ -33,6 +33,10 @@ def register_all_tools() -> None:
         semantic_search,       # 1 tool (BM25 semantic search)
         report_export,         # 1 tool (docx/xlsx/pptx report export)
         stix_correlation,      # 1 tool (MITRE ATT&CK STIX correlation)
+        metrics,               # Prometheus /metrics resources
+        attack_graph,          # 1 tool (attacker relationship graph / networkx)
+        investigation_workflow,  # 1 tool (langgraph investigation workflow)
+        playbook_runner,         # 1 tool (alert-driven playbook runner)
     )
 
-    logger.info("87 tools + 2 resources registered.")
+    logger.info("92 tools + 4 resources registered.")

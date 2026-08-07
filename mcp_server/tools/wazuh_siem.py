@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Wazuh SIEM tools — agents, alerts, manager logs, rules, decoders, groups, cluster, security events
+Wazuh SIEM tools - agents, alerts, manager logs, rules, decoders, groups, cluster, security events
 """
 from __future__ import annotations
 import json
 from pathlib import Path
-from typing import Optional
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field
-from mcp_server import WAZUH_INDEXER_PASSWORD
+from mcp_server import WAZUH_API_URL, WAZUH_API_PASSWORD, WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_URL
 from mcp_server.core.constants import _WAZUH_ALERTS_MAX_LINES, MITRE_TACTIC_TO_CATEGORY
-from mcp_server import WAZUH_INDEXER_URL
 
 from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
@@ -376,7 +374,8 @@ async def blueteam_wazuh_manager_logs(log_type: str = "alerts", limit: int = 50,
 async def blueteam_wazuh_alerts(agent_name: Optional[str] = None, srcip: Optional[str] = None,
                                  since: Optional[str] = None, until: Optional[str] = None,
                                  limit: int = 500, cursor: Optional[str] = None,
-                                 bypass_redaction: bool = False) -> str:
+                                 bypass_redaction: bool = False,
+                                 redaction_policy: Optional[str] = None) -> str:
     """Read Wazuh security alerts — local alerts.json first, auto-fallback to Indexer."""
     _audit_log("blueteam_wazuh_alerts", {})
     p = Path(_WAZUH_ALERTS_PATH)
@@ -407,7 +406,7 @@ async def blueteam_wazuh_alerts(agent_name: Optional[str] = None, srcip: Optiona
         if hit_list and len(docs) >= limit:
             last_sort = hit_list[-1].get("sort")
             if last_sort: next_cursor = _encode_cursor({"search_after": last_sort})
-        return _truncate_if_needed(json.dumps({"source": "wazuh-indexer", "alerts": _redact_alert_data(docs, bypass=bypass_redaction), "count": len(docs), "next_cursor": next_cursor}, indent=2))
+        return _truncate_if_needed(json.dumps({"source": "wazuh-indexer", "alerts": _redact_alert_data(docs, bypass=bypass_redaction, policy=redaction_policy), "count": len(docs), "next_cursor": next_cursor}, indent=2))
     # Local alerts.json path
     skip = 0
     if cursor:
@@ -442,7 +441,9 @@ async def blueteam_wazuh_alerts(agent_name: Optional[str] = None, srcip: Optiona
             alerts.append(a)
         except json.JSONDecodeError: continue
     next_cursor = _encode_cursor({"scanned": scanned}) if len(alerts) >= limit else None
-    return _truncate_if_needed(json.dumps({"source": "local", "alerts": alerts, "count": len(alerts), "next_cursor": next_cursor}, indent=2))
+    return _truncate_if_needed(json.dumps({"source": "local",
+                                            "alerts": _redact_alert_data(alerts, bypass=bypass_redaction, policy=redaction_policy),
+                                            "count": len(alerts), "next_cursor": next_cursor}, indent=2))
 
 @mcp.tool(
     name="blueteam_wazuh_indexer_search",
@@ -452,7 +453,8 @@ async def blueteam_wazuh_indexer_search(agent_name: Optional[str] = None, srcip:
                                          since: Optional[str] = None, until: Optional[str] = None,
                                          limit: int = 500, max_scanned: int = 0,
                                          cursor: Optional[str] = None, keyword: Optional[str] = None,
-                                         response_format: str = "json") -> str:
+                                         response_format: str = "json",
+                                         redaction_policy: Optional[str] = None) -> str:
     """Query Wazuh Indexer (OpenSearch) for alerts/events with cursor pagination.
 
     Set max_scanned > 0 for auto-pagination (server fetches up to N documents
@@ -488,11 +490,15 @@ async def blueteam_wazuh_indexer_search(agent_name: Optional[str] = None, srcip:
     total_val = 0
     total_relation = "eq"
     page_size = min(limit, 10000)
-    effective_max = max_scanned if max_scanned > 0 else page_size
+    # Hard cap on auto-pagination: one call must never sweep the whole index.
+    # 100k docs already exceeds the response character limit; iteration via
+    # next_cursor is the supported path for larger scans.
+    _MAX_AUTO_SCAN = 100000
+    effective_max = min(max_scanned, _MAX_AUTO_SCAN) if max_scanned > 0 else page_size
 
     while total_scanned < effective_max:
         body = {"size": min(page_size, effective_max - total_scanned),
-                "sort": [{"@timestamp": {"order": "asc"}}],
+                "sort": [{"@timestamp": {"order": "asc"}}, {"_id": "asc"}],
                 "query": {"bool": {"must": must}} if must else {"match_all": {}}}
         if search_after:
             body["search_after"] = search_after
@@ -522,5 +528,5 @@ async def blueteam_wazuh_indexer_search(agent_name: Optional[str] = None, srcip:
         "retrieved": total_scanned,
         "has_more": has_more,
         "next_cursor": next_cursor,
-        "documents": all_docs,
+        "documents": _redact_alert_data(all_docs, policy=redaction_policy),
     }, indent=2, ensure_ascii=False))

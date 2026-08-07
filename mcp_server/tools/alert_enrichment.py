@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Alert enrichment tools — curated report, threat card, attack chain, beacon detect, summarize, compare
+Alert enrichment tools - curated report, threat card, attack chain, beacon detect, summarize, compare
 """
 from __future__ import annotations
 import json, re, math, asyncio, os
@@ -10,7 +10,7 @@ from typing import Optional, Literal, Any
 from collections import Counter
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
-                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC,
+                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC,
                         CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV,
                         ABUSEIPDB_API_KEY, VIRUSTOTAL_API_KEY,
                         GREYNOISE_COMMUNITY_BASE_URL, ABUSEIPDB_BASE_URL,
@@ -22,6 +22,7 @@ from mcp_server.core.http_client import _api_call, _get_client
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
+from mcp_server.threat_intel.crowdsec import _crowdsec_request
 
 # F-1: Alert Summarization
 class AlertSummarizeInput(BaseModel):
@@ -59,6 +60,12 @@ class AlertSummarizeInput(BaseModel):
         default="markdown",
         description="Output format: 'markdown' (human-readable digest) or 'json'.",
     )
+    redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
+        default=None,
+        description=_REDACTION_POLICY_DESC,
+    )
+    reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
     bypass_redaction: bool = Field(
         default=False,
         description=_BYPASS_REDACTION_DESC,
@@ -135,7 +142,7 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
         return json.dumps(raw, indent=2)
 
     hits = raw.get("hits", {}).get("hits", [])
-    docs = [_redact_alert_data(h.get("_source", h), bypass=params.bypass_redaction)
+    docs = [_redact_alert_data(h.get("_source", h), params=params)
             for h in hits]
 
     if not docs:
@@ -335,7 +342,7 @@ async def blueteam_beacon_detect(params: BeaconDetectInput) -> str:
     σ/μ). A low CV with consistent intervals is the statistical signature
     of periodic beaconing — a hallmark of C2 callbacks.
 
-    Returns beacon score (0.0–1.0), estimated period, gap statistics,
+    Returns beacon score (0.0-1.0), estimated period, gap statistics,
     and a timeline summary.
 
     **Required Permissions**: Wazuh Indexer user with ``read`` access.
@@ -389,10 +396,10 @@ async def blueteam_beacon_detect(params: BeaconDetectInput) -> str:
             "srcip": params.srcip,
             "beacon_score": 0.0,
             "verdict": "insufficient_data",
-            "detail": f"Only {len(hits)} events — need at least {params.min_events}.",
+            "detail": f"Only {len(hits)} events - need at least {params.min_events}.",
         }
         return json.dumps(result, indent=2) if params.response_format == "json" else (
-            f"# Beacon Detection — `{params.srcip}`\n\n"
+            f"# Beacon Detection - `{params.srcip}`\n\n"
             f"**Insufficient data**: {len(hits)} events (need ≥{params.min_events}). "
             f"Expand the time window and retry.")
 
@@ -791,6 +798,12 @@ class ThreatCardInput(BaseModel):
         default=True,
         description="Include CrowdSec and GreyNoise reputation lookups (may add ~2s latency).",
     )
+    redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
+        default=None,
+        description=_REDACTION_POLICY_DESC,
+    )
+    reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
     bypass_redaction: bool = Field(
         default=False,
         description=_BYPASS_REDACTION_DESC,
@@ -898,7 +911,7 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     if isinstance(docs, dict) and "error" in docs:
         return json.dumps(docs, indent=2)
 
-    docs = _redact_alert_data(docs, bypass=params.bypass_redaction)
+    docs = _redact_alert_data(docs, params=params)
 
     if not docs:
         return "# Threat Card — `" + params.srcip + "`\n\n**No alerts found** for this IP in the selected time window."
@@ -1507,6 +1520,12 @@ class CuratedThreatReportInput(BaseModel):
     group_by: Literal["srcip", "domain", "rule.id", "agent"] = Field(default="srcip")
     response_format: Literal["markdown", "json"] = Field(default="markdown")
     bypass_redaction: bool = Field(default=False, description=_BYPASS_REDACTION_DESC)
+    redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
+        default=None,
+        description=_REDACTION_POLICY_DESC,
+    )
+    reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
     compare_since: Optional[str] = Field(default=None, max_length=30)
     investigation_depth: Literal["summary", "enriched", "deep"] = Field(default="enriched")
     deduplicate: bool = Field(default=False)
@@ -1527,18 +1546,18 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
     tool calls with one.
 
     **Filter dimensions** (any combination, all AND'd):
-      • geo_country / geo_country_pattern — GeoLocation.country_name
+      • geo_country / geo_country_pattern - GeoLocation.country_name
       • geo_bbox - bounding box "lat1,lon1,lat2,lon2" for area filtering
-      • domain / domain_pattern / domain_contains — data.domain
-      • rule_ids / rule_level_min / rule_level_max / rule_groups / rule_desc_contains — rule filtering
-      • mitre_tactics / mitre_techniques — ATT&CK filtering
-      • agent_name / agent_ip / agent_id — target agent
+      • domain / domain_pattern / domain_contains - data.domain
+      • rule_ids / rule_level_min / rule_level_max / rule_groups / rule_desc_contains - rule filtering
+      • mitre_tactics / mitre_techniques - ATT&CK filtering
+      • agent_name / agent_ip / agent_id - target agent
       • decoder - log decoder name (web-accesslog, sysmon, etc.)
       • url_pattern / referrer_pattern / response_codes / response_size_min / response_size_max / http_methods / user_agent_contains - HTTP layer
       • rule_firedtimes_min - persistence signal
       • log_source_pattern - wildcard on location field
-      • srcips (include) / exclude_srcips — IP-level
-      • min_crowdsec_reputation — pre-filter by threat intel
+      • srcips (include) / exclude_srcips - IP-level
+      • min_crowdsec_reputation - pre-filter by threat intel
 
     **Threat Intel** (best-effort, concurrent):
       Argus (7 upstream sources) + CrowdSec CTI (behaviors, MITRE, CVE) +

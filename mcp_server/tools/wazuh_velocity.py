@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Wazuh attack velocity tool — dual-window comparison
+Wazuh attack velocity tool - dual-window comparison
 """
 from __future__ import annotations
 import json, re, asyncio
@@ -9,8 +9,10 @@ from datetime import datetime, timedelta
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
-                        _BYPASS_REDACTION_DESC, _RESPONSE_FORMAT_DESC, _AGENT_NAME_DESC)
+                        _BYPASS_REDACTION_DESC, _RESPONSE_FORMAT_DESC, _AGENT_NAME_DESC,
+                        _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
+from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _handle_api_error
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import (_parse_time_window, _auto_bucket_interval,
@@ -23,7 +25,7 @@ class WazuhAttackVelocityInput(BaseModel):
     window: str = Field(
         default="1h",
         max_length=10,
-        description="Window size for comparison — relative expression: '15m', '1h', '6h', '24h'. "
+        description="Window size for comparison - relative expression: '15m', '1h', '6h', '24h'. "
                     "'1h' compares the last hour against the hour before that.",
     )
     agent_name: ValidAgentName = Field(
@@ -54,6 +56,12 @@ class WazuhAttackVelocityInput(BaseModel):
     bypass_redaction: bool = Field(
         default=False, description=_BYPASS_REDACTION_DESC,
     )
+    redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
+        default=None,
+        description=_REDACTION_POLICY_DESC,
+    )
+    reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
 
 
     @field_validator("window")
@@ -84,7 +92,7 @@ async def wazuh_attack_velocity(params: WazuhAttackVelocityInput = WazuhAttackVe
     Also reports the top accelerating rules and source IPs across the two windows.
 
     Args:
-        params.window: Window size — relative expression like '15m', '1h', '6h', '24h'.
+        params.window: Window size - relative expression like '15m', '1h', '6h', '24h'.
                       '1h' compares the last hour against the hour before it.
         params.agent_name: Optional agent filter.
         params.rule_groups: Optional comma-separated rule groups filter.
@@ -175,6 +183,8 @@ async def wazuh_attack_velocity(params: WazuhAttackVelocityInput = WazuhAttackVe
 
     current_buckets = current_raw.get("aggregations", {}).get("over_time", {}).get("buckets", [])
     previous_buckets = previous_raw.get("aggregations", {}).get("over_time", {}).get("buckets", [])
+    current_buckets = _redact_alert_data(current_buckets)  # mask victim identifiers in bucket keys
+    previous_buckets = _redact_alert_data(previous_buckets)
 
     current_total = sum(b.get("doc_count", 0) for b in current_buckets)
     previous_total = sum(b.get("doc_count", 0) for b in previous_buckets)

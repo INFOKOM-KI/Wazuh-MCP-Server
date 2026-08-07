@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Fail2Ban tools — jail status, banned IPs, unban
+Fail2Ban tools - jail status, banned IPs, unban
 """
 from __future__ import annotations
-import json, shutil
+import json, shutil, ipaddress
 from typing import Optional
-from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from mcp_server import mcp
-from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.audit import _audit_log, _truncate_if_needed, _check_rate_limit
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.subprocess import _run, _tool_not_found
 
@@ -54,7 +54,7 @@ async def blueteam_fail2ban_jail_status(params: JailInput) -> str:
     if not shutil.which("fail2ban-client"):
         return _tool_not_found("fail2ban")
     r = _run(["fail2ban-client", "status", params.jail])
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], params=params)
 
 
 class UnbanInput(BaseModel):
@@ -68,9 +68,11 @@ class UnbanInput(BaseModel):
     def validate_ip(cls, v: str) -> str:
         if not v or len(v) > 45:
             raise ValueError("Invalid IP format or length")
-        if _IPV4_RE.match(v) or _IPV6_RE.match(v):
-            return v
-        raise ValueError("Invalid IP format")
+        try:
+            ipaddress.ip_address(v)
+        except ValueError:
+            raise ValueError("Invalid IP format") from None
+        return v
 
 
 @mcp.tool(

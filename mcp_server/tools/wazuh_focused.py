@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Wazuh focused crawl tool — surgical alert retrieval
+Wazuh focused crawl tool - surgical alert retrieval
 """
 from __future__ import annotations
 import json, re, ipaddress
 from typing import Optional, Literal, Any
-from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
+import httpx
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
-                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _RESPONSE_FORMAT_DESC,
+                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC, _RESPONSE_FORMAT_DESC,
                         BLUETEAM_ALLOW_UNTRUNCATED, CHARACTER_LIMIT)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
+from mcp_server.core.http_client import _handle_api_error
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _encode_cursor, _decode_cursor
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.core.validators import ValidAgentName
 
 class FocusedCrawlInput(BaseModel):
-    """Input model for wazuh_alert_focused_crawl — surgical deep-dive into specific alert clusters."""
+    """Input model for wazuh_alert_focused_crawl - surgical deep-dive into specific alert clusters."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     src_ip: Optional[str] = Field(
@@ -59,6 +61,12 @@ class FocusedCrawlInput(BaseModel):
         default=False,
         description="Bypass PII redaction for audit investigations (requires BLUETEAM_REDACT_PII disabled).",
     )
+    redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
+        default=None,
+        description=_REDACTION_POLICY_DESC,
+    )
+    reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
     fields: Optional[str] = Field(
         default=None,
         description="Comma-separated additional _source fields to retrieve beyond defaults. "
@@ -129,7 +137,7 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
     most-triggered rules, anomalous time windows), use this tool to retrieve
     representative alert samples from those specific slices with full context.
 
-    This is the **drill-through** tool — it returns actual alert documents
+    This is the **drill-through** tool - it returns actual alert documents
     (PII-redacted per ``BLUETEAM_REDACT_PII``). Call it once per identified
     hot spot, not for the entire dataset.
 
@@ -217,7 +225,7 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
     hit_list = hits.get("hits", [])
 
     # Apply PII redaction to all document bodies
-    docs = [_redact_alert_data(h.get("_source", h), bypass=params.bypass_redaction) for h in hit_list]
+    docs = [_redact_alert_data(h.get("_source", h), params=params) for h in hit_list]
 
     # Build next_cursor for further pagination within the same slice
     next_cursor = None
@@ -303,7 +311,7 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
             lines.append(f"   - Source: `{src}` | Agent: `{agent}`")
             full = d.get("full_log", "")
             if full:
-                lines.append(f"   - Log: `{str(full)[:200]}{'...' if len(str(full)) > 200 else ''}`")
+                lines.append(f"- Log: `{str(full)[:200]}{'...' if len(str(full)) > 200 else ''}`")
             lines.append("")
         if len(docs) > 20:
             lines.append(f"_... and {len(docs) - 20} more alerts (use next_cursor for next page)_")

@@ -11,6 +11,7 @@ from collections import defaultdict
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.redact import _redact_alert_data
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window
 
@@ -28,7 +29,8 @@ class _BM25:
         self.n = len(corpus)
         self.tokenized = [_tokenize(d) for d in corpus]
         self.doc_len = [len(t) for t in self.tokenized]
-        self.avgdl = sum(self.doc_len) / max(self.n, 1)
+        # avgdl guard: empty corpus or all-empty docs must not divide by zero (Aul adjust)
+        self.avgdl = sum(self.doc_len) / max(self.n, 1) or 1e-9
         # Pre-compute IDF per term
         df: dict[str, int] = defaultdict(int)
         for tokens in self.tokenized:
@@ -42,15 +44,22 @@ class _BM25:
         scores: list[tuple[int, float]] = []
         for idx, doc_tokens in enumerate(self.tokenized):
             dl = self.doc_len[idx]
+            if dl == 0:
+                continue  # empty doc -> score 0 (also protects the length-normalized TF - by Aul)
+            # One-pass term-frequency dict per doc (O(dl)) instead of
+            # doc_tokens.count(qt) per query term (O(q*dl)).
+            tf: dict[str, int] = {}
+            for t in doc_tokens:
+                tf[t] = tf.get(t, 0) + 1
             score = 0.0
             for qt in q_tokens:
                 if qt not in self.idf:
                     continue
-                f = doc_tokens.count(qt)
+                f = tf.get(qt, 0)
                 if f == 0:
                     continue
-                tf = f * (_K1 + 1) / (f + _K1 * (1 - _B + _B * dl / self.avgdl))
-                score += self.idf[qt] * tf
+                tfv = f * (_K1 + 1) / (f + _K1 * (1 - _B + _B * dl / self.avgdl))
+                score += self.idf[qt] * tfv
             if score > 0:
                 scores.append((idx, score))
         scores.sort(key=lambda x: -x[1])
@@ -305,11 +314,13 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
 
     bm25_alerts = _BM25(corpus)
     results = bm25_alerts.score(params.query)[:params.top_k]
+    # Redact before any field is returned - same pipeline as every other data tool.
+    redacted_docs = _redact_alert_data(all_docs)
 
     if params.response_format == "json":
         top_docs = []
         for idx, score in results:
-            d = all_docs[idx]
+            d = redacted_docs[idx]
             rule = d.get("rule", {})
             data = d.get("data", {})
             top_docs.append({
@@ -333,7 +344,7 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
              "", "| # | BM25 | Time | Rule | IP | Detail |",
              "|---|------|------|------|----|--------|"]
     for rank, (idx, score) in enumerate(results, 1):
-        d = all_docs[idx]
+        d = redacted_docs[idx]
         rule = d.get("rule", {})
         data = d.get("data", {})
         ts = str(d.get("@timestamp", "?"))[:16]

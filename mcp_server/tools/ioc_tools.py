@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-IOC extraction tool — structured indicator extraction from alert text/logs.
+IOC extraction tool - structured indicator extraction from alert text/logs.
 """
 from __future__ import annotations
 import json, re
-from typing import Literal
+from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import mcp
-from mcp_server.core.audit import _audit_log
+from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.ioc_store import record_iocs, query_iocs, ioc_stats
+from mcp_server.core.redact import _redact_alert_data
 
 # IOC Patterns
 _IPV4_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\b")
@@ -107,6 +109,10 @@ async def blueteam_extract_iocs(params: IocExtractInput) -> str:
     """
     _audit_log("blueteam_extract_iocs", {"text_len": len(params.text)})
     iocs = _extract_iocs(params.text)
+    # Record into the IOC lifecycle store (time-decay re-scoring without re-querying)
+    record_iocs(iocs["ips"] + iocs["domains"] + iocs["urls"] + iocs["emails"]
+                + iocs["hashes"]["md5"] + iocs["hashes"]["sha1"] + iocs["hashes"]["sha256"],
+                source="extract")
 
     total = len(iocs["ips"]) + len(iocs["domains"]) + len(iocs["urls"]) + \
             len(iocs["emails"]) + len(iocs["hashes"]["md5"]) + \
@@ -165,3 +171,68 @@ async def blueteam_extract_iocs(params: IocExtractInput) -> str:
         lines.append("✅ No IOCs detected in the provided text.")
 
     return "\n".join(lines)
+
+
+class IocLifecycleInput(BaseModel):
+    """Input model for blueteam_ioc_lifecycle."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    kind: Optional[Literal["ip", "domain", "url", "email", "hash"]] = Field(
+        default=None,
+        description="Filter by IOC kind. Default: all kinds.",
+    )
+    since_days: int = Field(default=30, ge=1, le=3650,
+        description="Only IOCs seen within the last N days (default 30).")
+    min_count: int = Field(default=1, ge=1,
+        description="Minimum observation count to include (default 1).")
+    top_n: int = Field(default=50, ge=1, le=200,
+        description="Max IOCs to return (default 50).")
+    response_format: Literal["markdown", "json"] = Field(
+        default="markdown", description="'markdown' (default) or 'json'.")
+
+
+@mcp.tool(
+    name="blueteam_ioc_lifecycle",
+    annotations={"readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False},
+)
+async def blueteam_ioc_lifecycle(params: IocLifecycleInput) -> str:
+    """Query the IOC lifecycle store - discovered IOCs ranked by time-decay recency.
+
+    Returns IOCs recorded from alert extraction (blueteam_extract_iocs) and 3-Sum
+    Engine A triggers, ranked by (decay_weight, count). Recent IOCs score closer to
+    1.0; IOCs older than the half-life (7 days) approach 0. Priority = recency
+    of last observation, then observation count.
+
+    **Worked Examples**
+
+    1. *Active attacker IPs last 7 days*:
+       ``blueteam_ioc_lifecycle(kind="ip", since_days=7)``
+
+    2. *Most-observed domains*:
+       ``blueteam_ioc_lifecycle(kind="domain", min_count=3, top_n=20)``
+
+    3. *JSON for pipeline*:
+       ``blueteam_ioc_lifecycle(kind="hash", response_format="json")``
+    """
+    _audit_log("blueteam_ioc_lifecycle", {"kind": params.kind, "since_days": params.since_days})
+    hits = query_iocs(kind=params.kind, since_days=params.since_days,
+                      min_count=params.min_count, top_n=params.top_n)
+    if not hits:
+        return _truncate_if_needed(
+            f"# IOC Lifecycle - no IOCs\n\nNo recorded IOCs match kind={params.kind}, "
+            f"seen within {params.since_days}d, min_count={params.min_count}. "
+            f"Run blueteam_extract_iocs or three_sum_correlation first to populate the store.")
+
+    if params.response_format == "json":
+        return _truncate_if_needed(json.dumps(
+            _redact_alert_data({"count": len(hits), "iocs": hits}), indent=2, ensure_ascii=False))
+
+    lines = [f"# 🧬 IOC Lifecycle — {len(hits)} active IOCs", "",
+             "| Kind | IOC | Count | Last seen | Decay | Age (d) |",
+             "|------|-----|-------|-----------|-------|---------|"]
+    for h in hits:
+        lines.append(f"| {h['kind']} | `{h['ioc']}` | {h['count']} | {h['last_seen'][:16]} | "
+                     f"{h['decay_weight']:.2f} | {h['age_days']} |")
+    lines.append("")
+    lines.append("*Decay: recency weight (7-day half-life). Priority = decay then count.*")
+    return _truncate_if_needed("\n".join(lines))

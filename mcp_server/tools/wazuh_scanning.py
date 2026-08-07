@@ -7,8 +7,9 @@ from __future__ import annotations
 import json
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field
-from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD
+from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.redact import _redact_alert_data
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.core.validators import ValidAgentName
@@ -63,7 +64,7 @@ async def blueteam_wazuh_vulnerabilities(params: VulnerabilityInput) -> str:
     raw = await _wazuh_indexer_post(body, index_pattern=_WAZUH_INDEX_PATTERNS["vulnerabilities"])
     if "error" in raw:
         return json.dumps(raw, indent=2)
-    aggs = raw.get("aggregations", {})
+    aggs = _redact_alert_data(raw.get("aggregations", {}))
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
     if params.response_format == "json":
         return json.dumps({"total": total, "aggregations": aggs}, indent=2, ensure_ascii=False)
@@ -110,7 +111,7 @@ class SyscheckInput(BaseModel):
 async def blueteam_wazuh_syscheck(params: SyscheckInput) -> str:
     """Query Wazuh File Integrity Monitoring (syscheck) events from the indexer.
 
-    Detects file changes — additions, modifications, deletions — across agents.
+    Detects file changes - additions, modifications, deletions — across agents.
     Essential for finding unauthorized file modifications, backdoor persistence,
     and configuration tampering.
 
@@ -144,7 +145,7 @@ async def blueteam_wazuh_syscheck(params: SyscheckInput) -> str:
     raw = await _wazuh_indexer_post(body)
     if "error" in raw:
         return json.dumps(raw, indent=2)
-    aggs = raw.get("aggregations", {})
+    aggs = _redact_alert_data(raw.get("aggregations", {}))
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
     if params.response_format == "json":
         return json.dumps({"total": total, "aggregations": aggs}, indent=2, ensure_ascii=False)
@@ -237,7 +238,7 @@ async def blueteam_wazuh_compliance(params: ComplianceInput) -> str:
     raw = await _wazuh_indexer_post(body)
     if "error" in raw:
         return json.dumps(raw, indent=2)
-    aggs_result = raw.get("aggregations", {})
+    aggs_result = _redact_alert_data(raw.get("aggregations", {}))
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
     if params.response_format == "json":
         return json.dumps({"total": total, "aggregations": aggs_result}, indent=2, ensure_ascii=False)
@@ -268,6 +269,12 @@ class GeoHeatmapInput(BaseModel):
     response_format: Literal["markdown", "json"] = Field(default="markdown")
     bypass_redaction: bool = Field(default=False,
         description="Accepted for API consistency. Heatmap returns aggregates only (no raw PII).")
+    redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
+        default=None,
+        description=_REDACTION_POLICY_DESC,
+    )
+    reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
 
 
 @mcp.tool(name="blueteam_wazuh_geo_heatmap",
@@ -310,7 +317,7 @@ async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
     raw = await _wazuh_indexer_post(body)
     if "error" in raw:
         return json.dumps(raw, indent=2)
-    aggs = raw.get("aggregations", {})
+    aggs = _redact_alert_data(raw.get("aggregations", {}))
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
     buckets = aggs.get("by_city", {}).get("buckets", [])
     if params.response_format == "json":

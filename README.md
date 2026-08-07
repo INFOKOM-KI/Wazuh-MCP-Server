@@ -11,7 +11,7 @@ Where Kali Linux gives Claude offensive tools (nmap, gobuster, sqlmap), this giv
 
 ## Architecture
 
-`main.py` (with the `mcp_server/` package) is a **modular MCP server** with 87 tools spanning host forensics, Wazuh SIEM, threat intelligence, Sangfor blocklist integration, alert enrichment, 3-Sum APT correlation engine, MITRE ATT&CK, threat hunting, domain investigation, and IOC extraction. It supports two transports:
+`main.py` (with the `mcp_server/` package) is a **modular MCP server** with 92 tools spanning host forensics, Wazuh SIEM, threat intelligence, Sangfor blocklist integration, alert enrichment, 3-Sum APT correlation engine, MITRE ATT&CK, threat hunting, domain investigation, and IOC extraction. It supports two transports:
 
 | Transport | Use case | MCP client connection |
 |---|---|---|
@@ -21,7 +21,7 @@ Where Kali Linux gives Claude offensive tools (nmap, gobuster, sqlmap), this giv
 ```
                           ┌──────────────────────────────────┐
                           │     main.py                     │
-                          │     87 tools · modular · 2 transports  │
+                          │     92 tools · modular · 4 resources  │
                           │                                  │
                           │  ┌────────────────────────────┐  │
                           │  │ Host Forensics (26 tools)  │  │
@@ -84,7 +84,7 @@ Where Kali Linux gives Claude offensive tools (nmap, gobuster, sqlmap), this giv
 
 | File | Tools | When to use |
 |---|---|---|
-| `main.py` + `mcp_server/` | **All 87 tools** | **Recommended** — full capabilities, credential stripping, PII redaction |
+| `main.py` + `mcp_server/` | **All 92 tools** | **Recommended** — full capabilities, credential stripping, PII redaction |
 
 ---
 
@@ -346,6 +346,19 @@ All environment variables accepted by the suite. Variables marked **[unified]** 
 | `BLUETEAM_REDACT_LOCATIONS` | `true` | Strip directory tree from `location` field |
 | `BLUETEAM_REDACT_UAS` | `true` | Truncate `data.user_agent` to 80 chars |
 | `BLUETEAM_REDACT_SALT` | (hostname-derived) | Salt for deterministic forensic email/ path hashing |
+| `BLUETEAM_REDACTION_POLICY` | `full` | Redaction policy: `full` (shape-based) / `protect_victim` (victim-owned only) |
+| `BLUETEAM_OWNED_DOMAINS` | *(empty)* | Comma-separated owned domains — victim masking under `protect_victim` |
+| `BLUETEAM_ALLOW_FORENSIC_BYPASS` | `false` | Allow `bypass_redaction` / `redaction_policy='raw'` (Layer 1 still applied) |
+| `BLUETEAM_FORENSIC_TOKEN` | *(empty)* | Operator token required for raw/bypass when set |
+| `BLUETEAM_ATTACKER_REGISTRY` | *(empty)* | JSONL path for attacker-IOC registry persistence |
+| `BLUETEAM_ATTACKER_REGISTRY_TTL` | `604800` | Registry entry TTL in seconds (0 = never expire) |
+| `BLUETEAM_ATTACKER_REGISTRY_MAX` | `10000` | Registry entry cap (oldest evicted) |
+| `BLUETEAM_IOC_STORE` | *(empty)* | JSONL path for the IOC lifecycle store |
+| `BLUETEAM_IOC_STORE_MAX` | `50000` | IOC store cap |
+| `BLUETEAM_AUTO_PROMOTE_IPS` | `false` | Auto-promote consistently-observed IPs to the registry |
+| `BLUETEAM_EXPORT_RETENTION_DAYS` | `0` | Prune `export_*.jsonl` older than N days (0 = keep forever) |
+| `BLUETEAM_CAMPAIGN_SNAPSHOTS` | *(empty)* | JSONL path for campaign-watch component snapshots |
+| `BLUETEAM_STIX_CACHE` | `/var/log/blue-team-mcp/...` | Local cache path for the MITRE ATT&CK STIX bundle |
 
 ---
 
@@ -1097,6 +1110,30 @@ export BLUETEAM_RATE_LIMIT=60
 
 ## Security Notes
 
+### Redaction & Privacy Policy (`protect_victim` mode)
+
+All alert data returned to the LLM passes through `_redact_alert_data()` — a six-layer
+pipeline whose **Layer 1 (credential stripping) is never bypassable**, including inside
+attacker payloads. The pipeline is policy-driven (`BLUETEAM_REDACTION_POLICY` env, default
+`full`; per-call `redaction_policy` field on tool input models overrides it):
+
+| Policy | Effect |
+|--------|--------|
+| `full` (default) | Shape-based masking: emails, private IPs, **all** domains, paths, UAs |
+| `protect_victim` | Masks **only victim-owned indicators** — emails/domains at `BLUETEAM_OWNED_DOMAINS` (e.g. `tangerangkota.go.id`), private IPs, paths, identity fields (`account`/`srcuser`/`dstuser`/`user`/`username`), `agent.name`. **Attacker public IPs, attacker domains/emails, and payload contents stay intact.** |
+| `raw` | Layer 1 credential strip only — **hard-gated** behind `BLUETEAM_ALLOW_FORENSIC_BYPASS` (default `false`); raises otherwise |
+
+- Attacker-IOC registry (`mcp_server/core/attacker_registry.py`): 3-Sum Engine A triggers,
+  CrowdSec/ThreatFox enrichment, and `true_positive` verdicts exempt registered IOCs from
+  shape-based masking in any mode (never from Layer 1).
+- Recommended deployment for SOC work:
+  `BLUETEAM_REDACTION_POLICY=protect_victim BLUETEAM_OWNED_DOMAINS=tangerangkota.go.id`
+- `bypass_redaction=True` / `redaction_policy="raw"` is **LLM-callable but gated** — it
+  fails loudly unless the operator sets `BLUETEAM_ALLOW_FORENSIC_BYPASS=true`. Every bypass
+  is audit-logged (`forensic_bypass_response` with response SHA-256).
+
+### Operational notes
+
 - The MCP server runs with **whatever privileges the SSH user has**. Running as a dedicated low-privilege user (with sudo for specific tools) is recommended for production.
 - Threat intel tools make **outbound API calls** to:
   - AbuseIPDB (`api.abuseipdb.com`)
@@ -1109,6 +1146,56 @@ export BLUETEAM_RATE_LIMIT=60
 - **Path restrictions:** `blueteam_hash_file` allows paths under `/var`, `/etc`, `/home`, `/opt`, `/usr` (configurable via `BLUETEAM_ALLOWED_PATHS`). `blueteam_capture_traffic` writes pcap files only under `BLUETEAM_CAPTURE_DIR` (default `/tmp`).
 
 ---
+
+## Graph Engineering & IOC Intelligence
+
+The platform layers networkx and langgraph over the 92-tool core:
+
+### Attack graph (networkx) — `blueteam_attack_graph`
+Builds an attacker relationship graph from the IOC store + attacker registry:
+nodes = IOCs (with decay weights + confirmed flags) + STIX techniques/actors;
+edges = co-occurrence (IOCs seen in the same extraction/trigger batch) + STIX.
+Reports campaign clusters (connected components), hub IOCs (degree), bridge IOCs
+(betweenness), **suspicion-ranked unconfirmed IOCs** (personalized PageRank seeded
+on confirmed attackers), and shortest paths (e.g. srcip → actor).
+
+### Campaign watch — `blueteam_campaign_watch`
+Snapshots attack-graph components to `BLUETEAM_CAMPAIGN_SNAPSHOTS` (JSONL) and
+diffs against the previous run: **new clusters** and **growing clusters** (with the
+added IOCs) — active-campaign expansion detection.
+
+### IOC lifecycle — `blueteam_ioc_lifecycle`
+JSONL store (`BLUETEAM_IOC_STORE`) of discovered IOCs with time-decayed recency
+scoring (7-day half-life). Fed by `blueteam_extract_iocs` and 3-Sum Engine A.
+Auto-promotes consistently-observed IPs to the attacker registry when
+`BLUETEAM_AUTO_PROMOTE_IPS=true`.
+
+### STIX kill-chain — `blueteam_stix_killchain`
+Per-srcip ATT&CK chain from observed `rule.mitre.id` mapped through the MITRE
+STIX graph, ordered by kill-chain phase, annotated with actors/campaigns/mitigations.
+
+### LangGraph workflows
+- `blueteam_investigation_workflow` — stateful graph: extract → enrich → correlate →
+  attack graph → kill-chain → baseline drift → report/verdict (conditional routing,
+  graceful degradation).
+- `blueteam_playbook_run` — alert-driven playbook runner (langgraph supervisor):
+  selects a threat-hunt template from the alert context (MITRE > rule groups >
+  fallback), runs the hunt, retries once with the generic `c2_beacon` template if
+  empty, then dispatches the investigation workflow for the top srcip.
+
+### 3-Sum graph integration — `three_sum_correlation(use_attack_graph=true)`
+Engine A consumes the attack graph: **cluster-aware intersection** (a campaign
+cluster spanning all 3 categories triggers even when no single IP does), **PPR
+suspicion boost**, and a **registry-confirmed IOC bonus**. Engine B gains the
+`engine_b_sparse_floor` sparse-category guard.
+
+### Baseline drift — `blueteam_baseline_drift`
+Current window vs. the preceding same-length baseline via Z-score (σ = 0 guard,
+conservative Z ≥ 2.5). Flags anomalous alert-volume buckets.
+
+### Metrics — `metrics://prometheus` (+ `metrics://prometheus/json`)
+Prometheus text exposition: tool call counters, pipeline durations, redaction-gate
+failures, rate-limit hits, attacker-registry and IOC-store gauges.
 
 ## Requirements
 
@@ -1123,13 +1210,13 @@ export BLUETEAM_RATE_LIMIT=60
 **Python packages** (auto-installed in venv):
 - `mcp>=1.0.0,<2.0.0`
 - `httpx>=0.27.0,<0.28.0`
-- `pydantic>=2.0.0,<3.0.0`
+- `pydantic>=2.0.0,<3.0.0`\n- `networkx>=3.0,<4.0`\n- `langgraph>=0.2,<0.6`
 
 **Server files:**
 
 | File | Role |
 |---|---|
-| `main.py` + `mcp_server/` | **Primary** — all 87 tools, both transports (stdio / Streamable HTTP) |
+| `main.py` + `mcp_server/` | **Primary** — all 92 tools, both transports (stdio / Streamable HTTP) |
 
 ### Legacy Naming Debt
 

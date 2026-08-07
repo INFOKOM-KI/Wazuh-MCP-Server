@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Blue Team MCP Server — shared FastMCP instance, env config, and constants
+Blue Team MCP Server - shared FastMCP instance, env config, and constants
 """
 from __future__ import annotations
 import os, sys, logging
@@ -61,7 +61,7 @@ WAZUH_INDEXER_USER = os.environ.get("WAZUH_INDEXER_USER", "admin")
 WAZUH_INDEXER_PASSWORD = os.environ.get("WAZUH_INDEXER_PASSWORD", "")
 WAZUH_INDEXER_VERIFY_SSL = os.environ.get("WAZUH_INDEXER_VERIFY_SSL", "true").lower() in ("1", "true", "yes")
 if not WAZUH_INDEXER_VERIFY_SSL:
-    logger.warning("WAZUH_INDEXER_VERIFY_SSL disabled — TLS OFF for Wazuh Indexer")
+    logger.warning("WAZUH_INDEXER_VERIFY_SSL disabled - TLS OFF for Wazuh Indexer")
 
 # Sangfor Blocklist
 SANGFOR_BLOCKLIST_URL = os.environ.get("SANGFOR_BLOCKLIST_URL", "").rstrip("/")
@@ -84,6 +84,36 @@ BLUETEAM_REDACT_EMAILS = os.environ.get("BLUETEAM_REDACT_EMAILS", "true").lower(
 BLUETEAM_REDACT_DOMAINS = os.environ.get("BLUETEAM_REDACT_DOMAINS", "true").lower() in ("1", "true", "yes")
 BLUETEAM_REDACT_LOCATIONS = os.environ.get("BLUETEAM_REDACT_LOCATIONS", "true").lower() in ("1", "true", "yes")
 BLUETEAM_REDACT_UAS = os.environ.get("BLUETEAM_REDACT_UAS", "true").lower() in ("1", "true", "yes")
+
+# Redaction policy & forensic bypass gate
+#   full           - shape-based masking (legacy default)
+#   protect_victim - mask victim-owned indicators only; attacker IOCs stay intact
+#   raw            - Layer 1 credential strip only (requires ALLOW_FORENSIC_BYPASS)
+BLUETEAM_REDACTION_POLICY = os.environ.get("BLUETEAM_REDACTION_POLICY", "full").strip().lower()
+if BLUETEAM_REDACTION_POLICY not in ("full", "protect_victim"):
+    logger.warning("BLUETEAM_REDACTION_POLICY=%r invalid - falling back to 'full'. "
+                   "Use 'full' or 'protect_victim'.", BLUETEAM_REDACTION_POLICY)
+    BLUETEAM_REDACTION_POLICY = "full"
+BLUETEAM_OWNED_DOMAINS = os.environ.get("BLUETEAM_OWNED_DOMAINS", "")
+BLUETEAM_ALLOW_FORENSIC_BYPASS = os.environ.get("BLUETEAM_ALLOW_FORENSIC_BYPASS", "false").lower() in ("1", "true", "yes")
+if BLUETEAM_ALLOW_FORENSIC_BYPASS:
+    logger.warning("BLUETEAM_ALLOW_FORENSIC_BYPASS=true — forensic raw output enabled "
+                   "(bypass_redaction/redaction_policy='raw' will be honored)")
+# Operator token required for raw/bypass when set (empty = no token required)
+BLUETEAM_FORENSIC_TOKEN = os.environ.get("BLUETEAM_FORENSIC_TOKEN", "")
+
+# Attacker-IOC registry persistence (JSONL)
+BLUETEAM_ATTACKER_REGISTRY = os.environ.get("BLUETEAM_ATTACKER_REGISTRY", "")
+BLUETEAM_ATTACKER_REGISTRY_TTL = int(os.environ.get("BLUETEAM_ATTACKER_REGISTRY_TTL", "604800"))  # 7d; 0 = never expire
+BLUETEAM_ATTACKER_REGISTRY_MAX = int(os.environ.get("BLUETEAM_ATTACKER_REGISTRY_MAX", "10000"))
+
+# IOC lifecycle store (JSONL)
+BLUETEAM_IOC_STORE = os.environ.get("BLUETEAM_IOC_STORE", "")
+BLUETEAM_IOC_STORE_MAX = int(os.environ.get("BLUETEAM_IOC_STORE_MAX", "50000"))
+
+# Operational hardening
+BLUETEAM_EXPORT_RETENTION_DAYS = int(os.environ.get("BLUETEAM_EXPORT_RETENTION_DAYS", "0"))  # 0 = keep forever
+BLUETEAM_AUTO_PROMOTE_IPS = os.environ.get("BLUETEAM_AUTO_PROMOTE_IPS", "false").lower() in ("1", "true", "yes")
 
 # Audit & Rate Limiting
 BLUETEAM_AUDIT_LOG = os.environ.get("BLUETEAM_AUDIT_LOG", "")
@@ -110,13 +140,21 @@ if not VIRUSTOTAL_API_KEY:
     _MISSING_OPTIONAL.append("VIRUSTOTAL_API_KEY (VirusTotal lookups disabled)")
 
 if _MISSING_CRITICAL:
-    logger.critical("CRITICAL: Required env vars not set: %s — server will fail on Indexer tools.",
+    logger.critical("CRITICAL: Required env vars not set: %s - server will fail on Indexer tools.",
                      ", ".join(_MISSING_CRITICAL))
 if _MISSING_OPTIONAL:
     logger.warning("Optional env vars not set: %s", ", ".join(_MISSING_OPTIONAL))
 
 # Shared Field Descriptions
 _BYPASS_REDACTION_DESC = "When true, skip PII/credential redaction for audit investigations."
+_REDACTION_POLICY_DESC = ("Redaction policy: 'full' (shape-based, default), "
+                          "'protect_victim' (mask victim-owned indicators only, attacker IOCs intact), "
+                          "'raw' (Layer 1 credential strip only - requires BLUETEAM_ALLOW_FORENSIC_BYPASS).")
+_REVEAL_OWNED_DESC = ("When true (forensic), expose emails/subdomains at owned domains "
+                      "(BLUETEAM_OWNED_DOMAINS) unmasked while all other protect_victim masking stays on. "
+                      "Layer 1 credentials remain masked. Requires BLUETEAM_OWNED_DOMAINS to be set.")
+_FORENSIC_TOKEN_DESC = ("Operator forensic token (matches BLUETEAM_FORENSIC_TOKEN). Required for "
+                        "redaction_policy='raw' / bypass_redaction when that env is set.")
 _RESPONSE_FORMAT_DESC = "Output format: 'markdown' (default) or 'json'."
 _SINCE_DESC = "ISO 8601 start time in UTC. Defaults to 365 days ago."
 _UNTIL_DESC = "ISO 8601 end time in UTC. Defaults to now."

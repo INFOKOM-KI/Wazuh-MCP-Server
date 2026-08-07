@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Server-side Wazuh alert export — streams documents directly to disk via OpenSearch scroll API.
+Server-side Wazuh alert export - streams documents directly to disk via OpenSearch scroll API.
 """
 from __future__ import annotations
-import json, os, asyncio
+import json, os, asyncio, time
 from datetime import datetime, timezone
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
-from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_USER, WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_VERIFY_SSL
+from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_USER, WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_VERIFY_SSL, BLUETEAM_EXPORT_RETENTION_DAYS
 from mcp_server.core.audit import _audit_log
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.wazuh.indexer import _WAZUH_INDEX_PATTERNS
@@ -37,7 +37,7 @@ class WazuhExportInput(BaseModel):
 
 
 class _ScrollClient:
-    """Minimal OpenSearch scroll client — avoids httpx for this specific use case."""
+    """Minimal OpenSearch scroll client - avoids httpx for this specific use case."""
     def __init__(self, base_url: str, user: str, password: str, verify: bool):
         import httpx
         self.base_url = base_url.rstrip("/")
@@ -92,7 +92,7 @@ class _ScrollClient:
 async def blueteam_wazuh_export(params: WazuhExportInput) -> str:
     """Export Wazuh alerts to a JSONL file on the server using OpenSearch scroll API.
 
-    Streams ALL matching documents directly to disk — no in-memory accumulation.
+    Streams ALL matching documents directly to disk - no in-memory accumulation.
     Handles millions of documents without OOM. Returns the file path for further
     processing with ``blueteamReadSyslog`` or direct filesystem access.
 
@@ -148,6 +148,7 @@ async def blueteam_wazuh_export(params: WazuhExportInput) -> str:
     total_exported = 0
     scroll_id: str | None = None
     error_msg: str | None = None
+    total_val = 0
 
     try:
         result = await scroll.open_scroll(_WAZUH_INDEX_PATTERNS["alerts"], body)
@@ -183,10 +184,23 @@ async def blueteam_wazuh_export(params: WazuhExportInput) -> str:
 
     file_size = filepath.stat().st_size if filepath.exists() else 0
 
+    # Retention: prune old export_*.jsonl files when BLUETEAM_EXPORT_RETENTION_DAYS > 0
+    if BLUETEAM_EXPORT_RETENTION_DAYS > 0:
+        cutoff = time.time() - BLUETEAM_EXPORT_RETENTION_DAYS * 86400
+        try:
+            for old in export_dir.glob("export_*.jsonl"):
+                try:
+                    if old.stat().st_mtime < cutoff:
+                        old.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
     return json.dumps({
         "status": "completed" if not error_msg else "partial",
         "error": error_msg,
-        "total_matching": total_val if 'total_val' in dir() else 0,
+        "total_matching": total_val,
         "exported": total_exported,
         "file": str(filepath),
         "size_bytes": file_size,
