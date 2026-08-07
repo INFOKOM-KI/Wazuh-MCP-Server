@@ -199,7 +199,7 @@ CrowdSec IP reputation and GreyNoise context lookups are integrated directly int
 
 #### In-Memory Cache (CrowdSec CTI Only)
 
-Per `SKILLS.md` §3.1, CrowdSec CTI responses are cached in-process with configurable TTL:
+CrowdSec CTI responses are cached in-process with configurable TTL:
 
 - **Default TTL**: 900 seconds (15 minutes) — configurable via `CROWDSEC_CACHE_TTL`
 - **Cache scope**: per-IP, per-path — identical requests hit the cache; different IPs do not
@@ -1086,7 +1086,7 @@ Once connected via Claude Desktop, you can ask / Setelah terkoneksi:
 
 ## MAESTRO Framework Alignment (currently for dev only)
 
-This server aligns with the [CSA MAESTRO](https://cloudsecurityalliance.org/blog/2025/02/06/agentic-ai-threat-modeling-framework-maestro) framework for agentic AI security. See [MAESTRO.md](MAESTRO.md) for the threat model and mitigations.
+This server aligns with the [CSA MAESTRO](https://cloudsecurityalliance.org/blog/2025/02/06/agentic-ai-threat-modeling-framework-maestro) framework for agentic AI security.
 
 ### Optional: Audit Logging (Repudiation Mitigation)
 
@@ -1305,7 +1305,7 @@ qualifier, while the other Wazuh tools use `blueteam_wazuh_`:
 | `wazuh_attack_velocity` | `blueteam_wazuh_attack_velocity` | Active — do not rename (backward compat) |
 | `wazuh_wazuh_indexer_search` | `blueteam_wazuh_indexer_search` | **Alias** — delegates to `blueteam_wazuh_indexer_search` (both names valid) |
 
-Per CLAUDE.md Hard Rule 1, these names are frozen to avoid breaking active
+Hard Rule 1, these names are frozen to avoid breaking active
 client workflows. A future major version may introduce the `blueteam_wazuh_`
 aliases alongside a deprecation window for the short names.
 
@@ -1317,5 +1317,3 @@ Before deploying, run the automated regression linter:
 python3 check_guardrails.py        # 6 checks: unbound locals, params. misuse, import order, closures, drift, overaggressive
 python3 check_guardrails.py --strict  # CI mode: non-zero exit on any warning
 ```
-
-See `CLAUDE.md` §5 for the full pre-merge checklist.
