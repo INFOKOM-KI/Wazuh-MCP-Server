@@ -60,6 +60,7 @@ class PlaybookState(TypedDict, total=False):
     rule_groups: Optional[str]
     srcip: Optional[str]
     window: str
+    use_attack_graph: bool
     generate_report: bool
     record_verdict: bool
     verdict_label: str
@@ -160,6 +161,7 @@ async def investigate(state: PlaybookState) -> dict:
             alert_text=state.get("alert_text"),
             srcip=srcip,
             window=state.get("window", "24h"),
+            use_attack_graph=state.get("use_attack_graph", True),
             generate_report=state.get("generate_report", False),
             report_dir=state.get("report_dir", "/tmp"),
             record_verdict=state.get("record_verdict", False),
@@ -191,7 +193,8 @@ def build_playbook_graph():
 async def run_playbook(alert_text: str | None = None, rule_id: str | None = None,
                        technique: str | None = None, rule_groups: str | None = None,
                        srcip: str | None = None, template_name: str | None = None,
-                       window: str = "24h", generate_report: bool = False,
+                       window: str = "24h", use_attack_graph: bool = True,
+                       generate_report: bool = False,
                        record_verdict: bool = False, verdict_label: str = "suspicious",
                        report_dir: str = "/tmp") -> dict:
     """Run the playbook end-to-end and return the final summary."""
@@ -204,6 +207,7 @@ async def run_playbook(alert_text: str | None = None, rule_id: str | None = None
         "srcip": srcip,
         "template_name": template_name,
         "window": window,
+        "use_attack_graph": use_attack_graph,
         "generate_report": generate_report,
         "record_verdict": record_verdict,
         "verdict_label": verdict_label,

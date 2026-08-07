@@ -22,6 +22,10 @@ class InvestigationWorkflowInput(BaseModel):
         description="Source IP to investigate (enables 3-Sum + STIX kill-chain steps).")
     window: str = Field(default="24h", max_length=30,
         description="Time window for indexer steps ('24h', '7d', ISO 8601).")
+    use_attack_graph: bool = Field(default=True,
+        description="Run the 3-Sum correlation in graph mode: cluster-aware category "
+                    "intersection (campaign-level APT detection), PPR suspicion boost, "
+                    "and registry-confirmed IOC.")
     generate_report: bool = Field(default=False,
         description="Generate a .docx SOC report at the end (requires officecli + writable report_dir).")
     report_dir: str = Field(default="/tmp", max_length=200,
@@ -85,6 +89,7 @@ async def blueteam_investigation_workflow(params: InvestigationWorkflowInput) ->
         alert_text=params.alert_text,
         srcip=params.srcip,
         window=params.window,
+        use_attack_graph=params.use_attack_graph,
         generate_report=params.generate_report,
         report_dir=params.report_dir,
         record_verdict=params.record_verdict,

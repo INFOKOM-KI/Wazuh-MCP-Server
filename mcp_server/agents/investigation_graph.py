@@ -28,6 +28,7 @@ class InvestigationState(TypedDict, total=False):
     alert_text: str
     srcip: Optional[str]
     window: str
+    use_attack_graph: bool
     generate_report: bool
     record_verdict: bool
     verdict_label: str
@@ -82,6 +83,7 @@ async def correlate_step(state: InvestigationState) -> dict:
         out = await three_sum_correlation(ThreeSumCorrelationInput(
             response_format="json",
             follow_up="threat_intel" if state.get("srcip") else "none",
+            use_attack_graph=state.get("use_attack_graph", True),
         ))
         result = json.loads(out)
         if isinstance(result, dict) and result.get("error"):
@@ -230,7 +232,8 @@ def build_investigation_graph():
 
 
 async def run_investigation(alert_text: str | None = None, srcip: str | None = None,
-                            window: str = "24h", generate_report: bool = False,
+                            window: str = "24h", use_attack_graph: bool = True,
+                            generate_report: bool = False,
                             record_verdict: bool = False, verdict_label: str = "suspicious",
                             report_dir: str = "/tmp") -> dict:
     """Run the investigation workflow end-to-end and return the final state summary."""
@@ -239,6 +242,7 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
         "alert_text": alert_text or "",
         "srcip": srcip,
         "window": window,
+        "use_attack_graph": use_attack_graph,
         "generate_report": generate_report,
         "record_verdict": record_verdict,
         "verdict_label": verdict_label,

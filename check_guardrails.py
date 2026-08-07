@@ -9,6 +9,7 @@ Catches the regression patterns that caused every production outage:
   4. ORDER - eager eval refs defined below their dependency
   5. IMPORT - runtime-evaluated types missing from imports
   6. CLOSURE - inner functions referencing params fields as free variables
+  7. KWARG   - call-site keyword args missing from the callee's signature (TypeError class)
 
 Usage:
   python3 check_guardrails.py             # exit 0=clean, 1=warnings
@@ -260,7 +261,7 @@ def check_closure(source: str, lines: list[str]) -> list[dict]:
 
 # Runner
 def check_unexpected_kwargs(source: str, lines: list[str]) -> list[dict]:
-    """KWARG — call-site keyword args must exist in the callee's signature.
+    """KWARG - call-site keyword args must exist in the callee's signature.
 
     Catches `params=params` passed to a local helper whose signature has no
     `params` param (the wazuh_domain._full_scan_paginate TypeError class).

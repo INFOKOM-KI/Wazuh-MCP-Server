@@ -31,6 +31,9 @@ class PlaybookRunInput(BaseModel):
                     f"{', '.join(sorted(_THREAT_HUNT_TEMPLATES))}.")
     window: str = Field(default="24h", max_length=30,
         description="Time window for hunt + investigation steps.")
+    use_attack_graph: bool = Field(default=True,
+        description="Run the 3-Sum correlation in graph mode (cluster-aware APT detection, "
+                    "PPR suspicion boost, confirmed-IOC).")
     generate_report: bool = Field(default=False,
         description="Generate a .docx SOC report at the end.")
     report_dir: str = Field(default="/tmp", max_length=200,
@@ -88,6 +91,7 @@ async def blueteam_playbook_run(params: PlaybookRunInput) -> str:
         srcip=params.srcip,
         template_name=params.template_name,
         window=params.window,
+        use_attack_graph=params.use_attack_graph,
         generate_report=params.generate_report,
         report_dir=params.report_dir,
         record_verdict=params.record_verdict,

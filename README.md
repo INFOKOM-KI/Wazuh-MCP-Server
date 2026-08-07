@@ -1188,6 +1188,13 @@ Engine A consumes the attack graph: **cluster-aware intersection** (a campaign
 cluster spanning all 3 categories triggers even when no single IP does), **PPR
 suspicion boost**, and a **registry-confirmed IOC bonus**. Engine B gains the
 `engine_b_sparse_floor` sparse-category guard.
+The LangGraph workflows (`blueteam_investigation_workflow`, `blueteam_playbook_run`)
+default `use_attack_graph=true` — the auto-pipelines run campaign-level APT
+detection out of the box.
+Engine A consumes the attack graph: **cluster-aware intersection** (a campaign
+cluster spanning all 3 categories triggers even when no single IP does), **PPR
+suspicion boost**, and a **registry-confirmed IOC bonus**. Engine B gains the
+`engine_b_sparse_floor` sparse-category guard.
 
 ### Baseline drift — `blueteam_baseline_drift`
 Current window vs. the preceding same-length baseline via Z-score (σ = 0 guard,
@@ -1324,6 +1331,6 @@ aliases alongside a deprecation window for the short names.
 Before deploying, run the automated regression linter:
 
 ```bash
-python3 check_guardrails.py        # 6 checks: unbound locals, params. misuse, import order, closures, drift, overaggressive
+python3 check_guardrails.py        # 7 checks: unbound, drift, overaggressive params., order, imports, closures, unexpected kwargs
 python3 check_guardrails.py --strict  # CI mode: non-zero exit on any warning
 ```
