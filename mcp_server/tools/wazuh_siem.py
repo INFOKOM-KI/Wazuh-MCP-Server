@@ -223,9 +223,11 @@ async def wazuh_rule_taxonomy() -> str:
     """Expose the current Wazuh rule taxonomy as an MCP resource."""
     if not WAZUH_API_URL or not WAZUH_API_PASSWORD:
         return json.dumps({"error": "WAZUH_API_URL and WAZUH_API_PASSWORD must be set."})
-    data = await _wazuh_api_get("/rules", {"limit": "500", "sort": "-level"})
-    if isinstance(data.get("error"), str):
-        return json.dumps(data)
+    from mcp_server.core.exceptions import BlueTeamMCPError
+    try:
+        data = await _wazuh_api_get("/rules", {"limit": "500", "sort": "-level"})
+    except BlueTeamMCPError as e:
+        return json.dumps({"error": str(e), "type": type(e).__name__})
     items = data.get("data", {}).get("affected_items", [])
     by_level: dict[int, int] = {}
     top_rules: list[dict] = []

@@ -5,11 +5,10 @@ Blue Team Wazuh MCP Server - entry point.
 
 Startup order (must NOT be reordered):
   1. Parse CLI args, set MCP_HOST / MCP_PORT env vars.
-  2. Import mcp_server — creates the FastMCP instance.
-  3. init_config()       — validate typed configuration, raise on fatal errors.
-  4. init_auth_manager() — initialize JWT token manager singleton.
-  5. register_all_tools()— import tool modules; gating is enforced here.
-  6. mcp.run()           — start the selected transport.
+  2. Import mcp_server - triggers FastMCP creation + init_config().
+  3. init_auth_manager() - initialize JWT token manager singleton.
+  4. register_all_tools() - import tool modules; gating is enforced here.
+  5. mcp.run() - start the selected transport.
 """
 
 import argparse
@@ -33,18 +32,10 @@ def main() -> None:
     os.environ["MCP_HOST"] = args.host
     os.environ["MCP_PORT"] = str(args.port)
 
-    # 2: Import mcp_server (creates FastMCP, reads env vars)
+    # 2: Import mcp_server - triggers FastMCP creation + init_config() in __init__.py
     from mcp_server import mcp, logger
 
-    # 3: Validate typed configuration
-    from mcp_server.core.config import init_config
-    try:
-        init_config()
-    except Exception as exc:
-        logger.critical("Configuration validation failed: %s", exc)
-        sys.exit(1)
-
-    # 4: Initialize Wazuh auth manager singleton
+    # 3: Initialize Wazuh auth manager singleton
     from mcp_server.core.config import config
     from mcp_server.wazuh.auth import init_auth_manager
     if config is not None:
@@ -55,11 +46,11 @@ def main() -> None:
             verify_ssl=config.wazuh_manager.verify_ssl,
         )
 
-    # 5: Register tools (respects tool-gating config)
+    # 4: Register tools (respects tool-gating config)
     from mcp_server.tools import register_all_tools
     register_all_tools()
 
-    # 6: Start transport
+    # 5: Start transport
     tool_count = len(getattr(mcp._tool_manager, "_tools", {}))
     logger.info("%d tools registered. Starting %s transport on %s:%s",
                 tool_count, args.transport, args.host, args.port)

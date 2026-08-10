@@ -75,6 +75,8 @@ def register_all_tools() -> None:
         ("attack_graph",          "attack_graph",          False),  # 2 tools
         ("investigation_workflow","investigation_workflow",False),  # 1 tool
         ("playbook_runner",       "playbook_runner",       False),  # 1 tool
+        ("wazuh_sca",             "wazuh_sca",             False),  # 3 tools (SCA compliance)
+        ("wazuh_rules_files",     "wazuh_rules_files",     False),  # 2 tools (rule XML)
     ]
 
     for attr, category, skip_ro in _MODULES:

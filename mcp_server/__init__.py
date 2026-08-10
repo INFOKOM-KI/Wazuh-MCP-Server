@@ -1,12 +1,28 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Blue Team MCP Server - shared FastMCP instance, env config, and constants
+Blue Team MCP Server — shared FastMCP instance, config bootstrap, and constants.
+
+At import time this module:
+  1. Configures stderr logging.
+  2. Creates the FastMCP server instance (needs MCP_HOST / MCP_PORT from env).
+  3. Calls ``init_config()`` from ``mcp_server.core.config`` to build the typed
+     Config singleton and validate it (raises ConfigurationError on fatal issues).
+  4. Populates backward-compatible module-level vars from the config singleton
+     so existing ``from mcp_server import WAZUH_API_URL, ...`` imports keep working.
+
+Modules SHOULD migrate to ``from mcp_server.core.config import config`` over
+time; the module-level vars here are a transition shim.
 """
 from __future__ import annotations
-import os, sys, logging
 
-# Logging (stderr only - stdout is the MCP JSON-RPC channel)
+import os
+import sys
+import logging
+
+# ---------------------------------------------------------------------------
+# Logging — stderr only (stdout is the MCP JSON-RPC channel)
+# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -14,7 +30,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("blue_team_mcp")
 
-from mcp.server.fastmcp import FastMCP
+# ---------------------------------------------------------------------------
+# FastMCP instance — needs host/port before anything else
+# ---------------------------------------------------------------------------
+from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 _SERVER_NAME = os.environ.get("BLUE_TEAM_MCP_SERVER_NAME", "blue_team_mcp").strip().lower()
 if os.environ.get("BLUE_TEAM_MCP_SERVER_NAME", "").strip() and os.environ.get("BLUE_TEAM_MCP_SERVER_NAME", "").strip() != _SERVER_NAME:
@@ -24,138 +43,125 @@ _MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 _MCP_PORT = int(os.environ.get("MCP_PORT", "8000"))
 mcp = FastMCP(_SERVER_NAME, host=_MCP_HOST, port=_MCP_PORT)
 
-# Threat Intelligence API keys
-ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY", "")
-VIRUSTOTAL_API_KEY = os.environ.get("VIRUSTOTAL_API_KEY", "")
-CROWDSEC_API_KEY_ENV = "CROWDSEC_API_KEY"
-CROWDSEC_CACHE_TTL = int(os.environ.get("CROWDSEC_CACHE_TTL", "900"))
-GREYNOISE_COMMUNITY_BASE_URL = os.environ.get("GREYNOISE_BASE_URL", "https://api.greynoise.io/v3/community")
-NETRA_API_KEY_ENV = "NETRA_API_KEY"
-NETRA_VERIFY_SSL = os.environ.get("NETRA_VERIFY_SSL", "false").lower() in ("1", "true", "yes")
-ARGUS_API_KEY_ENV = "ARGUS_API_KEY"
-ARGUS_VERIFY_SSL = os.environ.get("ARGUS_VERIFY_SSL", "false").lower() in ("1", "true", "yes")
-THREATFOX_API_KEY_ENV = "THREATFOX_API_KEY"
-THREATFOX_CACHE_TTL = int(os.environ.get("THREATFOX_CACHE_TTL", "900"))
+# ---------------------------------------------------------------------------
+# Configuration bootstrap — called once at import time.
+# Raises ConfigurationError on fatal issues (missing Indexer URL, etc.).
+# ---------------------------------------------------------------------------
+from mcp_server.core.config import init_config  # noqa: E402
 
-# External API Base URLs (all overridable via env vars)
-CROWDSEC_BASE_URL = os.environ.get("CROWDSEC_BASE_URL", "https://cti.api.crowdsec.net")
-THREATFOX_BASE_URL = os.environ.get("THREATFOX_BASE_URL", "https://threatfox-api.abuse.ch/api/v1/")
-ABUSEIPDB_BASE_URL = os.environ.get("ABUSEIPDB_BASE_URL", "https://api.abuseipdb.com/api/v2")
-VIRUSTOTAL_BASE_URL = os.environ.get("VIRUSTOTAL_BASE_URL", "https://www.virustotal.com/api/v3")
-NETRA_BASE_URL = os.environ.get("NETRA_BASE_URL", "https://netra.fbi.gov:8013/api/v1")
-ARGUS_BASE_URL = os.environ.get("ARGUS_BASE_URL", "http://localhost:8088/lookup-jobs")
-RDAP_BASE_URL = os.environ.get("RDAP_BASE_URL", "https://rdap.org")
-CRTSH_BASE_URL = os.environ.get("CRTSH_BASE_URL", "https://crt.sh")
+_config = init_config()
+
+# ---------------------------------------------------------------------------
+# Backward-compatible module-level exports — sourced from the Config singleton.
+# New code should use ``from mcp_server.core.config import config``.
+# ---------------------------------------------------------------------------
+
+_c = _config
+
+# Threat Intelligence API keys
+ABUSEIPDB_API_KEY   = _c.threat_intel.abuseipdb_api_key
+VIRUSTOTAL_API_KEY  = _c.threat_intel.virustotal_api_key
+CROWDSEC_API_KEY_ENV = "CROWDSEC_API_KEY"
+CROWDSEC_CACHE_TTL   = _c.threat_intel.crowdsec_cache_ttl
+GREYNOISE_COMMUNITY_BASE_URL = _c.threat_intel.greynoise_base_url
+NETRA_API_KEY_ENV   = "NETRA_API_KEY"
+NETRA_VERIFY_SSL    = _c.threat_intel.netra_verify_ssl
+ARGUS_API_KEY_ENV   = "ARGUS_API_KEY"
+ARGUS_VERIFY_SSL    = _c.threat_intel.argus_verify_ssl
+THREATFOX_API_KEY_ENV = "THREATFOX_API_KEY"
+THREATFOX_CACHE_TTL   = _c.threat_intel.threatfox_cache_ttl
+
+# External API Base URLs
+CROWDSEC_BASE_URL  = _c.threat_intel.crowdsec_base_url
+THREATFOX_BASE_URL = _c.threat_intel.threatfox_base_url
+ABUSEIPDB_BASE_URL = _c.threat_intel.abuseipdb_base_url
+VIRUSTOTAL_BASE_URL = _c.threat_intel.virustotal_base_url
+NETRA_BASE_URL     = _c.threat_intel.netra_base_url
+ARGUS_BASE_URL     = _c.threat_intel.argus_base_url
+RDAP_BASE_URL      = _c.threat_intel.rdap_base_url
+CRTSH_BASE_URL     = _c.threat_intel.crtsh_base_url
 
 # Wazuh Manager API
-WAZUH_API_URL = os.environ.get("WAZUH_API_URL", "").rstrip("/")
-WAZUH_API_USER = os.environ.get("WAZUH_API_USER", "wazuh-wui")
-WAZUH_API_PASSWORD = os.environ.get("WAZUH_API_PASSWORD", "")
-WAZUH_API_VERIFY_SSL = os.environ.get("WAZUH_API_VERIFY_SSL", "true").lower() in ("1", "true", "yes")
-if not WAZUH_API_VERIFY_SSL:
-    logger.warning("WAZUH_API_VERIFY_SSL disabled - TLS OFF for Wazuh Manager API")
+WAZUH_API_URL        = _c.wazuh_manager.url
+WAZUH_API_USER       = _c.wazuh_manager.username
+WAZUH_API_PASSWORD   = _c.wazuh_manager.password
+WAZUH_API_VERIFY_SSL = _c.wazuh_manager.verify_ssl
 
 # Wazuh Indexer / OpenSearch
-WAZUH_INDEXER_URL = os.environ.get("WAZUH_INDEXER_URL", "").rstrip("/")
-WAZUH_INDEXER_USER = os.environ.get("WAZUH_INDEXER_USER", "admin")
-WAZUH_INDEXER_PASSWORD = os.environ.get("WAZUH_INDEXER_PASSWORD", "")
-WAZUH_INDEXER_VERIFY_SSL = os.environ.get("WAZUH_INDEXER_VERIFY_SSL", "true").lower() in ("1", "true", "yes")
-if not WAZUH_INDEXER_VERIFY_SSL:
-    logger.warning("WAZUH_INDEXER_VERIFY_SSL disabled - TLS OFF for Wazuh Indexer")
+WAZUH_INDEXER_URL        = _c.wazuh_indexer.url
+WAZUH_INDEXER_USER       = _c.wazuh_indexer.username
+WAZUH_INDEXER_PASSWORD   = _c.wazuh_indexer.password
+WAZUH_INDEXER_VERIFY_SSL = _c.wazuh_indexer.verify_ssl
+_WAZUH_INDEXER_MAX_SIZE  = _c.wazuh_indexer.max_size
 
 # Sangfor Blocklist
-SANGFOR_BLOCKLIST_URL = os.environ.get("SANGFOR_BLOCKLIST_URL", "").rstrip("/")
-SANGFOR_BLOCKLIST_TOKEN = os.environ.get("SANGFOR_BLOCKLIST_TOKEN", "")
-SANGFOR_BLOCKLIST_TIMEOUT = float(os.environ.get("SANGFOR_BLOCKLIST_TIMEOUT", "15"))
-SANGFOR_BLOCKLIST_VERIFY_SSL = os.environ.get("SANGFOR_BLOCKLIST_VERIFY_SSL", "false").lower() in ("1", "true", "yes")
+SANGFOR_BLOCKLIST_URL      = _c.sangfor.url
+SANGFOR_BLOCKLIST_TOKEN    = _c.sangfor.token
+SANGFOR_BLOCKLIST_TIMEOUT  = _c.sangfor.timeout
+SANGFOR_BLOCKLIST_VERIFY_SSL = _c.sangfor.verify_ssl
 
 # Performance & Limits
-MAX_LOG_LINES = 2000
-CHARACTER_LIMIT = int(os.environ.get("BLUETEAM_CHARACTER_LIMIT", "100000"))
-_WAZUH_INDEXER_MAX_SIZE = int(os.environ.get("WAZUH_INDEXER_MAX_SIZE", "10000"))
-HTTP_TIMEOUT = 30.0
-BLUETEAM_ALLOW_UNTRUNCATED = os.environ.get("BLUETEAM_ALLOW_UNTRUNCATED", "false").lower() in ("1", "true", "yes")
-if BLUETEAM_ALLOW_UNTRUNCATED:
-    logger.warning("BLUETEAM_ALLOW_UNTRUNCATED=true - character-limit bypass ENABLED")
+MAX_LOG_LINES             = _c.limits.max_log_lines
+CHARACTER_LIMIT           = _c.limits.character_limit
+HTTP_TIMEOUT              = _c.limits.http_timeout
+BLUETEAM_ALLOW_UNTRUNCATED = _c.limits.allow_untruncated
 
 # Redaction Layers
-BLUETEAM_REDACT_PII = os.environ.get("BLUETEAM_REDACT_PII", "true").lower() in ("1", "true", "yes")
-BLUETEAM_REDACT_EMAILS = os.environ.get("BLUETEAM_REDACT_EMAILS", "true").lower() in ("1", "true", "yes")
-BLUETEAM_REDACT_DOMAINS = os.environ.get("BLUETEAM_REDACT_DOMAINS", "true").lower() in ("1", "true", "yes")
-BLUETEAM_REDACT_LOCATIONS = os.environ.get("BLUETEAM_REDACT_LOCATIONS", "true").lower() in ("1", "true", "yes")
-BLUETEAM_REDACT_UAS = os.environ.get("BLUETEAM_REDACT_UAS", "true").lower() in ("1", "true", "yes")
+BLUETEAM_REDACT_PII       = _c.redaction.redact_pii
+BLUETEAM_REDACT_EMAILS    = _c.redaction.redact_emails
+BLUETEAM_REDACT_DOMAINS   = _c.redaction.redact_domains
+BLUETEAM_REDACT_LOCATIONS = _c.redaction.redact_locations
+BLUETEAM_REDACT_UAS       = _c.redaction.redact_uas
 
 # Redaction policy & forensic bypass gate
-#   full           - shape-based masking (legacy default)
-#   protect_victim - mask victim-owned indicators only; attacker IOCs stay intact
-#   raw            - Layer 1 credential strip only (requires ALLOW_FORENSIC_BYPASS)
-BLUETEAM_REDACTION_POLICY = os.environ.get("BLUETEAM_REDACTION_POLICY", "full").strip().lower()
-if BLUETEAM_REDACTION_POLICY not in ("full", "protect_victim"):
-    logger.warning("BLUETEAM_REDACTION_POLICY=%r invalid - falling back to 'full'. "
-                   "Use 'full' or 'protect_victim'.", BLUETEAM_REDACTION_POLICY)
-    BLUETEAM_REDACTION_POLICY = "full"
-BLUETEAM_OWNED_DOMAINS = os.environ.get("BLUETEAM_OWNED_DOMAINS", "")
-BLUETEAM_ALLOW_FORENSIC_BYPASS = os.environ.get("BLUETEAM_ALLOW_FORENSIC_BYPASS", "false").lower() in ("1", "true", "yes")
-if BLUETEAM_ALLOW_FORENSIC_BYPASS:
-    logger.warning("BLUETEAM_ALLOW_FORENSIC_BYPASS=true — forensic raw output enabled "
-                   "(bypass_redaction/redaction_policy='raw' will be honored)")
-# Operator token required for raw/bypass when set (empty = no token required)
-BLUETEAM_FORENSIC_TOKEN = os.environ.get("BLUETEAM_FORENSIC_TOKEN", "")
+BLUETEAM_REDACTION_POLICY     = _c.redaction.policy
+BLUETEAM_OWNED_DOMAINS        = _c.redaction.owned_domains
+BLUETEAM_ALLOW_FORENSIC_BYPASS = _c.redaction.allow_forensic_bypass
+BLUETEAM_FORENSIC_TOKEN        = _c.redaction.forensic_token
 
 # Attacker-IOC registry persistence (JSONL)
-BLUETEAM_ATTACKER_REGISTRY = os.environ.get("BLUETEAM_ATTACKER_REGISTRY", "")
-BLUETEAM_ATTACKER_REGISTRY_TTL = int(os.environ.get("BLUETEAM_ATTACKER_REGISTRY_TTL", "604800"))  # 7d; 0 = never expire
-BLUETEAM_ATTACKER_REGISTRY_MAX = int(os.environ.get("BLUETEAM_ATTACKER_REGISTRY_MAX", "10000"))
+BLUETEAM_ATTACKER_REGISTRY     = _c.attacker_registry.path
+BLUETEAM_ATTACKER_REGISTRY_TTL = _c.attacker_registry.ttl
+BLUETEAM_ATTACKER_REGISTRY_MAX = _c.attacker_registry.max_entries
 
 # IOC lifecycle store (JSONL)
-BLUETEAM_IOC_STORE = os.environ.get("BLUETEAM_IOC_STORE", "")
-BLUETEAM_IOC_STORE_MAX = int(os.environ.get("BLUETEAM_IOC_STORE_MAX", "50000"))
+BLUETEAM_IOC_STORE     = _c.ioc_store.path
+BLUETEAM_IOC_STORE_MAX = _c.ioc_store.max_entries
 
 # Operational hardening
-BLUETEAM_EXPORT_RETENTION_DAYS = int(os.environ.get("BLUETEAM_EXPORT_RETENTION_DAYS", "0"))  # 0 = keep forever
-BLUETEAM_AUTO_PROMOTE_IPS = os.environ.get("BLUETEAM_AUTO_PROMOTE_IPS", "false").lower() in ("1", "true", "yes")
+BLUETEAM_EXPORT_RETENTION_DAYS = _c.operational.export_retention_days
+BLUETEAM_AUTO_PROMOTE_IPS      = _c.operational.auto_promote_ips
+BLUETEAM_EXPORT_DIR            = _c.operational.export_dir
 
 # Audit & Rate Limiting
-BLUETEAM_AUDIT_LOG = os.environ.get("BLUETEAM_AUDIT_LOG", "")
-BLUETEAM_RATE_LIMIT = int(os.environ.get("BLUETEAM_RATE_LIMIT", "0"))
-_INVESTIGATION_HISTORY_FILE = os.environ.get("BLUETEAM_INVESTIGATION_HISTORY", "")
-BLUETEAM_EXPORT_DIR = os.environ.get("BLUETEAM_EXPORT_DIR", "/var/log/blue-team-mcp/exports")
-MITRE_ATTACK_STIX = os.environ.get("MITRE_ATTACK_STIX", "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/refs/heads/master/enterprise-attack/enterprise-attack.json")
+BLUETEAM_AUDIT_LOG            = _c.audit.audit_log_path
+BLUETEAM_RATE_LIMIT            = _c.audit.rate_limit
+_INVESTIGATION_HISTORY_FILE    = _c.audit.investigation_history
+MITRE_ATTACK_STIX              = _c.audit.mitre_stix_url
 
-# Startup validation
-_MISSING_CRITICAL: list[str] = []
-if not WAZUH_INDEXER_URL:
-    _MISSING_CRITICAL.append("WAZUH_INDEXER_URL")
-if not WAZUH_INDEXER_PASSWORD:
-    _MISSING_CRITICAL.append("WAZUH_INDEXER_PASSWORD")
+# ---------------------------------------------------------------------------
+# Shared Field Descriptions (string constants — not config values)
+# ---------------------------------------------------------------------------
 
-_MISSING_OPTIONAL: list[str] = []
-if not WAZUH_API_URL:
-    _MISSING_OPTIONAL.append("WAZUH_API_URL (Manager API tools disabled)")
-if not CROWDSEC_API_KEY_ENV or not os.environ.get(CROWDSEC_API_KEY_ENV):
-    _MISSING_OPTIONAL.append(f"{CROWDSEC_API_KEY_ENV} (CrowdSec tools disabled)")
-if not ABUSEIPDB_API_KEY:
-    _MISSING_OPTIONAL.append("ABUSEIPDB_API_KEY (AbuseIPDB lookup disabled)")
-if not VIRUSTOTAL_API_KEY:
-    _MISSING_OPTIONAL.append("VIRUSTOTAL_API_KEY (VirusTotal lookups disabled)")
-
-if _MISSING_CRITICAL:
-    logger.critical("CRITICAL: Required env vars not set: %s - server will fail on Indexer tools.",
-                     ", ".join(_MISSING_CRITICAL))
-if _MISSING_OPTIONAL:
-    logger.warning("Optional env vars not set: %s", ", ".join(_MISSING_OPTIONAL))
-
-# Shared Field Descriptions
-_BYPASS_REDACTION_DESC = "When true, skip PII/credential redaction for audit investigations."
-_REDACTION_POLICY_DESC = ("Redaction policy: 'full' (shape-based, default), "
-                          "'protect_victim' (mask victim-owned indicators only, attacker IOCs intact), "
-                          "'raw' (Layer 1 credential strip only - requires BLUETEAM_ALLOW_FORENSIC_BYPASS).")
-_REVEAL_OWNED_DESC = ("When true (forensic), expose emails/subdomains at owned domains "
-                      "(BLUETEAM_OWNED_DOMAINS) unmasked while all other protect_victim masking stays on. "
-                      "Layer 1 credentials remain masked. Requires BLUETEAM_OWNED_DOMAINS to be set.")
-_FORENSIC_TOKEN_DESC = ("Operator forensic token (matches BLUETEAM_FORENSIC_TOKEN). Required for "
-                        "redaction_policy='raw' / bypass_redaction when that env is set.")
+_BYPASS_REDACTION_DESC = (
+    "When true, skip PII/credential redaction for audit investigations."
+)
+_REDACTION_POLICY_DESC = (
+    "Redaction policy: 'full' (shape-based, default), "
+    "'protect_victim' (mask victim-owned indicators only, attacker IOCs intact), "
+    "'raw' (Layer 1 credential strip only - requires BLUETEAM_ALLOW_FORENSIC_BYPASS)."
+)
+_REVEAL_OWNED_DESC = (
+    "When true (forensic), expose emails/subdomains at owned domains "
+    "(BLUETEAM_OWNED_DOMAINS) unmasked while all other protect_victim masking "
+    "stays on. Layer 1 credentials remain masked. Requires BLUETEAM_OWNED_DOMAINS "
+    "to be set."
+)
+_FORENSIC_TOKEN_DESC = (
+    "Operator forensic token (matches BLUETEAM_FORENSIC_TOKEN). Required for "
+    "redaction_policy='raw' / bypass_redaction when that env is set."
+)
 _RESPONSE_FORMAT_DESC = "Output format: 'markdown' (default) or 'json'."
-_SINCE_DESC = "ISO 8601 start time in UTC. Defaults to 365 days ago."
-_UNTIL_DESC = "ISO 8601 end time in UTC. Defaults to now."
+_SINCE_DESC  = "ISO 8601 start time in UTC. Defaults to 365 days ago."
+_UNTIL_DESC  = "ISO 8601 end time in UTC. Defaults to now."
 _AGENT_NAME_DESC = "Optional agent name filter."

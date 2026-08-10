@@ -11,7 +11,7 @@ Where Kali Linux gives Claude offensive tools (nmap, gobuster, sqlmap), this giv
 
 ## Architecture
 
-`main.py` (with the `mcp_server/` package) is a **modular MCP server** with 92 tools spanning host forensics, Wazuh SIEM, threat intelligence, Sangfor blocklist integration, alert enrichment, 3-Sum APT correlation engine, MITRE ATT&CK, threat hunting, domain investigation, and IOC extraction. It supports two transports:
+`main.py` (with the `mcp_server/` package) is a **modular MCP server** with 97 tools spanning host forensics, Wazuh SIEM, threat intelligence, Sangfor blocklist integration, alert enrichment, 3-Sum APT correlation engine, MITRE ATT&CK, threat hunting, domain investigation, and IOC extraction. It supports two transports:
 
 | Transport | Use case | MCP client connection |
 |---|---|---|
@@ -21,7 +21,7 @@ Where Kali Linux gives Claude offensive tools (nmap, gobuster, sqlmap), this giv
 ```
                           ┌──────────────────────────────────┐
                           │     main.py                     │
-                          │     92 tools · modular · 4 resources  │
+                          │     97 tools · modular · 4 resources  │
                           │                                  │
                           │  ┌────────────────────────────┐  │
                           │  │ Host Forensics (26 tools)  │  │
@@ -84,7 +84,7 @@ Where Kali Linux gives Claude offensive tools (nmap, gobuster, sqlmap), this giv
 
 | File | Tools | When to use |
 |---|---|---|
-| `main.py` + `mcp_server/` | **All 92 tools** | **Recommended** — full capabilities, credential stripping, PII redaction |
+| `main.py` + `mcp_server/` | **All 97 tools** | **Recommended** — full capabilities, credential stripping, PII redaction |
 
 ---
 
@@ -1207,11 +1207,11 @@ failures, rate-limit hits, attacker-registry and IOC-store gauges.
 ## LLM Reference Prompt
 
 Copy the block below into your local LLM (Claude Desktop, Ollama, LM Studio, etc.) that is
-connected to this MCP server. It teaches the model the full tool surface (92 tools + 4
+connected to this MCP server. It teaches the model the full tool surface (97 tools + 4
 resources) and the standard SOC workflows.
 
 ```text
-You are a blue-team SOC analyst operating the Blue Team Wazuh MCP server (92 tools).
+You are a blue-team SOC analyst operating the Blue Team Wazuh MCP server (97 tools).
 Be precise, evidence-based, and never fabricate API fields. Follow the redacted-but-real
 protocol: rely on masked values + forensic hashes by default; only expose raw data when the
 operator explicitly asks.
@@ -1294,7 +1294,7 @@ prompt block above into the LLM client's system prompt.
 ## Contoh Prompt SOC — Laporan Serangan 24 Jam (Bahasa Indonesia)
 
 Prompt lengkap berikut memetakan **setiap** permintaan ke tool MCP yang konkret, sehingga
-seluruh fungsi platform (92 tools + 4 resources) benar-benar terpanggil. Salin ke LLM lokal
+seluruh fungsi platform (97 tools + 4 resources) benar-benar terpanggil. Salin ke LLM lokal
 yang terhubung ke server ini.
 
 ```text
@@ -1405,7 +1405,7 @@ forensik yang memang perlu melihat nilai aslinya.
 
 | File | Role |
 |---|---|
-| `main.py` + `mcp_server/` | **Primary** — all 92 tools, both transports (stdio / Streamable HTTP) |
+| `main.py` + `mcp_server/` | **Primary** — all 97 tools, both transports (stdio / Streamable HTTP) |
 
 ### Legacy Naming Debt
 
@@ -1433,3 +1433,19 @@ Before deploying, run the automated regression linter:
 python3 check_guardrails.py        # 7 checks: unbound, drift, overaggressive params., order, imports, closures, unexpected kwargs
 python3 check_guardrails.py --strict  # CI mode: non-zero exit on any warning
 ```
+
+## Phase 1-3 Changelog (Aug 2026)
+
+| Feature | Phase | Description |
+|---|---|---|
+| Typed Config (`core/config.py`) | 1 | 13 nested dataclasses replacing ~60 `os.environ` reads; `validate()` raises on fatal errors |
+| Exception Hierarchy (`core/exceptions.py`) | 1 | `BlueTeamMCPError` → `ConfigurationError`, `WazuhAuthError`, `WazuhAPIError`, `ThreatIntelError` |
+| JWT 60s Expiry Buffer (`wazuh/auth.py`) | 1 | Instance-scoped `WazuhAuthManager` with proactive token refresh |
+| `@blueteam_tool` Decorator (`core/tool_decorator.py`) | 2 | Auto-applies audit logging, exception catching, and response truncation |
+| Tool Gating (`tools/__init__.py`) | 2 | `WAZUH_DISABLED_CATEGORIES`, `WAZUH_READ_ONLY` — skip modules before import |
+| Agent Filter Parity (`tools/wazuh_siem.py`) | 2 | `status`, `q`, `sort`, `select`, `search`, `distinct` on `blueteam_wazuh_agents` |
+| Dynamic Tool Count | 2 | Runtime-derived from FastMCP registry — no more hardcoded "92" |
+| SCA Compliance Tools (`tools/wazuh_sca.py`) | 3 | `blueteam_wazuh_get_agent_sca`, `blueteam_wazuh_get_sca_policy_checks`, `blueteam_wazuh_list_sca_policies` |
+| Rule-File Tools (`tools/wazuh_rules_files.py`) | 3 | `blueteam_wazuh_get_rule_files`, `blueteam_wazuh_get_rule_file_content` |
+| Test Suite (`tests/`) | 3 | 56 tests, 0 failures — exceptions, redact, correlation, auth |
+| Config Consolidation (`mcp_server/__init__.py`) | 4 | Module-level vars sourced from `Config` singleton; backward-compatible exports |
