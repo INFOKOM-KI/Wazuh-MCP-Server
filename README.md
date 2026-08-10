@@ -1409,7 +1409,7 @@ blueteam_wazuh_domain_lookup(
     reveal_owned=true
 )
 ```
-
+```markdown
 ### 4d. Generate laporan akhir (UNMASKED — hanya untuk file)
 
 Gunakan hasil dari 4c untuk menyusun laporan akhir yang **menampilkan email dinas
@@ -1417,6 +1417,7 @@ dan subdomain tangerang kota secara lengkap**. Kemudian export:
 
 - Gunakan `blueteam_wazuh_export` untuk menyimpan hasil ke JSONL, atau format manual ke `.md`.
 - Untuk laporan Office: gunakan `blueteam_export_report` (docx/xlsx/pptx).
+```
 
 **PENTING — Chain of custody:**
 - Output chat dan layar HANYA menampilkan laporan masked (hasil 4b).
