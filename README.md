@@ -1366,13 +1366,15 @@ CrowdSec + AbuseIPDB menjadi single confidence score per IP.
 
 ---
 
+
 ## Phase 4 — Report & Export
 
 ### 4a. Geo heatmap
 Gunakan `blueteam_wazuh_geo_heatmap` dengan `since="24h"`.
 
-### 4b. Generate markdown report
-Susun laporan dengan struktur:
+### 4b. Generate markdown report (MASKED — untuk presentasi dan chat output)
+Susun laporan awal dengan data dari Phase 1-3. Pada tahap ini, email/subdomain dinas
+masih dalam keadaan ter-mask (`protect_victim`, tanpa `reveal_owned`). Laporkan:
 1. Ringkasan eksekutif (total serangan, top 5 IP attacker, top 3 subdomain diserang)
 2. Subdomain terbanyak diserang + IP attacker + payload per subdomain
 3. Email locked + analisis Argus/ThreatFox per IP penyebab
@@ -1381,11 +1383,69 @@ Susun laporan dengan struktur:
 6. MITRE ATT&CK techniques terdeteksi
 7. Geo heatmap summary
 
-### 4c. Export ke file
-Gunakan `blueteam_wazuh_export` untuk menyimpan hasil ke JSONL, atau format manual
-ke `.md`. Untuk laporan akhir: gunakan `blueteam_export_report` (docx/xlsx/pptx)
-jika format Office dibutuhkan.
+### 4c. Re-run data collection dengan `reveal_owned=true` (FORENSIK — untuk laporan akhir saja)
+
+**KHUSUS untuk laporan akhir yang akan disimpan ke file**, jalankan ulang query berikut
+dengan parameter `reveal_owned=true` agar email dinas dan subdomain tangerang kota
+terlihat asli (unmasked). **JANGAN gunakan `bypass_redaction`.**
+
+```text
+blueteam_wazuh_indexer_search(
+    since="24h",
+    max_scanned=10000,
+    redaction_policy="protect_victim",
+    reveal_owned=true
+)
+
+blueteam_wazuh_compromised_emails_analysis(
+    since="24h",
+    redaction_policy="protect_victim",
+    reveal_owned=true
+)
+
+blueteam_wazuh_domain_lookup(
+    domain="<subdomain dari Phase 1b>",
+    redaction_policy="protect_victim",
+    reveal_owned=true
+)
 ```
+
+### 4d. Generate laporan akhir (UNMASKED — hanya untuk file)
+
+Gunakan hasil dari 4c untuk menyusun laporan akhir yang **menampilkan email dinas
+dan subdomain tangerang kota secara lengkap**. Kemudian export:
+
+- Gunakan `blueteam_wazuh_export` untuk menyimpan hasil ke JSONL, atau format manual ke `.md`.
+- Untuk laporan Office: gunakan `blueteam_export_report` (docx/xlsx/pptx).
+
+**PENTING — Chain of custody:**
+- Output chat dan layar HANYA menampilkan laporan masked (hasil 4b).
+- Data unmasked (hasil 4c) HANYA disimpan ke file — jangan ditampilkan di chat.
+- Laporan akhir di file (.md/.docx) berisi data forensik lengkap dengan email/subdomain dinas asli.
+```
+
+### Cara Kerja Chain `reveal_owned=true`
+
+```
+Phase 1-3 (TRIAGE — data yang diproses dan di-reasoning LLM):
+  protect_victim, TANPA reveal_owned
+  → a***i@tangerangkota.go.id [h:abc123]   ← MASKED
+  → mail.tangerangkota.go.id                ← MASKED
+  → 45.33.32.156                            ← UNMASKED (attacker)
+
+Phase 4c (FORENSIK — re-run khusus untuk file):
+  protect_victim + reveal_owned=true
+  → auli@tangerangkota.go.id                ← UNMASKED
+  → mail.tangerangkota.go.id                ← UNMASKED
+  → 45.33.32.156                            ← UNMASKED (attacker)
+
+Phase 4d (EXPORT):
+  File (.md/.docx) ← berisi data unmasked lengkap
+  Chat output      ← tetap masked (hasil Phase 4b)
+```
+
+LLM **tidak pernah melihat** data unmasked selama reasoning dan triage. Data unmasked
+hanya diproses pada Phase 4c untuk penulisan file akhir.
 
 ### Catatan Penggunaan
 
