@@ -1,120 +1,226 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Wazuh SIEM tools - agents, alerts, manager logs, rules, decoders, groups, cluster, security events
+Wazuh SIEM tools - Manager API agents/rules/decoders/groups/cluster,
+Indexer alerts/search, MITRE resources, and local alerts fallback.
+
+Manager API tools use @blueteam_tool for automatic audit logging, error handling (catching WazuhAuthError / WazuhAPIError),
+and response truncation. Agent filtering now passes through Wazuh's native q/sort/select/search/status/distinct parameters.
+
+NOTE: No ``from __future__ import annotations`` — deferred annotation
+      evaluation (PEP 563) breaks the @blueteam_tool decorator's type
+      resolution because the wrapper's __globals__ is tool_decorator.py.
 """
-from __future__ import annotations
+
 import json
 from pathlib import Path
 from typing import Optional, Literal
+
 from pydantic import BaseModel, ConfigDict, Field
-from mcp_server import WAZUH_API_URL, WAZUH_API_PASSWORD, WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_URL
-from mcp_server.core.constants import _WAZUH_ALERTS_MAX_LINES, MITRE_TACTIC_TO_CATEGORY
 
-from mcp_server import mcp
-from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.core.redact import _redact_alert_data
+from mcp_server import (
+    WAZUH_API_URL, WAZUH_API_PASSWORD,
+    WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_URL,
+)
+from mcp_server.core.constants import (
+    _WAZUH_ALERTS_MAX_LINES, MITRE_TACTIC_TO_CATEGORY,
+    _WAZUH_LOG_TAG, _WAZUH_ALERTS_PATH,
+)
+from mcp_server.core.tool_decorator import blueteam_tool
+
 from mcp_server.wazuh.auth import _wazuh_api_get
-from mcp_server.wazuh.indexer import _WAZUH_INDEX_PATTERNS, _encode_cursor, _decode_cursor
+from mcp_server.wazuh.indexer import (
+    _WAZUH_INDEX_PATTERNS, _encode_cursor, _decode_cursor,
+)
 
+# Manager API tools - all benefit from @blueteam_tool (audit + error + trunc)
 # blueteam_wazuh_get_rules
 class WazuhRulesInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    rule_id: Optional[str] = Field(default=None, max_length=16)
+    rule_id: Optional[str] = Field(default=None, max_length=16,
+                                    description="Optional rule ID filter (comma-separated)")
+    status: Optional[str] = Field(default=None,
+                                   description="Filter by status: enabled, disabled, all")
+    group: Optional[str] = Field(default=None, description="Filter by rule group")
+    level: Optional[str] = Field(default=None,
+                                  description="Filter by level range, e.g. '5-15'")
+    pci_dss: Optional[str] = Field(default=None, description="PCI DSS requirement filter")
+    gdpr: Optional[str] = Field(default=None, description="GDPR requirement filter")
+    hipaa: Optional[str] = Field(default=None, description="HIPAA requirement filter")
+    nist_800_53: Optional[str] = Field(default=None, description="NIST 800-53 requirement filter")
+    mitre: Optional[str] = Field(default=None, description="MITRE technique ID filter")
+    filename: Optional[str] = Field(default=None, description="Rule file name filter")
+    search: Optional[str] = Field(default=None, max_length=128,
+                                   description="Free-text search")
+    select: Optional[str] = Field(default=None, max_length=256,
+                                   description="Comma-separated field names to return")
+    sort: Optional[str] = Field(default=None,
+                                 description="Sort: +/-field, e.g. '-level'")
+    q: Optional[str] = Field(default=None, max_length=256,
+                              description="Lucene query string")
+    distinct: bool = Field(default=False, description="Return distinct values only")
     limit: int = Field(default=50, ge=1, le=500)
-    response_format: Literal["markdown","json"] = Field(default="markdown")
+    response_format: Literal["markdown", "json"] = Field(default="markdown")
 
-@mcp.tool(name="blueteam_wazuh_get_rules", annotations={"readOnlyHint":True,"destructiveHint":False,"idempotentHint":True,"openWorldHint":False})
+
+@blueteam_tool(name="blueteam_wazuh_get_rules")
 async def blueteam_wazuh_get_rules(params: WazuhRulesInput) -> str:
-    _audit_log("blueteam_wazuh_get_rules", {"rule_id": params.rule_id})
-    api = {"limit": str(params.limit)}
-    if params.rule_id: api["rule_ids"] = params.rule_id.strip()
+    api: dict[str, str] = {"limit": str(params.limit)}
+    if params.rule_id:      api["rule_ids"] = params.rule_id.strip()
+    if params.status:       api["status"] = params.status
+    if params.group:        api["group"] = params.group
+    if params.level:        api["level"] = params.level
+    if params.pci_dss:      api["pci_dss"] = params.pci_dss
+    if params.gdpr:         api["gdpr"] = params.gdpr
+    if params.hipaa:        api["hipaa"] = params.hipaa
+    if params.nist_800_53:  api["nist-800-53"] = params.nist_800_53
+    if params.mitre:        api["mitre"] = params.mitre
+    if params.filename:     api["filename"] = params.filename
+    if params.search:       api["search"] = params.search
+    if params.select:       api["select"] = params.select
+    if params.sort:         api["sort"] = params.sort
+    if params.q:            api["q"] = params.q
+    if params.distinct:     api["distinct"] = "true"
+
     data = await _wazuh_api_get("/rules", api)
-    if isinstance(data.get("error"), str): return json.dumps(data, indent=2)
-    items = data.get("data",{}).get("affected_items",[])
+    items = data.get("data", {}).get("affected_items", [])
     if params.response_format == "json":
-        return _truncate_if_needed(json.dumps({"count":len(items),"rules":items[:params.limit]},indent=2))
-    return _truncate_if_needed("\n".join([f"# Wazuh Rules ({len(items)})",""]+[f"- `{r.get('id','?')}` (L{r.get('level','?')}): {r.get('description','?')[:80]}" for r in items[:30]]))
+        return json.dumps({"count": len(items), "rules": items[:params.limit]}, indent=2)
+    return "\n".join(
+        [f"# Wazuh Rules ({len(items)})", ""]
+        + [f"- `{r.get('id','?')}` (L{r.get('level','?')}): "
+           f"{str(r.get('description',''))[:80]}"
+           for r in items[:30]]
+    )
+
 
 # blueteam_wazuh_get_decoders
 class WazuhDecodersInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     decoder_name: Optional[str] = Field(default=None, max_length=64)
+    search: Optional[str] = Field(default=None, max_length=128)
+    select: Optional[str] = Field(default=None, max_length=256)
+    sort: Optional[str] = Field(default=None)
+    q: Optional[str] = Field(default=None, max_length=256)
+    distinct: bool = Field(default=False)
     limit: int = Field(default=50, ge=1, le=500)
-    response_format: Literal["markdown","json"] = Field(default="markdown")
+    response_format: Literal["markdown", "json"] = Field(default="markdown")
 
-@mcp.tool(name="blueteam_wazuh_get_decoders", annotations={"readOnlyHint":True,"destructiveHint":False,"idempotentHint":True,"openWorldHint":False})
+
+@blueteam_tool(name="blueteam_wazuh_get_decoders")
 async def blueteam_wazuh_get_decoders(params: WazuhDecodersInput) -> str:
-    _audit_log("blueteam_wazuh_get_decoders", {"decoder": params.decoder_name})
-    api = {"limit": str(params.limit)}
+    api: dict[str, str] = {"limit": str(params.limit)}
     if params.decoder_name: api["decoder_names"] = params.decoder_name.strip()
+    if params.search:       api["search"] = params.search
+    if params.select:       api["select"] = params.select
+    if params.sort:         api["sort"] = params.sort
+    if params.q:            api["q"] = params.q
+    if params.distinct:     api["distinct"] = "true"
+
     data = await _wazuh_api_get("/decoders", api)
-    if isinstance(data.get("error"), str): return json.dumps(data, indent=2)
-    items = data.get("data",{}).get("affected_items",[])
+    items = data.get("data", {}).get("affected_items", [])
     if params.response_format == "json":
-        return _truncate_if_needed(json.dumps({"count":len(items),"decoders":items[:params.limit]},indent=2))
-    return _truncate_if_needed("\n".join([f"# Wazuh Decoders ({len(items)})",""]+[f"- `{d.get('name','?')}`: {str(d.get('details',''))[:60]}" for d in items[:30]]))
+        return json.dumps({"count": len(items), "decoders": items[:params.limit]}, indent=2)
+    return "\n".join(
+        [f"# Wazuh Decoders ({len(items)})", ""]
+        + [f"- `{d.get('name','?')}`: {str(d.get('details',''))[:60]}"
+           for d in items[:30]]
+    )
+
 
 # blueteam_wazuh_get_groups
 class WazuhGroupsInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     group_name: Optional[str] = Field(default=None, max_length=64)
-    response_format: Literal["markdown","json"] = Field(default="markdown")
+    search: Optional[str] = Field(default=None, max_length=128)
+    select: Optional[str] = Field(default=None, max_length=256)
+    sort: Optional[str] = Field(default=None)
+    q: Optional[str] = Field(default=None, max_length=256)
+    distinct: bool = Field(default=False)
+    response_format: Literal["markdown", "json"] = Field(default="markdown")
 
-@mcp.tool(name="blueteam_wazuh_get_groups", annotations={"readOnlyHint":True,"destructiveHint":False,"idempotentHint":True,"openWorldHint":False})
+
+@blueteam_tool(name="blueteam_wazuh_get_groups")
 async def blueteam_wazuh_get_groups(params: WazuhGroupsInput) -> str:
-    _audit_log("blueteam_wazuh_get_groups", {"group": params.group_name})
-    api = {}
+    api: dict[str, str] = {}
     if params.group_name: api["group_list"] = params.group_name.strip()
+    if params.search:     api["search"] = params.search
+    if params.select:     api["select"] = params.select
+    if params.sort:       api["sort"] = params.sort
+    if params.q:          api["q"] = params.q
+    if params.distinct:   api["distinct"] = "true"
+
     data = await _wazuh_api_get("/groups", api)
-    if isinstance(data.get("error"), str): return json.dumps(data, indent=2)
-    items = data.get("data",{}).get("affected_items",[])
+    items = data.get("data", {}).get("affected_items", [])
     if params.response_format == "json":
-        return _truncate_if_needed(json.dumps({"count":len(items),"groups":items},indent=2))
-    return _truncate_if_needed("\n".join([f"# Agent Groups ({len(items)})",""]+[f"- `{g.get('name','?')}` ({g.get('count',0)} agents)" for g in items[:30]]))
+        return json.dumps({"count": len(items), "groups": items}, indent=2)
+    return "\n".join(
+        [f"# Agent Groups ({len(items)})", ""]
+        + [f"- `{g.get('name','?')}` ({g.get('count',0)} agents)"
+           for g in items[:30]]
+    )
+
 
 # blueteam_wazuh_get_security_events
 class WazuhSecurityEventsInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    search: Optional[str] = Field(default=None, max_length=128)
+    select: Optional[str] = Field(default=None, max_length=256)
+    sort: Optional[str] = Field(default="-timestamp")
+    q: Optional[str] = Field(default=None, max_length=256)
+    distinct: bool = Field(default=False)
     limit: int = Field(default=50, ge=1, le=500)
-    response_format: Literal["markdown","json"] = Field(default="markdown")
+    response_format: Literal["markdown", "json"] = Field(default="markdown")
 
-@mcp.tool(name="blueteam_wazuh_get_security_events", annotations={"readOnlyHint":True,"destructiveHint":False,"idempotentHint":True,"openWorldHint":False})
+
+@blueteam_tool(name="blueteam_wazuh_get_security_events")
 async def blueteam_wazuh_get_security_events(params: WazuhSecurityEventsInput) -> str:
-    _audit_log("blueteam_wazuh_get_security_events", {"limit": params.limit})
-    api = {"limit": str(min(params.limit,500)), "sort": "-timestamp"}
+    api: dict[str, str] = {"limit": str(min(params.limit, 500)),
+                            "sort": params.sort or "-timestamp"}
+    if params.search:   api["search"] = params.search
+    if params.select:   api["select"] = params.select
+    if params.q:        api["q"] = params.q
+    if params.distinct: api["distinct"] = "true"
+
     data = await _wazuh_api_get("/security/events", api)
-    if isinstance(data.get("error"), str): return json.dumps(data, indent=2)
-    items = data.get("data",{}).get("affected_items",[])
+    items = data.get("data", {}).get("affected_items", [])
     if params.response_format == "json":
-        return _truncate_if_needed(json.dumps({"count":len(items),"events":items[:params.limit]},indent=2))
-    return _truncate_if_needed("\n".join([f"# Security Events ({len(items)})",""]+[f"- `[{str(e.get('timestamp','?'))[:19]}]` {e.get('user','?')}: {str(e.get('action','?'))[:80]}" for e in items[:20]]))
+        return json.dumps({"count": len(items), "events": items[:params.limit]}, indent=2)
+    return "\n".join(
+        [f"# Security Events ({len(items)})", ""]
+        + [f"- `[{str(e.get('timestamp','?'))[:19]}]` {e.get('user','?')}: "
+           f"{str(e.get('action','?'))[:80]}"
+           for e in items[:20]]
+    )
+
 
 # blueteam_wazuh_get_cluster_nodes
 class WazuhClusterNodesInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    response_format: Literal["markdown","json"] = Field(default="markdown")
+    response_format: Literal["markdown", "json"] = Field(default="markdown")
 
-@mcp.tool(name="blueteam_wazuh_get_cluster_nodes", annotations={"readOnlyHint":True,"destructiveHint":False,"idempotentHint":True,"openWorldHint":False})
+@blueteam_tool(name="blueteam_wazuh_get_cluster_nodes")
 async def blueteam_wazuh_get_cluster_nodes(params: WazuhClusterNodesInput) -> str:
-    _audit_log("blueteam_wazuh_get_cluster_nodes", {})
     data = await _wazuh_api_get("/cluster/nodes")
-    if isinstance(data.get("error"), str): return json.dumps(data, indent=2)
-    items = data.get("data",{}).get("affected_items",[])
+    items = data.get("data", {}).get("affected_items", [])
     if params.response_format == "json":
-        return _truncate_if_needed(json.dumps({"count":len(items),"nodes":items},indent=2))
-    return _truncate_if_needed("\n".join([f"# Cluster Nodes ({len(items)})",""]+[f"- `{n.get('name','?')}` ({n.get('type','?')}) v{n.get('version','?')} @ {n.get('ip','?')}" for n in items]))
+        return json.dumps({"count": len(items), "nodes": items}, indent=2)
+    return "\n".join(
+        [f"# Cluster Nodes ({len(items)})", ""]
+        + [f"- `{n.get('name','?')}` ({n.get('type','?')}) "
+           f"v{n.get('version','?')} @ {n.get('ip','?')}"
+           for n in items]
+    )
+
+
+# Resources
+from mcp_server import mcp
+from mcp_server.core.audit import _truncate_if_needed
 
 
 @mcp.resource("wazuh://rules/taxonomy")
 async def wazuh_rule_taxonomy() -> str:
-    """Expose the current Wazuh rule taxonomy as an MCP resource.
-
-    The LLM reads this resource before querying alerts to understand which
-    rule IDs and severity levels exist without making a Manager API call.
-    Returns a compact JSON summary of rule counts by level and top rule
-    descriptions.
-    """
+    """Expose the current Wazuh rule taxonomy as an MCP resource."""
     if not WAZUH_API_URL or not WAZUH_API_PASSWORD:
         return json.dumps({"error": "WAZUH_API_URL and WAZUH_API_PASSWORD must be set."})
     data = await _wazuh_api_get("/rules", {"limit": "500", "sort": "-level"})
@@ -126,358 +232,307 @@ async def wazuh_rule_taxonomy() -> str:
     for r in items[:200]:
         lvl = r.get("level", 0)
         by_level[lvl] = by_level.get(lvl, 0) + 1
-        top_rules.append({"id": r.get("id"), "level": lvl, "description": str(r.get("description", ""))[:80]})
+        top_rules.append({
+            "id": r.get("id"), "level": lvl,
+            "description": str(r.get("description", ""))[:80],
+        })
     return json.dumps({
         "total_rules": len(items),
-        "by_level": {str(k): v for k, v in sorted(by_level.items(), reverse=True)},
-        "top_rules": top_rules[:50],
+        "by_level": by_level,
+        "top_rules": top_rules,
     }, indent=2)
-
-
-# MITRE ATT&CK Resource
-# Embedded MITRE technique catalog - common techniques the LLM encounters in alerts.
-# Full framework: https://attack.mitre.org - this subset covers the most frequent Wazuh detections.
-_MITRE_TECHNIQUES: dict[str, dict] = {
-    # Reconnaissance
-    "T1595": {"name": "Active Scanning", "tactic": "Reconnaissance",
-              "desc": "Adversary scans victim infrastructure via port scans, vulnerability scans, or wordlist scanning."},
-    "T1046": {"name": "Network Service Discovery", "tactic": "Discovery",
-              "desc": "Adversary scans for open services/ports — typical Nmap/SYN scan behavior."},
-    # Initial Access
-    "T1190": {"name": "Exploit Public-Facing Application", "tactic": "Initial Access",
-              "desc": "Adversary exploits internet-facing app vulnerability (CVE) for initial foothold."},
-    "T1078": {"name": "Valid Accounts", "tactic": "Initial Access",
-              "desc": "Adversary uses stolen/compromised credentials for initial access."},
-    "T1566": {"name": "Phishing", "tactic": "Initial Access",
-              "desc": "Adversary sends spearphishing emails with malicious attachments or links."},
-    # Execution
-    "T1059": {"name": "Command and Scripting Interpreter", "tactic": "Execution",
-              "desc": "Adversary executes commands/scripts — PowerShell, bash, Python, wscript, etc."},
-    "T1059.001": {"name": "PowerShell", "tactic": "Execution",
-                    "desc": "PowerShell execution — often encoded (-enc) or obfuscated."},
-    "T1053": {"name": "Scheduled Task/Job", "tactic": "Execution",
-              "desc": "Adversary creates scheduled tasks (schtasks, at, cron) for persistence/recurring execution."},
-    # Persistence
-    "T1547": {"name": "Boot or Logon Autostart Execution", "tactic": "Persistence",
-              "desc": "Adversary adds entries to Run keys, Startup folder, or logon scripts."},
-    "T1546": {"name": "Event Triggered Execution", "tactic": "Persistence",
-              "desc": "Adversary sets up triggers — WMI event subscriptions, .bashrc/.profile hooks."},
-    "T1505": {"name": "Server Software Component", "tactic": "Persistence",
-              "desc": "Adversary installs web shells, SQL triggers, or other server-side persistence."},
-    # Privilege Escalation
-    "T1068": {"name": "Exploitation for Privilege Escalation", "tactic": "Privilege Escalation",
-              "desc": "Adversary exploits kernel or service vulnerability to elevate from user to root/SYSTEM."},
-    "T1548": {"name": "Abuse Elevation Control Mechanism", "tactic": "Privilege Escalation",
-              "desc": "Adversary abuses sudo, UAC bypass, or Setuid binaries to elevate."},
-    # Defense Evasion
-    "T1027": {"name": "Obfuscated Files or Information", "tactic": "Defense Evasion",
-              "desc": "Adversary encodes/encrypts payloads — base64, XOR, AES — to evade signature detection."},
-    "T1070": {"name": "Indicator Removal", "tactic": "Defense Evasion",
-              "desc": "Adversary clears logs, deletes files, or wipes bash history to cover tracks."},
-    "T1562": {"name": "Impair Defenses", "tactic": "Defense Evasion",
-              "desc": "Adversary disables firewall, stops security services, or uninstalls AV/EDR."},
-    # Credential Access
-    "T1003": {"name": "OS Credential Dumping", "tactic": "Credential Access",
-              "desc": "Adversary dumps credentials — mimikatz, LSASS memory, /etc/shadow, SAM hive."},
-    "T1110": {"name": "Brute Force", "tactic": "Credential Access",
-              "desc": "Adversary brute-forces SSH, RDP, FTP, or web login forms."},
-    "T1555": {"name": "Credentials from Password Stores", "tactic": "Credential Access",
-              "desc": "Adversary extracts saved credentials from browsers, keychains, or password managers."},
-    # Discovery
-    "T1082": {"name": "System Information Discovery", "tactic": "Discovery",
-              "desc": "Adversary gathers OS version, hostname, patches — uname, systeminfo, ver."},
-    "T1083": {"name": "File and Directory Discovery", "tactic": "Discovery",
-              "desc": "Adversary enumerates files — ls, dir, find, tree — looking for sensitive data."},
-    "T1018": {"name": "Remote System Discovery", "tactic": "Discovery",
-              "desc": "Adversary scans network for other hosts — ping sweep, net view, arp -a."},
-    "T1049": {"name": "System Network Connections Discovery", "tactic": "Discovery",
-              "desc": "Adversary inspects active connections — netstat, ss, lsof -i."},
-    # Lateral Movement
-    "T1021": {"name": "Remote Services", "tactic": "Lateral Movement",
-              "desc": "Adversary moves laterally via RDP, SSH, SMB, WinRM, or VNC to other hosts."},
-    "T1570": {"name": "Lateral Tool Transfer", "tactic": "Lateral Movement",
-              "desc": "Adversary copies tools/payloads between hosts — scp, smbclient, certutil."},
-    # Collection
-    "T1560": {"name": "Archive Collected Data", "tactic": "Collection",
-              "desc": "Adversary compresses/encrypts stolen data — tar, zip, rar, gpg — before exfiltration."},
-    # Command and Control
-    "T1071": {"name": "Application Layer Protocol", "tactic": "Command and Control",
-              "desc": "Adversary uses HTTP/HTTPS, DNS, or WebSocket for C2 — blends with normal traffic."},
-    "T1095": {"name": "Non-Application Layer Protocol", "tactic": "Command and Control",
-              "desc": "Adversary uses raw TCP/UDP/ICMP for C2 — netcat, socat, custom protocols."},
-    "T1572": {"name": "Protocol Tunneling", "tactic": "Command and Control",
-              "desc": "Adversary tunnels C2 over DNS, ICMP, or SSH — DNS exfiltration, ICMP tunnels."},
-    # Exfiltration
-    "T1041": {"name": "Exfiltration Over C2 Channel", "tactic": "Exfiltration",
-              "desc": "Adversary exfiltrates data over the same channel used for C2."},
-    "T1048": {"name": "Exfiltration Over Alternative Protocol", "tactic": "Exfiltration",
-              "desc": "Adversary exfiltrates via DNS, ICMP, or other non-C2 channels to evade detection."},
-    # Impact
-    "T1486": {"name": "Data Encrypted for Impact", "tactic": "Impact",
-              "desc": "Adversary encrypts data (ransomware) for extortion — files renamed/locked."},
-    "T1485": {"name": "Data Destruction", "tactic": "Impact",
-              "desc": "Adversary wipes data — rm -rf, shred, format — to disrupt operations."},
-}
 
 
 @mcp.resource("wazuh://mitre/attack")
 async def wazuh_mitre_attack() -> str:
-    """Expose MITRE ATT&CK framework mapping as an MCP resource.
-
-    The LLM reads this resource to understand which MITRE techniques map to
-    which kill-chain phases and 3-Sum correlation categories. Includes a catalog
-    of 30+ common techniques with names, descriptions, and tactic mappings.
-
-    Returns JSON with the tactic→category mapping and the technique catalog.
-    """
+    """Expose MITRE ATT&CK tactic-to-category mapping as an MCP resource."""
     return json.dumps({
-        "framework_version": "ATT&CK v16 (subset)",
-        "tactic_to_category": MITRE_TACTIC_TO_CATEGORY,
-        "categories": {
-            "A": "Reconnaissance / Discovery / Resource Development — early-stage recon",
-            "B": "Access / Execution / Defense Evasion / Credential Access — active intrusion",
-            "C": "Persistence / C2 / Exfiltration / Impact — post-compromise / dwell",
-        },
-        "techniques": _MITRE_TECHNIQUES,
-        "_usage": "Use tactic_to_category to map Wazuh rule.mitre.tactic to 3-Sum category (A/B/C). "
-                  "Use techniques to look up technique names/descriptions from IDs seen in alerts.",
+        "description": "MITRE ATT&CK tactic → alert category mapping for Engine A/B correlation",
+        "mapping": MITRE_TACTIC_TO_CATEGORY,
     }, indent=2)
 
 
-@mcp.tool(
-    name="blueteam_mitre_lookup",
-    annotations={"readOnlyHint": True, "destructiveHint": False,
-                 "idempotentHint": True, "openWorldHint": False},
-)
-async def blueteam_mitre_lookup(
-    technique_id: str = "",
-    tactic: str = "",
-) -> str:
-    """Look up MITRE ATT&CK technique details or list techniques by tactic.
-
-    Use this when a Wazuh alert contains ``rule.mitre`` fields and you need to
-    understand what a technique ID means, or when building a threat hunt for a
-    specific kill-chain phase.
-
-    **Worked Examples**
-
-    1. *What is T1003?*:
-       ``blueteam_mitre_lookup(technique_id="T1003")``
-
-    2. *List all credential access techniques*:
-       ``blueteam_mitre_lookup(tactic="Credential Access")``
-
-    3. *Both — find a specific technique and verify its tactic*:
-       ``blueteam_mitre_lookup(technique_id="T1059.001", tactic="Execution")``
-    """
-    results: dict = {}
-
-    if tactic:
-        matches = {tid: t for tid, t in _MITRE_TECHNIQUES.items()
-                   if t["tactic"].lower() == tactic.strip().lower()}
-        results["tactic"] = tactic
-        results["category"] = MITRE_TACTIC_TO_CATEGORY.get(tactic.strip(), "?")
-        results["techniques"] = matches
-
-    if technique_id:
-        tid = technique_id.strip().upper()
-        tech = _MITRE_TECHNIQUES.get(tid)
-        if tech:
-            results["technique"] = {"id": tid, **tech,
-                                     "category": MITRE_TACTIC_TO_CATEGORY.get(tech["tactic"], "?")}
-        else:
-            results["technique"] = {"id": tid,
-                                     "error": f"Technique {tid} not in embedded catalog. "
-                                              "Check https://attack.mitre.org/techniques/{tid.replace('.','/')}/"}
-
-    if not results:
-        # Return full mapping as fallback
-        results["tactic_to_category"] = MITRE_TACTIC_TO_CATEGORY
-        results["technique_count"] = len(_MITRE_TECHNIQUES)
-        results["hint"] = "Pass technique_id or tactic to filter."
-
-    return json.dumps(results, indent=2, ensure_ascii=False)
+# blueteam_wazuh_agents - filter parity with Wazuh Manager API
+class WazuhAgentsInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    status: Optional[str] = Field(default=None,
+                                   description="Filter: active, disconnected, never_connected, pending (comma-separated)")
+    sort: Optional[str] = Field(default=None,
+                                 description="Sort: +/-field, e.g. '-date_add'")
+    search: Optional[str] = Field(default=None, max_length=128,
+                                   description="Free-text search across agent name/ip")
+    select: Optional[str] = Field(default=None, max_length=256,
+                                   description="Comma-separated field names to return, e.g. 'id,name,ip,status'")
+    q: Optional[str] = Field(default=None, max_length=256,
+                              description="Lucene query string for advanced filtering")
+    distinct: bool = Field(default=False,
+                            description="Return distinct values only")
+    limit: int = Field(default=100, ge=1, le=500)
+    cursor: Optional[str] = Field(default=None,
+                                   description="Opaque pagination cursor from previous response")
 
 
-# Core Wazuh tools (hand-migrated)
-import json
-from pathlib import Path
-from mcp_server.core.constants import _WAZUH_LOG_TAG, _WAZUH_ALERTS_PATH, _WAZUH_ALERTS_MAX_LINES
-from mcp_server.core.redact import _redact_alert_data
-from mcp_server.core.subprocess import _run_async
-from mcp_server.wazuh.auth import _wazuh_api_get
-
-@mcp.tool(
-    name="blueteam_wazuh_agents",
-    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
-)
-async def blueteam_wazuh_agents(limit: int = 100, cursor: Optional[str] = None) -> str:
-    """List Wazuh agents with cursor pagination — one page per call."""
-    _audit_log("blueteam_wazuh_agents", {})
+@blueteam_tool(name="blueteam_wazuh_agents")
+async def blueteam_wazuh_agents(params: WazuhAgentsInput) -> str:
+    """List Wazuh agents with full Manager API filter support and cursor pagination."""
     offset = 0
-    if cursor:
-        decoded = _decode_cursor(cursor)
+    if params.cursor:
+        decoded = _decode_cursor(params.cursor)
         if decoded:
             offset = decoded.get("offset", 0)
-    params = {"offset": str(offset), "limit": str(min(limit, 500))}
-    data = await _wazuh_api_get("/agents", params)
-    if isinstance(data.get("error"), str):
-        return json.dumps(data, indent=2)
+
+    api: dict[str, str] = {
+        "offset": str(offset),
+        "limit": str(min(params.limit, 500)),
+    }
+    if params.status:   api["status"] = params.status
+    if params.sort:     api["sort"] = params.sort
+    if params.search:   api["search"] = params.search
+    if params.select:   api["select"] = params.select
+    if params.q:        api["q"] = params.q
+    if params.distinct: api["distinct"] = "true"
+
+    data = await _wazuh_api_get("/agents", api)
     agents = data.get("data", {}).get("affected_items", [])
     total = data.get("data", {}).get("total_affected_items", len(agents))
-    next_cursor = _encode_cursor({"offset": offset + len(agents)}) if len(agents) >= limit else None
-    return json.dumps({"total": total, "offset": offset, "limit": limit, "next_cursor": next_cursor, "agents": agents}, indent=2)
+    next_cursor = _encode_cursor({"offset": offset + len(agents)}) if len(agents) >= params.limit else None
+    return json.dumps({
+        "total": total, "offset": offset, "limit": params.limit,
+        "next_cursor": next_cursor, "agents": agents,
+    }, indent=2)
 
-@mcp.tool(
-    name="blueteam_wazuh_agents_summary",
-    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
-)
+
+# blueteam_wazuh_agents_summary
+@blueteam_tool(name="blueteam_wazuh_agents_summary")
 async def blueteam_wazuh_agents_summary() -> str:
     """Get Wazuh agent count by status."""
-    _audit_log("blueteam_wazuh_agents_summary", {})
     data = await _wazuh_api_get("/agents/summary/status")
-    if isinstance(data.get("error"), str):
-        return json.dumps(data, indent=2)
     return json.dumps(data.get("data", data), indent=2)
 
 
-@mcp.tool(
-    name="blueteam_wazuh_manager_logs",
-    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
-)
-async def blueteam_wazuh_manager_logs(log_type: str = "alerts", limit: int = 50, cursor: Optional[str] = None) -> str:
+# blueteam_wazuh_manager_logs
+class WazuhManagerLogsInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    log_type: str = Field(default="alerts", description="One of: alerts, ossec, cluster, auth, monitoring")
+    search: Optional[str] = Field(default=None, max_length=128)
+    sort: Optional[str] = Field(default=None)
+    limit: int = Field(default=50, ge=1, le=500)
+    cursor: Optional[str] = Field(default=None)
+
+
+@blueteam_tool(name="blueteam_wazuh_manager_logs")
+async def blueteam_wazuh_manager_logs(params: WazuhManagerLogsInput) -> str:
     """Fetch Wazuh manager logs with cursor pagination."""
-    _audit_log("blueteam_wazuh_manager_logs", {})
-    if log_type not in _WAZUH_LOG_TAG:
+    if params.log_type not in _WAZUH_LOG_TAG:
         return json.dumps({"error": f"log_type must be one of: {tuple(_WAZUH_LOG_TAG)}"})
     offset = 0
-    if cursor:
-        decoded = _decode_cursor(cursor)
+    if params.cursor:
+        decoded = _decode_cursor(params.cursor)
         if decoded:
             offset = decoded.get("offset", 0)
-    api_params = {"offset": str(offset), "limit": str(min(limit, 500)), "pretty": "true", "tag": _WAZUH_LOG_TAG[log_type]}
-    data = await _wazuh_api_get("/manager/logs", api_params)
-    if isinstance(data.get("error"), str):
-        return json.dumps(data, indent=2)
+    api: dict[str, str] = {
+        "offset": str(offset),
+        "limit": str(min(params.limit, 500)),
+        "pretty": "true",
+        "tag": _WAZUH_LOG_TAG[params.log_type],
+    }
+    if params.search: api["search"] = params.search
+    if params.sort:   api["sort"] = params.sort
+
+    data = await _wazuh_api_get("/manager/logs", api)
     items = data.get("data", {}).get("affected_items", data.get("data", []))
     if isinstance(items, dict):
         items = [items]
     total = data.get("data", {}).get("total_affected_items", len(items))
-    next_cursor = _encode_cursor({"offset": offset + len(items)}) if len(items) >= limit else None
-    return json.dumps({"total": total, "offset": offset, "limit": limit, "next_cursor": next_cursor, "logs": items}, indent=2)
+    next_cursor = _encode_cursor({"offset": offset + len(items)}) if len(items) >= params.limit else None
+    return json.dumps({
+        "total": total, "offset": offset, "limit": params.limit,
+        "next_cursor": next_cursor, "logs": items,
+    }, indent=2)
+
+
+# Indexer tools + local alerts fallback (keep manual pattern for now
+# these call _wazuh_indexer_post which still returns dicts, not exceptions)
+from mcp_server.core.audit import _audit_log
+from mcp_server.core.redact import _redact_alert_data
+from mcp_server.core.subprocess import _run_async
 
 
 @mcp.tool(
     name="blueteam_wazuh_alerts",
-    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+    annotations={"readOnlyHint": True, "destructiveHint": False,
+                  "idempotentHint": True, "openWorldHint": False}
 )
-async def blueteam_wazuh_alerts(agent_name: Optional[str] = None, srcip: Optional[str] = None,
-                                 since: Optional[str] = None, until: Optional[str] = None,
-                                 limit: int = 500, cursor: Optional[str] = None,
-                                 bypass_redaction: bool = False,
-                                 redaction_policy: Optional[str] = None) -> str:
-    """Read Wazuh security alerts — local alerts.json first, auto-fallback to Indexer."""
+async def blueteam_wazuh_alerts(
+    agent_name: Optional[str] = None,
+    srcip: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = 500,
+    cursor: Optional[str] = None,
+    bypass_redaction: bool = False,
+    redaction_policy: Optional[str] = None,
+) -> str:
+    """Read Wazuh security alerts - local alerts.json first, auto-fallback to Indexer."""
     _audit_log("blueteam_wazuh_alerts", {})
     p = Path(_WAZUH_ALERTS_PATH)
     if not p.exists():
-        from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _encode_cursor, _decode_cursor
+        from mcp_server.wazuh.indexer import _wazuh_indexer_post
         from mcp_server.wazuh.time_utils import _parse_time_window
         if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
-            return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set. "
-                              "Set these to enable automatic indexer fallback, or use blueteam_wazuh_manager_logs."}, indent=2)
+            return json.dumps({
+                "error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set. "
+                         "Set these to enable automatic indexer fallback, "
+                         "or use blueteam_wazuh_manager_logs."
+            }, indent=2)
         search_after = None
         since_iso, until_iso = _parse_time_window(since or "24h", until)
         if cursor:
             decoded = _decode_cursor(cursor)
             if decoded:
                 search_after = decoded.get("search_after")
-        must = [{"range": {"@timestamp": {"gte": since_iso, "lt": until_iso, "format": "strict_date_optional_time"}}}]
-        if agent_name: must.append({"match": {"agent.name": agent_name}})
+        must = [{"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
+                                           "format": "strict_date_optional_time"}}}]
+        if agent_name:
+            must.append({"match": {"agent.name": agent_name}})
         if srcip:
-            must.append({"bool": {"should": [{"match": {"data.srcip": srcip}}, {"match_phrase": {"full_log": srcip}}], "minimum_should_match": 1}})
-        body = {"size": min(limit, 2000), "sort": [{"@timestamp": {"order": "asc"}}], "query": {"bool": {"must": must}}}
-        if search_after: body["search_after"] = search_after
+            must.append({"bool": {"should": [
+                {"match": {"data.srcip": srcip}},
+                {"match_phrase": {"full_log": srcip}},
+            ], "minimum_should_match": 1}})
+        body = {
+            "size": min(limit, 2000),
+            "sort": [{"@timestamp": {"order": "asc"}}],
+            "query": {"bool": {"must": must}},
+        }
+        if search_after:
+            body["search_after"] = search_after
         raw = await _wazuh_indexer_post(body)
-        if "error" in raw: return json.dumps(raw, indent=2)
+        if "error" in raw:
+            return json.dumps(raw, indent=2)
         hits = raw.get("hits", {})
         docs = [h.get("_source", h) for h in hits.get("hits", [])]
         next_cursor = None
         hit_list = hits.get("hits", [])
         if hit_list and len(docs) >= limit:
             last_sort = hit_list[-1].get("sort")
-            if last_sort: next_cursor = _encode_cursor({"search_after": last_sort})
-        return _truncate_if_needed(json.dumps({"source": "wazuh-indexer", "alerts": _redact_alert_data(docs, bypass=bypass_redaction, policy=redaction_policy), "count": len(docs), "next_cursor": next_cursor}, indent=2))
+            if last_sort:
+                next_cursor = _encode_cursor({"search_after": last_sort})
+        return _truncate_if_needed(json.dumps({
+            "source": "wazuh-indexer",
+            "alerts": _redact_alert_data(docs, bypass=bypass_redaction,
+                                          policy=redaction_policy),
+            "count": len(docs),
+            "next_cursor": next_cursor,
+        }, indent=2))
+
     # Local alerts.json path
     skip = 0
     if cursor:
         decoded = _decode_cursor(cursor)
-        if decoded: skip = decoded.get("scanned", 0)
+        if decoded:
+            skip = decoded.get("scanned", 0)
     page = min((skip + limit) * 3, _WAZUH_ALERTS_MAX_LINES)
     r = await _run_async(["tail", "-n", str(page), _WAZUH_ALERTS_PATH])
     if r.get("returncode", 0) != 0:
-        return json.dumps({"error": "Failed to read alerts", "stderr": r.get("stderr", "")})
+        return json.dumps({"error": "Failed to read alerts",
+                            "stderr": r.get("stderr", "")})
     alerts = []
     af = (agent_name or "").strip()
     ipf = (srcip or "").strip()
     scanned = 0
     for line in (r.get("stdout") or "").strip().splitlines():
         scanned += 1
-        if scanned <= skip: continue
-        if len(alerts) >= limit: break
+        if scanned <= skip:
+            continue
+        if len(alerts) >= limit:
+            break
         line = line.strip()
-        if not line: continue
+        if not line:
+            continue
         try:
             a = json.loads(line)
             if af:
                 ag = a.get("agent") or {}
                 n = ag.get("name") or ag.get("id", "") if isinstance(ag, dict) else str(ag)
-                if af.lower() not in (n or "").lower(): continue
+                if af.lower() not in (n or "").lower():
+                    continue
             if ipf:
                 ds = str(a.get("data", {}).get("srcip", ""))
                 ds2 = str(a.get("data", {}).get("srcip2", ""))
                 ts = str(a.get("srcip", ""))
                 fl = str(a.get("full_log", ""))
-                if ipf not in (ds, ds2, ts) and ipf not in fl: continue
+                if ipf not in (ds, ds2, ts) and ipf not in fl:
+                    continue
             alerts.append(a)
-        except json.JSONDecodeError: continue
+        except json.JSONDecodeError:
+            continue
     next_cursor = _encode_cursor({"scanned": scanned}) if len(alerts) >= limit else None
-    return _truncate_if_needed(json.dumps({"source": "local",
-                                            "alerts": _redact_alert_data(alerts, bypass=bypass_redaction, policy=redaction_policy),
-                                            "count": len(alerts), "next_cursor": next_cursor}, indent=2))
+    return _truncate_if_needed(json.dumps({
+        "source": "local",
+        "alerts": _redact_alert_data(alerts, bypass=bypass_redaction,
+                                      policy=redaction_policy),
+        "count": len(alerts),
+        "next_cursor": next_cursor,
+    }, indent=2))
+
 
 @mcp.tool(
     name="blueteam_wazuh_indexer_search",
-    annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+    annotations={"readOnlyHint": True, "destructiveHint": False,
+                  "idempotentHint": True, "openWorldHint": False}
 )
-async def blueteam_wazuh_indexer_search(agent_name: Optional[str] = None, srcip: Optional[str] = None,
-                                         since: Optional[str] = None, until: Optional[str] = None,
-                                         limit: int = 500, max_scanned: int = 0,
-                                         cursor: Optional[str] = None, keyword: Optional[str] = None,
-                                         response_format: str = "json",
-                                         redaction_policy: Optional[str] = None) -> str:
+async def blueteam_wazuh_indexer_search(
+    agent_name: Optional[str] = None,
+    srcip: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    limit: int = 500,
+    max_scanned: int = 0,
+    cursor: Optional[str] = None,
+    keyword: Optional[str] = None,
+    response_format: str = "json",
+    redaction_policy: Optional[str] = None,
+) -> str:
     """Query Wazuh Indexer (OpenSearch) for alerts/events with cursor pagination.
 
     Set max_scanned > 0 for auto-pagination (server fetches up to N documents
-    across multiple pages in a single call). Pass cursor from previous
-    response to continue where you left off.
-
-    Returns total matching documents so you know if data was truncated.
+    across multiple pages in a single call).
     """
     _audit_log("blueteam_wazuh_indexer_search", {})
-    from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _encode_cursor, _decode_cursor
+    from mcp_server.wazuh.indexer import (
+        _wazuh_indexer_post, _KEYWORD_SEARCH_FIELDS,
+    )
     from mcp_server.wazuh.time_utils import _parse_time_window
+
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
-        return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."}, indent=2)
+        return json.dumps({
+            "error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."
+        }, indent=2)
     since_iso, until_iso = _parse_time_window(since, until)
-    must = []
-    if agent_name: must.append({"match": {"agent.name": agent_name}})
+    must: list[dict] = []
+    if agent_name:
+        must.append({"match": {"agent.name": agent_name}})
     if srcip:
-        must.append({"bool": {"should": [{"match": {"data.srcip": srcip}}, {"match": {"data.srcip2": srcip}}, {"match": {"srcip": srcip}}, {"match_phrase": {"full_log": srcip}}], "minimum_should_match": 1}})
-    tr = {"format": "strict_date_optional_time", "gte": since_iso, "lt": until_iso}
-    must.append({"range": {"@timestamp": tr}})
+        must.append({"bool": {"should": [
+            {"match": {"data.srcip": srcip}},
+            {"match": {"data.srcip2": srcip}},
+            {"match": {"srcip": srcip}},
+            {"match_phrase": {"full_log": srcip}},
+        ], "minimum_should_match": 1}})
+    must.append({"range": {"@timestamp": {
+        "format": "strict_date_optional_time", "gte": since_iso, "lt": until_iso,
+    }}})
     if keyword:
-        parts = [f'{f}: ({keyword})^{b}' if b else f'{f}: ({keyword})' for f, b in _KEYWORD_SEARCH_FIELDS]
-        must.append({"query_string": {"query": " OR ".join(parts), "default_operator": "AND", "lenient": True}})
+        parts = [
+            f"{f}: ({keyword})^{b}" if b else f"{f}: ({keyword})"
+            for f, b in _KEYWORD_SEARCH_FIELDS
+        ]
+        must.append({"query_string": {
+            "query": " OR ".join(parts),
+            "default_operator": "AND",
+            "lenient": True,
+        }})
 
     search_after = None
     if cursor:
@@ -485,26 +540,26 @@ async def blueteam_wazuh_indexer_search(agent_name: Optional[str] = None, srcip:
         if decoded:
             search_after = decoded.get("search_after")
 
-    all_docs = []
+    all_docs: list[dict] = []
     total_scanned = 0
     total_val = 0
     total_relation = "eq"
     page_size = min(limit, 10000)
-    # Hard cap on auto-pagination: one call must never sweep the whole index.
-    # 100k docs already exceeds the response character limit; iteration via
-    # next_cursor is the supported path for larger scans.
     _MAX_AUTO_SCAN = 100000
     effective_max = min(max_scanned, _MAX_AUTO_SCAN) if max_scanned > 0 else page_size
 
     while total_scanned < effective_max:
-        body = {"size": min(page_size, effective_max - total_scanned),
-                "sort": [{"@timestamp": {"order": "asc"}}, {"_id": "asc"}],
-                "query": {"bool": {"must": must}} if must else {"match_all": {}}}
+        body = {
+            "size": min(page_size, effective_max - total_scanned),
+            "sort": [{"@timestamp": {"order": "asc"}}, {"_id": "asc"}],
+            "query": {"bool": {"must": must}} if must else {"match_all": {}},
+        }
         if search_after:
             body["search_after"] = search_after
         raw = await _wazuh_indexer_post(body)
         if "error" in raw:
-            if all_docs: break  # partial results on error
+            if all_docs:
+                break
             return json.dumps(raw, indent=2)
         hits = raw.get("hits", {})
         hit_list = hits.get("hits", [])
@@ -521,12 +576,39 @@ async def blueteam_wazuh_indexer_search(agent_name: Optional[str] = None, srcip:
             break
         search_after = last_sort
 
-    next_cursor = _encode_cursor({"search_after": search_after}) if search_after and total_scanned < total_val else None
+    next_cursor = (
+        _encode_cursor({"search_after": search_after})
+        if search_after and total_scanned < total_val
+        else None
+    )
     has_more = next_cursor is not None
     return _truncate_if_needed(json.dumps({
         "total": {"value": total_val, "relation": total_relation},
         "retrieved": total_scanned,
         "has_more": has_more,
         "next_cursor": next_cursor,
-        "documents": _redact_alert_data(all_docs, policy=redaction_policy),
-    }, indent=2, ensure_ascii=False))
+        "alerts": _redact_alert_data(all_docs, policy=redaction_policy),
+    }, indent=2))
+
+
+# blueteam_mitre_lookup
+@mcp.tool(
+    name="blueteam_mitre_lookup",
+    annotations={"readOnlyHint": True, "destructiveHint": False,
+                  "idempotentHint": True, "openWorldHint": False}
+)
+async def blueteam_mitre_lookup(tactic_or_technique: str) -> str:
+    """Look up a MITRE ATT&CK tactic or technique in the local mapping."""
+    _audit_log("blueteam_mitre_lookup", {"query": tactic_or_technique})
+    q = tactic_or_technique.strip().upper()
+    results: dict[str, str] = {}
+    for tactic, category in MITRE_TACTIC_TO_CATEGORY.items():
+        if q in tactic.upper() or q in category.upper():
+            results[tactic] = category
+    if not results:
+        return json.dumps({
+            "query": tactic_or_technique,
+            "result": "not_found",
+            "available_tactics": list(MITRE_TACTIC_TO_CATEGORY.keys()),
+        }, indent=2)
+    return json.dumps({"query": tactic_or_technique, "matches": results}, indent=2)
