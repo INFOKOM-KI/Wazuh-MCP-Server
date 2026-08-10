@@ -1449,3 +1449,5 @@ python3 check_guardrails.py --strict  # CI mode: non-zero exit on any warning
 | Rule-File Tools (`tools/wazuh_rules_files.py`) | 3 | `blueteam_wazuh_get_rule_files`, `blueteam_wazuh_get_rule_file_content` |
 | Test Suite (`tests/`) | 3 | 56 tests, 0 failures — exceptions, redact, correlation, auth |
 | Config Consolidation (`mcp_server/__init__.py`) | 4 | Module-level vars sourced from `Config` singleton; backward-compatible exports |
+| HTTP/2 + Retry Jitter (`core/http_client.py`) | 7 | `http2=True` on all pooled clients; jittered 200-400ms backoff prevents thundering herd |
+| Guardrail Pre-Commit Hook (`.git/hooks/pre-commit`) | 8 | `check_guardrails.py --strict` blocks commits with DRIFT/CLOSURE/UNBOUND bugs |

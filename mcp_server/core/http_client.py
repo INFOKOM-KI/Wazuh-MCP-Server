@@ -4,7 +4,7 @@
 HTTP client pool, unified API call helper, error handling, IP validation.
 """
 from __future__ import annotations
-import asyncio, ipaddress, json, logging
+import asyncio, ipaddress, json, logging, random
 from typing import Any, Dict, Optional, Annotated
 import httpx
 from pydantic import AfterValidator
@@ -35,6 +35,7 @@ async def _get_client(
             timeout=httpx.Timeout(HTTP_TIMEOUT),
             limits=httpx.Limits(max_keepalive_connections=max_keepalive, max_connections=max_connections),
             verify=verify,
+            http2=True,
         )
     return _clients[name]
 
@@ -63,13 +64,13 @@ async def _api_call(method: str, url: str, *, client_name: str = "http", verify:
                 last_exc = e
                 continue
             if e.response.status_code >= 500 and attempt == 0:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.2 + random.uniform(0, 0.2))
                 last_exc = e
                 continue
             raise
         except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
             if attempt == 0:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.2 + random.uniform(0, 0.2))
                 last_exc = e
                 continue
             raise
