@@ -24,7 +24,12 @@ from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 
-# 1: Alert Summarization
+# IPs to exclude from beacon detection (comma-separated, e.g. monitoring agents, heartbeats)
+_BEACON_EXCLUDE_IPS: set[str] = {
+    ip.strip() for ip in os.environ.get("BLUETEAM_BEACON_EXCLUDE_IPS", "").split(",") if ip.strip()
+}
+
+# 2: Beacon Detection
 # Auto-extracted from alert_enrichment.py - modular refactor (2026-08-11 - AUL Tuning)
 class BeaconDetectInput(BaseModel):
     """Input model for blueteam_beacon_detect."""
@@ -98,6 +103,12 @@ async def blueteam_beacon_detect(params: BeaconDetectInput) -> str:
        ``blueteam_beacon_detect(srcip="103.107.116.202", since="1h", min_events=10)``
     """
     _audit_log("blueteam_beacon_detect", {"srcip": params.srcip})
+    # Exclude known benign periodic IPs (monitoring, heartbeats)
+    if params.srcip.strip() in _BEACON_EXCLUDE_IPS:
+        return json.dumps({"srcip": params.srcip, "beacon_score": 0.0,
+                           "verdict": "benign",
+                           "note": "IP in BLUETEAM_BEACON_EXCLUDE_IPS — known health-check/monitoring"},
+                          indent=2)
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
         return json.dumps({
             "error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set.",

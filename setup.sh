@@ -156,6 +156,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # LangGraph workflow persistence
 # export BLUETEAM_LANGGRAPH_DB="/var/log/blue-team-mcp/langgraph.db"  # SQLite state; unset = InMemorySaver (lost on restart)
 # export BLUETEAM_LANGGRAPH_NODE_TIMEOUT="120"  # seconds — per-node timeout
+
+# Beacon detection exclusions (comma-separated IPs — known health-check/monitoring infra)
+# export BLUETEAM_BEACON_EXCLUDE_IPS="10.0.0.1,10.0.0.2"
 # export BLUETEAM_RATE_LIMIT="0"
 
 # Path restrictions (defaults shown)
@@ -232,6 +235,7 @@ export WAZUH_DISABLED_CATEGORIES="${WAZUH_DISABLED_CATEGORIES:-}"
 export WAZUH_READ_ONLY="${WAZUH_READ_ONLY:-false}"
 export WAZUH_READ_ONLY="${WAZUH_READ_ONLY:-false}"
 export BLUETEAM_CAMPAIGN_SNAPSHOTS="${BLUETEAM_CAMPAIGN_SNAPSHOTS:-/var/log/blue-team-mcp/campaign_snapshots.jsonl}"
+export BLUETEAM_BEACON_EXCLUDE_IPS="${BLUETEAM_BEACON_EXCLUDE_IPS:-}"
 export BLUETEAM_REDACT_EMAILS="${BLUETEAM_REDACT_EMAILS:-true}"
 export BLUETEAM_REDACT_DOMAINS="${BLUETEAM_REDACT_DOMAINS:-true}"
 export BLUETEAM_REDACT_LOCATIONS="${BLUETEAM_REDACT_LOCATIONS:-true}"

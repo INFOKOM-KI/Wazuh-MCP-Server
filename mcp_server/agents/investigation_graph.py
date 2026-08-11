@@ -176,8 +176,10 @@ async def analytics_step(state: InvestigationState) -> dict:
 async def baseline_step(state: InvestigationState) -> dict:
     from mcp_server.tools.baseline import blueteam_baseline_drift, BaselineDriftInput
     try:
-        out = await blueteam_baseline_drift(BaselineDriftInput(
-            window=state.get("window", "24h"), response_format="json"))
+        out = await _with_timeout(
+            blueteam_baseline_drift(BaselineDriftInput(
+                window=state.get("window", "24h"), response_format="json")),
+            "baseline")
         return {"baseline": json.loads(out), "steps": ["baseline: drift evaluated"]}
     except Exception as e:
         return {"errors": [f"baseline: {e}"], "steps": ["baseline: degraded"]}
