@@ -110,7 +110,9 @@ def analyze_attack_graph(G: nx.Graph, top_n: int = 10) -> dict:
     degree = dict(G.degree())
     n = G.number_of_nodes()
     if n >= 2:
-        k = min(50, n)  # approximate betweenness (Kadabra/random sampling)
+        # Scale k with graph size: 10% of nodes, capped between 10-200.
+        # Small graphs need a higher fraction; large graphs use sampling.
+        k = max(10, min(int(n * 0.1), 200))
         bc = nx.betweenness_centrality(G, k=k)
     else:
         bc = {}

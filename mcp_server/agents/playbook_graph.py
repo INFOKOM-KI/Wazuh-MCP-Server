@@ -9,7 +9,7 @@ the hunt once with the generic (c2_beacon) template when the targeted hunt
 finds no source IPs, and records every degraded step.
 """
 from __future__ import annotations
-import json, logging, os, uuid
+import asyncio, json, logging, os, uuid
 from typing import Annotated, Optional, TypedDict
 from operator import add
 from langgraph.graph import StateGraph, START, END
@@ -18,6 +18,9 @@ from mcp_server.tools.threat_hunt import _THREAT_HUNT_TEMPLATES
 from mcp_server.agents.investigation_graph import run_investigation
 
 logger = logging.getLogger("blue_team_mcp.playbook_graph")
+
+# Per-node timeout (seconds)
+_NODE_TIMEOUT = float(os.environ.get("BLUETEAM_LANGGRAPH_NODE_TIMEOUT", "120"))
 
 # SqliteSaver (survives server restarts) with env-var path
 _LG_DB = os.environ.get("BLUETEAM_LANGGRAPH_DB", "")
@@ -38,6 +41,8 @@ else:
     _checkpointer = InMemorySaver()
 
 _FALLBACK_TEMPLATE = "c2_beacon"
+# Retry ladder: if the targeted template finds 0 srcips, try these in order.
+_RETRY_TEMPLATES = ["c2_beacon", "lateral_movement", "suspicious_parent"]
 
 # Playbook metadata: rule-group keywords + investigation focus per template.
 # `focus` labels which investigation steps matter most for the report narrative.
@@ -85,7 +90,7 @@ class PlaybookState(TypedDict, total=False):
     report_dir: str
     # runtime
     template_name: Optional[str]
-    generic_retried: bool
+    _retry_idx: int
     hunt: Optional[dict]
     srcips: list[str]
     selected_srcip: Optional[str]
@@ -121,8 +126,10 @@ async def run_hunt(state: PlaybookState) -> dict:
     from mcp_server.tools.threat_hunt import blueteam_threat_hunt, ThreatHuntInput
     tpl = state.get("template_name") or _FALLBACK_TEMPLATE
     try:
-        out = await blueteam_threat_hunt(ThreatHuntInput(
-            template=tpl, since=state.get("window", "24h"), response_format="json"))
+        out = await asyncio.wait_for(
+            blueteam_threat_hunt(ThreatHuntInput(
+                template=tpl, since=state.get("window", "24h"), response_format="json")),
+            timeout=_NODE_TIMEOUT)
         hunt = json.loads(out)
         if isinstance(hunt, dict) and hunt.get("error"):
             return {"hunt": hunt, "srcips": [],
@@ -145,26 +152,36 @@ async def run_hunt(state: PlaybookState) -> dict:
 def supervise(state: PlaybookState) -> dict:
     """Node: pick the top srcip and decide retry/investigate/end.
 
-    Mutates state (selected_srcip, retry flags, _route); the router function
-    reads _route so langgraph sees a dict update, not a bare string.
+    Retry ladder: if the targeted template finds no srcips, retries with up to
+    3 fallback templates (_RETRY_TEMPLATES) before giving up.
     """
     updates: dict = {}
     if state.get("srcips") and not state.get("selected_srcip"):
         updates["selected_srcip"] = state["srcips"][0]["ip"]
         updates["steps"] = [f"supervise: top srcip = {updates['selected_srcip']}"]
-    retry = (not state.get("srcips")
-             and state.get("template_name") != _FALLBACK_TEMPLATE
-             and not state.get("generic_retried"))
-    if retry:
-        updates["template_name"] = _FALLBACK_TEMPLATE
-        updates["generic_retried"] = True
-        updates["steps"] = ["supervise: hunt empty -> retrying with c2_beacon"]
-    if retry:
-        updates["_route"] = "retry"
-    elif state.get("selected_srcip") or state.get("srcip") or state.get("alert_text"):
+    if state.get("selected_srcip") or state.get("srcip") or state.get("alert_text"):
         updates["_route"] = "investigate"
+        return updates
+    # No srcips - try the next retry template if available
+    retry_idx = state.get("_retry_idx", 0)
+    if retry_idx < len(_RETRY_TEMPLATES):
+        next_tpl = _RETRY_TEMPLATES[retry_idx]
+        if state.get("template_name") == next_tpl:
+            # Already tried this one, skip to next
+            retry_idx += 1
+            if retry_idx < len(_RETRY_TEMPLATES):
+                next_tpl = _RETRY_TEMPLATES[retry_idx]
+            else:
+                updates["_route"] = END
+                updates["steps"] = ["supervise: all retries exhausted - no srcips found"]
+                return updates
+        updates["_retry_idx"] = retry_idx + 1
+        updates["template_name"] = next_tpl
+        updates["steps"] = [f"supervise: hunt empty -> retrying with '{next_tpl}' ({retry_idx + 1}/{len(_RETRY_TEMPLATES)})"]
+        updates["_route"] = "retry"
     else:
         updates["_route"] = END
+        updates["steps"] = ["supervise: all retries exhausted - no srcips found"]
     return updates
 
 
@@ -235,6 +252,7 @@ async def run_playbook(alert_text: str | None = None, rule_id: str | None = None
         "verdict_label": verdict_label,
         "report_dir": report_dir,
         "srcips": [],
+        "_retry_idx": 0,
         "steps": [],
         "errors": [],
     }

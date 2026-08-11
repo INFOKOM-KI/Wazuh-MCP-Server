@@ -69,11 +69,30 @@ async def _wazuh_indexer_msearch(bodies: list[dict], index_pattern: Optional[str
                                 headers={"Content-Type": "application/x-ndjson"})
         raw = resp.json()
         if isinstance(raw, dict) and "responses" in raw:
-            return raw["responses"]
+            responses = raw["responses"]
+            # Per-response granularity: each response may independently
+            # succeed or fail. Return individual error dicts for failed
+            # queries so callers can distinguish partial failures.
+            out: list[dict] = []
+            for i, r in enumerate(responses):
+                if isinstance(r, dict) and "error" in r:
+                    out.append({"error": f"_msearch query {i} failed: {r['error'].get('reason', str(r['error']))}"})
+                elif isinstance(r, dict) and "status" in r and r.get("status", 200) >= 400:
+                    out.append({"error": f"_msearch query {i} HTTP {r['status']}",
+                               "detail": str(r.get("error", {}))[:300]})
+                else:
+                    out.append(r)
+            # Pad if fewer responses than bodies (unlikely but defensive)
+            while len(out) < len(bodies):
+                out.append({"error": f"_msearch query {len(out)}: no response"})
+            return out
         return [raw] if not isinstance(raw, list) else raw
     except Exception as e:
-        logger.warning("_msearch failed (%s) — fallback to individual calls", e)
-        return [_MSEARCH_FALLBACK_ERROR] * len(bodies)
+        logger.warning("_msearch failed (%s) - returning per-query error dicts", e)
+        # Per-query fallback: each body gets its own error dict rather than
+        # a single blanket error. This lets callers that can handle partial
+        # failures (e.g. 3-Sum with one category down) continue working.
+        return [{"error": f"_msearch failed: {e}"}] * len(bodies)
 
 
 # Cursor pagination (base64-encoded JSON)
