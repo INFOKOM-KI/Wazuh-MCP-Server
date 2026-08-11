@@ -22,6 +22,7 @@ from mcp_server.wazuh.time_utils import _parse_time_window, _auto_bucket_interva
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 from mcp_server.core.attacker_registry import register_attacker_ioc, register_attacker_ips
 from mcp_server.core.ioc_store import record_iocs
+from mcp_server.tools.investigation_history import _read_history
 from mcp_server.correlation.three_sum_core import (evaluate_engine_a, evaluate_engine_b, format_evaluation_dict,
     normalize_srcip_to_cidr, DEFAULT_THRESHOLD_SCORE, DEFAULT_Z_THRESHOLD, DEFAULT_WINDOW_MINUTES,
     DEFAULT_SPARSE_FLOOR, evaluate_baseline_drift, evaluate_multi_resolution, _MULTI_RES_TIERS)
