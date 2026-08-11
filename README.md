@@ -836,6 +836,7 @@ All tools below are registered across the `mcp_server/` package. Tools not requi
 | `blueteam_wazuh_compliance` | 🆕 Compliance framework summary (CIS, PCI DSS, GDPR, HIPAA, NIST 800-53) |
 | `blueteam_wazuh_geo_heatmap` | 🆕 Attack coordinate + city-level geo heatmap for visualization |
 | `blueteam_semantic_search` | 🆕 BM25 semantic search - natural language queries against Wazuh rules |
+| `blueteam_prompt_route` | 🆕 BM25 prompt-to-tool routing — maps natural-language prompts to ranked MCP tools |
 | `blueteam_export_report` | 🆕 SOC report deliverables - generate .docx / .xlsx / .pptx via officecli |
 | `blueteam_stix_analyze` | 🆕 MITRE ATT&CK STIX correlation - map techniques, threat actors, campaigns, mitigations |
 
