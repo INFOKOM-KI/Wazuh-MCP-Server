@@ -35,7 +35,7 @@ from mcp_server.wazuh.indexer import (
 # Manager API tools - all benefit from @blueteam_tool (audit + error + trunc)
 # blueteam_wazuh_get_rules
 # Indexer tools (remaining after Manager API split)
-from mcp_server.core.audit import _audit_log
+from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.subprocess import _run_async
 

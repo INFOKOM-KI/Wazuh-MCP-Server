@@ -11,6 +11,7 @@ from collections import Counter
 from pydantic import field_validator, BaseModel, ConfigDict, Field
 from mcp_server import (mcp, _INVESTIGATION_HISTORY_FILE)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.attacker_registry import register_attacker_ioc
 
 _INVESTIGATION_HISTORY_MAX_ENTRIES = int(os.environ.get("BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES", "10000"))
 
