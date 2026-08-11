@@ -19,7 +19,7 @@ import sys
 def main() -> None:
     # 1: CLI args (before FastMCP construction)
     parser = argparse.ArgumentParser(
-        description="blue_team_mcp — SOC automation MCP server for Wazuh"
+        description="blue_team_mcp - SOC automation MCP server for Wazuh"
     )
     parser.add_argument(
         "--transport", choices=["stdio", "streamable_http", "http"],

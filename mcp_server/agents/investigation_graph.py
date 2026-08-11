@@ -15,12 +15,31 @@ Every node degrades gracefully: steps without required credentials (indexer,
 API keys) are recorded in `errors` and the workflow continues.
 """
 from __future__ import annotations
-import json, uuid
+import json, logging, os, uuid
 from typing import Annotated, Optional, TypedDict
 from operator import add
-
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
+
+logger = logging.getLogger("blue_team_mcp.investigation_graph")
+
+# SqliteSaver (survives server restarts) with env-var path
+_LG_DB = os.environ.get("BLUETEAM_LANGGRAPH_DB", "")
+
+_checkpointer = None
+if _LG_DB:
+    try:
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        _checkpointer = SqliteSaver.from_conn_string(_LG_DB)
+        logger.info("investigation_graph: SqliteSaver at %s", _LG_DB)
+    except Exception as e:
+        logger.warning("investigation_graph: SqliteSaver unavailable (%s), "
+                       "falling back to InMemorySaver", e)
+        _checkpointer = InMemorySaver()
+else:
+    logger.info("investigation_graph: BLUETEAM_LANGGRAPH_DB not set, "
+                "using InMemorySaver (state lost on restart)")
+    _checkpointer = InMemorySaver()
 
 
 class InvestigationState(TypedDict, total=False):
@@ -204,7 +223,7 @@ def _after_report(state: InvestigationState) -> str:
 
 
 def build_investigation_graph():
-    """Build and compile the StateGraph (InMemorySaver checkpointer)."""
+    """Build and compile the StateGraph. Uses module-level checkpointer."""
     g = StateGraph(InvestigationState)
     g.add_node("extract", extract_step)
     g.add_node("enrich", enrich_step)
@@ -228,7 +247,11 @@ def build_investigation_graph():
         "report": "report", "verdict": "verdict", END: END})
     g.add_conditional_edges("report", _after_report, {"verdict": "verdict", END: END})
     g.add_edge("verdict", END)
-    return g.compile(checkpointer=InMemorySaver())
+    return g.compile(checkpointer=_checkpointer)
+
+
+# Pre-compiled graph singleton - reused across all ainvoke calls.
+_investigation_graph = build_investigation_graph()
 
 
 async def run_investigation(alert_text: str | None = None, srcip: str | None = None,
@@ -237,7 +260,7 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
                             record_verdict: bool = False, verdict_label: str = "suspicious",
                             report_dir: str = "/tmp") -> dict:
     """Run the investigation workflow end-to-end and return the final state summary."""
-    graph = build_investigation_graph()
+    graph = _investigation_graph  # reuse pre-compiled singleton
     initial: InvestigationState = {
         "alert_text": alert_text or "",
         "srcip": srcip,

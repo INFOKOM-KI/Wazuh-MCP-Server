@@ -9,15 +9,33 @@ the hunt once with the generic (c2_beacon) template when the targeted hunt
 finds no source IPs, and records every degraded step.
 """
 from __future__ import annotations
-import json, uuid
+import json, logging, os, uuid
 from typing import Annotated, Optional, TypedDict
 from operator import add
-
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
-
 from mcp_server.tools.threat_hunt import _THREAT_HUNT_TEMPLATES
 from mcp_server.agents.investigation_graph import run_investigation
+
+logger = logging.getLogger("blue_team_mcp.playbook_graph")
+
+# SqliteSaver (survives server restarts) with env-var path
+_LG_DB = os.environ.get("BLUETEAM_LANGGRAPH_DB", "")
+
+_checkpointer = None
+if _LG_DB:
+    try:
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        _checkpointer = SqliteSaver.from_conn_string(_LG_DB)
+        logger.info("playbook_graph: SqliteSaver at %s", _LG_DB)
+    except Exception as e:
+        logger.warning("playbook_graph: SqliteSaver unavailable (%s), "
+                       "falling back to InMemorySaver", e)
+        _checkpointer = InMemorySaver()
+else:
+    logger.info("playbook_graph: BLUETEAM_LANGGRAPH_DB not set, "
+                "using InMemorySaver (state lost on restart)")
+    _checkpointer = InMemorySaver()
 
 _FALLBACK_TEMPLATE = "c2_beacon"
 
@@ -187,7 +205,11 @@ def build_playbook_graph():
     g.add_conditional_edges("supervise", route_after_supervise, {
         "retry": "hunt", "investigate": "investigate", END: END})
     g.add_edge("investigate", END)
-    return g.compile(checkpointer=InMemorySaver())
+    return g.compile(checkpointer=_checkpointer)
+
+
+# Pre-compiled graph singleton, reused across all ainvoke calls.
+_playbook_graph = build_playbook_graph()
 
 
 async def run_playbook(alert_text: str | None = None, rule_id: str | None = None,
@@ -198,7 +220,7 @@ async def run_playbook(alert_text: str | None = None, rule_id: str | None = None
                        record_verdict: bool = False, verdict_label: str = "suspicious",
                        report_dir: str = "/tmp") -> dict:
     """Run the playbook end-to-end and return the final summary."""
-    graph = build_playbook_graph()
+    graph = _playbook_graph  # reuse pre-compiled singleton
     initial: PlaybookState = {
         "alert_text": alert_text or "",
         "rule_id": rule_id,

@@ -14,6 +14,7 @@ from typing import Any
 DEFAULT_THRESHOLD_SCORE: int = 10
 DEFAULT_Z_THRESHOLD: float = 2.5
 DEFAULT_WINDOW_MINUTES: int = 10080  # 7 days
+DEFAULT_SPARSE_FLOOR: int = 10  # suppress single-event spikes in quiet categories
 
 # Non-networked decoder fallback IPs (syscheck, auditd, vulnerability-detector)
 _EXCLUDE_IP_FALLBACKS: set[str] = {"0.0.0.0", "unknown", ""}
@@ -24,7 +25,6 @@ _DEDUP_WRAPPER_RULES: set[str] = {"606029", "651"}
 
 def normalize_srcip_to_cidr(ip: str, prefix: int = 24) -> str:
     """Normalize an IP to its /24 CIDR network (opt-in grouping).
-
     Args:
         ip: IPv4 or IPv6 address string.
         prefix: CIDR prefix length (default 24 for IPv4).
@@ -58,10 +58,10 @@ def evaluate_engine_a(
     Finds source IPs appearing in all 3 alert categories, sums their per-category
     risk scores, and returns those exceeding ``threshold_score``.
 
-    Graph integration (all optional, pure data — see ``investigation.py`` for the
+    Graph integration (all optional, pure data - see ``investigation.py`` for the
     orchestrator that builds them from ``core/attack_graph.py``):
       - ``cluster_map``: {ip: {cluster member IPs}}. When given, an IP's category
-        coverage is the MAX over itself and its cluster members — a campaign
+        coverage is the MAX over itself and its cluster members - a campaign
         cluster spanning all 3 categories triggers even when no single IP does.
       - ``ppr_scores`` / ``ppr_boost_factor``: adds ``ppr * factor`` to the total
         for IPs ranked by suspicion propagation (0.0 disables).
@@ -139,16 +139,16 @@ def evaluate_engine_b(
     buckets_b: list[dict[str, Any]],
     buckets_c: list[dict[str, Any]],
     z_score_threshold: float = DEFAULT_Z_THRESHOLD,
-    sparse_floor: int = 0,
+    sparse_floor: int = DEFAULT_SPARSE_FLOOR,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Engine B - 3-Source Volumetric Z-Score (sparse-guard aware).
 
     Computes rolling μ/σ across three time-bucketed alert sources and flags
     buckets where all three simultaneously exceed the Z-threshold.
 
-    ``sparse_floor``: per-source total-event floor. A source whose window total
-    is below the floor contributes Z = 0 for every bucket (its signal is too
-    sparse to be statistically meaningful - prevents single-event spikes in
+    ``sparse_floor``: per-source total-event floor (default 10). A source whose
+    window total is below the floor contributes Z = 0 for every bucket (its signal
+    is too sparse to be statistically meaningful - prevents single-event spikes in
     quiet categories from driving detections). 0 disables the guard.
 
     Args:
@@ -301,7 +301,7 @@ def evaluate_baseline_drift(
     current_counts: list[int],
     z_score_threshold: float = DEFAULT_Z_THRESHOLD,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Baseline-drift anomaly detection — current buckets vs a historical baseline.
+    """Baseline-drift anomaly detection - current buckets vs a historical baseline.
 
     Computes \u03bc/\u03c3 over the baseline series, Z-scores each current bucket against
     it, and flags buckets where Z >= threshold. Pure computation (stdlib only).

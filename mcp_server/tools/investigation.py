@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from typing import Optional, Literal
 from collections import Counter
 from pydantic import field_validator, BaseModel, ConfigDict, Field
-
 from mcp_server import (mcp, _INVESTIGATION_HISTORY_FILE)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 
@@ -469,7 +468,7 @@ class ThreeSumCorrelationInput(BaseModel):
                     "(campaign-level APT detection - a cluster spanning all 3 categories "
                     "triggers even when no single IP does), PPR suspicion boost, and "
                     "registry-confirmed IOC bonus.")
-    engine_b_sparse_floor: int = Field(default=3, ge=0,
+    engine_b_sparse_floor: int = Field(default=10, ge=0,
         description="Engine B sparse-category guard: sources with fewer total events than "
                     "this floor contribute Z=0 (prevents single-event spikes in quiet "
                     "categories from driving detections). 0 disables.")
@@ -592,10 +591,13 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
         fetched = await asyncio.gather(*[_fetch_srcips(l, g, s) for l, g, s in labels])
         srcips_by_label = {}
         engine_a_warnings: list[str] = []
+        engine_a_query_failures = 0
         for l, e, w in fetched:
             srcips_by_label[l] = e
             if w:
                 engine_a_warnings.append(w)
+                if "also failed" in w:
+                    engine_a_query_failures += 1
 
         triggers, stats = evaluate_engine_a(
             srcips_by_label.get(data.category_a_label, []),
@@ -637,8 +639,8 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
                         "extended_bounds": {"min": since_iso, "max": until_iso}}}}}
             raw = await _wazuh_indexer_post(body)
             if "error" in raw:
-                return []
-            return raw.get("aggregations", {}).get("over_time", {}).get("buckets", [])
+                return ([], True)
+            return (raw.get("aggregations", {}).get("over_time", {}).get("buckets", []), False)
 
         async def _count_lockouts():
             """Account-lockout volume signal (advisory metadata, never a scoring input).
@@ -662,12 +664,14 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             total = raw.get("hits", {}).get("total", {})
             return total.get("value", 0) if isinstance(total, dict) else total
 
-        buckets_a, buckets_b, buckets_c, lockouts = await asyncio.gather(
+        (buckets_a, err_a), (buckets_b, err_b), (buckets_c, err_c), lockouts = await asyncio.gather(
             _fetch_time_buckets(data.category_a_groups),
             _fetch_time_buckets(data.category_b_groups),
             _fetch_time_buckets(data.category_c_groups),
             _count_lockouts(),
         )
+
+        engine_b_query_failures = sum(1 for e in (err_a, err_b, err_c) if e)
 
         anomalies, b_stats = evaluate_engine_b(
             buckets_a, buckets_b, buckets_c,
@@ -685,6 +689,40 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
         evaluation_time_ms=(time.monotonic() - start_time) * 1000,
     )
 
+    # DEGRADATION DETECTION - surface total Indexer failure so the LLM
+    # agent is never told "NONE / 0 triggers" when the Indexer was simply down.
+    engine_a_degraded = (data.engine_a_enabled and engine_a_query_failures == 3)
+    engine_b_degraded = (data.engine_b_enabled and engine_b_query_failures == 3)
+    if data.engine_a_enabled and not data.engine_b_enabled and engine_a_degraded:
+        result["_degraded"] = True
+        result["_degradation_reason"] = (
+            "Engine A: all 3 source-IP queries against the Wazuh Indexer failed "
+            "(Indexer may be unreachable). Engine B is disabled. "
+            "Results are unreliable - severity=NONE may indicate an outage, not a clean window.")
+    elif data.engine_b_enabled and not data.engine_a_enabled and engine_b_degraded:
+        result["_degraded"] = True
+        result["_degradation_reason"] = (
+            "Engine B: all 3 time-bucket queries against the Wazuh Indexer failed "
+            "(Indexer may be unreachable). Engine A is disabled. "
+            "Results are unreliable — anomaly_count=0 may indicate an outage, not a clean window.")
+    elif engine_a_degraded and engine_b_degraded:
+        result["_degraded"] = True
+        result["_degradation_reason"] = (
+            "Both Engine A (3 source-IP queries) and Engine B (3 time-bucket queries) "
+            "failed against the Wazuh Indexer. The Indexer is likely unreachable. "
+            "All correlation results are unreliable — treat severity=NONE as unknown, not clean.")
+    elif engine_a_degraded or engine_b_degraded:
+        parts = []
+        if engine_a_degraded:
+            parts.append("Engine A (all 3 source-IP queries failed)")
+        if engine_b_degraded:
+            parts.append("Engine B (all 3 time-bucket queries failed)")
+        result["_degraded"] = True
+        result["_degradation_reason"] = (
+            "Partial Indexer failure: " + "; ".join(parts) + ". "
+            "The working engine's results are reliable; the failed engine's results "
+            "(0 triggers/anomalies) should NOT be interpreted as a clean signal.")
+
     # FOLLOW-UP ENRICHMENT - auto-enrich top triggers with threat intel
     if data.follow_up == "threat_intel" and engine_a_results:
         triggers, _ = engine_a_results
@@ -700,8 +738,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
 
 async def _enrich_ips(ips: list[str]) -> dict[str, dict]:
     """Enrich a list of IPs with CrowdSec + ThreatFox concurrently.
-
-    Best-effort — individual failures are surfaced inline but never block
+    Best-effort - individual failures are surfaced inline but never block
     the overall enrichment pass.
     """
     register_attacker_ips(ips, source="enrichment")  # queried IOCs are attacker candidates — keep unmasked
@@ -766,7 +803,6 @@ class InvestigateIpInput(BaseModel):
 )
 async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
     """Run a comprehensive IP investigation - alert profile, timeline, and geo.
-
     Combines three indexer queries in parallel:
     1. Alert count + top rules (like alert summarization)
     2. Hourly timeline (for pattern/beacon detection)

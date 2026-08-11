@@ -4,6 +4,7 @@ pydantic>=2.0.0,<3.0.0
 officecli-sdk>=0.1.0
 networkx>=3.0,<4.0
 langgraph>=0.2,<0.6
+langgraph-checkpoint-sqlite>=2.0,<3.0
 
 # Dev dependencies (install with: pip install -r requirements.txt)
 pytest>=7.0

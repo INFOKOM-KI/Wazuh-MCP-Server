@@ -34,6 +34,10 @@ _ENTRIES: dict[str, dict] = {}
 _ATTACKER_EXACT: set[str] = set()
 _ATTACKER_DOMAINS: set[str] = set()
 
+# Lazy-sweep guard: sweep at most once per 60s to avoid O(n) on every is_attacker_ioc()
+_LAST_SWEEP = 0.0
+_SWEEP_INTERVAL = 60.0
+
 _SEP_CHARS = " /\\"
 
 
@@ -79,8 +83,20 @@ def _expired(entry: dict) -> bool:
     return _REGISTRY_TTL > 0 and (time.time() - entry["ts"]) > _REGISTRY_TTL
 
 
-def _sweep_expired() -> int:
-    """Drop expired entries from memory; return count removed."""
+def _sweep_expired(force: bool = False) -> int:
+    """Drop expired entries from memory; return count removed.
+
+    Uses a 'lazy guard' - sweeps at most once per _SWEEP_INTERVAL seconds
+    unless ``force=True`` (used by flush/clear paths).
+    """
+    global _LAST_SWEEP
+    if not force:
+        now = time.time()
+        if now - _LAST_SWEEP < _SWEEP_INTERVAL:
+            return 0
+        _LAST_SWEEP = now
+    else:
+        _LAST_SWEEP = time.time()
     stale = [ioc for ioc, e in _ENTRIES.items() if _expired(e)]
     for ioc in stale:
         _remove_entry(ioc)
@@ -97,7 +113,8 @@ def _flush() -> None:
     """Rewrite the JSONL file atomically with the current (pruned) entries."""
     if not _REGISTRY_PATH:
         return
-    # enforce cap: keep most-recent MAX entries
+    # sweep expired + enforce cap: keep most-recent MAX entries
+    _sweep_expired(force=True)
     if _REGISTRY_MAX > 0 and len(_ENTRIES) > _REGISTRY_MAX:
         for ioc in sorted(_ENTRIES, key=lambda k: _ENTRIES[k]["ts"])[:len(_ENTRIES) - _REGISTRY_MAX]:
             _remove_entry(ioc)
@@ -174,8 +191,10 @@ def register_attacker_domains(values: list[str], source: str = "manual") -> None
 
 
 def is_attacker_ioc(value: str) -> bool:
-    """True if value (or its domain) is a registered, unexpired attacker indicator."""
-    _sweep_expired()
+    """True if value (or its domain) is a registered, unexpired attacker indicator.
+    Lazy-sweeps expired entries (at most once per 60s) before checking.
+    """
+    _sweep_expired()  # lazy guard: O(1) unless interval elapsed
     v = (value or "").strip().lower()
     if not v:
         return False
@@ -187,7 +206,7 @@ def is_attacker_ioc(value: str) -> bool:
 
 def registry_stats() -> dict:
     """Operational stats: size, TTL, cap, sources."""
-    _sweep_expired()
+    _sweep_expired(force=True)  # explicit diagnostic - always sweep
     sources: dict[str, int] = {}
     for e in _ENTRIES.values():
         sources[e["source"]] = sources.get(e["source"], 0) + 1
