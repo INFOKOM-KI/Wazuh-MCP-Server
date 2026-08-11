@@ -17,9 +17,7 @@ Analytics (blueteam_attack_graph tool):
 """
 from __future__ import annotations
 import json, os, time
-
 import networkx as nx
-
 from mcp_server.core.ioc_store import query_iocs
 from mcp_server.core.attacker_registry import is_attacker_ioc
 
@@ -43,7 +41,7 @@ async def build_attack_graph(since_days: int = 30, min_count: int = 1,
                    confirmed=is_attacker_ioc(h["ioc"]),
                    batches=set(h.get("batches", [])))
     # Co-occurrence edges: IOCs sharing extraction/trigger batches.
-    # Inverted-index approach: O(b × k²) where b = batch count, k = avg IOCs per
+    # Inverted-index approach: O(b x k²) where b = batch count, k = avg IOCs per
     # batch. Dramatically faster than the O(n²) all-pairs nested loop when the
     # batch count is much smaller than the IOC count (the common case).
     batch_to_iocs: dict[int, list[str]] = {}
@@ -118,6 +116,16 @@ def analyze_attack_graph(G: nx.Graph, top_n: int = 10) -> dict:
         bc = {}
     top_hubs = sorted(degree, key=degree.get, reverse=True)[:top_n]
     top_bridges = sorted(bc, key=bc.get, reverse=True)[:top_n]
+
+    # Edge betweenness: critical connections between otherwise-unrelated clusters.
+    # High edge betweenness = campaign boundary edges - severing them isolates clusters.
+    if n >= 2 and G.number_of_edges() >= 1:
+        k_edges = max(10, min(int(G.number_of_edges() * 0.05), 100))
+        ebc = nx.edge_betweenness_centrality(G, k=k_edges, seed=42)
+        top_edges = sorted(ebc, key=ebc.get, reverse=True)[:top_n]
+    else:
+        top_edges = []
+
     return {
         "num_nodes": n,
         "num_edges": G.number_of_edges(),
@@ -130,6 +138,11 @@ def analyze_attack_graph(G: nx.Graph, top_n: int = 10) -> dict:
                       "confirmed": G.nodes[i].get("confirmed")} for i in top_hubs],
         "top_bridges": [{"ioc": i, "betweenness": round(bc[i], 4),
                          "kind": G.nodes[i].get("kind")} for i in top_bridges],
+        "top_edge_bridges": [{"source": u, "target": v,
+                                "betweenness": round(ebc[(u, v)], 4),
+                                "kind_u": G.nodes[u].get("kind"),
+                                "kind_v": G.nodes[v].get("kind")}
+                               for u, v in top_edges],
     }
 
 

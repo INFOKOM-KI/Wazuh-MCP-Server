@@ -181,9 +181,17 @@ def _flush() -> None:
                     stale_ttl.append(ioc)
         for ioc in stale_ttl:
             del _ENTRIES[ioc]
-    # Cap enforcement: keep most-recent MAX entries
+    # Cap enforcement: evict entries with the LOWEST decay weight first.
+    # Among equally-decayed entries, evict the oldest last-seen.
+    # This preserves high-signal IOCs (frequently observed, high decay)
+    # over low-signal ones even when both are within TTL.
     if _STORE_MAX > 0 and len(_ENTRIES) > _STORE_MAX:
-        for ioc in sorted(_ENTRIES, key=lambda k: _ENTRIES[k]["last_ts"])[:len(_ENTRIES) - _STORE_MAX]:
+        ranked = []
+        for ioc, e in _ENTRIES.items():
+            w = compute_time_decay_weight(_iso(e["first_ts"]), _iso(e["last_ts"]))
+            ranked.append((w, e["last_ts"], ioc))
+        ranked.sort(key=lambda x: (x[0], x[1]))  # asc: worst decay, then oldest
+        for _, _, ioc in ranked[:len(_ENTRIES) - _STORE_MAX]:
             del _ENTRIES[ioc]
     try:
         path = Path(_STORE_PATH)

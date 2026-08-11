@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-G5: Alert-driven playbook runner (langgraph supervisor).
+Alert-driven playbook runner (langgraph supervisor).
 Given an alert (rule_id / MITRE technique / rule_groups / alert_text / srcip),
 selects the matching threat-hunt template, runs the hunt, picks the top source
 IP, and dispatches the G2 investigation workflow. The supervisor node retries
@@ -74,6 +74,41 @@ _PLAYBOOK_META: dict[str, dict] = {
 _RULE_GROUP_INDEX: dict[str, str] = {
     kw: tpl for tpl, meta in _PLAYBOOK_META.items() for kw in meta["rule_groups"]
 }
+# Lazy-loaded dynamic index from Wazuh Manager API (live rule groups).
+# Populated on first playbook run; falls back to static index on failure.
+_RULE_GROUP_INDEX_LIVE: dict[str, str] | None = None
+_RULE_GROUP_INDEX_LOADED = False
+
+
+async def _try_load_live_rule_index():
+    """Fetch rule groups from Wazuh Manager API and rebuild the index.
+
+    Falls back to the static _RULE_GROUP_INDEX on any failure.
+    """
+    global _RULE_GROUP_INDEX_LIVE, _RULE_GROUP_INDEX_LOADED
+    if _RULE_GROUP_INDEX_LOADED:
+        return
+    _RULE_GROUP_INDEX_LOADED = True
+    try:
+        from mcp_server.wazuh.auth import _wazuh_api_get
+        data = await _wazuh_api_get("/rules", {"limit": "500", "sort": "-level"})
+        if isinstance(data.get("error"), str):
+            raise RuntimeError(data["error"])
+        items = data.get("data", {}).get("affected_items", [])
+        if len(items) < 10:
+            raise RuntimeError(f"Only {len(items)} rules returned")
+        live_index: dict[str, str] = {}
+        for r in items:
+            rule_id = str(r.get("id", ""))
+            groups = [g.strip().lower() for g in r.get("groups", [])]
+            for g in groups:
+                if g in _RULE_GROUP_INDEX and g not in live_index:
+                    live_index[g] = _RULE_GROUP_INDEX[g]
+        if live_index:
+            _RULE_GROUP_INDEX_LIVE = live_index
+            logger.info("playbook_graph: loaded %d live rule-group mappings", len(live_index))
+    except Exception as e:
+        logger.warning("playbook_graph: live rule index unavailable (%s), using static", e)
 
 class PlaybookState(TypedDict, total=False):
     # inputs
@@ -102,7 +137,11 @@ class PlaybookState(TypedDict, total=False):
 
 # Nodes
 def select_playbook(state: PlaybookState) -> dict:
-    """Resolve the threat-hunt template from the alert context."""
+    """Resolve the threat-hunt template from the alert context.
+
+    Uses the live Wazuh rule-group index when available; loads it lazily
+    on first call.
+    """
     tpl = (state.get("template_name") or "").strip().lower()
     if tpl in _THREAT_HUNT_TEMPLATES:
         return {"template_name": tpl,
@@ -114,7 +153,9 @@ def select_playbook(state: PlaybookState) -> dict:
                 return {"template_name": name,
                         "steps": [f"playbook: selected '{name}' (MITRE {technique})"]}
     groups = (state.get("rule_groups") or "").lower()
-    for kw, name in _RULE_GROUP_INDEX.items():
+    # Try live index first (populated lazily on first call), fall back to static
+    idx = _RULE_GROUP_INDEX_LIVE or _RULE_GROUP_INDEX
+    for kw, name in idx.items():
         if kw in groups:
             return {"template_name": name,
                     "steps": [f"playbook: selected '{name}' (rule group '{kw}')"]}
@@ -237,6 +278,7 @@ async def run_playbook(alert_text: str | None = None, rule_id: str | None = None
                        record_verdict: bool = False, verdict_label: str = "suspicious",
                        report_dir: str = "/tmp") -> dict:
     """Run the playbook end-to-end and return the final summary."""
+    await _try_load_live_rule_index()  # lazy-load live rule index on first run
     graph = _playbook_graph  # reuse pre-compiled singleton
     initial: PlaybookState = {
         "alert_text": alert_text or "",

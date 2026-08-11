@@ -347,7 +347,8 @@ from mcp_server.core.attacker_registry import register_attacker_ioc, register_at
 from mcp_server.core.ioc_store import record_iocs
 from mcp_server.correlation.engine import response_pipeline
 from mcp_server.correlation.three_sum_core import (evaluate_engine_a, evaluate_engine_b, format_evaluation_dict,
-    normalize_srcip_to_cidr, DEFAULT_THRESHOLD_SCORE, DEFAULT_Z_THRESHOLD, DEFAULT_WINDOW_MINUTES)
+    normalize_srcip_to_cidr, DEFAULT_THRESHOLD_SCORE, DEFAULT_Z_THRESHOLD, DEFAULT_WINDOW_MINUTES,
+    DEFAULT_SPARSE_FLOOR, evaluate_baseline_drift, evaluate_multi_resolution, _MULTI_RES_TIERS)
 
 
 # Aggregate Analysis
@@ -743,6 +744,103 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             "The working engine's results are reliable; the failed engine's results "
             "(0 triggers/anomalies) should NOT be interpreted as a clean signal.")
 
+    # MULTI-RESOLUTION - re-run at 1h and 24h windows, cross-tier analysis.
+    if data.multi_resolution:
+        tier_results = [result]  # current run is the 7d tier
+        for tier in _MULTI_RES_TIERS[:-1]:  # 1h, 24h (7d already done)
+            tier_since = datetime.utcnow() - timedelta(minutes=tier["window_minutes"])
+            tier_since_iso = tier_since.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            # Build per-tier filter
+            def _tier_filter(groups):
+                return {"bool": {"filter": [
+                    {"range": {"@timestamp": {"gte": tier_since_iso, "lt": until_iso,
+                                               "format": "strict_date_optional_time"}}},
+                    {"bool": {"should": [
+                        {"terms": {"rule.groups": groups}},
+                        {"terms": {"rule.groups.keyword": groups}},
+                    ], "minimum_should_match": 1}},
+                ]}}
+
+            # Engine A at this tier
+            tier_a_results = None
+            if data.engine_a_enabled:
+                async def _tier_fetch(label, groups, score):
+                    w = None
+                    body = {"size": 0, "query": _tier_filter(groups),
+                            "aggs": {"unique_srcips": {"multi_terms": {
+                                "terms": [{"field": f} for f in _SRCIP_FIELD_PATHS], "size": 10000}}}}
+                    raw = await _wazuh_indexer_post(body)
+                    if "error" in raw or not raw.get("aggregations", {}).get("unique_srcips"):
+                        w = f"multi_terms fallback at {tier['label']}"
+                        raw = await _wazuh_indexer_post({
+                            "size": 0, "query": _tier_filter(groups),
+                            "aggs": {"unique_srcips": {"terms": {"field": _SRCIP_FIELD_PATHS[0], "size": 10000}}}})
+                        if "error" in raw:
+                            return (label, [], w + " also failed")
+                    buckets = raw.get("aggregations", {}).get("unique_srcips", {}).get("buckets", [])
+                    entries = []
+                    for b in buckets:
+                        key = b.get("key")
+                        ip = next((v for v in key if v is not None), "0.0.0.0") if isinstance(key, list) else key
+                        if ip and ip != "0.0.0.0":
+                            entries.append((ip, score))
+                    return (label, entries, w)
+                fet = await asyncio.gather(*[_tier_fetch(l, g, s) for l, g, s in labels])
+                sbl = {}
+                for l, e, _ in fet:
+                    sbl[l] = e
+                tta, tts = evaluate_engine_a(
+                    sbl.get(data.category_a_label, []), sbl.get(data.category_b_label, []),
+                    sbl.get(data.category_c_label, []),
+                    threshold_score=tier["threshold_score"],
+                    exclude_srcips=list(exclude_set) if exclude_set else None,
+                    cat_a_weight=data.cat_a_weight, cat_b_weight=data.cat_b_weight,
+                    cat_c_weight=data.cat_c_weight,
+                )
+                tier_a_results = (tta, tts)
+
+            # Engine B at this tier
+            tier_b_results = None
+            if data.engine_b_enabled:
+                tier_dur = tier["window_minutes"]
+                if tier_dur <= 60:
+                    bi = "1m"
+                elif tier_dur <= 360:
+                    bi = "5m"
+                else:
+                    bi = "15m"
+                async def _tier_buckets(groups):
+                    body = {"size": 0, "query": _tier_filter(groups),
+                            "aggs": {"over_time": {"date_histogram": {
+                                "field": "@timestamp", "fixed_interval": bi,
+                                "min_doc_count": 0,
+                                "extended_bounds": {"min": tier_since_iso, "max": until_iso}}}}}
+                    raw = await _wazuh_indexer_post(body)
+                    if "error" in raw:
+                        return ([], True)
+                    return (raw.get("aggregations", {}).get("over_time", {}).get("buckets", []), False)
+                tba, tbb, tbc = await asyncio.gather(
+                    _tier_buckets(data.category_a_groups),
+                    _tier_buckets(data.category_b_groups),
+                    _tier_buckets(data.category_c_groups),
+                )
+                anomalies, bstats = evaluate_engine_b(
+                    tba[0], tbb[0], tbc[0],
+                    z_score_threshold=tier["z_score_threshold"],
+                    sparse_floor=data.engine_b_sparse_floor,
+                    use_mad=data.engine_b_use_mad,
+                    shoulder_ratio=data.engine_b_shoulder_ratio,
+                )
+                tier_b_results = (anomalies, bstats)
+
+            tier_result = format_evaluation_dict(tier_since_iso, until_iso,
+                engine_a_results=tier_a_results, engine_b_results=tier_b_results,
+                evaluation_time_ms=0)
+            tier_results.append(tier_result)
+
+        result["multi_resolution"] = evaluate_multi_resolution(tier_results)
+
     # FOLLOW-UP ENRICHMENT - auto-enrich top triggers with threat intel
     if data.follow_up == "threat_intel" and engine_a_results:
         triggers, _ = engine_a_results
@@ -761,7 +859,7 @@ async def _enrich_ips(ips: list[str]) -> dict[str, dict]:
     Best-effort - individual failures are surfaced inline but never block
     the overall enrichment pass.
     """
-    register_attacker_ips(ips, source="enrichment")  # queried IOCs are attacker candidates — keep unmasked
+    register_attacker_ips(ips, source="enrichment")  # queried IOCs are attacker candidates - keep unmasked
     async def _crowdsec_one(ip: str) -> dict | None:
         try:
             raw = await _crowdsec_request(f"/v2/smoke/{ip}")

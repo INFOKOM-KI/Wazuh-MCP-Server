@@ -16,7 +16,14 @@ DEFAULT_WINDOW_MINUTES: int = 10080  # 7 days
 DEFAULT_SPARSE_FLOOR: int = 10  # suppress single-event spikes in quiet categories
 DEFAULT_SHOULDER_RATIO: float = 0.6  # adjacent-bucket Z threshold fraction
 
-# Non-networked decoder fallback IPs (syscheck, auditd, vulnerability-detector)
+# Multi-resolution tiers for M12 slow-burn APT detection.
+# Tighter thresholds on short windows (high signal-to-noise),
+# looser on long windows (catch slow periodic patterns).
+_MULTI_RES_TIERS: list[dict[str, Any]] = [
+    {"label": "1h",  "window_minutes": 60,    "threshold_score": 12, "z_score_threshold": 3.0},
+    {"label": "24h", "window_minutes": 1440,  "threshold_score": 10, "z_score_threshold": 2.5},
+    {"label": "7d",  "window_minutes": 10080, "threshold_score": 8,  "z_score_threshold": 2.0},
+]
 _EXCLUDE_IP_FALLBACKS: set[str] = {"0.0.0.0", "unknown", ""}
 
 # Active Response wrapper rule IDs - these duplicate the underlying alert
@@ -360,6 +367,70 @@ def format_evaluation_dict(
     }
 
     return result
+
+
+def evaluate_multi_resolution(
+    tier_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Cross-tier APT persistence analysis (M12).
+
+    Accepts 3 result dicts from :func:`format_evaluation_dict` at different
+    time windows (1h / 24h / 7d) and detects attack patterns that persist
+    across scales vs. transient noise at a single tier.
+
+    Slow-burn APT: activity invisible at 1h/24h but detected at 7d.
+    Burst: activity detected at 1h but absent at 24h/7d (likely noise).
+    Persistent: activity detected at all 3 tiers (high confidence).
+
+    Args:
+        tier_results: List of 3 result dicts from ``format_evaluation_dict``,
+                      ordered by increasing window size.
+
+    Returns:
+        Dict with ``tiers`` (per-tier summary), ``cross_tier`` (overlap analysis),
+        ``slow_burn`` (7d-only triggers), and ``persistent_iocs`` (IPs flagged
+        at all tiers with a srcip).
+    """
+    tiers: list[dict[str, Any]] = []
+    all_tier_ips: list[set[str]] = []
+
+    for r in tier_results:
+        window = (r.get("window") or {})
+        ea = (r.get("engine_a") or {})
+        eb = (r.get("engine_b") or {})
+        us = (r.get("unified_scoring") or {})
+        tier_ips = {t.get("ip") for t in ea.get("triggers", []) if t.get("ip")}
+        all_tier_ips.append(tier_ips)
+        tiers.append({
+            "window": f"{window.get('since', '?')} → {window.get('until', '?')}",
+            "engine_a_triggers": ea.get("stats", {}).get("triggers_count", 0),
+            "engine_b_anomalies": eb.get("stats", {}).get("anomaly_count", 0),
+            "severity": us.get("severity", "NONE"),
+            "unified_score": us.get("unified_score", 0),
+            "trigger_ips": sorted(tier_ips)[:20],
+            "_degraded": r.get("_degraded", False),
+        })
+
+    # Cross-tier IP overlap
+    persistent = all_tier_ips[0] & all_tier_ips[1] & all_tier_ips[2] if len(all_tier_ips) >= 3 else set()
+    slow_burn = (all_tier_ips[2] - all_tier_ips[0] - all_tier_ips[1]) if len(all_tier_ips) >= 3 else set()
+    burst_only = (all_tier_ips[0] - all_tier_ips[1] - all_tier_ips[2]) if len(all_tier_ips) >= 3 else set()
+
+    return {
+        "tiers": tiers,
+        "cross_tier": {
+            "persistent_count": len(persistent),
+            "slow_burn_count": len(slow_burn),
+            "burst_only_count": len(burst_only),
+        },
+        "slow_burn_iocs": sorted(slow_burn)[:30],
+        "persistent_iocs": sorted(persistent)[:30],
+        "interpretation": (
+            "persistent ({}) = detected at all 3 tiers (high confidence). "
+            "slow_burn ({}) = 7d only (possible slow beacon / monthly C2). "
+            "burst ({}) = 1h only (likely noise or short-lived scan)."
+        ).format(len(persistent), len(slow_burn), len(burst_only)),
+    }
 
 
 def evaluate_baseline_drift(
