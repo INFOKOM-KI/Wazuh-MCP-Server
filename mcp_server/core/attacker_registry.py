@@ -201,7 +201,16 @@ def is_attacker_ioc(value: str) -> bool:
     if v in _ATTACKER_EXACT:
         return True
     dom = v.rsplit("@", 1)[-1] if "@" in v else v
-    return any(dom == d or dom.endswith("." + d) for d in _ATTACKER_DOMAINS)
+    # Match: exact domain OR exactly one subdomain level (e.g. www.evil.com)
+    # matches evil.com, but subdo.evil.com does not).
+    for d in _ATTACKER_DOMAINS:
+        if dom == d:
+            return True
+        if dom.endswith("." + d):
+            prefix = dom[:-(len(d) + 1)]
+            if "." not in prefix:  # exactly one subdomain level
+                return True
+    return False
 
 
 def registry_stats() -> dict:

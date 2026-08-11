@@ -26,7 +26,9 @@ logger = logging.getLogger("blue_team_mcp.ioc_store")
 
 _STORE_PATH = os.environ.get("BLUETEAM_IOC_STORE", "")
 _STORE_MAX = int(os.environ.get("BLUETEAM_IOC_STORE_MAX", "50000"))
+_STORE_TTL = int(os.environ.get("BLUETEAM_IOC_STORE_TTL", "7776000"))  # 90 days
 _BATCH_CAP = 10  # max co-occurrence batches remembered per IOC
+_STORE_MIN_DECAY_EVICT = 0.01  # only TTL-evict entries with negligible decay
 
 # {ioc: {"kind", "first_ts", "last_ts", "count", "source"}} — normalized keys
 _ENTRIES: dict[str, dict] = {}
@@ -166,6 +168,20 @@ def clear_ioc_store() -> None:
 def _flush() -> None:
     if not _STORE_PATH:
         return
+    now = _now()
+    # TTL eviction: entries older than TTL with negligible decay are dead weight.
+    # Old entries still receiving hits (high count/decay) are kept regardless.
+    if _STORE_TTL > 0:
+        stale_ttl = []
+        for ioc, e in _ENTRIES.items():
+            age = now - e["last_ts"]
+            if age > _STORE_TTL:
+                w = compute_time_decay_weight(_iso(e["first_ts"]), _iso(e["last_ts"]))
+                if w < _STORE_MIN_DECAY_EVICT:
+                    stale_ttl.append(ioc)
+        for ioc in stale_ttl:
+            del _ENTRIES[ioc]
+    # Cap enforcement: keep most-recent MAX entries
     if _STORE_MAX > 0 and len(_ENTRIES) > _STORE_MAX:
         for ioc in sorted(_ENTRIES, key=lambda k: _ENTRIES[k]["last_ts"])[:len(_ENTRIES) - _STORE_MAX]:
             del _ENTRIES[ioc]

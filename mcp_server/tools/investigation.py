@@ -42,10 +42,10 @@ async def blueteam_mark_investigated(params: MarkInvestigatedInput) -> str:
     **Worked Examples**
 
     1. *Mark malicious*:
-       ``blueteam_mark_investigated(srcip="103.107.116.202", verdict="true_positive", notes="CrowdSec confirmed — C2 beaconing")``
+       ``blueteam_mark_investigated(srcip="103.107.116.202", verdict="true_positive", notes="CrowdSec confirmed - C2 beaconing")``
 
     2. *Mark false positive*:
-       ``blueteam_mark_investigated(srcip="8.8.8.8", verdict="false_positive", notes="Google DNS — scanner noise")``
+       ``blueteam_mark_investigated(srcip="8.8.8.8", verdict="false_positive", notes="Google DNS - scanner noise")``
     """
     _audit_log("blueteam_mark_investigated", {"srcip": params.srcip, "verdict": params.verdict})
     if params.verdict == "true_positive":
@@ -472,6 +472,21 @@ class ThreeSumCorrelationInput(BaseModel):
         description="Engine B sparse-category guard: sources with fewer total events than "
                     "this floor contribute Z=0 (prevents single-event spikes in quiet "
                     "categories from driving detections). 0 disables.")
+    engine_b_use_mad: bool = Field(default=False,
+        description="Use Median Absolute Deviation (MAD) for Z-scores instead of mean/stddev. "
+                    "More robust to bursty alert volumes from maintenance windows.")
+    engine_b_shoulder_ratio: float = Field(default=0.6, ge=0.0, le=1.0,
+        description="Adjacent-bucket confirmation ratio for Engine B. A Z-score spike must "
+                    "have at least one adjacent bucket with Z >= threshold x ratio. "
+                    "Filters single-bucket noise. 0 disables.")
+    cat_a_weight: float = Field(default=1.0, ge=0.0, le=10.0,
+        description="Weight multiplier for Category A (recon) scores in Engine A. "
+                    "Lower = less influence on total.")
+    cat_b_weight: float = Field(default=1.5, ge=0.0, le=10.0,
+        description="Weight multiplier for Category B (access anomaly) scores.")
+    cat_c_weight: float = Field(default=2.0, ge=0.0, le=10.0,
+        description="Weight multiplier for Category C (C2/exfil) scores. "
+                    "Higher = stronger signal - C2 is the strongest APT indicator.")
     bypass_redaction: bool = Field(default=False,
         description="Accepted for API consistency. 3-Sum returns computed scores, not raw alert PII.")
     redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
@@ -611,6 +626,9 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             ppr_boost_factor=_PPR_BOOST_FACTOR if ctx else 0.0,
             confirmed_ips=ctx["confirmed_ips"] if ctx else None,
             confirmed_bonus=_CONFIRMED_BONUS if ctx else 0.0,
+            cat_a_weight=data.cat_a_weight,
+            cat_b_weight=data.cat_b_weight,
+            cat_c_weight=data.cat_c_weight,
         )
         register_attacker_ips([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
         record_iocs([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
@@ -677,6 +695,8 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             buckets_a, buckets_b, buckets_c,
             z_score_threshold=data.z_score_threshold,
             sparse_floor=data.engine_b_sparse_floor,
+            use_mad=data.engine_b_use_mad,
+            shoulder_ratio=data.engine_b_shoulder_ratio,
         )
         b_stats["account_lockouts_observed"] = lockouts  # advisory, not a scoring input
         engine_b_results = (anomalies, b_stats)

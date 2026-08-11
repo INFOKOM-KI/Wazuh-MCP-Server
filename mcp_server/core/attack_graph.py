@@ -42,16 +42,25 @@ async def build_attack_graph(since_days: int = 30, min_count: int = 1,
         G.add_node(h["ioc"], kind=h["kind"], weight=h["decay_weight"], count=h["count"],
                    confirmed=is_attacker_ioc(h["ioc"]),
                    batches=set(h.get("batches", [])))
-    # Co-occurrence edges: IOCs sharing extraction/trigger batches
-    nodes = list(G.nodes)
-    for i in range(len(nodes)):
-        bi = G.nodes[nodes[i]]["batches"]
-        if not bi:
+    # Co-occurrence edges: IOCs sharing extraction/trigger batches.
+    # Inverted-index approach: O(b × k²) where b = batch count, k = avg IOCs per
+    # batch. Dramatically faster than the O(n²) all-pairs nested loop when the
+    # batch count is much smaller than the IOC count (the common case).
+    batch_to_iocs: dict[int, list[str]] = {}
+    for node in G.nodes:
+        for bid in G.nodes[node].get("batches", ()):
+            batch_to_iocs.setdefault(bid, []).append(node)
+    for bid, iocs in batch_to_iocs.items():
+        if len(iocs) < 2:
             continue
-        for j in range(i + 1, len(nodes)):
-            shared = bi & G.nodes[nodes[j]]["batches"]
-            if shared:
-                G.add_edge(nodes[i], nodes[j], weight=len(shared), source="cooccur")
+        # Edges per batch: connect each pair once
+        for i in range(len(iocs)):
+            for j in range(i + 1, len(iocs)):
+                existing = G.get_edge_data(iocs[i], iocs[j])
+                if existing:
+                    existing["weight"] = existing.get("weight", 0) + 1
+                else:
+                    G.add_edge(iocs[i], iocs[j], weight=1, source="cooccur")
     if include_stix:
         await _add_stix_edges(G, cap=stix_ips_cap)
     return G
