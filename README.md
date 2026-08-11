@@ -1125,10 +1125,17 @@ LANGKAH 10 — Geo Heatmap:
 blueteam_wazuh_geo_heatmap(since="24h", response_format="json")
 
 LANGKAH 11 — Laporan Akhir:
+<!-- Untuk format docx, pastikan OfficeCLI sudah terinstall terlebih dahulu -->
 blueteam_export_report(format="md", reveal_owned=true,
   title="Laporan Serangan Siber 24 Jam — Infra Pemkot Tangerang",
   path="/var/log/blue-team-mcp/reports/laporan_24jam_{{date}}.md",
   md_sections=[...])
+
+# Alternatif format docx (wajib install OfficeCLI):
+# blueteam_export_report(format="docx", reveal_owned=true,
+#   title="Laporan Serangan Siber 24 Jam — Infra Pemkot Tangerang",
+#   path="/var/log/blue-team-mcp/reports/laporan_24jam_{{date}}.docx",
+#   md_sections=[...])
 ```
 
 ### 🔎 MITRE ATT&CK / Taktik MITRE
