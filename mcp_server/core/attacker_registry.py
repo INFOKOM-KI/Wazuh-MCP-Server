@@ -85,7 +85,6 @@ def _expired(entry: dict) -> bool:
 
 def _sweep_expired(force: bool = False) -> int:
     """Drop expired entries from memory; return count removed.
-
     Uses a 'lazy guard' - sweeps at most once per _SWEEP_INTERVAL seconds
     unless ``force=True`` (used by flush/clear paths).
     """

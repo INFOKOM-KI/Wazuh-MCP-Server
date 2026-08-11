@@ -11,7 +11,7 @@ from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _BYPASS_R
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window
 
-from mcp_server.correlation.engine import response_pipeline
+from mcp_server.core.audit import response_pipeline
 
 class GeoDistributionInput(BaseModel):
     """Input model for blueteam_wazuh_geo_distribution."""

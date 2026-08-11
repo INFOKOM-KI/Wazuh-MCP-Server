@@ -32,7 +32,6 @@ class MarkInvestigatedInput(BaseModel):
 )
 async def blueteam_mark_investigated(params: MarkInvestigatedInput) -> str:
     """Record an IP investigation verdict in the persistent JSONL history.
-
     Appends a timestamped entry to BLUETEAM_INVESTIGATION_HISTORY. This is the
     only tool that writes investigation state - all other tools (curated reports,
     threat cards, beacon detection) are read-only.
@@ -345,7 +344,7 @@ from mcp_server.wazuh.time_utils import _parse_time_window, _auto_bucket_interva
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 from mcp_server.core.attacker_registry import register_attacker_ioc, register_attacker_ips
 from mcp_server.core.ioc_store import record_iocs
-from mcp_server.correlation.engine import response_pipeline
+from mcp_server.core.audit import response_pipeline
 from mcp_server.correlation.three_sum_core import (evaluate_engine_a, evaluate_engine_b, format_evaluation_dict,
     normalize_srcip_to_cidr, DEFAULT_THRESHOLD_SCORE, DEFAULT_Z_THRESHOLD, DEFAULT_WINDOW_MINUTES,
     DEFAULT_SPARSE_FLOOR, evaluate_baseline_drift, evaluate_multi_resolution, _MULTI_RES_TIERS)
@@ -731,7 +730,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
         result["_degradation_reason"] = (
             "Both Engine A (3 source-IP queries) and Engine B (3 time-bucket queries) "
             "failed against the Wazuh Indexer. The Indexer is likely unreachable. "
-            "All correlation results are unreliable — treat severity=NONE as unknown, not clean.")
+            "All correlation results are unreliable - treat severity=NONE as unknown, not clean.")
     elif engine_a_degraded or engine_b_degraded:
         parts = []
         if engine_a_degraded:

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _BYPASS_REDACTION_DESC, _INVESTIGATION_HISTORY_FILE)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.correlation.engine import response_pipeline
+from mcp_server.core.audit import response_pipeline
 from mcp_server.correlation.three_sum_core import evaluate_baseline_drift, DEFAULT_Z_THRESHOLD
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window

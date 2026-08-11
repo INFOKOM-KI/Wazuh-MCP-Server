@@ -52,8 +52,15 @@ def register_all_tools() -> None:
     _MODULES: list[tuple[str, str, bool]] = [
         ("host_forensics",        "host_forensics",        True),   # 23 tools, some destructive-ish
         ("fail2ban",              "fail2ban",              True),   # 3 tools, blueteam_fail2ban_unban is destructive
-        ("wazuh_siem",            "wazuh_siem",            False),  # 11 tools, all read-only
-        ("alert_enrichment",      "alert_enrichment",      False),  # 14 tools
+        ("wazuh_siem",            "wazuh_siem",            False),  # Indexer query tools
+        ("wazuh_manager",         "wazuh_manager",         False),  # Manager API tools (rules, decoders, groups, etc.)
+        ("alert_enrichment",      "alert_enrichment",      False),  # Standalone threat-intel + Sangfor + unified scoring
+        ("alert_summarize",       "alert_summarize",       False),  # F-1 Alert summarization
+        ("alert_beacon",           "alert_beacon",           False),  # F-2 Beacon detection
+        ("alert_attack_chain",     "alert_attack_chain",     False),  # F-3 Attack chain analysis
+        ("alert_threat_card",      "alert_threat_card",      False),  # F-5 Threat cards
+        ("alert_compare",          "alert_compare",          False),  # F-6 Side-by-side IP comparison
+        ("alert_curated_report",   "alert_curated_report",   False),  # G-3 Curated threat report
         ("baseline",              "baseline",              False),  # 3 tools
         ("investigation",         "investigation",         False),  # 7 tools
         ("geo",                   "geo",                   False),  # 1 tool
