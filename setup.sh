@@ -137,12 +137,25 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # Server identity (optional — use lowercase to avoid LLM casing mismatches)
 # export BLUE_TEAM_MCP_SERVER_NAME="blue_team_mcp"
 
-# Audit and limits (optional)
+# audit and limits (optional)
 # export BLUETEAM_INVESTIGATION_HISTORY="/var/log/blue-team-mcp/investigation_history.jsonl"
 # export BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES="10000"
 # export BLUETEAM_EXPORT_DIR="/var/log/blue-team-mcp/exports"
 # export MITRE_ATTACK_STIX="https://raw.githubusercontent.com/mitre-attack/attack-stix-data/refs/heads/master/enterprise-attack/enterprise-attack.json"  # public repo mitre attack
 # export BLUETEAM_AUDIT_LOG="/var/log/blue-team-mcp/audit.log"
+# export BLUETEAM_RATE_LIMIT="0"
+
+# IOC lifecycle & attacker registry persistence
+# export BLUETEAM_IOC_STORE="/var/log/blue-team-mcp/ioc_store.jsonl"
+# export BLUETEAM_IOC_STORE_MAX="50000"
+# export BLUETEAM_IOC_STORE_TTL="7776000"   # 90 days — oldest entries with negligible decay are pruned
+# export BLUETEAM_ATTACKER_REGISTRY="/var/log/blue-team-mcp/attacker_registry.jsonl"
+# export BLUETEAM_ATTACKER_REGISTRY_TTL="604800"  # 7 days
+# export BLUETEAM_ATTACKER_REGISTRY_MAX="10000"
+
+# LangGraph workflow persistence
+# export BLUETEAM_LANGGRAPH_DB="/var/log/blue-team-mcp/langgraph.db"  # SQLite state; unset = InMemorySaver (lost on restart)
+# export BLUETEAM_LANGGRAPH_NODE_TIMEOUT="120"  # seconds — per-node timeout
 # export BLUETEAM_RATE_LIMIT="0"
 
 # Path restrictions (defaults shown)
@@ -206,6 +219,9 @@ export BLUETEAM_ATTACKER_REGISTRY_TTL="${BLUETEAM_ATTACKER_REGISTRY_TTL:-604800}
 export BLUETEAM_ATTACKER_REGISTRY_MAX="${BLUETEAM_ATTACKER_REGISTRY_MAX:-10000}"
 export BLUETEAM_IOC_STORE="${BLUETEAM_IOC_STORE:-/var/log/blue-team-mcp/ioc_store.jsonl}"
 export BLUETEAM_IOC_STORE_MAX="${BLUETEAM_IOC_STORE_MAX:-50000}"
+export BLUETEAM_IOC_STORE_TTL="${BLUETEAM_IOC_STORE_TTL:-7776000}"
+export BLUETEAM_LANGGRAPH_DB="${BLUETEAM_LANGGRAPH_DB:-/var/log/blue-team-mcp/langgraph.db}"
+export BLUETEAM_LANGGRAPH_NODE_TIMEOUT="${BLUETEAM_LANGGRAPH_NODE_TIMEOUT:-120}"
 export BLUETEAM_FORENSIC_TOKEN="${BLUETEAM_FORENSIC_TOKEN:-}"
 export BLUETEAM_EXPORT_RETENTION_DAYS="${BLUETEAM_EXPORT_RETENTION_DAYS:-0}"
 export BLUETEAM_AUTO_PROMOTE_IPS="${BLUETEAM_AUTO_PROMOTE_IPS:-false}"

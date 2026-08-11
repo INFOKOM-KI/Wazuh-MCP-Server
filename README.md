@@ -355,6 +355,9 @@ All environment variables accepted by the suite. Variables marked **[unified]** 
 | `BLUETEAM_ATTACKER_REGISTRY_MAX` | `10000` | Registry entry cap (oldest evicted) |
 | `BLUETEAM_IOC_STORE` | *(empty)* | JSONL path for the IOC lifecycle store |
 | `BLUETEAM_IOC_STORE_MAX` | `50000` | IOC store cap |
+| `BLUETEAM_IOC_STORE_TTL` | `7776000` | Seconds before dead IOC entries are pruned (90 days) |
+| `BLUETEAM_LANGGRAPH_DB` | *(empty)* | SQLite path for LangGraph persistence — survives restarts |
+| `BLUETEAM_LANGGRAPH_NODE_TIMEOUT` | `120` | Per-node timeout seconds for investigation/playbook workflows |
 | `BLUETEAM_AUTO_PROMOTE_IPS` | `false` | Auto-promote consistently-observed IPs to the registry |
 | `BLUETEAM_EXPORT_RETENTION_DAYS` | `0` | Prune `export_*.jsonl` older than N days (0 = keep forever) |
 | `BLUETEAM_CAMPAIGN_SNAPSHOTS` | *(empty)* | JSONL path for campaign-watch component snapshots |
@@ -448,7 +451,7 @@ Then point Claude Desktop at it:
 
 Replace `192.168.153.5` with the IP reachable from your workstation (`192.168.153.5` for NAT, `172.16.101.5` for LAB).
 
-Restart Claude Desktop. You should see all 50 blue-team-mcp tools available.
+Restart Claude Desktop. You should see all 97 blue-team-mcp tools available.
 
 ### 4. Production Deployment
 
@@ -732,7 +735,7 @@ All tools below are registered across the `mcp_server/` package. Tools not requi
 | `wazuh_compromised_emails_analysis` | Correlate compromised emails with attacker IPs, optional Netra enrichment (auto-paginates per batch) |
 | `wazuh_alert_timeline` | Time-bucketed alert aggregation using OpenSearch `date_histogram` — covers ALL matching alerts |
 | `wazuh_attack_velocity` | Compare two time windows to detect attack acceleration/deceleration — covers ALL matching alerts |
-| `three_sum_correlation` | **3-Sum APT Detection Engine**: Engine A (intersection scoring) + Engine B (volumetric Z-score) + **unified cross-engine scoring**. Auto-scaled bucket intervals, account lockout counter, `follow_up="curated_report"` for auto-enriching trigger IPs. Category B defaults include `spam`/`postfix`. |
+| `three_sum_correlation` | **3-Sum APT Detection Engine**: Engine A (weighted intersection scoring) + Engine B (volumetric Z-score, median/MAD option, shoulder check) + **unified cross-engine scoring** + **multi-resolution analysis** (1h/24h/7d tiers). Auto-scaled bucket intervals, account lockout counter, `follow_up="threat_intel"`, degradation detection on Indexer failure. |
 | `blueteam_wazuh_get_rules` | List Wazuh rules with optional ID filter — Manager API |
 | `blueteam_wazuh_get_decoders` | List Wazuh decoders with optional name filter — Manager API |
 | `blueteam_wazuh_get_groups` | List Wazuh agent groups — Manager API |
