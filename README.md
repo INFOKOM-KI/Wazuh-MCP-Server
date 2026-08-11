@@ -1076,6 +1076,61 @@ Once connected via Claude Desktop, you can ask / Setelah terkoneksi:
 → blueteam_beacon_detect(srcip="185.220.101.1", since="24h")
 ```
 
+### 📋 SOC Daily Report / Laporan Harian SOC (24 Jam)
+
+```
+⚠️ EXECUTION RULES:
+- redaction_policy="protect_victim" HANYA diterima oleh 6 tool:
+    blueteam_curated_threat_report, blueteam_wazuh_alert_summarize,
+    blueteam_wazuh_indexer_search, three_sum_correlation,
+    blueteam_wazuh_export, blueteam_investigate_ip
+- Tool lain TIDAK MENERIMA redaction_policy — JANGAN kirim parameter itu.
+  Jika tool menolak "extra_forbidden", hapus redaction_policy dan panggil ulang.
+- reveal_owned=True HANYA pada langkah 11 (laporan akhir).
+
+LANGKAH 1 — Gambaran Menyeluruh:
+blueteam_curated_threat_report(since="24h", investigation_depth="deep",
+  response_format="json", redaction_policy="protect_victim")
+
+LANGKAH 2 — Subdomain Paling Diserang:
+wazuh_domain_lookup(domain="tangerangkota.go.id", since="24h", response_format="json")
+
+LANGKAH 3 — Threat Card per Attacker (top IP dari langkah 2):
+blueteam_threat_card(srcip=<ip>, since="24h")
+blueteam_attack_chain(srcip=<ip>, since="24h")
+
+LANGKAH 4 — Ekstrak IOC:
+blueteam_extract_iocs(text=<alert_text_dari_langkah_1>)
+
+LANGKAH 5 — Argus (auth success IPs):
+wazuh_alert_aggregate_analysis(mode="summary", since="24h", response_format="json")
+→ argus_ip_lookup(ip=<ip>) untuk IP dengan authentication_success.
+
+LANGKAH 6 — 3-Sum APT + ThreatFox:
+three_sum_correlation(time_window_minutes=1440, follow_up="threat_intel",
+  multi_resolution=true, response_format="json", redaction_policy="protect_victim")
+
+LANGKAH 7 — Email Locked:
+wazuh_compromised_emails_analysis(since="24h", response_format="json")
+→ argus_ip_lookup + threatfox_ioc_search untuk setiap IP penyebab lock.
+
+LANGKAH 8 — wp2shell:
+blueteam_semantic_search(query="wp2shell webshell exploit", source="alerts",
+  since="24h", top_k=20, response_format="json")
+
+LANGKAH 9 — MITRE ATT&CK (3 top attacker):
+blueteam_stix_killchain(srcip=<top_attacker_ip>, since="24h")
+
+LANGKAH 10 — Geo Heatmap:
+blueteam_wazuh_geo_heatmap(since="24h", response_format="json")
+
+LANGKAH 11 — Laporan Akhir:
+blueteam_export_report(format="md", reveal_owned=true,
+  title="Laporan Serangan Siber 24 Jam — Infra Pemkot Tangerang",
+  path="/var/log/blue-team-mcp/reports/laporan_24jam_{{date}}.md",
+  md_sections=[...])
+```
+
 ### 🔎 MITRE ATT&CK / Taktik MITRE
 
 ```
