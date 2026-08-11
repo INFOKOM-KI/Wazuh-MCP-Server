@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import (
+    mcp,
     WAZUH_API_URL, WAZUH_API_PASSWORD,
     WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_URL,
 )
