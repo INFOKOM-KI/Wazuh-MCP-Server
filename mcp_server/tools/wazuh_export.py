@@ -8,8 +8,9 @@ import json, os, asyncio, time
 from datetime import datetime, timezone
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
-from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_USER, WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_VERIFY_SSL, BLUETEAM_EXPORT_RETENTION_DAYS
+from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_USER, WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_VERIFY_SSL, BLUETEAM_EXPORT_RETENTION_DAYS, _BYPASS_REDACTION_DESC, _FORENSIC_TOKEN_DESC, BLUETEAM_ALLOW_FORENSIC_BYPASS, BLUETEAM_FORENSIC_TOKEN
 from mcp_server.core.audit import _audit_log
+from mcp_server.core.redact import _redact_alert_data
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.wazuh.indexer import _WAZUH_INDEX_PATTERNS
 
@@ -34,6 +35,8 @@ class WazuhExportInput(BaseModel):
                                      description="Comma-separated rule groups filter.")
     max_docs: int = Field(default=0, ge=0,
                           description="Max documents to export. 0 = unlimited.")
+    bypass_redaction: bool = Field(default=False, description=_BYPASS_REDACTION_DESC)
+    forensic_token: str | None = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
 
 
 class _ScrollClient:
@@ -110,6 +113,13 @@ async def blueteam_wazuh_export(params: WazuhExportInput) -> str:
        ``blueteam_wazuh_export(since="7d", keyword="locked OR brute", max_docs=100000)``
     """
     _audit_log("blueteam_wazuh_export", {"since": params.since, "max_docs": params.max_docs})
+    # Forensic bypass gate: requires BLUETEAM_ALLOW_FORENSIC_BYPASS=true + matching token
+    if params.bypass_redaction:
+        if not BLUETEAM_ALLOW_FORENSIC_BYPASS:
+            return json.dumps({"error": "bypass_redaction requires BLUETEAM_ALLOW_FORENSIC_BYPASS=true on the server."}, indent=2)
+        if BLUETEAM_FORENSIC_TOKEN:
+            if not params.forensic_token or params.forensic_token != BLUETEAM_FORENSIC_TOKEN:
+                return json.dumps({"error": "forensic_token required for bypass_redaction."}, indent=2)
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
         return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."}, indent=2)
 
@@ -163,6 +173,12 @@ async def blueteam_wazuh_export(params: WazuhExportInput) -> str:
                     break
                 for h in hit_list:
                     doc = h.get("_source", h)
+                    # Apply redaction policy: raw if bypass_redaction, else protect_victim default
+                    if not params.bypass_redaction:
+                        doc = _redact_alert_data(doc, policy="protect_victim")
+                    else:
+                        doc = _redact_alert_data(doc, bypass=True,
+                                                  forensic_token=params.forensic_token)
                     f.write(json.dumps(doc, ensure_ascii=False, default=str) + "\n")
                     total_exported += 1
                     if params.max_docs > 0 and total_exported >= params.max_docs:
