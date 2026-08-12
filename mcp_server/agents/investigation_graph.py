@@ -33,11 +33,11 @@ _LG_DB = os.environ.get("BLUETEAM_LANGGRAPH_DB", "")
 _checkpointer = None
 if _LG_DB:
     try:
-        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        from langgraph.checkpoint.sqlite import SqliteSaver
         import sqlite3
         conn = sqlite3.connect(_LG_DB, check_same_thread=False)
-        _checkpointer = AsyncSqliteSaver(conn=conn)
-        logger.info("investigation_graph: AsyncSqliteSaver at %s", _LG_DB)
+        _checkpointer = SqliteSaver(conn=conn)
+        logger.info("investigation_graph: SqliteSaver at %s", _LG_DB)
     except Exception as e:
         logger.warning("investigation_graph: SqliteSaver unavailable (%s), "
                        "falling back to InMemorySaver", e)
