@@ -1138,6 +1138,71 @@ blueteam_export_report(format="md", reveal_owned=true,
 #   md_sections=[...])
 ```
 
+### 🕸️ NetworkX Attack Graph & LangGraph Workflows
+
+Gunakan `blueteam_attack_graph`, `blueteam_campaign_watch`,
+`blueteam_investigation_workflow`, dan `blueteam_playbook_run`
+untuk analisis graf serangan dan otomatisasi investigasi.
+
+```
+⚠️ EXECUTION RULES:
+- Gunakan blueteam_prompt_route terlebih dahulu untuk memetakan prompt ke tool yang tepat.
+- blueteam_investigation_workflow dan blueteam_playbook_run menggunakan
+  LangGraph stateful workflows — state bertahan antar restart jika
+  BLUETEAM_LANGGRAPH_DB dikonfigurasi.
+
+--- NetworkX Attack Graph ---
+
+"Tampilkan attack graph 30 hari terakhir — cluster kampanye, hub, bridge IOCs."
+→ blueteam_attack_graph(since_days=30, top_n=10, response_format="json")
+
+"Analisis suspicion rank — IOC mana yang paling dekat ke confirmed attacker?"
+→ blueteam_attack_graph(since_days=30, top_n=20, response_format="json")
+→ Fokus pada top_suspicion dan top_edge_bridges.
+
+"Bandingkan campaign snapshot sekarang vs sebelumnya — ada cluster baru?"
+→ blueteam_campaign_watch(response_format="json")
+→ Periksa new_clusters dan growth events.
+
+"Cari jalur terpendek antara dua IOC dalam attack graph."
+→ blueteam_attack_graph(since_days=30, response_format="json")
+→ Gunakan shortest_path_between(a="<ip1>", b="<ip2>") dari hasil.
+
+--- LangGraph Investigation Workflow ---
+
+"Jalankan investigasi otomatis untuk IP 103.166.210.53."
+→ blueteam_investigation_workflow(
+    alert_text="<isi_alert>",
+    srcip="103.166.210.53",
+    window="24h",
+    use_attack_graph=true,
+    generate_report=true,
+    record_verdict=true,
+    verdict_label="suspicious")
+
+"Workflow lengkap: extract IOC → enrich → 3-Sum correlate →
+  analytics (graph ∥ killchain) → baseline → report → verdict."
+→ Semua langkah berjalan otomatis dalam satu panggilan.
+→ Gunakan BLUETEAM_LANGGRAPH_DB untuk persistensi state.
+
+--- LangGraph Playbook Runner ---
+
+"Jalankan playbook untuk alert credential dumping."
+→ blueteam_playbook_run(
+    alert_text="<isi_alert>",
+    rule_id="60106",
+    technique="T1003",
+    rule_groups="credential,mimikatz,lsass",
+    window="24h",
+    use_attack_graph=true,
+    generate_report=true)
+
+"Playbook: select template → run hunt → supervise → retry ladder
+  (3 fallback templates) → dispatch investigation workflow."
+→ Gunakan blueteam_prompt_route untuk memilih template yang tepat.
+→ Retry ladder: targeted → c2_beacon → lateral_movement → END.
+```
+
 ### 🔎 MITRE ATT&CK / Taktik MITRE
 
 ```
