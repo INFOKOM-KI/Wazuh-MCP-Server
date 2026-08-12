@@ -35,8 +35,12 @@ if _LG_DB:
     try:
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
         import sqlite3, asyncio
-        conn = sqlite3.connect(_LG_DB, check_same_thread=False)
-        _checkpointer = AsyncSqliteSaver(conn=conn)
+        
+        async def _init_async_cp():
+            conn = sqlite3.connect(_LG_DB, check_same_thread=False)
+            return AsyncSqliteSaver(conn=conn)
+        
+        _checkpointer = asyncio.run(_init_async_cp())
         logger.info("investigation_graph: AsyncSqliteSaver at %s", _LG_DB)
     except Exception as e:
         logger.warning("investigation_graph: SqliteSaver unavailable (%s), "
