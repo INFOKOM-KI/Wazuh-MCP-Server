@@ -1082,10 +1082,12 @@ Once connected via Claude Desktop, you can ask / Setelah terkoneksi:
 
 ```
 ⚠️ EXECUTION RULES:
-- redaction_policy="protect_victim" HANYA diterima oleh 6 tool:
+- redaction_policy="protect_victim" HANYA diterima oleh 5 tool:
     blueteam_curated_threat_report, blueteam_wazuh_alert_summarize,
     blueteam_wazuh_indexer_search, three_sum_correlation,
-    blueteam_wazuh_export, blueteam_investigate_ip
+    blueteam_investigate_ip
+- blueteam_wazuh_export menggunakan bypass_redaction (bukan redaction_policy) —
+  hanya untuk forensic export ke disk (LLM tidak melihat raw data).
 - Tool lain TIDAK MENERIMA redaction_policy — JANGAN kirim parameter itu.
   Jika tool menolak "extra_forbidden", hapus redaction_policy dan panggil ulang.
 - reveal_owned=True HANYA pada tool yang mendukungnya (blueteam_wazuh_indexer_search,
