@@ -1221,7 +1221,9 @@ blueteam_export_report(format="docx",
     {"heading": "MITRE ATT&CK Kill Chain",
      "paragraphs": ["<dari langkah 13>"]},
     {"heading": "Geo Heatmap",
-     "paragraphs": ["<dari langkah 14>"]}
+     "paragraphs": ["<dari langkah 14>"]},
+    {"heading": "Webshell Check (Forensic)",
+     "paragraphs": ["<dari langkah 17: blueteam_check_webshell results>"]}
   ])
 
 LANGKAH 16 — Forensic Export (opsional, UNTUK ANALIS):
@@ -1231,6 +1233,18 @@ blueteam_wazuh_export(
   forensic_token="<BLUETEAM_FORENSIC_TOKEN>",
   path="/var/log/blue-team-mcp/exports/forensic_24jam_{{date}}.jsonl")
 → Raw data ke disk — LLM hanya terima {"path": "...", "total": N}.
+
+LANGKAH 17 — Webshell Check (setelah forensic unmask):
+Analis membaca file export, ekstrak URL mencurigakan:
+  cat /var/log/blue-team-mcp/exports/forensic_24jam_*.jsonl \
+    | jq -r '.data.url' | sort -u | grep -v '^-$'
+Untuk SETIAP URL mencurigakan:
+  blueteam_check_webshell(url="<url>", timeout=10)
+→ Verdict: CONFIRMED / LOGIN_PAGE (klasifikasi LLM) / SUSPICIOUS / CLEAN.
+→ CONFIRMED → URL auto-registered sebagai attacker IOC.
+→ LOGIN_PAGE → LLM analisa HTML context: shell login atau aplikasi sah?
+→ Jika shell login terkonfirmasi, register sebagai attacker IOC.
+→ Tambahkan hasil ke laporan DOCX: "Webshell Check Results".
 ```
 
 #### Format Markdown (tanpa OfficeCLI — LLM compose langsung)
@@ -1290,6 +1304,11 @@ OUTPUT — LLM menyusun laporan markdown dengan struktur:
 
 ## Geo Heatmap
 <dari langkah 14>
+
+## Webshell Check (Forensic)
+| URL | HTTP Status | Verdict | Shell Family |
+|-----|------------|---------|-------------|
+<dari langkah 17: blueteam_check_webshell results>
 
 ---
 *Laporan digenerate otomatis oleh Blue Team MCP Server — TangerangKota-CSIRT*
