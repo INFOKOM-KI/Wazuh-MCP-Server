@@ -56,7 +56,7 @@ def main() -> None:
                 tool_count, args.transport, args.host, args.port)
 
     if args.transport in ("streamable_http", "http"):
-        mcp.run(transport="streamable-http")
+        mcp.run(transport="streamable-http", timeout_keep_alive=300)
     else:
         mcp.run(transport="stdio")
 
