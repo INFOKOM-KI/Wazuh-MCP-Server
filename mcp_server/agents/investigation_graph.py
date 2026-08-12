@@ -34,10 +34,10 @@ _checkpointer = None
 if _LG_DB:
     try:
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-        import sqlite3, asyncio
+        import aiosqlite, asyncio
         
         async def _init_async_cp():
-            conn = sqlite3.connect(_LG_DB, check_same_thread=False)
+            conn = await aiosqlite.connect(_LG_DB)
             return AsyncSqliteSaver(conn=conn)
         
         _checkpointer = asyncio.run(_init_async_cp())
