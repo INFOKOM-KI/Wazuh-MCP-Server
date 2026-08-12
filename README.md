@@ -1088,63 +1088,126 @@ Once connected via Claude Desktop, you can ask / Setelah terkoneksi:
   Jika tool menolak "extra_forbidden", hapus redaction_policy dan panggil ulang.
 - reveal_owned=True HANYA pada tool yang mendukungnya (blueteam_wazuh_indexer_search,
   blueteam_wazuh_alert_summarize, blueteam_investigate_ip).
-  blueteam_export_report TIDAK mendukung reveal_owned.
-- Path export WAJIB di bawah /var/log/blue-team-mcp/exports/ (server-enforced).
-  blueteam_export_report TIDAK mendukung reveal_owned — gunakan redaction_policy
-  pada tool analisis sebelumnya untuk mengontrol masking.
+- blueteam_export_report TIDAK mendukung reveal_owned.
+- blueteam_export_report HANYA mendukung format docx/xlsx/pptx.
+- Path export WAJIB: /var/log/blue-team-mcp/exports/
 
-LANGKAH 1 — Gambaran Menyeluruh:
+LANGKAH 0 — BM25 Prompt Routing (opsional):
+blueteam_prompt_route(prompt="<isi_prompt>", mode="buckets")
+→ Petakan prompt ke tool yang paling relevan.
+
+LANGKAH 1 — Gambaran Menyeluruh (SEMUA serangan):
 blueteam_curated_threat_report(since="24h", investigation_depth="deep",
   response_format="json", redaction_policy="protect_victim")
+→ Dapatkan seluruh serangan: top attacker IP, rule, severity, mitre tactics,
+  geo distribution, time decay analysis, dan IOC.
 
 LANGKAH 2 — Subdomain Paling Diserang:
-wazuh_domain_lookup(domain="tangerangkota.go.id", since="24h", response_format="json")
+wazuh_domain_lookup(domain="tangerangkota.go.id", since="24h",
+  response_format="json", max_scanned=10000)
+→ Urutkan seluruh subdomain berdasarkan jumlah serangan.
 
-LANGKAH 3 — Threat Card per Attacker (top IP dari langkah 2):
-blueteam_threat_card(srcip=<ip>, since="24h")
-blueteam_attack_chain(srcip=<ip>, since="24h")
+LANGKAH 3 — Threat Card + Attack Chain per Attacker:
+Untuk SETIAP top attacker IP (minimal top 10) dari langkah 1-2:
+  blueteam_threat_card(srcip=<ip>, since="24h")
+  blueteam_attack_chain(srcip=<ip>, since="24h")
+→ Threat intel, kill-chain progression, rule transition graph.
 
-LANGKAH 4 — Ekstrak IOC:
-blueteam_extract_iocs(text=<alert_text_dari_langkah_1>)
+LANGKAH 4 — Ekstrak IOC (seluruh jenis serangan):
+blueteam_extract_iocs(text=<seluruh_alert_text_dari_langkah_1>)
+→ Ekstrak IP, domain, URL, email, hash dari SEMUA alert.
 
 LANGKAH 5 — Argus (auth success IPs):
-wazuh_alert_aggregate_analysis(mode="summary", since="24h", response_format="json")
-→ argus_ip_lookup(ip=<ip>) untuk IP dengan authentication_success.
+wazuh_alert_aggregate_analysis(mode="summary", since="24h",
+  response_format="json")
+→ Filter seluruh IP dengan authentication_success, lalu:
+  argus_ip_lookup(ip=<ip>) untuk setiap IP.
 
-LANGKAH 6 — 3-Sum APT + ThreatFox:
+LANGKAH 6 — 3-Sum APT + ThreatFox + CrowdSec:
 three_sum_correlation(time_window_minutes=1440, follow_up="threat_intel",
-  multi_resolution=true, response_format="json", redaction_policy="protect_victim")
+  multi_resolution=true, response_format="json",
+  redaction_policy="protect_victim")
+→ Deteksi APT multi-stage + auto-enrich seluruh trigger IP.
 
-LANGKAH 7 — Email Locked:
+LANGKAH 7 — NetworkX Attack Graph (seluruh IOC):
+blueteam_attack_graph(since_days=30, top_n=20, response_format="json")
+→ Cluster kampanye (connected components), hub IOCs (degree centrality),
+  bridge IOCs (betweenness centrality), edge betweenness (boundary edges),
+  suspicion rank (personalized PageRank seeded on confirmed attackers).
+blueteam_campaign_watch(response_format="json")
+→ Diff snapshot sekarang vs sebelumnya: new_clusters, growth events.
+
+LANGKAH 8 — LangGraph Investigation (seluruh top attacker):
+Untuk SETIAP top attacker IP (minimal top 5):
+blueteam_investigation_workflow(
+  alert_text="<dari langkah 1>", srcip=<ip>,
+  window="24h", use_attack_graph=true,
+  generate_report=false, record_verdict=true,
+  verdict_label="suspicious")
+→ extract IOC → enrich (CrowdSec/ThreatFox) → 3-Sum correlate →
+  analytics (graph ∥ killchain) → baseline drift → verdict.
+  State bertahan antar restart jika BLUETEAM_LANGGRAPH_DB diset.
+
+LANGKAH 9 — LangGraph Playbook (seluruh alert anomali):
+Jika 3-Sum mendeteksi anomali (severity ≥ LOW):
+blueteam_playbook_run(
+  alert_text="<dari langkah 1>",
+  rule_groups="<dari hasil 3-Sum / curated report>",
+  window="24h", use_attack_graph=true, generate_report=false)
+→ select template → run hunt → supervise → retry ladder (3 fallback:
+  c2_beacon → lateral_movement → suspicious_parent) → investigate.
+
+LANGKAH 10 — Email Locked + Analisa:
 wazuh_compromised_emails_analysis(since="24h", response_format="json")
-→ argus_ip_lookup + threatfox_ioc_search untuk setiap IP penyebab lock.
+→ Seluruh email dengan status "locked" + analisa IP penyebab:
+  argus_ip_lookup(ip=<ip>)
+  threatfox_ioc_search(search_term=<ip>)
 
-LANGKAH 8 — wp2shell:
-blueteam_semantic_search(query="wp2shell webshell exploit", source="alerts",
-  since="24h", top_k=20, response_format="json")
+LANGKAH 11 — Semantic Search (seluruh pola serangan):
+blueteam_semantic_search(
+  query="<pola_serangan_dari_langkah_1>",
+  source="alerts", since="24h", top_k=30,
+  response_format="json")
+→ BM25 lexical ranking: temukan seluruh alert yang relevan
+  dengan pola serangan dominan (webshell, bruteforce, C2, dll).
 
-LANGKAH 9 — MITRE ATT&CK (3 top attacker):
-blueteam_stix_killchain(srcip=<top_attacker_ip>, since="24h")
+LANGKAH 12 — MITRE ATT&CK (seluruh top attacker):
+Untuk setiap top attacker IP (minimal top 5):
+blueteam_stix_killchain(srcip=<ip>, since="24h")
+→ Map seluruh technique ID ke ATT&CK kill-chain phases,
+  annotated dengan actors, campaigns, mitigations.
 
-LANGKAH 10 — Geo Heatmap:
+LANGKAH 13 — Geo Heatmap:
 blueteam_wazuh_geo_heatmap(since="24h", response_format="json")
+→ Visualisasi seluruh serangan berdasarkan koordinat geo.
 
-LANGKAH 11 — Laporan Akhir:
-<!-- blueteam_export_report hanya mendukung format: docx, xlsx, pptx -->
-<!-- reveal_owned tidak didukung oleh blueteam_export_report — gunakan redaction_policy pada tool sebelumnya -->
+LANGKAH 14 — Laporan Akhir (DOCX via OfficeCLI):
 blueteam_export_report(format="docx",
   title="Laporan Serangan Siber 24 Jam — Infra Pemkot Tangerang",
   path="/var/log/blue-team-mcp/exports/laporan_24jam_{{date}}.docx",
   docx_sections=[
-    {"heading": "Ringkasan Eksekutif", "paragraphs": ["<dari langkah 1>"]},
-    {"heading": "Subdomain Diserang + Attacker IP", "paragraphs": ["<dari langkah 2-3>"]},
-    {"heading": "IOC", "paragraphs": ["<dari langkah 4>"]},
-    {"heading": "Auth Success + Argus", "paragraphs": ["<dari langkah 5>"]},
-    {"heading": "3-Sum APT Detection", "paragraphs": ["<dari langkah 6>"]},
-    {"heading": "Email Locked + Analisa", "paragraphs": ["<dari langkah 7>"]},
-    {"heading": "wp2shell Analysis", "paragraphs": ["<dari langkah 8>"]},
-    {"heading": "MITRE ATT&CK Kill Chain", "paragraphs": ["<dari langkah 9>"]},
-    {"heading": "Geo Heatmap", "paragraphs": ["<dari langkah 10>"]}
+    {"heading": "Ringkasan Eksekutif",
+     "paragraphs": ["<dari langkah 1: total serangan, top attacker, severity>"]},
+    {"heading": "Subdomain Diserang + Attacker IP + Payload",
+     "paragraphs": ["<dari langkah 2-3: seluruh subdomain + threat card>"]},
+    {"heading": "IOC (Seluruh Jenis Serangan)",
+     "paragraphs": ["<dari langkah 4: IP, domain, URL, email, hash>"]},
+    {"heading": "Auth Success + Argus",
+     "paragraphs": ["<dari langkah 5>"]},
+    {"heading": "3-Sum APT Detection (Multi-Resolution)",
+     "paragraphs": ["<dari langkah 6: persistent, slow_burn, burst_only>"]},
+    {"heading": "Attack Graph — NetworkX",
+     "paragraphs": ["<dari langkah 7: clusters, hubs, bridges, edge betweenness, campaign watch>"]},
+    {"heading": "LangGraph Investigation + Playbook",
+     "paragraphs": ["<dari langkah 8-9: workflow results, verdict, retry ladder>"]},
+    {"heading": "Email Locked + Analisa Threat Intel",
+     "paragraphs": ["<dari langkah 10>"]},
+    {"heading": "Semantic Search — Pola Serangan Dominan",
+     "paragraphs": ["<dari langkah 11: BM25 ranked results>"]},
+    {"heading": "MITRE ATT&CK Kill Chain",
+     "paragraphs": ["<dari langkah 12: tactics, techniques, actors, mitigations>"]},
+    {"heading": "Geo Heatmap",
+     "paragraphs": ["<dari langkah 13>"]}
   ])
 ```
 
