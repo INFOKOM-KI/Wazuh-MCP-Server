@@ -30,16 +30,22 @@ if _LG_DB:
     try:
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
         import aiosqlite, asyncio
-        
+
         async def _init_async_cp():
             conn = await aiosqlite.connect(_LG_DB)
             return AsyncSqliteSaver(conn=conn)
-        
+
         _checkpointer = asyncio.run(_init_async_cp())
+        try:
+            _ = _checkpointer.get_next_version
+        except Exception:
+            raise RuntimeError("checkpointer invalid after asyncio.run")
         logger.info("playbook_graph: AsyncSqliteSaver at %s", _LG_DB)
     except Exception as e:
-        logger.warning("playbook_graph: SqliteSaver unavailable (%s), "
-                       "falling back to InMemorySaver", e)
+        logger.warning(
+            "playbook_graph: SqliteSaver unavailable (%s), "
+            "using InMemorySaver. Persistence requires langgraph-checkpoint-sqlite "
+            "version compatibility - state will not survive restarts.", e)
         _checkpointer = InMemorySaver()
 else:
     logger.info("playbook_graph: BLUETEAM_LANGGRAPH_DB not set, "

@@ -35,13 +35,25 @@ if _LG_DB:
     try:
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
         import aiosqlite, asyncio
-        
+
         async def _init_async_cp():
             conn = await aiosqlite.connect(_LG_DB)
             return AsyncSqliteSaver(conn=conn)
-        
+
         _checkpointer = asyncio.run(_init_async_cp())
+        # Quick verify: if the checkpointer survived the event loop, use it.
+        # If not (common with aiosqlite + asyncio.run), fall back silently.
+        try:
+            _ = _checkpointer.get_next_version
+        except Exception:
+            raise RuntimeError("checkpointer invalid after asyncio.run")
         logger.info("investigation_graph: AsyncSqliteSaver at %s", _LG_DB)
+    except Exception as e:
+        logger.warning(
+            "investigation_graph: SqliteSaver unavailable (%s), "
+            "using InMemorySaver. Persistence requires langgraph-checkpoint-sqlite "
+            "version compatibility - state will not survive restarts.", e)
+        _checkpointer = InMemorySaver()
     except Exception as e:
         logger.warning("investigation_graph: SqliteSaver unavailable (%s), "
                        "falling back to InMemorySaver", e)
