@@ -1078,6 +1078,8 @@ Once connected via Claude Desktop, you can ask / Setelah terkoneksi:
 
 ### 📋 SOC Daily Report / Laporan Harian SOC (24 Jam)
 
+#### Format DOCX (via OfficeCLI)
+
 ```
 ⚠️ EXECUTION RULES:
 - redaction_policy="protect_victim" HANYA diterima oleh 6 tool:
@@ -1227,6 +1229,80 @@ blueteam_wazuh_export(
 → Raw unmasked data ditulis ke disk server.
 → LLM HANYA menerima {"path": "...", "total": N}.
 → Analis membaca: cat /var/log/blue-team-mcp/exports/forensic_24jam_*.jsonl
+```
+
+#### Format Markdown (tanpa OfficeCLI — LLM compose langsung)
+
+```
+⚠️ EXECUTION RULES:
+- Sama dengan rules di atas (redaction_policy, reveal_owned, forensic).
+- TIDAK menggunakan blueteam_export_report.
+- LLM menyusun laporan markdown langsung dari hasil langkah 1-13.
+- Format output: markdown dengan heading, table, code block.
+- Simpan sebagai file .md di akhir respons.
+
+LANGKAH 1-13 — Jalankan SEMUA langkah analisis (sama seperti format DOCX).
+
+OUTPUT — LLM menyusun laporan markdown dengan struktur:
+
+# Laporan Serangan Siber 24 Jam — Infra Pemkot Tangerang
+**Periode**: {{since}} — {{until}} | **Total Serangan**: {{total}}
+
+## Ringkasan Eksekutif
+<dari langkah 1: total serangan, top 5 attacker, severity breakdown, MITRE tactics>
+
+## Subdomain Diserang + Attacker IP
+| Subdomain | Total Serangan | Top Attacker IP | Payload/Exploit |
+|-----------|---------------|-----------------|------------------|
+<dari langkah 2-3>
+
+## IOC (Seluruh Jenis Serangan)
+- **IP**: ...
+- **Domain**: ...
+- **URL**: ...
+- **Email**: <masked>
+- **Hash**: ...
+<dari langkah 4>
+
+## Auth Success + Argus
+<dari langkah 5>
+
+## 3-Sum APT Detection (Multi-Resolution)
+- **Persistent (all 3 tiers)**: <count> IPs — high confidence
+- **Slow Burn (7d only)**: <count> IPs — possible slow beacon
+- **Burst (1h only)**: <count> IPs — likely noise
+<dari langkah 6>
+
+## Attack Graph — NetworkX
+- **Campaign Clusters**: <N> components
+- **Hub IOCs (degree centrality)**: ...
+- **Bridge IOCs (betweenness)**: ...
+- **Edge Betweenness (campaign boundaries)**: ...
+- **Suspicion Rank (PageRank)**: ...
+- **Campaign Watch (new/growth)**: ...
+<dari langkah 7>
+
+## LangGraph Investigation + Playbook
+<dari langkah 8-9: summary per attacker, verdict, retry results>
+
+## Email Locked + Analisa Threat Intel
+<dari langkah 10: email locked, IP penyebab, hasil Argus/ThreatFox>
+
+## Semantic Search — Pola Serangan Dominan
+| Rank | BM25 Score | Rule ID | Description | Count |
+|------|-----------|---------|-------------|-------|
+<dari langkah 11>
+
+## MITRE ATT&CK Kill Chain
+| Tactic | Technique ID | Name | Actor | Campaign |
+|--------|-------------|------|-------|----------|
+<dari langkah 12>
+
+## Geo Heatmap
+<dari langkah 13: deskripsikan distribusi geo — negara/kota terbanyak>
+
+---
+*Laporan digenerate otomatis oleh Blue Team MCP Server — TangerangKota-CSIRT*
 ```
 
 ### 🕸️ NetworkX Attack Graph & LangGraph Workflows
