@@ -1092,6 +1092,14 @@ Once connected via Claude Desktop, you can ask / Setelah terkoneksi:
 - blueteam_export_report HANYA mendukung format docx/xlsx/pptx.
 - Path export WAJIB: /var/log/blue-team-mcp/exports/
 
+⚠️ FORENSIC UNMASKING (tanpa leak ke LLM Provider):
+- blueteam_wazuh_export dengan bypass_redaction=true + forensic_token
+  menulis raw data LANGSUNG ke disk server — LLM HANYA menerima file path.
+- Analis membaca file export langsung di server — email/subdomain asli
+  TIDAK PERNAH melewati LLM provider.
+- blueteam_export_report TETAP menggunakan data ter-redaksi dari analisis.
+- Syarat: BLUETEAM_ALLOW_FORENSIC_BYPASS=true + BLUETEAM_FORENSIC_TOKEN diset.
+
 LANGKAH 0 — BM25 Prompt Routing (opsional):
 blueteam_prompt_route(prompt="<isi_prompt>", mode="buckets")
 → Petakan prompt ke tool yang paling relevan.
@@ -1209,6 +1217,16 @@ blueteam_export_report(format="docx",
     {"heading": "Geo Heatmap",
      "paragraphs": ["<dari langkah 13>"]}
   ])
+
+LANGKAH 15 — Forensic Export (opsional, UNTUK ANALIS — bukan LLM):
+blueteam_wazuh_export(
+  since="24h",
+  bypass_redaction=true,
+  forensic_token="<BLUETEAM_FORENSIC_TOKEN>",
+  path="/var/log/blue-team-mcp/exports/forensic_24jam_{{date}}.jsonl")
+→ Raw unmasked data ditulis ke disk server.
+→ LLM HANYA menerima {"path": "...", "total": N}.
+→ Analis membaca: cat /var/log/blue-team-mcp/exports/forensic_24jam_*.jsonl
 ```
 
 ### 🕸️ NetworkX Attack Graph & LangGraph Workflows
