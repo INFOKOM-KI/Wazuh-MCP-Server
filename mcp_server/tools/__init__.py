@@ -77,6 +77,7 @@ def register_all_tools() -> None:
         ("ioc_tools",             "ioc_tools",             False),  # 2 tools
         ("wazuh_export",          "wazuh_export",          False),  # 1 tool
         ("wazuh_scanning",        "wazuh_scanning",        False),  # 4 tools
+        ("webshell_check",         "webshell_check",         False),  # 1 tool - curl + signature scan
         ("semantic_search",       "semantic_search",       False),  # 1 tool
         ("report_export",         "report_export",         False),  # 1 tool
         ("stix_correlation",      "stix_correlation",      False),  # 2 tools
