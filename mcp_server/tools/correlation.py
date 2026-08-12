@@ -29,6 +29,10 @@ from mcp_server.correlation.three_sum_core import (evaluate_engine_a, evaluate_e
 
 # IOC limit for attack-graph cluster context
 _GRAPH_MAX_IOCS = 500
+# Engine A graph-integration boost factors
+_PPR_BOOST_FACTOR = 5.0      # total += ppr_score * factor
+_CONFIRMED_BONUS = 2.0       # flat bonus for registry-confirmed attacker IOCs
+
 async def _build_cluster_context() -> dict:
     """Attack-graph context for Engine A: cluster_map, ppr_scores, confirmed_ips.
 
