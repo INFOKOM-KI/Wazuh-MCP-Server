@@ -1078,7 +1078,156 @@ Once connected via Claude Desktop, you can ask / Setelah terkoneksi:
 
 ### 📋 SOC Daily Report / Laporan Harian SOC (24 Jam)
 
-#### Format DOCX (via OfficeCLI)
+#### Format DOCX (via OfficeCLI + Sangfor Blocklist)
+
+```
+⚠️ EXECUTION RULES:
+- redaction_policy="protect_victim" HANYA diterima oleh 6 tool:
+    blueteam_curated_threat_report, blueteam_wazuh_alert_summarize,
+    blueteam_wazuh_indexer_search, three_sum_correlation,
+    blueteam_wazuh_export, blueteam_investigate_ip
+- Tool lain TIDAK MENERIMA redaction_policy — JANGAN kirim parameter itu.
+  Jika tool menolak "extra_forbidden", hapus redaction_policy dan panggil ulang.
+- reveal_owned=True HANYA pada tool yang mendukungnya (blueteam_wazuh_indexer_search,
+  blueteam_wazuh_alert_summarize, blueteam_investigate_ip).
+- blueteam_export_report TIDAK mendukung reveal_owned.
+- blueteam_export_report HANYA mendukung format docx/xlsx/pptx.
+- Path export WAJIB: /var/log/blue-team-mcp/exports/
+
+⚠️ FORENSIC UNMASKING (tanpa leak ke LLM Provider):
+- blueteam_wazuh_export dengan bypass_redaction=true + forensic_token
+  menulis raw data LANGSUNG ke disk server — LLM HANYA menerima file path.
+- Analis membaca file export langsung di server — email/subdomain asli
+  TIDAK PERNAH melewati LLM provider.
+- blueteam_export_report TETAP menggunakan data ter-redaksi dari analisis.
+- Syarat: BLUETEAM_ALLOW_FORENSIC_BYPASS=true + BLUETEAM_FORENSIC_TOKEN diset.
+
+LANGKAH 0 — BM25 Prompt Routing (opsional):
+blueteam_prompt_route(prompt="<isi_prompt>", mode="buckets")
+→ Petakan prompt ke tool yang paling relevan.
+
+LANGKAH 1 — Gambaran Menyeluruh (SEMUA serangan):
+blueteam_curated_threat_report(since="24h", investigation_depth="deep",
+  response_format="json", redaction_policy="protect_victim")
+→ Dapatkan seluruh serangan: top attacker IP, rule, severity, mitre tactics,
+  geo distribution, time decay analysis, dan IOC.
+
+LANGKAH 2 — Subdomain Paling Diserang:
+wazuh_domain_lookup(domain="tangerangkota.go.id", since="24h",
+  response_format="json", max_scanned=10000)
+→ Urutkan seluruh subdomain berdasarkan jumlah serangan.
+
+LANGKAH 3 — Threat Card + Attack Chain per Attacker:
+Untuk SETIAP top attacker IP (minimal top 10) dari langkah 1-2:
+  blueteam_threat_card(srcip=<ip>, since="24h")
+  blueteam_attack_chain(srcip=<ip>, since="24h")
+→ Threat intel, kill-chain progression, rule transition graph.
+
+LANGKAH 4 — Sangfor Blocklist Check (firewall status):
+sangfor_blocklist_list(response_format="json")
+→ Dapatkan seluruh IP yang sudah di-block oleh Sangfor.
+Untuk SETIAP top attacker IP dari langkah 1-2:
+  sangfor_blocklist_check(ip=<ip>, response_format="json")
+→ Cek apakah IP attacker sudah ada di blocklist Sangfor.
+→ Tandai IP yang BELUM di-block untuk tindakan lanjutan.
+
+LANGKAH 5 — Ekstrak IOC (seluruh jenis serangan):
+blueteam_extract_iocs(text=<seluruh_alert_text_dari_langkah_1>)
+→ Ekstrak IP, domain, URL, email, hash dari SEMUA alert.
+
+LANGKAH 6 — Argus (auth success IPs):
+wazuh_alert_aggregate_analysis(mode="summary", since="24h",
+  response_format="json")
+→ Filter seluruh IP dengan authentication_success, lalu:
+  argus_ip_lookup(ip=<ip>) untuk setiap IP.
+
+LANGKAH 7 — 3-Sum APT + ThreatFox + CrowdSec:
+three_sum_correlation(time_window_minutes=1440, follow_up="threat_intel",
+  multi_resolution=true, response_format="json",
+  redaction_policy="protect_victim")
+→ Deteksi APT multi-stage + auto-enrich seluruh trigger IP.
+
+LANGKAH 8 — NetworkX Attack Graph (seluruh IOC):
+blueteam_attack_graph(since_days=30, top_n=20, response_format="json")
+→ Cluster kampanye, hub/bridge IOCs, edge betweenness, suspicion rank.
+blueteam_campaign_watch(response_format="json")
+→ Diff snapshot sekarang vs sebelumnya: new_clusters, growth events.
+
+LANGKAH 9 — LangGraph Investigation (seluruh top attacker):
+Untuk SETIAP top attacker IP (minimal top 5):
+blueteam_investigation_workflow(
+  alert_text="<dari langkah 1>", srcip=<ip>,
+  window="24h", use_attack_graph=true,
+  generate_report=false, record_verdict=true,
+  verdict_label="suspicious")
+→ extract → enrich → 3-Sum → analytics (graph ∥ killchain) →
+  baseline → verdict. State bertahan jika BLUETEAM_LANGGRAPH_DB diset.
+
+LANGKAH 10 — LangGraph Playbook (seluruh alert anomali):
+Jika 3-Sum mendeteksi anomali (severity ≥ LOW):
+blueteam_playbook_run(
+  alert_text="<dari langkah 1>",
+  rule_groups="<dari hasil 3-Sum / curated report>",
+  window="24h", use_attack_graph=true, generate_report=false)
+→ select template → run hunt → supervise → retry ladder → investigate.
+
+LANGKAH 11 — Email Locked + Analisa:
+wazuh_compromised_emails_analysis(since="24h", response_format="json")
+→ Seluruh email "locked" + argus_ip_lookup + threatfox_ioc_search.
+
+LANGKAH 12 — Semantic Search (seluruh pola serangan):
+blueteam_semantic_search(
+  query="<pola_serangan_dari_langkah_1>",
+  source="alerts", since="24h", top_k=30,
+  response_format="json")
+→ BM25 ranking: temukan seluruh alert dengan pola serangan dominan.
+
+LANGKAH 13 — MITRE ATT&CK (seluruh top attacker):
+Untuk setiap top attacker IP (minimal top 5):
+blueteam_stix_killchain(srcip=<ip>, since="24h")
+→ Map technique ID ke ATT&CK phases + actors, campaigns, mitigations.
+
+LANGKAH 14 — Geo Heatmap:
+blueteam_wazuh_geo_heatmap(since="24h", response_format="json")
+
+LANGKAH 15 — Laporan Akhir (DOCX):
+blueteam_export_report(format="docx",
+  title="Laporan Serangan Siber 24 Jam — Infra Pemkot Tangerang",
+  path="/var/log/blue-team-mcp/exports/laporan_24jam_{{date}}.docx",
+  docx_sections=[
+    {"heading": "Ringkasan Eksekutif",
+     "paragraphs": ["<dari langkah 1: total, top attacker, severity>"]},
+    {"heading": "Subdomain Diserang + Attacker IP",
+     "paragraphs": ["<dari langkah 2-3>"]},
+    {"heading": "Sangfor Blocklist Status",
+     "paragraphs": ["<dari langkah 4: blocked vs unblocked IPs>"]},
+    {"heading": "IOC (Seluruh Jenis Serangan)",
+     "paragraphs": ["<dari langkah 5>"]},
+    {"heading": "Auth Success + Argus",
+     "paragraphs": ["<dari langkah 6>"]},
+    {"heading": "3-Sum APT Detection (Multi-Resolution)",
+     "paragraphs": ["<dari langkah 7: persistent, slow_burn, burst_only>"]},
+    {"heading": "Attack Graph — NetworkX",
+     "paragraphs": ["<dari langkah 8>"]},
+    {"heading": "LangGraph Investigation + Playbook",
+     "paragraphs": ["<dari langkah 9-10>"]},
+    {"heading": "Email Locked + Analisa Threat Intel",
+     "paragraphs": ["<dari langkah 11>"]},
+    {"heading": "Semantic Search — Pola Serangan Dominan",
+     "paragraphs": ["<dari langkah 12: BM25 ranked results>"]},
+    {"heading": "MITRE ATT&CK Kill Chain",
+     "paragraphs": ["<dari langkah 13>"]},
+    {"heading": "Geo Heatmap",
+     "paragraphs": ["<dari langkah 14>"]}
+  ])
+
+LANGKAH 16 — Forensic Export (opsional, UNTUK ANALIS):
+blueteam_wazuh_export(
+  since="24h",
+  bypass_redaction=true,
+  forensic_token="<BLUETEAM_FORENSIC_TOKEN>",
+  path="/var/log/blue-team-mcp/exports/forensic_24jam_{{date}}.jsonl")
+→ Raw data ke disk — LLM hanya terima {"path": "...", "total": N}.
 
 ```
 ⚠️ EXECUTION RULES:
@@ -1237,11 +1386,11 @@ blueteam_wazuh_export(
 ⚠️ EXECUTION RULES:
 - Sama dengan rules di atas (redaction_policy, reveal_owned, forensic).
 - TIDAK menggunakan blueteam_export_report.
-- LLM menyusun laporan markdown langsung dari hasil langkah 1-13.
+- LLM menyusun laporan markdown langsung dari hasil langkah 1-14.
 - Format output: markdown dengan heading, table, code block.
 - Simpan sebagai file .md di akhir respons.
 
-LANGKAH 1-13 — Jalankan SEMUA langkah analisis (sama seperti format DOCX).
+LANGKAH 1-14 — Jalankan SEMUA langkah analisis (sama seperti format DOCX).
 
 OUTPUT — LLM menyusun laporan markdown dengan struktur:
 
@@ -1249,57 +1398,45 @@ OUTPUT — LLM menyusun laporan markdown dengan struktur:
 **Periode**: {{since}} — {{until}} | **Total Serangan**: {{total}}
 
 ## Ringkasan Eksekutif
-<dari langkah 1: total serangan, top 5 attacker, severity breakdown, MITRE tactics>
+<dari langkah 1>
 
 ## Subdomain Diserang + Attacker IP
-| Subdomain | Total Serangan | Top Attacker IP | Payload/Exploit |
-|-----------|---------------|-----------------|------------------|
 <dari langkah 2-3>
 
-## IOC (Seluruh Jenis Serangan)
-- **IP**: ...
-- **Domain**: ...
-- **URL**: ...
-- **Email**: <masked>
-- **Hash**: ...
-<dari langkah 4>
+## Sangfor Blocklist Status
+| IP | Blocked | Action Needed |
+|----|---------|---------------|
+<dari langkah 4: blocked vs unblocked IPs>
 
-## Auth Success + Argus
+## IOC (Seluruh Jenis Serangan)
 <dari langkah 5>
 
-## 3-Sum APT Detection (Multi-Resolution)
-- **Persistent (all 3 tiers)**: <count> IPs — high confidence
-- **Slow Burn (7d only)**: <count> IPs — possible slow beacon
-- **Burst (1h only)**: <count> IPs — likely noise
+## Auth Success + Argus
 <dari langkah 6>
 
-## Attack Graph — NetworkX
-- **Campaign Clusters**: <N> components
-- **Hub IOCs (degree centrality)**: ...
-- **Bridge IOCs (betweenness)**: ...
-- **Edge Betweenness (campaign boundaries)**: ...
-- **Suspicion Rank (PageRank)**: ...
-- **Campaign Watch (new/growth)**: ...
+## 3-Sum APT Detection (Multi-Resolution)
+- **Persistent**: <count> IPs — high confidence
+- **Slow Burn (7d only)**: <count> IPs
+- **Burst (1h only)**: <count> IPs — likely noise
 <dari langkah 7>
 
+## Attack Graph — NetworkX
+<dari langkah 8>
+
 ## LangGraph Investigation + Playbook
-<dari langkah 8-9: summary per attacker, verdict, retry results>
+<dari langkah 9-10>
 
 ## Email Locked + Analisa Threat Intel
-<dari langkah 10: email locked, IP penyebab, hasil Argus/ThreatFox>
-
-## Semantic Search — Pola Serangan Dominan
-| Rank | BM25 Score | Rule ID | Description | Count |
-|------|-----------|---------|-------------|-------|
 <dari langkah 11>
 
-## MITRE ATT&CK Kill Chain
-| Tactic | Technique ID | Name | Actor | Campaign |
-|--------|-------------|------|-------|----------|
+## Semantic Search — Pola Serangan Dominan
 <dari langkah 12>
 
+## MITRE ATT&CK Kill Chain
+<dari langkah 13>
+
 ## Geo Heatmap
-<dari langkah 13: deskripsikan distribusi geo — negara/kota terbanyak>
+<dari langkah 14>
 
 ---
 *Laporan digenerate otomatis oleh Blue Team MCP Server — TangerangKota-CSIRT*
