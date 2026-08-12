@@ -34,9 +34,9 @@ if _LG_DB:
             if hasattr(checkpointer, 'get_next_version'):
                 _checkpointer = checkpointer
             else:
-                _checkpointer = SqliteSaver(conn_string=_LG_DB)
+                _checkpointer = SqliteSaver(db_path=_LG_DB)
         except Exception:
-            _checkpointer = SqliteSaver(conn_string=_LG_DB)
+            _checkpointer = SqliteSaver(db_path=_LG_DB)
         logger.info("playbook_graph: SqliteSaver at %s", _LG_DB)
     except Exception as e:
         logger.warning("playbook_graph: SqliteSaver unavailable (%s), "
