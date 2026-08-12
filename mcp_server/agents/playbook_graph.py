@@ -29,14 +29,9 @@ _checkpointer = None
 if _LG_DB:
     try:
         from langgraph.checkpoint.sqlite import SqliteSaver
-        try:
-            checkpointer = SqliteSaver.from_conn_string(_LG_DB)
-            if hasattr(checkpointer, 'get_next_version'):
-                _checkpointer = checkpointer
-            else:
-                _checkpointer = SqliteSaver(db_path=_LG_DB)
-        except Exception:
-            _checkpointer = SqliteSaver(db_path=_LG_DB)
+        import sqlite3
+        conn = sqlite3.connect(_LG_DB, check_same_thread=False)
+        _checkpointer = SqliteSaver(conn=conn)
         logger.info("playbook_graph: SqliteSaver at %s", _LG_DB)
     except Exception as e:
         logger.warning("playbook_graph: SqliteSaver unavailable (%s), "

@@ -34,16 +34,9 @@ _checkpointer = None
 if _LG_DB:
     try:
         from langgraph.checkpoint.sqlite import SqliteSaver
-        # langgraph-checkpoint-sqlite 2.0.x: from_conn_string() returns a context
-        # manager, not a checkpointer. Use the constructor with db_path instead.
-        try:
-            checkpointer = SqliteSaver.from_conn_string(_LG_DB)
-            if hasattr(checkpointer, 'get_next_version'):
-                _checkpointer = checkpointer
-            else:
-                _checkpointer = SqliteSaver(db_path=_LG_DB)
-        except Exception:
-            _checkpointer = SqliteSaver(db_path=_LG_DB)
+        import sqlite3
+        conn = sqlite3.connect(_LG_DB, check_same_thread=False)
+        _checkpointer = SqliteSaver(conn=conn)
         logger.info("investigation_graph: SqliteSaver at %s", _LG_DB)
     except Exception as e:
         logger.warning("investigation_graph: SqliteSaver unavailable (%s), "
