@@ -1170,10 +1170,10 @@ untuk analisis graf serangan dan otomatisasi investigasi.
 
 --- LangGraph Investigation Workflow ---
 
-"Jalankan investigasi otomatis untuk IP 103.166.210.53."
+"Jalankan investigasi otomatis untuk IP <isi_srcip>"
 → blueteam_investigation_workflow(
     alert_text="<isi_alert>",
-    srcip="103.166.210.53",
+    srcip="<ip>",
     window="24h",
     use_attack_graph=true,
     generate_report=true,
