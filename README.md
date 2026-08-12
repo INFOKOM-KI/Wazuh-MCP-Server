@@ -1086,7 +1086,12 @@ Once connected via Claude Desktop, you can ask / Setelah terkoneksi:
     blueteam_wazuh_export, blueteam_investigate_ip
 - Tool lain TIDAK MENERIMA redaction_policy — JANGAN kirim parameter itu.
   Jika tool menolak "extra_forbidden", hapus redaction_policy dan panggil ulang.
-- reveal_owned=True HANYA pada langkah 11 (laporan akhir).
+- reveal_owned=True HANYA pada tool yang mendukungnya (blueteam_wazuh_indexer_search,
+  blueteam_wazuh_alert_summarize, blueteam_investigate_ip).
+  blueteam_export_report TIDAK mendukung reveal_owned.
+- Path export WAJIB di bawah /var/log/blue-team-mcp/exports/ (server-enforced).
+  blueteam_export_report TIDAK mendukung reveal_owned — gunakan redaction_policy
+  pada tool analisis sebelumnya untuk mengontrol masking.
 
 LANGKAH 1 — Gambaran Menyeluruh:
 blueteam_curated_threat_report(since="24h", investigation_depth="deep",
@@ -1125,17 +1130,22 @@ LANGKAH 10 — Geo Heatmap:
 blueteam_wazuh_geo_heatmap(since="24h", response_format="json")
 
 LANGKAH 11 — Laporan Akhir:
-<!-- Untuk format docx, pastikan OfficeCLI sudah terinstall terlebih dahulu -->
-blueteam_export_report(format="md", reveal_owned=true,
+<!-- blueteam_export_report hanya mendukung format: docx, xlsx, pptx -->
+<!-- reveal_owned tidak didukung oleh blueteam_export_report — gunakan redaction_policy pada tool sebelumnya -->
+blueteam_export_report(format="docx",
   title="Laporan Serangan Siber 24 Jam — Infra Pemkot Tangerang",
-  path="/var/log/blue-team-mcp/reports/laporan_24jam_{{date}}.md",
-  md_sections=[...])
-
-# Alternatif format docx (wajib install OfficeCLI):
-# blueteam_export_report(format="docx", reveal_owned=true,
-#   title="Laporan Serangan Siber 24 Jam — Infra Pemkot Tangerang",
-#   path="/var/log/blue-team-mcp/reports/laporan_24jam_{{date}}.docx",
-#   md_sections=[...])
+  path="/var/log/blue-team-mcp/exports/laporan_24jam_{{date}}.docx",
+  docx_sections=[
+    {"heading": "Ringkasan Eksekutif", "paragraphs": ["<dari langkah 1>"]},
+    {"heading": "Subdomain Diserang + Attacker IP", "paragraphs": ["<dari langkah 2-3>"]},
+    {"heading": "IOC", "paragraphs": ["<dari langkah 4>"]},
+    {"heading": "Auth Success + Argus", "paragraphs": ["<dari langkah 5>"]},
+    {"heading": "3-Sum APT Detection", "paragraphs": ["<dari langkah 6>"]},
+    {"heading": "Email Locked + Analisa", "paragraphs": ["<dari langkah 7>"]},
+    {"heading": "wp2shell Analysis", "paragraphs": ["<dari langkah 8>"]},
+    {"heading": "MITRE ATT&CK Kill Chain", "paragraphs": ["<dari langkah 9>"]},
+    {"heading": "Geo Heatmap", "paragraphs": ["<dari langkah 10>"]}
+  ])
 ```
 
 ### 🕸️ NetworkX Attack Graph & LangGraph Workflows
