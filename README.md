@@ -1122,9 +1122,12 @@ TIER 2 — bypass_redaction + forensic_token (HUMAN ONLY):
 ⚠️ PASS FORENSIC (opsional — setelah analisis selesai):
 - Jalankan ulang tool berikut dengan reveal_owned=true untuk atribusi aset milik sendiri:
   blueteam_curated_threat_report(..., reveal_owned=true)
-  wazuh_domain_lookup(..., reveal_owned=true)
-  wazuh_email_lookup(..., reveal_owned=true)
+  wazuh_domain_lookup(..., reveal_owned=true)   ← BUKA subdomain asli (Tier 1)
+  wazuh_email_lookup(..., reveal_owned=true)    ← BUKA email dinas asli (Tier 1)
 - Hasil pass forensic: subdomain + email dinas asli untuk identifikasi target serangan.
+- PENTING: reveal_owned=true = Tier 1 (AMAN, aset milik sendiri).
+  JANGAN salah klasifikasi sebagai Tier 2 (forensic_token). Tier 2 hanya untuk
+  attacker payload + data pihak ketiga.
 
 ⚠️ FORENSIC UNMASKING (tanpa leak ke LLM Provider):
 - blueteam_wazuh_export dengan bypass_redaction=true + forensic_token
@@ -1153,9 +1156,11 @@ blueteam_wazuh_indexer_search(
 → Gunakan untuk: identifikasi asset yang diserang, mapping attacker → target.
 → Ini data MILIK SENDIRI — aman untuk LLM (bukan PII pihak ketiga).
 
-LANGKAH 2 — Subdomain Paling Diserang:
+LANGKAH 2 — Subdomain Paling Diserang (reveal_owned — TIER 1):
 wazuh_domain_lookup(domain="tangerangkota.go.id", since="24h",
-  response_format="json", max_scanned=10000)
+  response_format="json", max_scanned=10000, reveal_owned=true)
+→ reveal_owned=true MEMBUKA subdomain asli (bukan masked).
+→ Ini aset MILIK SENDIRI — Tier 1, BUKAN Tier 2. TIDAK butuh forensic_token.
 → Urutkan seluruh subdomain berdasarkan jumlah serangan.
 
 LANGKAH 3 — Threat Card + Attack Chain per Attacker:
