@@ -195,16 +195,17 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
     _audit_log("blueteam_check_webshell", {"url": params.url, "timeout": params.timeout})
     body_file = f"/tmp/webshell_check_{uuid.uuid4().hex}.body"
 
-    curl_cmd = (
-        f"curl -s {'-L ' if params.follow_redirects else ''}"
-        f"--max-time {params.timeout} "
-        f"--insecure "
-        f"-o {body_file} "
-        f"-w 'HTTP_STATUS:%{{http_code}}\nCONTENT_TYPE:%{{content_type}}\nSIZE:%{{size_download}}\n' "
-        f"'{params.url}'"
-    )
+    # _run_async expects a LIST of args, not a shell string.
+    cmd = ["curl", "-s", "--insecure", "--max-time", str(params.timeout)]
+    if params.follow_redirects:
+        cmd.append("-L")
+    cmd += [
+        "-o", body_file,
+        "-w", "HTTP_STATUS:%{http_code}\nCONTENT_TYPE:%{content_type}\nSIZE:%{size_download}\n",
+        params.url,
+    ]
 
-    result = await _run_async(curl_cmd, timeout=int(params.timeout) + 5)
+    result = await _run_async(cmd, timeout=int(params.timeout) + 5)
 
     # Parse curl output
     status = 0
