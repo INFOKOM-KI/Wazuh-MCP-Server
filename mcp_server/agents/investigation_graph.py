@@ -27,37 +27,13 @@ logger = logging.getLogger("blue_team_mcp.investigation_graph")
 # the entire workflow indefinitely.
 _NODE_TIMEOUT = float(os.environ.get("BLUETEAM_LANGGRAPH_NODE_TIMEOUT", "120"))
 
-# SqliteSaver (survives server restarts) with env-var path
-_LG_DB = os.environ.get("BLUETEAM_LANGGRAPH_DB", "")
-
-_checkpointer = None
-if _LG_DB:
-    try:
-        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-        import aiosqlite, asyncio
-
-        async def _init_async_cp():
-            conn = await aiosqlite.connect(_LG_DB)
-            return AsyncSqliteSaver(conn=conn)
-
-        _checkpointer = asyncio.run(_init_async_cp())
-        # Quick verify: if the checkpointer survived the event loop, use it.
-        # If not (common with aiosqlite + asyncio.run), fall back silently.
-        try:
-            _ = _checkpointer.get_next_version
-        except Exception:
-            raise RuntimeError("checkpointer invalid after asyncio.run")
-        logger.info("investigation_graph: AsyncSqliteSaver at %s", _LG_DB)
-    except Exception as e:
-        logger.warning(
-            "investigation_graph: SqliteSaver unavailable (%s), "
-            "using InMemorySaver. Persistence requires langgraph-checkpoint-sqlite "
-            "version compatibility - state will not survive restarts.", e)
-        _checkpointer = InMemorySaver()
-else:
-    logger.info("investigation_graph: BLUETEAM_LANGGRAPH_DB not set, "
-                "using InMemorySaver (state lost on restart)")
-    _checkpointer = InMemorySaver()
+# State persistence: InMemorySaver is the reliable default.
+# NOTE: AsyncSqliteSaver is intentionally NOT used here - aiosqlite connections
+# created via asyncio.run() die when the temporary loop closes, causing
+# "'Connection' object has no attribute 'is_alive'" at ainvoke() runtime.
+# Re-enable SqliteSaver only when the FastMCP server exposes its own event loop
+# for lazy checkpointer init (future langgraph upgrade).
+_checkpointer = InMemorySaver()
 
 
 class InvestigationState(TypedDict, total=False):
@@ -144,7 +120,6 @@ async def correlate_step(state: InvestigationState) -> dict:
 
 async def analytics_step(state: InvestigationState) -> dict:
     """Run attack graph analysis + STIX killchain in parallel.
-
     graph_step and killchain_step are independent - the attack graph
     operates on the IOC store while the killchain queries the Indexer
     per-srcip. Running them concurrently cuts ~30% from the serial path.
@@ -279,7 +254,6 @@ def build_investigation_graph():
     g.add_node("baseline", baseline_step)
     g.add_node("report", report_step)
     g.add_node("verdict", verdict_step)
-
     g.add_edge(START, "extract")
     g.add_conditional_edges("extract", _has_targets, {"enrich": "enrich", "graph": "analytics"})
     g.add_edge("enrich", "correlate")

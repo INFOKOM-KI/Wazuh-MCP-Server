@@ -22,35 +22,10 @@ logger = logging.getLogger("blue_team_mcp.playbook_graph")
 # Per-node timeout (seconds)
 _NODE_TIMEOUT = float(os.environ.get("BLUETEAM_LANGGRAPH_NODE_TIMEOUT", "120"))
 
-# SqliteSaver (survives server restarts) with env-var path
-_LG_DB = os.environ.get("BLUETEAM_LANGGRAPH_DB", "")
-
-_checkpointer = None
-if _LG_DB:
-    try:
-        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-        import aiosqlite, asyncio
-
-        async def _init_async_cp():
-            conn = await aiosqlite.connect(_LG_DB)
-            return AsyncSqliteSaver(conn=conn)
-
-        _checkpointer = asyncio.run(_init_async_cp())
-        try:
-            _ = _checkpointer.get_next_version
-        except Exception:
-            raise RuntimeError("checkpointer invalid after asyncio.run")
-        logger.info("playbook_graph: AsyncSqliteSaver at %s", _LG_DB)
-    except Exception as e:
-        logger.warning(
-            "playbook_graph: SqliteSaver unavailable (%s), "
-            "using InMemorySaver. Persistence requires langgraph-checkpoint-sqlite "
-            "version compatibility - state will not survive restarts.", e)
-        _checkpointer = InMemorySaver()
-else:
-    logger.info("playbook_graph: BLUETEAM_LANGGRAPH_DB not set, "
-                "using InMemorySaver (state lost on restart)")
-    _checkpointer = InMemorySaver()
+# State persistence: InMemorySaver is the reliable default.
+# NOTE: AsyncSqliteSaver is intentionally NOT used - see investigation_graph.py
+# for the aiosqlite + asyncio.run() event-loop deadlock explanation.
+_checkpointer = InMemorySaver()
 
 _FALLBACK_TEMPLATE = "c2_beacon"
 # Retry ladder: if the targeted template finds 0 srcips, try these in order.
