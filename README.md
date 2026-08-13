@@ -1091,11 +1091,40 @@ Once connected via Claude Desktop, you can ask / Setelah terkoneksi:
   hanya untuk forensic export ke disk (LLM tidak melihat raw data).
 - Tool lain TIDAK MENERIMA redaction_policy — JANGAN kirim parameter itu.
   Jika tool menolak "extra_forbidden", hapus redaction_policy dan panggil ulang.
-- reveal_owned=True HANYA pada tool yang mendukungnya (blueteam_wazuh_indexer_search,
-  blueteam_wazuh_alert_summarize, blueteam_investigate_ip).
 - blueteam_export_report TIDAK mendukung reveal_owned.
 - blueteam_export_report HANYA mendukung format docx/xlsx/pptx.
 - Path export WAJIB: /var/log/blue-team-mcp/exports/
+
+⚠️ DUA TIER UNMASKING (pahami bedanya):
+
+TIER 1 — reveal_owned=true (AMAN untuk LLM, khusus MILIK SENDIRI):
+- HANYA membuka aset MILIK SENDIRI: *.tangerangkota.go.id + @tangerangkota.go.id
+- Ini data organisasi Anda, BUKAN PII pihak ketiga.
+- GUNAKAN untuk forensik: identifikasi subdomain diserang + email dinas locked.
+- Tool yang mendukung reveal_owned (12 tool — JANGAN batasi ke 3):
+  blueteam_curated_threat_report, blueteam_wazuh_alert_summarize,
+  blueteam_threat_card, three_sum_correlation, blueteam_investigate_ip,
+  wazuh_alert_aggregate_analysis, wazuh_domain_lookup, wazuh_email_lookup,
+  wazuh_alert_focused_crawl, wazuh_alert_timeline, wazuh_attack_velocity,
+  blueteam_wazuh_vulnerabilities.
+
+TIER 2 — bypass_redaction + forensic_token (HUMAN ONLY):
+- Membuka SEMUA data mentah (attacker payload, seluruh domain/email).
+- LLM TIDAK PERNAH melihat ini — hanya operator dengan token.
+- blueteam_wazuh_export menulis ke disk, LLM hanya terima file path.
+
+⚠️ MODEL DEFAULT (protect_victim — WAJIB untuk semua langkah analisis):
+- LLM MELIHAT: attacker IP publik, attacker payload/exploit, rule, severity, mitre.
+- LLM TIDAK MELIHAT: email dinas (@tangerangkota.go.id), subdomain internal
+  (*.tangerangkota.go.id), private IP (RFC1918), path internal.
+- Ini model paling aman: PII internal terlindung, data attacker utuh untuk investigasi.
+
+⚠️ PASS FORENSIC (opsional — setelah analisis selesai):
+- Jalankan ulang tool berikut dengan reveal_owned=true untuk atribusi aset milik sendiri:
+  blueteam_curated_threat_report(..., reveal_owned=true)
+  wazuh_domain_lookup(..., reveal_owned=true)
+  wazuh_email_lookup(..., reveal_owned=true)
+- Hasil pass forensic: subdomain + email dinas asli untuk identifikasi target serangan.
 
 ⚠️ FORENSIC UNMASKING (tanpa leak ke LLM Provider):
 - blueteam_wazuh_export dengan bypass_redaction=true + forensic_token
@@ -1114,6 +1143,15 @@ blueteam_curated_threat_report(since="24h", investigation_depth="deep",
   response_format="json", redaction_policy="protect_victim")
 → Dapatkan seluruh serangan: top attacker IP, rule, severity, mitre tactics,
   geo distribution, time decay analysis, dan IOC.
+
+LANGKAH 1b — Forensik Subdomain & Email Dinas (reveal_owned — TIER 1):
+blueteam_wazuh_indexer_search(
+  keyword="tangerangkota.go.id", since="24h",
+  redaction_policy="protect_victim", reveal_owned=true,
+  response_format="json")
+→ LLM MELIHAT subdomain asli (ppid.tangerangkota.go.id, dll) + email dinas asli.
+→ Gunakan untuk: identifikasi asset yang diserang, mapping attacker → target.
+→ Ini data MILIK SENDIRI — aman untuk LLM (bukan PII pihak ketiga).
 
 LANGKAH 2 — Subdomain Paling Diserang:
 wazuh_domain_lookup(domain="tangerangkota.go.id", since="24h",
@@ -1177,6 +1215,13 @@ blueteam_playbook_run(
 LANGKAH 11 — Email Locked + Analisa:
 wazuh_compromised_emails_analysis(since="24h", response_format="json")
 → Seluruh email "locked" + argus_ip_lookup + threatfox_ioc_search.
+
+LANGKAH 11b — Email Dinas Locked (reveal_owned — TIER 1):
+wazuh_compromised_emails_analysis(since="24h", reveal_owned=true,
+  response_format="json")
+→ LLM MELIHAT email dinas asli yang locked (bukan masked).
+→ Cross-reference dengan attacker IP penyebab lock.
+→ Ini email MILIK SENDIRI — aman untuk LLM.
 
 LANGKAH 12 — Semantic Search (seluruh pola serangan):
 blueteam_semantic_search(
