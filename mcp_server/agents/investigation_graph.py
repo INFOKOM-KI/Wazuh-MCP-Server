@@ -54,10 +54,6 @@ if _LG_DB:
             "using InMemorySaver. Persistence requires langgraph-checkpoint-sqlite "
             "version compatibility - state will not survive restarts.", e)
         _checkpointer = InMemorySaver()
-    except Exception as e:
-        logger.warning("investigation_graph: SqliteSaver unavailable (%s), "
-                       "falling back to InMemorySaver", e)
-        _checkpointer = InMemorySaver()
 else:
     logger.info("investigation_graph: BLUETEAM_LANGGRAPH_DB not set, "
                 "using InMemorySaver (state lost on restart)")
