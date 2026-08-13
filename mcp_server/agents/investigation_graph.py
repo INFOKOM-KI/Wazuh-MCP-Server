@@ -91,7 +91,7 @@ async def enrich_step(state: InvestigationState) -> dict:
     ips = ips[:10]
     if not ips:
         return {"steps": ["enrich: skipped (no IPs)"]}
-    from mcp_server.tools.investigation import _enrich_ips
+    from mcp_server.tools.correlation import _enrich_ips
     try:
         enr = await _with_timeout(_enrich_ips(ips), "enrich")
     except Exception:
@@ -100,7 +100,7 @@ async def enrich_step(state: InvestigationState) -> dict:
 
 
 async def correlate_step(state: InvestigationState) -> dict:
-    from mcp_server.tools.investigation import three_sum_correlation, ThreeSumCorrelationInput
+    from mcp_server.tools.correlation import three_sum_correlation, ThreeSumCorrelationInput
     try:
         out = await _with_timeout(
             three_sum_correlation(ThreeSumCorrelationInput(
@@ -202,7 +202,7 @@ async def verdict_step(state: InvestigationState) -> dict:
     srcip = state.get("srcip")
     if not state.get("record_verdict") or not srcip:
         return {"steps": ["verdict: skipped"]}
-    from mcp_server.tools.investigation import blueteam_mark_investigated, MarkInvestigatedInput
+    from mcp_server.tools.investigation_history import blueteam_mark_investigated, MarkInvestigatedInput
     try:
         out = await blueteam_mark_investigated(MarkInvestigatedInput(
             srcip=srcip, verdict=state.get("verdict_label", "suspicious"),
