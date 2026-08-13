@@ -25,11 +25,10 @@ class WazuhCompromisedEmailsAnalysisInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     emails: list[str] = Field(
-        ...,
-        min_length=1,
+        default=[],
         max_length=50,
-        description="List of email addresses to analyze "
-                    "(e.g. from wazuh_email_lookup results). Max 50.",
+        description="List of email addresses to analyze (e.g. from wazuh_email_lookup). "
+                    "If empty, auto-discovers compromised emails from the indexer.",
     )
     agent_name: ValidAgentName = Field(
         default=None,
@@ -126,6 +125,26 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
     """
     _audit_log("wazuh_compromised_emails_analysis", {"top_ips": params.top_ips, "since": params.since})
     since_str, until_str = _parse_time_window(params.since, params.until)
+
+    # Auto-discover compromised emails when none provided (LLM convenience)
+    if not params.emails:
+        from mcp_server.tools.wazuh_email import wazuh_email_lookup, WazuhEmailLookupInput
+        try:
+            lookup_out = await wazuh_email_lookup(WazuhEmailLookupInput(
+                since=params.since, until=params.until,
+                top_n=min(params.top_ips, 50), response_format="json"))
+            lookup = json.loads(lookup_out)
+            discovered = [e.get("email") for e in lookup.get("emails", []) if e.get("email")]
+            params.emails = discovered[:50]
+            _audit_log("wazuh_compromised_emails_analysis.auto_discover",
+                       {"count": len(params.emails)})
+        except Exception as e:
+            return json.dumps({"error": f"Auto-discovery failed and no emails provided: {e}"},
+                              indent=2)
+        if not params.emails:
+            return json.dumps({"error": "No compromised emails found in the window. "
+                                        "Provide explicit emails=[] list or widen the time window."},
+                              indent=2)
 
     ip_counter: Counter[str] = Counter()
     ip_to_emails: dict[str, set[str]] = {}  # IP -> set of targeted params.emails
