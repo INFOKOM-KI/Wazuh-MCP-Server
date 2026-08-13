@@ -10,7 +10,7 @@ from collections import Counter
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
-                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC,
+                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REVEAL_OWNED_DESC,
                         NETRA_API_KEY_ENV, NETRA_VERIFY_SSL, NETRA_BASE_URL, _AGENT_NAME_DESC,
                         _SINCE_DESC, _RESPONSE_FORMAT_DESC, _UNTIL_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
@@ -66,6 +66,7 @@ class WazuhCompromisedEmailsAnalysisInput(BaseModel):
         default="markdown",
         description="_RESPONSE_FORMAT_DESC",
     )
+    reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
 
     @field_validator("emails")
     @classmethod
@@ -187,7 +188,7 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
                 hits = data.get("hits", {})
                 hit_list = hits.get("hits", [])
                 docs = [h.get("_source", h) for h in hit_list]
-                docs = _redact_alert_data(docs, bypass=False)
+                docs = _redact_alert_data(docs, bypass=False, reveal_owned=params.reveal_owned)
                 if not docs:
                     break
 
