@@ -135,7 +135,8 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
                 since=params.since, until=params.until,
                 top_n=min(params.top_ips, 50), response_format="json"))
             lookup = json.loads(lookup_out)
-            discovered = [e.get("email") for e in lookup.get("emails", []) if e.get("email")]
+            # wazuh_email_lookup returns {"results": [{email, count, ...}], ...}
+            discovered = [e.get("email") for e in lookup.get("results", []) if e.get("email")]
             params.emails = discovered[:50]
             _audit_log("wazuh_compromised_emails_analysis.auto_discover",
                        {"count": len(params.emails)})

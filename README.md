@@ -1108,12 +1108,16 @@ TIER 1 — reveal_owned=true (AMAN untuk LLM, khusus MILIK SENDIRI):
 - HANYA membuka aset MILIK SENDIRI: *.tangerangkota.go.id + @tangerangkota.go.id
 - Ini data organisasi Anda, BUKAN PII pihak ketiga.
 - GUNAKAN untuk forensik: identifikasi subdomain diserang + email dinas locked.
-- Tool yang mendukung reveal_owned (12 tool — JANGAN batasi ke 3):
+- Tool yang mendukung reveal_owned (12 tool — AKURAT, hasil AST scan):
   blueteam_curated_threat_report, blueteam_wazuh_alert_summarize,
-  blueteam_threat_card, three_sum_correlation, blueteam_investigate_ip,
-  wazuh_alert_aggregate_analysis, wazuh_domain_lookup, wazuh_email_lookup,
-  wazuh_alert_focused_crawl, wazuh_alert_timeline, wazuh_attack_velocity,
-  blueteam_wazuh_vulnerabilities.
+  blueteam_threat_card, three_sum_correlation, wazuh_alert_aggregate_analysis,
+  wazuh_domain_lookup, wazuh_email_lookup, wazuh_compromised_emails_analysis,
+  wazuh_alert_focused_crawl, blueteam_wazuh_geo_heatmap,
+  wazuh_alert_timeline, wazuh_attack_velocity.
+- TIDAK mendukung reveal_owned: blueteam_investigate_ip,
+  blueteam_wazuh_indexer_search, blueteam_wazuh_vulnerabilities.
+- blueteam_wazuh_indexer_search mendukung redaction_policy (flat arg),
+  TAPI TIDAK reveal_owned.
 
 TIER 2 — bypass_redaction + forensic_token (HUMAN ONLY):
 - Membuka SEMUA data mentah (attacker payload, seluruh domain/email).
