@@ -1218,6 +1218,7 @@ Untuk SETIAP top attacker IP dari langkah 1-2 (dan file hash dari langkah 5):
 → OTX memberikan: malware families, adversaries, industries, MITRE techniques.
 → Serta:
   argus_ip_lookup(ip=<ip>) untuk IP dengan authentication_success.
+  netra_ip_analysis(ip=<ip>, response_format="json") untuk Netra threat score + AI insight.
   otx_lookup(indicator=<ip>, section="general") untuk campaign context.
   urlhaus_hash_lookup(file_hash=<hash>) untuk malware signature (dari langkah 5).
 
