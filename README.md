@@ -1193,13 +1193,18 @@ Untuk SETIAP top attacker IP (minimal top 10) dari langkah 1-2:
   blueteam_attack_chain(srcip=<ip>, since="24h")
 → Threat intel, kill-chain progression, rule transition graph.
 
-LANGKAH 4 — Sangfor Blocklist Check (firewall status):
-sangfor_blocklist_list(response_format="json")
-→ Dapatkan seluruh IP yang sudah di-block oleh Sangfor.
+LANGKAH 4 — Sangfor Blocklist Check (firewall status, BY TIMESTAMP):
+sangfor_blocklist_list(
+  date_start="<24_jam_lalu>", date_end="<sekarang>",
+  response_format="json")
+→ Dapatkan IP yang sudah di-block Sangfor DALAM RENTANG WAKTU 24 JAM.
+→ date_start/date_end format: "YYYY-MM-DD HH:MM:SS" (contoh "2026-08-13 00:00:00").
+→ Gunakan timestamp yang sama dengan jendela laporan (since/until).
 Untuk SETIAP top attacker IP dari langkah 1-2:
   sangfor_blocklist_check(ip=<ip>, response_format="json")
 → Cek apakah IP attacker sudah ada di blocklist Sangfor.
 → Tandai IP yang BELUM di-block untuk tindakan lanjutan.
+→ Catat timestamp saat IP di-block (jika tersedia di response).
 
 LANGKAH 5 — Ekstrak IOC (seluruh jenis serangan):
 blueteam_extract_iocs(text=<seluruh_alert_text_dari_langkah_1>)
