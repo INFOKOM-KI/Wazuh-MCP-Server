@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-ThreatFox IOC Search — abuse.ch threat intelligence integration
+ThreatFox IOC Search - abuse.ch threat intelligence integration.
 """
 from __future__ import annotations
 import json, logging, time, os, re, asyncio
@@ -12,21 +12,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import mcp, THREATFOX_API_KEY_ENV, THREATFOX_BASE_URL, THREATFOX_CACHE_TTL
 from mcp_server.core.http_client import _api_call, _handle_api_error, _is_private_or_reserved
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.threat_intel._cache import TTLCache, AsyncRateLimiter
 
 logger = logging.getLogger("blue_team_mcp.threatfox")
 
 # Startup validation - warn if key missing
 if not os.environ.get(THREATFOX_API_KEY_ENV):
-    logger.warning("%s not set — threatfox_ioc_search will return an error at call time. "
+    logger.warning("%s not set - threatfox_ioc_search will return an error at call time. "
                    "Get a free key at https://threatfox.abuse.ch/api", THREATFOX_API_KEY_ENV)
 
-_threatfox_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-_THREATFOX_CACHE_MAXSIZE = 1000
-
-# Rate limiter: 10 req/sec, max 3 concurrent (semaphore)
-_threatfox_semaphore = asyncio.Semaphore(3)
-_threatfox_last_request = 0.0
-_THREATFOX_MIN_INTERVAL = 0.1  # 100ms = 10 req/sec
+_threatfox_cache = TTLCache(maxsize=1000)
+_threatfox_limiter = AsyncRateLimiter(max_concurrent=3, min_interval=0.1)  # 10 req/sec
 
 # Patterns for detecting IOC type (used for SSRF guard scoping)
 _IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
@@ -65,20 +61,11 @@ async def _threatfox_request(search_term: str, exact_match: bool = False) -> dic
         RuntimeError: If API key is missing.
     """
     cache_key = f"{search_term}:{exact_match}"
-    now = time.monotonic()
-    global _threatfox_last_request
-    if cache_key in _threatfox_cache:
-        expiry, data = _threatfox_cache[cache_key]
-        if now < expiry:
-            return data
-        del _threatfox_cache[cache_key]
+    cached = _threatfox_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
-    # Rate limit: max 3 concurrent, 10 req/sec
-    async with _threatfox_semaphore:
-        elapsed = time.monotonic() - _threatfox_last_request
-        if elapsed < _THREATFOX_MIN_INTERVAL:
-            await asyncio.sleep(_THREATFOX_MIN_INTERVAL - elapsed)
-
+    async with _threatfox_limiter:
         headers = {
             "Auth-Key": _get_threatfox_api_key(),
             "accept": "application/json",
@@ -88,10 +75,7 @@ async def _threatfox_request(search_term: str, exact_match: bool = False) -> dic
         body = {"query": "search_ioc", "search_term": search_term, "exact_match": exact_match}
         resp = await _api_call("post", THREATFOX_BASE_URL, headers=headers, json=body)
         data = resp.json()
-        _threatfox_last_request = time.monotonic()
-    if len(_threatfox_cache) >= _THREATFOX_CACHE_MAXSIZE:
-        _threatfox_cache.pop(next(iter(_threatfox_cache)))  # LRU eviction
-    _threatfox_cache[cache_key] = (now + THREATFOX_CACHE_TTL, data)
+    _threatfox_cache.set(cache_key, data, THREATFOX_CACHE_TTL)
     return data
 
 
@@ -214,8 +198,8 @@ class ThreatFoxSearchInput(BaseModel):
 async def threatfox_ioc_search(params: ThreatFoxSearchInput) -> str:
     """Search ThreatFox by abuse.ch for malware-associated indicators of compromise.
 
-    Queries the ThreatFox API for any IOC — IP addresses, domain names, or file
-    hashes (MD5/SHA256) — and returns associated malware families, threat types,
+    Queries the ThreatFox API for any IOC - IP addresses, domain names, or file
+    hashes (MD5/SHA256) - and returns associated malware families, threat types,
     confidence levels, and linked malware samples.
 
     **Required Permissions**: Free ThreatFox API key from https://threatfox.abuse.ch/api
@@ -235,9 +219,9 @@ async def threatfox_ioc_search(params: ThreatFoxSearchInput) -> str:
        ``threatfox_ioc_search(search_term="evil-c2.example.com")``
 
     **Error Handling**:
-        - Missing API key → ``"THREATFOX_API_KEY not set"`` at call time
-        - Invalid/private IP → rejected at Pydantic validation
-        - ``query_status: "no_results"`` → empty result set (not an error)
+        - Missing API key -> ``"THREATFOX_API_KEY not set"`` at call time
+        - Invalid/private IP -> rejected at Pydantic validation
+        - ``query_status: "no_results"`` -> empty result set (not an error)
         - HTTP 429 → rate-limit message with retry hint
     """
     if not os.environ.get(THREATFOX_API_KEY_ENV):
@@ -376,7 +360,7 @@ async def threatfox_ioc_search_bulk(params: ThreatFoxBulkInput) -> str:
             lines.append(f"- `{r['search_term']}` — clean")
         else:
             lines.append(
-                f"- `{r['search_term']}` — {r['matches']} matches, "
+                f"- `{r['search_term']}` - {r['matches']} matches, "
                 f"malware: {', '.join(r['malware'][:3])}, "
                 f"confidence: {r['confidence']}/100"
             )

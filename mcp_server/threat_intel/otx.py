@@ -4,7 +4,7 @@
 AlienVault OTX threat intelligence integration.
 
 OTX (Open Threat Exchange) is the largest open threat intel community.
-Unlike CrowdSec/ThreatFox (reputation-only), OTX provides *pulses* — curated
+Unlike CrowdSec/ThreatFox (reputation-only), OTX provides *pulses* - curated
 IOC collections with malware families, adversaries, industries, and MITRE
 techniques. This gives attribution + campaign context.
 
@@ -18,18 +18,15 @@ from __future__ import annotations
 import json, logging, time, os, re, asyncio
 from typing import Any
 import httpx
-
 from mcp_server import OTX_API_KEY_ENV, OTX_BASE_URL, OTX_CACHE_TTL
 from mcp_server.core.http_client import _api_call, _handle_api_error
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.threat_intel._cache import TTLCache, AsyncRateLimiter
 
 logger = logging.getLogger("blue_team_mcp.otx")
 
-_otx_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-_OTX_CACHE_MAXSIZE = 1000
-_otx_semaphore = asyncio.Semaphore(5)
-_otx_last_request = 0.0
-_OTX_MIN_INTERVAL = 0.2  # 200ms = 5 req/sec (conservative for free tier)
+_otx_cache = TTLCache(maxsize=1000)
+_otx_limiter = AsyncRateLimiter(max_concurrent=5, min_interval=0.2)  # 5 req/sec
 
 # Indicator type resolution
 _IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
@@ -79,19 +76,11 @@ async def _otx_request(indicator: str, section: str = "general") -> dict[str, An
                          "Supported: IP, domain, hostname, URL, MD5/SHA1/SHA256 hash."}
 
     cache_key = f"{ind_type}:{indicator}:{section}"
-    now = time.monotonic()
-    global _otx_last_request
-    if cache_key in _otx_cache:
-        expiry, data = _otx_cache[cache_key]
-        if now < expiry:
-            return data
-        del _otx_cache[cache_key]
+    cached = _otx_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
-    async with _otx_semaphore:
-        elapsed = time.monotonic() - _otx_last_request
-        if elapsed < _OTX_MIN_INTERVAL:
-            await asyncio.sleep(_OTX_MIN_INTERVAL - elapsed)
-
+    async with _otx_limiter:
         headers = {
             "X-OTX-API-KEY": _get_otx_api_key(),
             "accept": "application/json",
@@ -100,17 +89,13 @@ async def _otx_request(indicator: str, section: str = "general") -> dict[str, An
         url = f"{OTX_BASE_URL}/api/v1/indicators/{ind_type}/{indicator}/{section}"
         resp = await _api_call("get", url, headers=headers)
         data = resp.json()
-        _otx_last_request = time.monotonic()
 
-    if len(_otx_cache) >= _OTX_CACHE_MAXSIZE:
-        _otx_cache.pop(next(iter(_otx_cache)))  # LRU eviction
-    _otx_cache[cache_key] = (now + OTX_CACHE_TTL, data)
+    _otx_cache.set(cache_key, data, OTX_CACHE_TTL)
     return data
 
 
 def _normalize_adversary(value: Any) -> str:
     """Normalize OTX adversary field to a string name.
-
     OTX returns ``adversary`` as either a plain string ("APT41") or a dict
     ({"name": "APT41", ...}). A set/dict comprehension over raw values
     crashes with ``unhashable type: 'dict'`` when it's a dict.
@@ -192,7 +177,7 @@ def _format_otx_markdown(indicator: str, ind_type: str, general: dict, pulses: l
 
 def _format_geo_markdown(indicator: str, geo: dict) -> str:
     """Format OTX geo section."""
-    lines = [f"# OTX Geo — `{indicator}`", ""]
+    lines = [f"# OTX Geo - `{indicator}`", ""]
     lines.append(f"| Field | Value |")
     lines.append(f"|-------|-------|")
     lines.append(f"| Country | {geo.get('country_name', '?')} ({geo.get('country_code', '?')}) |")

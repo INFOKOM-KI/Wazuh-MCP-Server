@@ -16,14 +16,12 @@ import httpx
 from mcp_server import URLHAUS_API_KEY_ENV, URLHAUS_BASE_URL, URLHAUS_CACHE_TTL
 from mcp_server.core.http_client import _api_call, _handle_api_error
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.threat_intel._cache import TTLCache, AsyncRateLimiter
 
 logger = logging.getLogger("blue_team_mcp.urlhaus")
 
-_urlhaus_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-_URLHAUS_CACHE_MAXSIZE = 2000
-_urlhaus_semaphore = asyncio.Semaphore(3)
-_urlhaus_last_request = 0.0
-_URLHAUS_MIN_INTERVAL = 0.2  # 200ms = 5 req/sec
+_urlhaus_cache = TTLCache(maxsize=2000)
+_urlhaus_limiter = AsyncRateLimiter(max_concurrent=3, min_interval=0.2)  # 5 req/sec
 
 
 def _get_urlhaus_api_key() -> str:
@@ -52,19 +50,11 @@ async def _urlhaus_payload_request(file_hash: str) -> dict[str, Any]:
 async def _urlhaus_post(endpoint: str, body: dict) -> dict[str, Any]:
     """Shared POST helper for URLhaus endpoints (url/ and payload/)."""
     cache_key = f"{endpoint}:{json.dumps(body, sort_keys=True)}"
-    now = time.monotonic()
-    global _urlhaus_last_request
-    if cache_key in _urlhaus_cache:
-        expiry, data = _urlhaus_cache[cache_key]
-        if now < expiry:
-            return data
-        del _urlhaus_cache[cache_key]
+    cached = _urlhaus_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
-    async with _urlhaus_semaphore:
-        elapsed = time.monotonic() - _urlhaus_last_request
-        if elapsed < _URLHAUS_MIN_INTERVAL:
-            await asyncio.sleep(_URLHAUS_MIN_INTERVAL - elapsed)
-
+    async with _urlhaus_limiter:
         headers = {
             "accept": "application/json",
             "User-Agent": "blue-team-mcp/1.0.0 (TangerangKota-CSIRT)",
@@ -75,11 +65,8 @@ async def _urlhaus_post(endpoint: str, body: dict) -> dict[str, Any]:
             headers["Auth-Key"] = key
         resp = await _api_call("post", URLHAUS_BASE_URL + endpoint, headers=headers, json=body)
         data = resp.json()
-        _urlhaus_last_request = time.monotonic()
 
-    if len(_urlhaus_cache) >= _URLHAUS_CACHE_MAXSIZE:
-        _urlhaus_cache.pop(next(iter(_urlhaus_cache)))
-    _urlhaus_cache[cache_key] = (now + URLHAUS_CACHE_TTL, data)
+    _urlhaus_cache.set(cache_key, data, URLHAUS_CACHE_TTL)
     return data
 
 

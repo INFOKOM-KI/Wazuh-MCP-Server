@@ -11,15 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, field_valida
 from mcp_server import mcp, CROWDSEC_API_KEY_ENV, CROWDSEC_CACHE_TTL, CROWDSEC_BASE_URL
 from mcp_server.core.http_client import _api_call, _handle_api_error, _is_private_or_reserved, ValidPublicIp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.threat_intel._cache import TTLCache, AsyncRateLimiter
 
 logger = logging.getLogger("blue_team_mcp.crowdsec")
-_crowdsec_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-_CROWDSEC_CACHE_MAXSIZE = 1000
-
-# Rate limiter: max 3 concurrent, 100ms gap = 10 req/sec (matches ThreatFox)
-_crowdsec_semaphore = asyncio.Semaphore(3)
-_crowdsec_last_request = 0.0
-_CROWDSEC_MIN_INTERVAL = 0.1
+_crowdsec_cache = TTLCache(maxsize=1000)
+_crowdsec_limiter = AsyncRateLimiter(max_concurrent=3, min_interval=0.1)  # 10 req/sec
 
 
 def _get_crowdsec_api_key() -> str:
@@ -30,36 +26,25 @@ def _get_crowdsec_api_key() -> str:
 
 
 async def _crowdsec_request(path: str) -> dict[str, Any]:
-    global _crowdsec_last_request
-    now = time.monotonic()
-    if path in _crowdsec_cache:
-        expiry, data = _crowdsec_cache[path]
-        if now < expiry:
-            return data
-        del _crowdsec_cache[path]
-    # Rate limit: max 3 concurrent, 10 req/sec (cache hits skip limiter)
-    async with _crowdsec_semaphore:
-        elapsed = time.monotonic() - _crowdsec_last_request
-        if elapsed < _CROWDSEC_MIN_INTERVAL:
-            await asyncio.sleep(_CROWDSEC_MIN_INTERVAL - elapsed)
+    cached = _crowdsec_cache.get(path)
+    if cached is not None:
+        return cached
+    async with _crowdsec_limiter:
         headers = {"x-api-key": _get_crowdsec_api_key(), "accept": "application/json",
                    "User-Agent": "blue-team-mcp/1.0.0 (TangerangKota-CSIRT)"}
         url = f"{CROWDSEC_BASE_URL}{path}"
         resp = await _api_call("get", url, headers=headers)
         data = resp.json()
-        _crowdsec_last_request = time.monotonic()
-    if len(_crowdsec_cache) >= _CROWDSEC_CACHE_MAXSIZE:
-        _crowdsec_cache.pop(next(iter(_crowdsec_cache)))  # LRU eviction
-    _crowdsec_cache[path] = (now + CROWDSEC_CACHE_TTL, data)
+    _crowdsec_cache.set(path, data, CROWDSEC_CACHE_TTL)
     return data
 
 
 def _format_crowdsec_markdown(ip: str, raw: dict) -> str:
-    lines = [f"# CrowdSec Reputation — {ip}", ""]
+    lines = [f"# CrowdSec Reputation - {ip}", ""]
     lines.append(f"- **Reputation**: {raw.get('reputation', 'unknown')}")
     if raw.get("as_name"): lines.append(f"- **ASN**: {raw['as_name']}")
     for b in raw.get("behaviors") or []:
-        lines.append(f"- **{b.get('name','?')}**{' — ' + b.get('label','') if b.get('label') else ''}")
+        lines.append(f"- **{b.get('name','?')}**{' - ' + b.get('label','') if b.get('label') else ''}")
     for m in raw.get("mitre_techniques") or []:
         lines.append(f"- MITRE: {m.get('name','?')} ({m.get('label','')})")
     return "\n".join(lines)
