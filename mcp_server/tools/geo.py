@@ -79,11 +79,11 @@ async def blueteam_wazuh_geo_distribution(params: GeoDistributionInput) -> str:
                           "order": {"_count": "desc"}},
                 "aggs": {
                     "unique_ips": {
-                        "cardinality": {"field": "data.srcip.keyword",
+                        "cardinality": {"field": "data.srcip",
                                         "precision_threshold": 40000},
                     },
                     "top_rules": {
-                        "terms": {"field": "rule.id.keyword", "size": 3},
+                        "terms": {"field": "rule.id", "size": 3},
                     },
                 },
             },

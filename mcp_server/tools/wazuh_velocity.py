@@ -161,8 +161,8 @@ async def wazuh_attack_velocity(params: WazuhAttackVelocityInput = WazuhAttackVe
                         "min_doc_count": 0,
                     },
                     "aggs": {
-                        "top_rules": {"terms": {"field": "rule.id.keyword", "size": 5}},
-                        "top_srcips": {"terms": {"field": "data.srcip.keyword", "size": 5}},
+                        "top_rules": {"terms": {"field": "rule.id", "size": 5}},
+                        "top_srcips": {"terms": {"field": "data.srcip", "size": 5}},
                     },
                 }
             },

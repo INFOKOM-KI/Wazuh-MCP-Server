@@ -219,14 +219,22 @@ async def sangfor_blocklist_check(params: SangforBlocklistCheckInput) -> str:
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
 async def sangfor_blocklist_list(params: SangforBlocklistListInput) -> str:
-    """List all IPs currently blocked by Sangfor firewall."""
-    _audit_log("sangfor_blocklist_list", {"limit": params.limit})
+    """List IPs blocked by Sangfor firewall, optionally filtered by timestamp."""
+    _audit_log("sangfor_blocklist_list", {"limit": params.limit,
+               "date_start": params.date_start, "date_end": params.date_end})
     from mcp_server import SANGFOR_BLOCKLIST_URL, SANGFOR_BLOCKLIST_TOKEN, SANGFOR_BLOCKLIST_VERIFY_SSL
     if not SANGFOR_BLOCKLIST_TOKEN or not SANGFOR_BLOCKLIST_URL:
         return json.dumps({"error": "SANGFOR_BLOCKLIST_TOKEN and SANGFOR_BLOCKLIST_URL must be set."})
     try:
         headers = {"Authorization": f"Bearer {SANGFOR_BLOCKLIST_TOKEN}", "accept": "application/json"}
-        resp = await _api_call("get", f"{SANGFOR_BLOCKLIST_URL}/list?limit={params.limit}", headers=headers)
+        # Build query string with date filters (only when provided)
+        query = [f"limit={params.limit}"]
+        if params.date_start:
+            query.append(f"date_start={params.date_start}")
+        if params.date_end:
+            query.append(f"date_end={params.date_end}")
+        url = f"{SANGFOR_BLOCKLIST_URL}/list?" + "&".join(query)
+        resp = await _api_call("get", url, headers=headers)
         raw = resp.json()
         if isinstance(raw, list):
             raw = {"blocked": len(raw) > 0, "count": len(raw), "entries": raw}

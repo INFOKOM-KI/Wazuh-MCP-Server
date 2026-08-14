@@ -83,7 +83,7 @@ async def blueteam_baseline_profile(params: BaselineProfileInput) -> str:
 
     aggs: dict = {}
     if params.metric == "unique_ips":
-        aggs["metric_value"] = {"cardinality": {"field": "data.srcip.keyword",
+        aggs["metric_value"] = {"cardinality": {"field": "data.srcip",
                                                  "precision_threshold": 40000}}
     else:
         aggs["metric_value"] = {"value_count": {"field": "_id"}}

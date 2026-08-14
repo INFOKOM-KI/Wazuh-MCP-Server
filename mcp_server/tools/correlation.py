@@ -147,9 +147,9 @@ async def wazuh_alert_aggregate_analysis(params: AggregateAnalysisInput) -> str:
         parts = [f'{f}: ({k})^{b}' if b else f'{f}: ({k})' for f, b in _KEYWORD_SEARCH_FIELDS[:8]]
         filters.append({"query_string": {"query": " OR ".join(parts), "default_operator": "AND", "lenient": True}})
     body = {"size": 0, "query": {"bool": {"filter": filters}},
-            "aggs": {"top_srcips": {"terms": {"field": "data.srcip.keyword", "size": params.top_n}},
-                     "top_rules": {"terms": {"field": "rule.id.keyword", "size": params.top_n}},
-                     "top_agents": {"terms": {"field": "agent.name.keyword", "size": params.top_n}},
+            "aggs": {"top_srcips": {"terms": {"field": "data.srcip", "size": params.top_n}},
+                     "top_rules": {"terms": {"field": "rule.id", "size": params.top_n}},
+                     "top_agents": {"terms": {"field": "agent.name", "size": params.top_n}},
                      "severity_bands": {"range": {"field": "rule.level",
                          "ranges": [{"key":"low","to":5},{"key":"medium","from":5,"to":10},{"key":"high","from":10}]}}}}
     # Add compliance breakdown aggregations if any compliance fields active
@@ -157,8 +157,28 @@ async def wazuh_alert_aggregate_analysis(params: AggregateAnalysisInput) -> str:
         body["aggs"][f"compliance_{cf.split('.')[-1]}"] = {"terms": {"field": cf, "size": 20}}
     raw = await _wazuh_indexer_post(body)
     if "error" in raw: return json.dumps(raw, indent=2)
+
+    # AUTO-FALLBACK: this deployment's `string_as_keyword` dynamic template maps
+    # strings to PLAIN `keyword` (no `.keyword` sub-field). If the .keyword
+    # aggregations return empty buckets while documents exist, retry with the
+    # plain field names (prevents the silent empty-bucket false-negative).
     aggs = raw.get("aggregations", {})
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
+    buckets_empty = (
+        not aggs.get("top_srcips", {}).get("buckets")
+        and not aggs.get("top_rules", {}).get("buckets")
+        and not aggs.get("top_agents", {}).get("buckets")
+    )
+    if total > 0 and buckets_empty:
+        # Retry with plain keyword field names (no .keyword suffix)
+        body["aggs"]["top_srcips"] = {"terms": {"field": "data.srcip", "size": params.top_n}}
+        body["aggs"]["top_rules"] = {"terms": {"field": "rule.id", "size": params.top_n}}
+        body["aggs"]["top_agents"] = {"terms": {"field": "agent.name", "size": params.top_n}}
+        raw2 = await _wazuh_indexer_post(body)
+        if "error" not in raw2:
+            raw = raw2
+            aggs = raw.get("aggregations", {})
+            total = raw.get("hits", {}).get("total", {}).get("value", 0)
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps({"total": total, "aggregations": aggs}, indent=2))
     sev = {b["key"]: b["doc_count"] for b in aggs.get("severity_bands", {}).get("buckets", [])}
@@ -693,8 +713,8 @@ async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
     async def _fetch_summary():
         body = {"size": 0, "query": {"bool": {"filter": base_filter}},
                 "aggs": {
-                    "top_rules": {"terms": {"field": "rule.id.keyword", "size": 10}},
-                    "top_agents": {"terms": {"field": "agent.name.keyword", "size": 10}},
+                    "top_rules": {"terms": {"field": "rule.id", "size": 10}},
+                    "top_agents": {"terms": {"field": "agent.name", "size": 10}},
                     "severity": {"range": {"field": "rule.level",
                         "ranges": [{"key": "low", "to": 5}, {"key": "medium", "from": 5, "to": 10},
                                    {"key": "high", "from": 10}]}},

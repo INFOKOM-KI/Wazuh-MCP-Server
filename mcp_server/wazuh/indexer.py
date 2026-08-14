@@ -29,6 +29,29 @@ _SRCIP_FIELD_PATHS: list[str] = [
 _MSEARCH_FALLBACK_ERROR: dict = {"error": "_msearch_failed"}
 
 
+async def _wazuh_indexer_mapping(index_pattern: Optional[str] = None) -> Dict:
+    """Fetch index field mappings from the OpenSearch _mapping endpoint.
+
+    Returns the raw mapping dict keyed by index name. Used by the schema
+    explorer tool to discover field names/types before building aggregations
+    (prevents the `.keyword` vs `keyword` field-mapping false-negative class).
+    """
+    if index_pattern is None:
+        index_pattern = _WAZUH_INDEX_PATTERNS["alerts"]
+    if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
+        return {"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."}
+    url = f"{WAZUH_INDEXER_URL}/{index_pattern}/_mapping"
+    try:
+        resp = await _api_call("get", url, client_name="indexer", verify=WAZUH_INDEXER_VERIFY_SSL,
+                                auth=(WAZUH_INDEXER_USER, WAZUH_INDEXER_PASSWORD),
+                                headers={"Content-Type": "application/json"})
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        return {"error": f"Indexer API error: {e.response.status_code}", "detail": e.response.text[:500]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 async def _wazuh_indexer_post(body: dict, index_pattern: Optional[str] = None) -> Dict:
     if index_pattern is None:
         index_pattern = _WAZUH_INDEX_PATTERNS["alerts"]

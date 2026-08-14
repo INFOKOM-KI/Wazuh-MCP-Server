@@ -115,7 +115,7 @@ async def blueteam_wazuh_alert_compare(params: AlertCompareInput) -> str:
                 }
             },
             "aggs": {
-                "top_rules": {"terms": {"field": "rule.id.keyword", "size": 5}},
+                "top_rules": {"terms": {"field": "rule.id", "size": 5}},
                 "by_level": {
                     "range": {
                         "field": "rule.level",
@@ -126,7 +126,7 @@ async def blueteam_wazuh_alert_compare(params: AlertCompareInput) -> str:
                         ],
                     }
                 },
-                "top_agents": {"terms": {"field": "agent.name.keyword", "size": 5}},
+                "top_agents": {"terms": {"field": "agent.name", "size": 5}},
             },
         }
         raw = await _wazuh_indexer_post(body)

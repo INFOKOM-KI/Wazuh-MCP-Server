@@ -59,7 +59,7 @@ async def blueteam_wazuh_vulnerabilities(params: VulnerabilityInput) -> str:
     body = {"size": 0, "query": {"bool": {"filter": filters}},
             "aggs": {"by_cve": {"terms": {"field": "vulnerability.cve", "size": params.top_n,
                                           "order": {"_count": "desc"}}},
-                     "by_agent": {"terms": {"field": "agent.name.keyword", "size": params.top_n}},
+                     "by_agent": {"terms": {"field": "agent.name", "size": params.top_n}},
                      "by_severity": {"terms": {"field": "vulnerability.severity", "size": 10}}}}
     raw = await _wazuh_indexer_post(body, index_pattern=_WAZUH_INDEX_PATTERNS["vulnerabilities"])
     if "error" in raw:
@@ -138,9 +138,9 @@ async def blueteam_wazuh_syscheck(params: SyscheckInput) -> str:
     if params.path_filter:
         filters.append({"wildcard": {"syscheck.path": params.path_filter.strip()}})
     body = {"size": 0, "query": {"bool": {"filter": filters}},
-            "aggs": {"by_agent": {"terms": {"field": "agent.name.keyword", "size": params.top_n}},
+            "aggs": {"by_agent": {"terms": {"field": "agent.name", "size": params.top_n}},
                      "by_event": {"terms": {"field": "syscheck.event", "size": 3}},
-                     "by_path": {"terms": {"field": "syscheck.path.keyword", "size": params.top_n,
+                     "by_path": {"terms": {"field": "syscheck.path", "size": params.top_n,
                                            "order": {"_count": "desc"}}}}}
     raw = await _wazuh_indexer_post(body)
     if "error" in raw:
@@ -308,11 +308,11 @@ async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
                                              {"match_phrase": {"full_log": params.srcip.strip()}}],
                                   "minimum_should_match": 1}})
     body = {"size": 0, "query": {"bool": {"filter": filters}},
-            "aggs": {"by_city": {"terms": {"field": "GeoLocation.city_name.keyword", "size": params.top_n,
+            "aggs": {"by_city": {"terms": {"field": "GeoLocation.city_name", "size": params.top_n,
                                            "order": {"_count": "desc"}},
                                  "aggs": {"lat": {"avg": {"field": "GeoLocation.latitude"}},
                                           "lon": {"avg": {"field": "GeoLocation.longitude"}},
-                                          "unique_ips": {"cardinality": {"field": "data.srcip.keyword",
+                                          "unique_ips": {"cardinality": {"field": "data.srcip",
                                                                          "precision_threshold": 40000}}}}}}
     raw = await _wazuh_indexer_post(body)
     if "error" in raw:

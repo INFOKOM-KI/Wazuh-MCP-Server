@@ -28,7 +28,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
                                   "default_field": "full_log", "lenient": True}},
             ]}},
             "aggs": {
-                "by_agent": {"terms": {"field": "agent.name.keyword", "size": 20}},
+                "by_agent": {"terms": {"field": "agent.name", "size": 20}},
                 "by_hour": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1h",
                               "min_doc_count": 0, "extended_bounds": {"min": since, "max": until}}},
             },
@@ -44,8 +44,8 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
                                   "default_field": "full_log", "lenient": True}},
             ]}},
             "aggs": {
-                "by_agent": {"terms": {"field": "agent.name.keyword", "size": 20}},
-                "by_rule": {"terms": {"field": "rule.id.keyword", "size": 15}},
+                "by_agent": {"terms": {"field": "agent.name", "size": 20}},
+                "by_rule": {"terms": {"field": "rule.id", "size": 15}},
             },
         },
     },
@@ -59,8 +59,8 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
                                   "default_field": "full_log", "lenient": True}},
             ]}},
             "aggs": {
-                "by_srcip": {"terms": {"field": "data.srcip.keyword", "size": 20}},
-                "by_agent": {"terms": {"field": "agent.name.keyword", "size": 20}},
+                "by_srcip": {"terms": {"field": "data.srcip", "size": 20}},
+                "by_agent": {"terms": {"field": "agent.name", "size": 20}},
             },
         },
     },
@@ -74,7 +74,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
                                   "default_field": "full_log", "lenient": True}},
             ]}},
             "aggs": {
-                "by_agent": {"terms": {"field": "agent.name.keyword", "size": 20}},
+                "by_agent": {"terms": {"field": "agent.name", "size": 20}},
                 "by_hour": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1h",
                               "min_doc_count": 0, "extended_bounds": {"min": since, "max": until}}},
             },
@@ -90,8 +90,8 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
                                   "default_field": "full_log", "lenient": True}},
             ]}},
             "aggs": {
-                "by_agent": {"terms": {"field": "agent.name.keyword", "size": 20}},
-                "by_srcip": {"terms": {"field": "data.srcip.keyword", "size": 20}},
+                "by_agent": {"terms": {"field": "agent.name", "size": 20}},
+                "by_srcip": {"terms": {"field": "data.srcip", "size": 20}},
             },
         },
     },
@@ -105,8 +105,8 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
                                   "default_field": "full_log", "lenient": True}},
             ]}},
             "aggs": {
-                "by_agent": {"terms": {"field": "agent.name.keyword", "size": 20}},
-                "by_rule": {"terms": {"field": "rule.id.keyword", "size": 15}},
+                "by_agent": {"terms": {"field": "agent.name", "size": 20}},
+                "by_rule": {"terms": {"field": "rule.id", "size": 15}},
             },
         },
     },
@@ -120,7 +120,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
                                   "default_field": "full_log", "lenient": True}},
             ]}},
             "aggs": {
-                "by_srcip": {"terms": {"field": "data.srcip.keyword", "size": 20}},
+                "by_srcip": {"terms": {"field": "data.srcip", "size": 20}},
                 "by_hour": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1h",
                               "min_doc_count": 0, "extended_bounds": {"min": since, "max": until}}},
             },
@@ -136,8 +136,8 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
                                   "default_field": "full_log", "lenient": True}},
             ]}},
             "aggs": {
-                "by_agent": {"terms": {"field": "agent.name.keyword", "size": 20}},
-                "by_rule": {"terms": {"field": "rule.id.keyword", "size": 15}},
+                "by_agent": {"terms": {"field": "agent.name", "size": 20}},
+                "by_rule": {"terms": {"field": "rule.id", "size": 15}},
             },
         },
     },
@@ -151,8 +151,8 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
                                   "default_field": "full_log", "lenient": True}},
             ]}},
             "aggs": {
-                "by_srcip": {"terms": {"field": "data.srcip.keyword", "size": 30}},
-                "by_dstip": {"terms": {"field": "data.dstip.keyword", "size": 20, "missing": "N/A"}},
+                "by_srcip": {"terms": {"field": "data.srcip", "size": 30}},
+                "by_dstip": {"terms": {"field": "data.dstip", "size": 20, "missing": "N/A"}},
             },
         },
     },
@@ -166,7 +166,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
                                   "default_field": "full_log", "lenient": True}},
             ]}},
             "aggs": {
-                "by_srcip": {"terms": {"field": "data.srcip.keyword", "size": 30}},
+                "by_srcip": {"terms": {"field": "data.srcip", "size": 30}},
                 "by_hour": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1h",
                               "min_doc_count": 0, "extended_bounds": {"min": since, "max": until}}},
             },
@@ -182,8 +182,8 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
                                   "default_field": "full_log", "lenient": True}},
             ]}},
             "aggs": {
-                "by_srcip": {"terms": {"field": "data.srcip.keyword", "size": 20}},
-                "by_url": {"terms": {"field": "data.url.keyword", "size": 15, "missing": "N/A"}},
+                "by_srcip": {"terms": {"field": "data.srcip", "size": 20}},
+                "by_url": {"terms": {"field": "data.url", "size": 15, "missing": "N/A"}},
             },
         },
     },
