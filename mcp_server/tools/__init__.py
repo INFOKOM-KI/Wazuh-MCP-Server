@@ -4,9 +4,7 @@
 Dynamic tool registration with gating.
 Each module's @mcp.tool / @blueteam_tool decorator auto-registers with the
 shared FastMCP instance on import.  Tool gating (WAZUH_DISABLED_TOOLS,
-WAZUH_DISABLED_CATEGORIES, WAZUH_READ_ONLY) is enforced before imports,
-so disabled tools never register at all.
-
+WAZUH_DISABLED_CATEGORIES, WAZUH_READ_ONLY) is enforced before imports, so disabled tools never register at all.
 The registered tool count is computed from the FastMCP registry at runtime, no hardcoded count anywhere.
 """
 from __future__ import annotations
@@ -45,7 +43,7 @@ def register_all_tools() -> None:
         return False
 
     # Threat Intel (always registered; tools degrade gracefully without API keys)
-    from ..threat_intel import crowdsec, greynoise, threatfox  # noqa: F401
+    from ..threat_intel import crowdsec, greynoise, threatfox, otx, urlhaus  # noqa: F401
 
     # Tool modules - each import fires @mcp.tool / @blueteam_tool decorators
     # Categories that can be disabled: (module_attr, category_name, skip_in_read_only)
@@ -78,6 +76,10 @@ def register_all_tools() -> None:
         ("wazuh_export",          "wazuh_export",          False),  # 1 tool
         ("wazuh_scanning",        "wazuh_scanning",        False),  # 4 tools
         ("webshell_check",         "webshell_check",         False),  # 1 tool - curl + signature scan
+        ("otx_lookup",             "otx_lookup",             False),  # 2 tools - AlienVault OTX threat intel
+        ("threat_intel_aggregate",  "threat_intel_aggregate",  False),  # 1 tool - unified multi-provider aggregation
+        ("urlhaus",                "urlhaus",                False),  # 2 tools - URLhaus malware URL database
+        ("asset_context",           "asset_context",           False),  # 1 tool - CMDB asset context
         ("semantic_search",       "semantic_search",       False),  # 1 tool
         ("report_export",         "report_export",         False),  # 1 tool
         ("stix_correlation",      "stix_correlation",      False),  # 2 tools

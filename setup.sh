@@ -63,6 +63,8 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 
 # Threat intelligence (optional)
 # export THREATFOX_API_KEY="your_key"     # free key: https://threatfox.abuse.ch/api
+# export OTX_API_KEY="your_key"           # free key: https://otx.alienvault.com/api
+# export URLHAUS_API_KEY="your_key"        # optional key: https://urlhaus.abuse.ch/api/
 # export ABUSEIPDB_API_KEY="your_key"     # https://www.abuseipdb.com
 # export VIRUSTOTAL_API_KEY="your_key"    # https://www.virustotal.com
 # export CROWDSEC_API_KEY="your_key"      # free tier: https://www.crowdsec.net/en/user/profile
@@ -80,6 +82,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export GREYNOISE_BASE_URL="https://api.greynoise.io/v3/community"
 # export CROWDSEC_BASE_URL="https://cti.api.crowdsec.net"
 # export THREATFOX_BASE_URL="https://threatfox-api.abuse.ch/api/v1/"
+# export OTX_BASE_URL="https://otx.alienvault.com"
 # export ABUSEIPDB_BASE_URL="https://api.abuseipdb.com/api/v2"
 # export VIRUSTOTAL_BASE_URL="https://www.virustotal.com/api/v3"
 # export NETRA_BASE_URL="https://netra.fbi.gov:8013/api/v1"
@@ -89,6 +92,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # Caching TTLs (seconds — defaults shown)
 # export CROWDSEC_CACHE_TTL="900"
 # export THREATFOX_CACHE_TTL="900"
+# export OTX_CACHE_TTL="1800"
+# export URLHAUS_CACHE_TTL="1800"
+# export BLUETEAM_CMDB_FILE="/var/log/blue-team-mcp/cmdb_inventory.json"
 
 # MCP transport (optional — default: stdio for SSH usage)
 # Uncomment one for a remote HTTP service:
@@ -185,6 +191,11 @@ export VIRUSTOTAL_API_KEY="${VIRUSTOTAL_API_KEY:-}"
 export CROWDSEC_API_KEY="${CROWDSEC_API_KEY:-}"
 export THREATFOX_API_KEY="${THREATFOX_API_KEY:-}"
 export THREATFOX_CACHE_TTL="${THREATFOX_CACHE_TTL:-900}"
+export OTX_API_KEY="${OTX_API_KEY:-}"
+export OTX_CACHE_TTL="${OTX_CACHE_TTL:-1800}"
+export URLHAUS_API_KEY="${URLHAUS_API_KEY:-}"
+export URLHAUS_CACHE_TTL="${URLHAUS_CACHE_TTL:-1800}"
+export BLUETEAM_CMDB_FILE="${BLUETEAM_CMDB_FILE:-}"
 export NETRA_API_KEY="${NETRA_API_KEY:-}"
 export NETRA_VERIFY_SSL="${NETRA_VERIFY_SSL:-false}"
 export ARGUS_API_KEY="${ARGUS_API_KEY:-}"
@@ -194,6 +205,8 @@ export ARGUS_VERIFY_SSL="${ARGUS_VERIFY_SSL:-false}"
 export GREYNOISE_BASE_URL="${GREYNOISE_BASE_URL:-https://api.greynoise.io/v3/community}"
 export CROWDSEC_BASE_URL="${CROWDSEC_BASE_URL:-https://cti.api.crowdsec.net}"
 export THREATFOX_BASE_URL="${THREATFOX_BASE_URL:-https://threatfox-api.abuse.ch/api/v1/}"
+export OTX_BASE_URL="${OTX_BASE_URL:-https://otx.alienvault.com}"
+export URLHAUS_BASE_URL="${URLHAUS_BASE_URL:-https://urlhaus-api.abuse.ch/v1/}"
 export ABUSEIPDB_BASE_URL="${ABUSEIPDB_BASE_URL:-https://api.abuseipdb.com/api/v2}"
 export VIRUSTOTAL_BASE_URL="${VIRUSTOTAL_BASE_URL:-https://www.virustotal.com/api/v3}"
 export NETRA_BASE_URL="${NETRA_BASE_URL:-https://netra.fbi.gov:8013/api/v1}"

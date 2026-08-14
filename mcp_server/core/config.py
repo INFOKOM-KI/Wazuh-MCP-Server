@@ -9,12 +9,10 @@ ConfigurationError on invalid values.
 All defaults are production-safe: localhost bind, TLS on, redaction on.
 """
 from __future__ import annotations
-
 import os
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
-
 from mcp_server.core.exceptions import ConfigurationError
 
 logger = logging.getLogger("blue_team_mcp.config")
@@ -27,7 +25,7 @@ def _bool(v: str, default: bool = False) -> bool:
         return default
     return v.strip().lower() in ("1", "true", "yes")
 
-# Nested config groups — one dataclass per trust domain
+# Nested config groups - one dataclass per trust domain
 @dataclass
 class ServerConfig:
     """MCP transport and binding configuration."""
@@ -72,7 +70,7 @@ class WazuhManagerConfig:
         """Manager API is optional - tools degrade gracefully when unset."""
         if self.url and not self.password:
             raise ConfigurationError(
-                "WAZUH_API_URL is set but WAZUH_API_PASSWORD is empty — "
+                "WAZUH_API_URL is set but WAZUH_API_PASSWORD is empty -"
                 "Manager API tools will fail."
             )
 
@@ -137,6 +135,14 @@ class ThreatIntelConfig:
     # RDAP / crt.sh
     rdap_base_url: str = "https://rdap.org"
     crtsh_base_url: str = "https://crt.sh"
+    # AlienVault OTX
+    otx_api_key: str = ""
+    otx_cache_ttl: int = 1800
+    otx_base_url: str = "https://otx.alienvault.com"
+    # URLhaus
+    urlhaus_api_key: str = ""
+    urlhaus_cache_ttl: int = 1800
+    urlhaus_base_url: str = "https://urlhaus-api.abuse.ch/v1/"
 
     @classmethod
     def from_env(cls) -> "ThreatIntelConfig":
@@ -160,6 +166,12 @@ class ThreatIntelConfig:
             argus_base_url=os.environ.get("ARGUS_BASE_URL", "http://localhost:8088/lookup-jobs"),
             rdap_base_url=os.environ.get("RDAP_BASE_URL", "https://rdap.org"),
             crtsh_base_url=os.environ.get("CRTSH_BASE_URL", "https://crt.sh"),
+            otx_api_key=os.environ.get("OTX_API_KEY", ""),
+            otx_cache_ttl=int(os.environ.get("OTX_CACHE_TTL", "1800")),
+            otx_base_url=os.environ.get("OTX_BASE_URL", "https://otx.alienvault.com"),
+            urlhaus_api_key=os.environ.get("URLHAUS_API_KEY", ""),
+            urlhaus_cache_ttl=int(os.environ.get("URLHAUS_CACHE_TTL", "1800")),
+            urlhaus_base_url=os.environ.get("URLHAUS_BASE_URL", "https://urlhaus-api.abuse.ch/v1/"),
         )
 
     def validate(self) -> None:
@@ -229,7 +241,7 @@ class RedactionConfig:
                 "BLUETEAM_ALLOW_FORENSIC_BYPASS=true."
             )
         if self.allow_forensic_bypass and self.forensic_token:
-            # Token is set — validate it's non-empty and reasonable length
+            # Token is set - validate it's non-empty and reasonable length
             if len(self.forensic_token) < 8:
                 raise ConfigurationError(
                     "BLUETEAM_FORENSIC_TOKEN must be at least 8 characters."
@@ -426,30 +438,30 @@ class Config:
     def emit_warnings(self) -> None:
         """Log warnings for non-fatal configuration issues.
 
-        Call AFTER validate() succeeds — these are advisory, not blocking.
+        Call AFTER validate() succeeds - these are advisory, not blocking.
         """
         if not self.wazuh_manager.url:
-            logger.warning("WAZUH_API_URL not set — Manager API tools disabled.")
+            logger.warning("WAZUH_API_URL not set - Manager API tools disabled.")
         if not self.wazuh_manager.verify_ssl:
-            logger.warning("WAZUH_API_VERIFY_SSL disabled — TLS OFF for Wazuh Manager API.")
+            logger.warning("WAZUH_API_VERIFY_SSL disabled - TLS OFF for Wazuh Manager API.")
         if not self.wazuh_indexer.verify_ssl:
-            logger.warning("WAZUH_INDEXER_VERIFY_SSL disabled — TLS OFF for Wazuh Indexer.")
+            logger.warning("WAZUH_INDEXER_VERIFY_SSL disabled - TLS OFF for Wazuh Indexer.")
         if not self.threat_intel.crowdsec_api_key:
-            logger.warning("CROWDSEC_API_KEY not set — CrowdSec tools disabled.")
+            logger.warning("CROWDSEC_API_KEY not set - CrowdSec tools disabled.")
         if not self.threat_intel.abuseipdb_api_key:
-            logger.warning("ABUSEIPDB_API_KEY not set — AbuseIPDB lookup disabled.")
+            logger.warning("ABUSEIPDB_API_KEY not set - AbuseIPDB lookup disabled.")
         if not self.threat_intel.virustotal_api_key:
-            logger.warning("VIRUSTOTAL_API_KEY not set — VirusTotal lookups disabled.")
+            logger.warning("VIRUSTOTAL_API_KEY not set - VirusTotal lookups disabled.")
         if self.limits.allow_untruncated:
-            logger.warning("BLUETEAM_ALLOW_UNTRUNCATED=true — character-limit bypass ENABLED.")
+            logger.warning("BLUETEAM_ALLOW_UNTRUNCATED=true - character-limit bypass ENABLED.")
         if self.redaction.allow_forensic_bypass:
             logger.warning(
-                "BLUETEAM_ALLOW_FORENSIC_BYPASS=true — forensic raw output enabled "
+                "BLUETEAM_ALLOW_FORENSIC_BYPASS=true - forensic raw output enabled "
                 "(bypass_redaction/redaction_policy='raw' will be honored)."
             )
 
 
-# Module-level singleton — initialized by mcp_server/__init__.py at startup
+# Module-level singleton - initialized by mcp_server/__init__.py at startup
 config: Optional[Config] = None
 def init_config() -> Config:
     """Build, validate, and store the global Config singleton.
@@ -461,7 +473,7 @@ def init_config() -> Config:
     config.validate()
     config.emit_warnings()
     logger.info(
-        "Configuration validated — Manager=%s, Indexer=%s, %d threat-intel providers.",
+        "Configuration validated - Manager=%s, Indexer=%s, %d threat-intel providers.",
         "enabled" if config.wazuh_manager.url else "disabled",
         "enabled" if config.wazuh_indexer.url else "disabled",
         sum(1 for k in [

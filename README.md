@@ -838,6 +838,13 @@ All tools below are registered across the `mcp_server/` package. Tools not requi
 | `blueteam_semantic_search` | 🆕 BM25 semantic search - natural language queries against Wazuh rules |
 | `blueteam_prompt_route` | 🆕 BM25 prompt-to-tool routing — maps natural-language prompts to ranked MCP tools |
 | `blueteam_check_webshell` | 🆕 Webshell checker — curl + 20-signature scan against forensic URLs |
+| `otx_lookup` | 🆕 AlienVault OTX — pulse-based campaign context (malware families, adversaries, MITRE) |
+| `otx_lookup_bulk` | 🆕 AlienVault OTX batch lookup (max 20 concurrent) |
+| `blueteam_threat_intel_aggregate` | 🆕 Unified 6-provider aggregation — one call instead of six |
+| `urlhaus_lookup` | 🆕 URLhaus malware URL database — check suspicious URLs |
+| `urlhaus_lookup_bulk` | 🆕 URLhaus batch URL check (max 20) |
+| `urlhaus_hash_lookup` | 🆕 URLhaus payload lookup — malware signature from MD5/SHA256 |
+| `blueteam_asset_context` | 🆕 CMDB asset context — what is this host, how critical, who owns it |
 | `blueteam_export_report` | 🆕 SOC report deliverables - generate .docx / .xlsx / .pptx via officecli |
 | `blueteam_stix_analyze` | 🆕 MITRE ATT&CK STIX correlation - map techniques, threat actors, campaigns, mitigations |
 
@@ -1162,6 +1169,10 @@ wazuh_domain_lookup(domain="tangerangkota.go.id", since="24h",
 → reveal_owned=true MEMBUKA subdomain asli (bukan masked).
 → Ini aset MILIK SENDIRI — Tier 1, BUKAN Tier 2. TIDAK butuh forensic_token.
 → Urutkan seluruh subdomain berdasarkan jumlah serangan.
+→ Untuk SETIAP subdomain diserang, dapatkan konteks aset:
+  blueteam_asset_context(host=<subdomain>, response_format="json")
+→ Asset context: nama, owner, criticality, environment, purpose.
+→ Prioritaskan response berdasarkan criticality (high → investigasi dulu).
 
 LANGKAH 3 — Threat Card + Attack Chain per Attacker:
 Untuk SETIAP top attacker IP (minimal top 10) dari langkah 1-2:
@@ -1181,11 +1192,16 @@ LANGKAH 5 — Ekstrak IOC (seluruh jenis serangan):
 blueteam_extract_iocs(text=<seluruh_alert_text_dari_langkah_1>)
 → Ekstrak IP, domain, URL, email, hash dari SEMUA alert.
 
-LANGKAH 6 — Argus (auth success IPs):
-wazuh_alert_aggregate_analysis(mode="summary", since="24h",
-  response_format="json")
-→ Filter seluruh IP dengan authentication_success, lalu:
-  argus_ip_lookup(ip=<ip>) untuk setiap IP.
+LANGKAH 6 — Unified Threat Intel (SEMUA provider — 1 panggilan):
+Untuk SETIAP top attacker IP dari langkah 1-2 (dan file hash dari langkah 5):
+  blueteam_threat_intel_aggregate(indicator=<ip>, response_format="json")
+→ Queries CrowdSec + ThreatFox + OTX + GreyNoise + AbuseIPDB + VirusTotal
+  SECARA CONCURRENT → consensus_malicious + aggregated_risk_level.
+→ OTX memberikan: malware families, adversaries, industries, MITRE techniques.
+→ Serta:
+  argus_ip_lookup(ip=<ip>) untuk IP dengan authentication_success.
+  otx_lookup(indicator=<ip>, section="general") untuk campaign context.
+  urlhaus_hash_lookup(file_hash=<hash>) untuk malware signature (dari langkah 5).
 
 LANGKAH 7 — 3-Sum APT + ThreatFox + CrowdSec:
 three_sum_correlation(time_window_minutes=1440, follow_up="threat_intel",
@@ -1256,6 +1272,8 @@ blueteam_export_report(format="docx",
      "paragraphs": ["<dari langkah 4: blocked vs unblocked IPs>"]},
     {"heading": "IOC (Seluruh Jenis Serangan)",
      "paragraphs": ["<dari langkah 5>"]},
+    {"heading": "Unified Threat Intel (6 Provider) + Asset Context",
+     "paragraphs": ["<dari langkah 2+6: consensus_malicious, malware families, criticality>"]},
     {"heading": "Auth Success + Argus",
      "paragraphs": ["<dari langkah 6>"]},
     {"heading": "3-Sum APT Detection (Multi-Resolution)",
@@ -1294,6 +1312,8 @@ Untuk SETIAP URL mencurigakan:
 → CONFIRMED → URL auto-registered sebagai attacker IOC.
 → LOGIN_PAGE → LLM analisa HTML context: shell login atau aplikasi sah?
 → Jika shell login terkonfirmasi, register sebagai attacker IOC.
+→ CEK JUGA di URLhaus (apakah URL ini distributor malware dikenal):
+  urlhaus_lookup(url="<url>", response_format="json")
 → Tambahkan hasil ke laporan DOCX: "Webshell Check Results".
 ```
 
@@ -1327,6 +1347,11 @@ OUTPUT — LLM menyusun laporan markdown dengan struktur:
 
 ## IOC (Seluruh Jenis Serangan)
 <dari langkah 5>
+
+## Unified Threat Intel (6 Provider) + Asset Context
+| Subdomain | Criticality | Owner | Consensus | Malware/Adversary |
+|-----------|-------------|-------|-----------|-------------------|
+<dari langkah 2+6: asset_context + threat_intel_aggregate>
 
 ## Auth Success + Argus
 <dari langkah 6>

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Blue Team MCP Server — shared FastMCP instance, config bootstrap, and constants.
-
+Blue Team MCP Server - shared FastMCP instance, config bootstrap, and constants.
 At import time this module:
   1. Configures stderr logging.
   2. Creates the FastMCP server instance (needs MCP_HOST / MCP_PORT from env).
@@ -10,19 +9,15 @@ At import time this module:
      Config singleton and validate it (raises ConfigurationError on fatal issues).
   4. Populates backward-compatible module-level vars from the config singleton
      so existing ``from mcp_server import WAZUH_API_URL, ...`` imports keep working.
-
 Modules SHOULD migrate to ``from mcp_server.core.config import config`` over
 time; the module-level vars here are a transition shim.
 """
 from __future__ import annotations
-
 import os
 import sys
 import logging
 
-# ---------------------------------------------------------------------------
-# Logging — stderr only (stdout is the MCP JSON-RPC channel)
-# ---------------------------------------------------------------------------
+# Logging - stderr only (stdout is the MCP JSON-RPC channel)
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -30,9 +25,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("blue_team_mcp")
 
-# ---------------------------------------------------------------------------
-# FastMCP instance — needs host/port before anything else
-# ---------------------------------------------------------------------------
+# FastMCP instance - needs host/port before anything else
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 _SERVER_NAME = os.environ.get("BLUE_TEAM_MCP_SERVER_NAME", "blue_team_mcp").strip().lower()
@@ -43,18 +36,14 @@ _MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 _MCP_PORT = int(os.environ.get("MCP_PORT", "8000"))
 mcp = FastMCP(_SERVER_NAME, host=_MCP_HOST, port=_MCP_PORT)
 
-# ---------------------------------------------------------------------------
-# Configuration bootstrap — called once at import time.
+# Configuration bootstrap - called once at import time.
 # Raises ConfigurationError on fatal issues (missing Indexer URL, etc.).
-# ---------------------------------------------------------------------------
 from mcp_server.core.config import init_config  # noqa: E402
 
 _config = init_config()
 
-# ---------------------------------------------------------------------------
-# Backward-compatible module-level exports — sourced from the Config singleton.
+# Backward-compatible module-level exports - sourced from the Config singleton.
 # New code should use ``from mcp_server.core.config import config``.
-# ---------------------------------------------------------------------------
 
 _c = _config
 
@@ -70,6 +59,10 @@ ARGUS_API_KEY_ENV   = "ARGUS_API_KEY"
 ARGUS_VERIFY_SSL    = _c.threat_intel.argus_verify_ssl
 THREATFOX_API_KEY_ENV = "THREATFOX_API_KEY"
 THREATFOX_CACHE_TTL   = _c.threat_intel.threatfox_cache_ttl
+OTX_API_KEY_ENV = "OTX_API_KEY"
+OTX_CACHE_TTL   = _c.threat_intel.otx_cache_ttl
+URLHAUS_API_KEY_ENV = "URLHAUS_API_KEY"
+URLHAUS_CACHE_TTL   = _c.threat_intel.urlhaus_cache_ttl
 
 # External API Base URLs
 CROWDSEC_BASE_URL  = _c.threat_intel.crowdsec_base_url
@@ -80,6 +73,8 @@ NETRA_BASE_URL     = _c.threat_intel.netra_base_url
 ARGUS_BASE_URL     = _c.threat_intel.argus_base_url
 RDAP_BASE_URL      = _c.threat_intel.rdap_base_url
 CRTSH_BASE_URL     = _c.threat_intel.crtsh_base_url
+OTX_BASE_URL       = _c.threat_intel.otx_base_url
+URLHAUS_BASE_URL   = _c.threat_intel.urlhaus_base_url
 
 # Wazuh Manager API
 WAZUH_API_URL        = _c.wazuh_manager.url
@@ -139,10 +134,7 @@ BLUETEAM_RATE_LIMIT            = _c.audit.rate_limit
 _INVESTIGATION_HISTORY_FILE    = _c.audit.investigation_history
 MITRE_ATTACK_STIX              = _c.audit.mitre_stix_url
 
-# ---------------------------------------------------------------------------
-# Shared Field Descriptions (string constants — not config values)
-# ---------------------------------------------------------------------------
-
+# Shared Field Descriptions (string constants - not config values)
 _BYPASS_REDACTION_DESC = (
     "When true, skip PII/credential redaction for audit investigations."
 )
