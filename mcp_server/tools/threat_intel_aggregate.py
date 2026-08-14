@@ -26,7 +26,7 @@ from mcp_server import (mcp, CROWDSEC_API_KEY_ENV, OTX_API_KEY_ENV,
                         ABUSEIPDB_BASE_URL, VIRUSTOTAL_BASE_URL)
 from mcp_server.core.http_client import _api_call, _is_private_or_reserved, ValidPublicIp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.threat_intel.otx import _classify_indicator
+from mcp_server.threat_intel.otx import _classify_indicator, _normalize_adversary
 
 logger = logging.getLogger("blue_team_mcp.threat_intel_aggregate")
 
@@ -166,7 +166,7 @@ async def _otx_provider(indicator: str, ind_type: str) -> TIProviderResult:
                                     indicator_type=ind_type, risk_level="none",
                                     reputation_score=0, is_malicious=False)
         mf = list({m for p in pulses for m in p.get("malware_families", [])})[:5]
-        adv = list({p.get("adversary") for p in pulses if p.get("adversary")})[:5]
+        adv = list({_normalize_adversary(p.get("adversary")) for p in pulses if _normalize_adversary(p.get("adversary"))})[:5]
         attack = list({a for p in pulses for a in p.get("attack_ids", [])})[:10]
         industries = list({i for p in pulses for i in p.get("industries", [])})[:5]
         # Malicious if malware families/adversaries OR direct malware sample hits.

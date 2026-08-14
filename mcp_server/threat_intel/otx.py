@@ -108,6 +108,22 @@ async def _otx_request(indicator: str, section: str = "general") -> dict[str, An
     return data
 
 
+def _normalize_adversary(value: Any) -> str:
+    """Normalize OTX adversary field to a string name.
+
+    OTX returns ``adversary`` as either a plain string ("APT41") or a dict
+    ({"name": "APT41", ...}). A set/dict comprehension over raw values
+    crashes with ``unhashable type: 'dict'`` when it's a dict.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return value.get("name", value.get("id", "")) or ""
+    return str(value)
+
+
 def _extract_pulse_summary(pulses: list[dict]) -> list[dict]:
     """Condense OTX pulses to the fields the LLM needs for attribution."""
     out = []
@@ -119,7 +135,7 @@ def _extract_pulse_summary(pulses: list[dict]) -> list[dict]:
             "modified": p.get("modified", "?"),
             "tags": p.get("tags", [])[:10],
             "malware_families": p.get("malware_families", [])[:5],
-            "adversary": p.get("adversary", ""),
+            "adversary": _normalize_adversary(p.get("adversary")),
             "industries": p.get("industries", [])[:5],
             "attack_ids": p.get("attack_ids", [])[:10],
             "targeted_countries": p.get("targeted_countries", [])[:5],

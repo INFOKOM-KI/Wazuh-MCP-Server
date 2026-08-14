@@ -13,7 +13,7 @@ from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.http_client import _handle_api_error, _is_private_or_reserved
 from mcp_server.threat_intel.otx import (
     _otx_request, _classify_indicator, _extract_pulse_summary,
-    _format_otx_markdown, _format_geo_markdown,
+    _format_otx_markdown, _format_geo_markdown, _normalize_adversary,
 )
 
 
@@ -177,7 +177,7 @@ async def otx_lookup_bulk(params: OtxBulkInput) -> str:
                 "indicator_type": _classify_indicator(ind),
                 "pulse_count": raw.get("pulse_info", {}).get("count", 0),
                 "malware_families": list({m for p in pulses for m in p.get("malware_families", [])})[:5],
-                "adversaries": list({p.get("adversary") for p in pulses if p.get("adversary")})[:5],
+                "adversaries": list({_normalize_adversary(p.get("adversary")) for p in pulses if _normalize_adversary(p.get("adversary"))})[:5],
             }
         except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
             return {"indicator": ind, "error": _handle_api_error(e, context=ind)}
