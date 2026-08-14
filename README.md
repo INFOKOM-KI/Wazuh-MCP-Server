@@ -1152,6 +1152,15 @@ LANGKAH 0 — BM25 Prompt Routing (opsional):
 blueteam_prompt_route(prompt="<isi_prompt>", mode="buckets")
 → Petakan prompt ke tool yang paling relevan.
 
+LANGKAH 0a — Index Schema Discovery (WAJIB sebelum aggregation):
+blueteam_index_schema(fields=["data.srcip", "rule.id", "rule.groups",
+  "agent.name", "data.domain", "data.url", "GeoLocation.city_name"],
+  response_format="json")
+→ Temukan tipe field aktual (keyword vs text.keyword) SEBELUM query.
+→ Wazuh pakai string_as_keyword template → field PLAIN keyword (tanpa .keyword).
+→ GUNAKAN nama field polos (rule.id, agent.name, data.srcip) di aggregation.
+→ JANGAN pakai .keyword suffix — akan return empty buckets.
+
 LANGKAH 1 — Gambaran Menyeluruh (SEMUA serangan):
 blueteam_curated_threat_report(since="24h", investigation_depth="deep",
   response_format="json", redaction_policy="protect_victim")
