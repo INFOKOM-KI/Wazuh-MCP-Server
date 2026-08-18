@@ -144,6 +144,129 @@ Two-tier unmasking on top of the policy:
 
 ---
 
+## SOC Analysis Prompt (copy-paste for your LLM)
+
+A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two output formats —
+**Markdown** (inline report, no extra deps) and **DOCX** (OfficeCLI report).
+
+> **DOCX requires OfficeCLI** — install first: `sudo bash setup.sh` (installs `officecli-sdk`) or
+> `pip install officecli-sdk`. The Markdown path needs nothing extra.
+
+```
+⚠️ EXECUTION RULES (parameter guardrails — prevents false positives):
+- redaction_policy="protect_victim" is accepted by ONLY 5 tools:
+    blueteam_curated_threat_report, blueteam_wazuh_alert_summarize,
+    blueteam_wazuh_indexer_search, three_sum_correlation, blueteam_investigate_ip
+- blueteam_wazuh_export uses bypass_redaction (NOT redaction_policy) — forensic export to disk only.
+- Other tools DO NOT accept redaction_policy. If a call returns "extra_forbidden", drop the param and retry.
+- blueteam_export_report does NOT support reveal_owned; it supports ONLY docx/xlsx/pptx.
+- Export path MUST be /var/log/blue-team-mcp/exports/.
+
+⚠️ TWO-TIER UNMASKING:
+- TIER 1 — reveal_owned=true (SAFE for LLM, own assets only): reveals only
+  *.tangerangkota.go.id + @tangerangkota.go.id. 12 tools accept it:
+  blueteam_curated_threat_report, blueteam_wazuh_alert_summarize, blueteam_threat_card,
+  three_sum_correlation, blueteam_investigate_ip, wazuh_alert_aggregate_analysis,
+  wazuh_domain_lookup, wazuh_email_lookup, wazuh_alert_focused_crawl,
+  wazuh_alert_timeline, wazuh_attack_velocity, blueteam_wazuh_vulnerabilities.
+- TIER 2 — bypass_redaction=true + forensic_token (HUMAN ONLY): raw data to disk via
+  blueteam_wazuh_export; the LLM sees only the file path. Requires
+  BLUETEAM_ALLOW_FORENSIC_BYPASS=true + BLUETEAM_FORENSIC_TOKEN.
+- DEFAULT MODEL = protect_victim: the LLM sees attacker public IPs/payloads/rule/severity/MITRE;
+  never internal emails, internal subdomains, private IPs (RFC1918), or internal paths.
+
+LANGKAH 0  — BM25 Prompt Routing (optional):
+blueteam_prompt_route(prompt="<isi_prompt>", mode="buckets")
+
+LANGKAH 0a — Index Schema Discovery (REQUIRED before any aggregation):
+blueteam_index_schema(fields=["data.srcip","rule.id","rule.groups","agent.name",
+  "data.domain","data.url","GeoLocation.city_name"], response_format="json")
+→ Wazuh uses string_as_keyword → fields are PLAIN keyword (no .keyword suffix).
+
+LANGKAH 1  — Full overview (all attacks):
+blueteam_curated_threat_report(since="24h", investigation_depth="deep",
+  response_format="json", redaction_policy="protect_victim")
+
+LANGKAH 1b — Own subdomain/email forensics (TIER 1):
+blueteam_wazuh_indexer_search(keyword="tangerangkota.go.id", since="24h",
+  redaction_policy="protect_victim", reveal_owned=true, response_format="json")
+
+LANGKAH 2  — Most-attacked subdomains (TIER 1) + asset context:
+wazuh_domain_lookup(domain="tangerangkota.go.id", since="24h",
+  response_format="json", max_scanned=10000, reveal_owned=true)
+→ For each attacked subdomain: blueteam_asset_context(host=<subdomain>, response_format="json")
+
+LANGKAH 3  — Threat card + attack chain per attacker (top 10):
+blueteam_threat_card(srcip=<ip>, since="24h")
+blueteam_attack_chain(srcip=<ip>, since="24h")
+
+LANGKAH 4  — Sangfor blocklist (BY TIMESTAMP, scoped to report window):
+sangfor_blocklist_list(date_start="<24h_ago>", date_end="<now>", response_format="json")
+→ For each attacker: sangfor_blocklist_check(ip=<ip>, response_format="json")
+
+LANGKAH 5  — Extract IOCs:
+blueteam_extract_iocs(text=<alert_text_from_step_1>)
+
+LANGKAH 6  — Unified threat intel (all providers):
+blueteam_threat_intel_aggregate(indicator=<ip>, response_format="json")
+argus_ip_lookup(ip=<ip>); netra_ip_analysis(ip=<ip>, response_format="json")
+otx_lookup(indicator=<ip>, section="general"); urlhaus_hash_lookup(file_hash=<hash>)
+
+LANGKAH 7  — 3-Sum APT + auto-enrich:
+three_sum_correlation(time_window_minutes=1440, follow_up="threat_intel",
+  multi_resolution=true, response_format="json", redaction_policy="protect_victim")
+
+LANGKAH 8  — Attack graph + campaign watch:
+blueteam_attack_graph(since_days=30, top_n=20, response_format="json")
+blueteam_campaign_watch(response_format="json")
+
+LANGKAH 9  — LangGraph investigation (top 10):
+blueteam_investigation_workflow(alert_text="<...>", srcip=<ip>, window="24h",
+  use_attack_graph=true, generate_report=false, record_verdict=true,
+  verdict_label="suspicious")
+
+LANGKAH 10 — LangGraph playbook (if 3-Sum severity ≥ LOW):
+blueteam_playbook_run(alert_text="<...>", rule_groups="<...>", window="24h",
+  use_attack_graph=true, generate_report=false)
+
+LANGKAH 11 — Compromised emails (locked):
+wazuh_compromised_emails_analysis(since="24h", response_format="json")
+wazuh_compromised_emails_analysis(since="24h", reveal_owned=true, response_format="json")  # TIER 1
+
+LANGKAH 12 — Semantic search (dominant attack patterns):
+blueteam_semantic_search(query="<pattern>", source="alerts", since="24h",
+  top_k=30, response_format="json")
+
+LANGKAH 13 — MITRE kill-chain (top 10):
+blueteam_stix_killchain(srcip=<ip>, since="24h")
+
+LANGKAH 14 — Geo heatmap:
+blueteam_wazuh_geo_heatmap(since="24h", response_format="json")
+
+—— FORMAT MARKDOWN (no OfficeCLI): compose the report directly from steps 1–14.
+   Structure: ringkasan → subdomain → IOC → threat intel → 3-Sum → attack graph →
+   LangGraph → email locked → semantic → MITRE → geo.
+
+—— FORMAT DOCX (OfficeCLI — install officecli first):
+LANGKAH 15 — Generate report:
+blueteam_export_report(format="docx",
+  title="Laporan Serangan Siber 24 Jam — Infra Pemkot Tangerang",
+  path="/var/log/blue-team-mcp/exports/laporan_24jam_{{date}}.docx",
+  docx_sections=[...])
+
+LANGKAH 16 — Forensic export (HUMAN ONLY — analyst reads the file on server):
+blueteam_wazuh_export(since="24h", bypass_redaction=true,
+  forensic_token="<BLUETEAM_FORENSIC_TOKEN>",
+  path="/var/log/blue-team-mcp/exports/forensic_24jam_{{date}}.jsonl")
+
+LANGKAH 17 — Webshell check (after analyst reads the export):
+cat /var/log/blue-team-mcp/exports/forensic_24jam_*.jsonl | jq -r '.data.url' | sort -u | grep -v '^-$'
+→ For each URL: blueteam_check_webshell(url="<url>", timeout=10)
+  and urlhaus_lookup(url="<url>", response_format="json")
+```
+
+---
+
 ## Requirements
 
 - Python 3.11+

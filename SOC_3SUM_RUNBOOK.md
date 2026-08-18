@@ -36,8 +36,8 @@ Category → tactic mapping:
 | Category | Tactics | Signal |
 |----------|---------|--------|
 | A (**recon**) | Reconnaissance, Resource Development, Discovery | weakest (*scanner noise*) |
-| B (**access**) | Initial Access, Execution, Persistence, Privilege Escalation, Defense Evasion, Credential Access, Lateral Movement | mid |
-| C (**C2/exfil**) | Collection, Command and Control, Exfiltration, Impact | strongest |
+| B (**access**) | Initial Access, Execution, Privilege Escalation, Defense Evasion, Credential Access, Lateral Movement | mid |
+| C (**C2/exfil**) | Persistence, Collection, Command and Control, Exfiltration, Impact | strongest |
 
 ---
 
