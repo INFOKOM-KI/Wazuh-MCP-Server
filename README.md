@@ -1,7 +1,7 @@
 # Blue Team MCP Server (Wazuh SIEM)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. Exposes **90+ SOC tools** across Wazuh SIEM, multi-provider threat
+offensive tooling. Exposes **100+ SOC tools** across Wazuh SIEM, multi-provider threat
 intelligence, alert enrichment, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph
 investigation workflows, and host forensics. Read-only by default.
 
@@ -77,7 +77,7 @@ optional — tools degrade gracefully without them.
 | Wazuh Indexer | `WAZUH_INDEXER_URL` / `_USER` / `_PASSWORD` | OpenSearch (9200) — alert/event data |
 | Wazuh Manager | `WAZUH_API_URL` / `_USER` / `_PASSWORD` | Manager API (55000) — rules/agents/config |
 | TLS | `WAZUH_INDEXER_VERIFY_SSL`, `WAZUH_API_VERIFY_SSL` | default `true` |
-| Threat intel | `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `GREYNOISE_BASE_URL` | 9 providers; all optional |
+| Threat intel | `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `GREYNOISE_BASE_URL`, `RAPIDAPI_KEY` | 9 providers + 3 RapidAPI lookups; all optional |
 | Redaction | `BLUETEAM_REDACTION_POLICY`, `BLUETEAM_OWNED_DOMAINS`, `BLUETEAM_REDACT_*` | see Security & Privacy |
 | Forensic gate | `BLUETEAM_ALLOW_FORENSIC_BYPASS`, `BLUETEAM_FORENSIC_TOKEN` | default `false` / empty |
 | Audit | `BLUETEAM_AUDIT_LOG` | JSONL audit trail (optional) |
@@ -105,7 +105,9 @@ lookups, and Manager API tools (rules, decoders, groups, agents, security events
 ### Threat Intelligence
 9 providers — CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise, AbuseIPDB, VirusTotal, Netra, Argus —
 with a unified `blueteam_threat_intel_aggregate` (fans out to six sources concurrently) and a
-weighted `blueteam_unified_threat_score`.
+weighted `blueteam_unified_threat_score`. Plus 3 RapidAPI capability lookups:
+`blueteam_ip_blacklist` (blacklist verdict), `blueteam_ioc_search` (IOC/malware matches), and
+`blueteam_breach_check` (email breach status) — all keyed by `RAPIDAPI_KEY`.
 
 ### Alert Enrichment
 `blueteam_wazuh_alert_summarize`, `blueteam_beacon_detect`, `blueteam_attack_chain`,

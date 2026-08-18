@@ -331,12 +331,12 @@ def main() -> int:
                 all_issues.extend(result)
                 if not json_out:
                     print(f"\n{'='*60}")
-                    print(f"  {name} ({path.name}): {len(result)} issue(s)")
+                    print(f"{name} ({path.name}): {len(result)} issue(s)")
                     print(f"{'='*60}")
                     for r in result:
                         ctx = r.get('context', r.get('detail', ''))
                         loc = f"{r.get('func','')}@" if 'func' in r else ""
-                        print(f"  [{r['check']}] {r.get('file','')} {loc}{r.get('line','')}: {r.get('field','')} → {ctx}")
+                        print(f"[{r['check']}] {r.get('file','')} {loc}{r.get('line','')}: {r.get('field','')} -> {ctx}")
             else:
                 clean += 1
                 if not json_out:
@@ -347,7 +347,7 @@ def main() -> int:
         return 0 if len(all_issues) == 0 else (2 if strict else 1)
 
     print(f"\n{'='*60}")
-    print(f"  {clean}/{len(FILES) * len(CHECKS)} file×check passes clean. {len(all_issues)} total issue(s).")
+    print(f"{clean}/{len(FILES) * len(CHECKS)} filexcheck passes clean. {len(all_issues)} total issue(s).")
     if len(all_issues) == 0:
         print("All guardrails passed.")
         return 0

@@ -63,6 +63,7 @@ OTX_API_KEY_ENV = "OTX_API_KEY"
 OTX_CACHE_TTL   = _c.threat_intel.otx_cache_ttl
 URLHAUS_API_KEY_ENV = "URLHAUS_API_KEY"
 URLHAUS_CACHE_TTL   = _c.threat_intel.urlhaus_cache_ttl
+RAPIDAPI_KEY_ENV    = "RAPIDAPI_KEY"
 
 # External API Base URLs
 CROWDSEC_BASE_URL  = _c.threat_intel.crowdsec_base_url

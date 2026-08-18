@@ -2,8 +2,8 @@
 """
 © NAuliajati - TangerangKota-CSIRT
 Dynamic tool registration with gating.
-Each module's @mcp.tool / @blueteam_tool decorator auto-registers with the
-shared FastMCP instance on import.  Tool gating (WAZUH_DISABLED_TOOLS,
+Each module's @mcp.tool / @blueteam_tool decorator auto-registers with
+the shared FastMCP instance on import. Tool gating (WAZUH_DISABLED_TOOLS,
 WAZUH_DISABLED_CATEGORIES, WAZUH_READ_ONLY) is enforced before imports, so disabled tools never register at all.
 The registered tool count is computed from the FastMCP registry at runtime, no hardcoded count anywhere.
 """
@@ -16,9 +16,8 @@ logger = logging.getLogger("blue_team_mcp.tools")
 
 def register_all_tools() -> None:
     """Import all tool modules, respecting tool-gating configuration.
-    Modules in disabled_categories are skipped entirely.  When read_only
-    mode is active, any module whose tools are primarily destructive is
-    also skipped.
+    Modules in disabled_categories are skipped entirely.
+    When read_only mode is active, any module whose tools are primarily destructive is also skipped.
     """
     if config is None:
         logger.warning("Config not initialized - registering all tools. "
@@ -42,8 +41,8 @@ def register_all_tools() -> None:
             return True
         return False
 
-    # Threat Intel (always registered; tools degrade gracefully without API keys)
-    from ..threat_intel import crowdsec, greynoise, threatfox, otx, urlhaus  # noqa: F401
+    # Threat Intel (always registered, tools degrade gracefully without API keys)
+    from ..threat_intel import crowdsec, greynoise, threatfox, otx, urlhaus, rapidapi  # noqa: F401
 
     # Tool modules - each import fires @mcp.tool / @blueteam_tool decorators
     # Categories that can be disabled: (module_attr, category_name, skip_in_read_only)
@@ -79,8 +78,8 @@ def register_all_tools() -> None:
         ("otx_lookup",             "otx_lookup",             False),  # 2 tools - AlienVault OTX threat intel
         ("threat_intel_aggregate",  "threat_intel_aggregate",  False),  # 1 tool - unified multi-provider aggregation
         ("urlhaus",                "urlhaus",                False),  # 2 tools - URLhaus malware URL database
-        ("asset_context",           "asset_context",           False),  # 1 tool — CMDB asset context
-        ("index_schema",             "index_schema",             False),  # 1 tool — index field schema explorer
+        ("asset_context",           "asset_context",           False),  # 1 tool - CMDB asset context
+        ("index_schema",             "index_schema",             False),  # 1 tool - index field schema explorer
         ("semantic_search",       "semantic_search",       False),  # 1 tool
         ("report_export",         "report_export",         False),  # 1 tool
         ("stix_correlation",      "stix_correlation",      False),  # 2 tools
@@ -98,7 +97,7 @@ def register_all_tools() -> None:
             continue
         __import__(f"mcp_server.tools.{attr}", fromlist=[attr])
 
-    # Dynamic tool count - single source of truth
+    # Dynamic tool count
     tool_count = _count_registered_tools()
     resource_count = _count_registered_resources()
 

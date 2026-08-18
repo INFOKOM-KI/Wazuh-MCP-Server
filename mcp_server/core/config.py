@@ -5,7 +5,6 @@ Typed configuration for Blue Team MCP Server.
 Replaces the ~60 import-time os.environ reads in mcp_server/__init__.py
 with structured dataclasses that validate at startup and raise
 ConfigurationError on invalid values.
-
 All defaults are production-safe: localhost bind, TLS on, redaction on.
 """
 from __future__ import annotations
@@ -143,6 +142,9 @@ class ThreatIntelConfig:
     urlhaus_api_key: str = ""
     urlhaus_cache_ttl: int = 1800
     urlhaus_base_url: str = "https://urlhaus-api.abuse.ch/v1/"
+    # RapidAPI capability lookups (IP blacklist, IOC search, breach check)
+    rapidapi_key: str = ""
+    rapidapi_cache_ttl: int = 1800
 
     @classmethod
     def from_env(cls) -> "ThreatIntelConfig":
@@ -172,6 +174,8 @@ class ThreatIntelConfig:
             urlhaus_api_key=os.environ.get("URLHAUS_API_KEY", ""),
             urlhaus_cache_ttl=int(os.environ.get("URLHAUS_CACHE_TTL", "1800")),
             urlhaus_base_url=os.environ.get("URLHAUS_BASE_URL", "https://urlhaus-api.abuse.ch/v1/"),
+            rapidapi_key=os.environ.get("RAPIDAPI_KEY", ""),
+            rapidapi_cache_ttl=int(os.environ.get("RAPIDAPI_CACHE_TTL", "1800")),
         )
 
     def validate(self) -> None:

@@ -68,6 +68,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export ABUSEIPDB_API_KEY="your_key"     # https://www.abuseipdb.com
 # export VIRUSTOTAL_API_KEY="your_key"    # https://www.virustotal.com
 # export CROWDSEC_API_KEY="your_key"      # free tier: https://www.crowdsec.net/en/user/profile
+# export RAPIDAPI_KEY="your_key"           # https://rapidapi.com (IP Blacklist, IOC Search, Breach Check)
 # export NETRA_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
 # export NETRA_VERIFY_SSL="false"         # set to "true" for production / trusted CA
 
@@ -195,6 +196,7 @@ export OTX_API_KEY="${OTX_API_KEY:-}"
 export OTX_CACHE_TTL="${OTX_CACHE_TTL:-1800}"
 export URLHAUS_API_KEY="${URLHAUS_API_KEY:-}"
 export URLHAUS_CACHE_TTL="${URLHAUS_CACHE_TTL:-1800}"
+export RAPIDAPI_KEY="${RAPIDAPI_KEY:-}"
 export BLUETEAM_CMDB_FILE="${BLUETEAM_CMDB_FILE:-}"
 export NETRA_API_KEY="${NETRA_API_KEY:-}"
 export NETRA_VERIFY_SSL="${NETRA_VERIFY_SSL:-false}"
