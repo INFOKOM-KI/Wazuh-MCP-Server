@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Tests for Phase 2-4 three_sum_core.py additions: multi-resolution, median/MAD, shoulder check, per-category weights.
-I'm to lazy to write test suites, hope my LLM doesn't disappoint me ;P
+I'm (Auli) to lazy to write test suites, hope my LLM doesn't disappoint me... ;P
 """
 from __future__ import annotations
 
@@ -99,6 +99,49 @@ def test_multi_resolution():
     assert result["cross_tier"]["burst_only_count"] == 0
 
 
+def test_engine_a_single_category_gate():
+    from mcp_server.correlation.three_sum_core import evaluate_engine_a
+    # High score concentrated in ONE category must NOT trigger (chained-attack gate)
+    hits, _ = evaluate_engine_a([], [], [("9.9.9.9", 100)], threshold_score=10)
+    assert hits == []
+    # Same high score spread across 2+ categories DOES trigger
+    hits, _ = evaluate_engine_a([], [("9.9.9.9", 50)], [("9.9.9.9", 50)], threshold_score=10)
+    assert len(hits) == 1
+    assert hits[0]["ip"] == "9.9.9.9"
+
+
+def test_mitre_classification_and_risk():
+    from mcp_server.correlation.three_sum_core import (
+        classify_mitre_tactic, tactics_for_category, compute_mitre_risk,
+        category_default_weight, build_category_techniques, compute_technique_risk)
+    # Tactic -> category via MITRE_TACTIC_TO_CATEGORY (primary engine)
+    assert classify_mitre_tactic("Command and Control") == "C"
+    assert classify_mitre_tactic("command-and-control") == "C"  # case/hyphen-insensitive
+    assert classify_mitre_tactic("Reconnaissance") == "A"
+    assert classify_mitre_tactic("Initial Access") == "B"
+    assert classify_mitre_tactic("totally-unknown-tactic") is None
+    # Category -> tactic list for query filters
+    assert "Command and Control" in tactics_for_category("C")
+    assert "Reconnaissance" in tactics_for_category("A")
+    assert not set(tactics_for_category("A")) & set(tactics_for_category("C"))
+    # Dynamic risk = rule.level × tactic weight (C2 weighs more than recon)
+    c2 = compute_mitre_risk(10, "Command and Control")
+    recon = compute_mitre_risk(10, "Reconnaissance")
+    assert c2 > recon
+    assert compute_mitre_risk(10, None) == 10.0  # unknown tactic -> weight 1.0
+    # Fallback weight is the category's mean tactic weight
+    assert category_default_weight("A") < category_default_weight("C")
+    # STIX-derived technique -> category bucketing (dynamic, no hardcoded technique IDs)
+    tech_tactics = {"T1059.001": ["execution"], "T1071.001": ["command-and-control"]}
+    cats = build_category_techniques(tech_tactics)
+    assert "T1059.001" in cats["B"]
+    assert "T1071.001" in cats["C"]
+    # Technique-only risk uses the technique's tactic weight
+    assert compute_technique_risk(10, "T1071.001", tech_tactics, "C") > compute_technique_risk(10, "T1059.001", tech_tactics, "B")
+    # Unknown technique -> category mean weight
+    assert compute_technique_risk(10, "T9999", tech_tactics, "C") == 10 * category_default_weight("C")
+
+
 if __name__ == "__main__":
     import sys
     import traceback
@@ -107,10 +150,10 @@ if __name__ == "__main__":
     for t in tests:
         try:
             globals()[t]()
-            print(f"  PASS {t}")
+            print(f"PASS {t}")
             passed += 1
         except Exception:
-            print(f"  FAIL {t}")
+            print(f"FAIL {t}")
             traceback.print_exc()
     print(f"\n{passed}/{len(tests)} passed")
     sys.exit(0 if passed == len(tests) else 1)

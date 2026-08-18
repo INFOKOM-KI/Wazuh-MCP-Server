@@ -33,6 +33,11 @@ _GRAPH_MAX_IOCS = 500
 _PPR_BOOST_FACTOR = 5.0      # total += ppr_score * factor
 _CONFIRMED_BONUS = 2.0       # flat bonus for registry-confirmed attacker IOCs
 
+# MITRE ATT&CK dynamic classification helpers (three_sum_core)
+from mcp_server.correlation.three_sum_core import (tactics_for_category,
+    compute_mitre_risk, category_default_weight, build_category_techniques,
+    compute_technique_risk)
+
 async def _build_cluster_context() -> dict:
     """Attack-graph context for Engine A: cluster_map, ppr_scores, confirmed_ips.
 
@@ -55,6 +60,31 @@ async def _build_cluster_context() -> dict:
     confirmed_ips = {n for n, d in G.nodes(data=True) if d.get("confirmed")}
     return {"cluster_map": cluster_map, "ppr_scores": ppr_scores,
             "confirmed_ips": confirmed_ips}
+
+
+async def _load_mitre_technique_map() -> dict[str, list[str]]:
+    """Resolve technique ID -> [tactic names] from the MITRE ATT&CK STIX bundle.
+
+    Reads the enterprise-attack.json kill_chain_phases (via the cached loader in
+    stix_correlation) so technique classification tracks ATT&CK framework updates
+    with no code change. Returns {} on any load failure (classification degrades
+    gracefully to rule.mitre.tactic + rule.groups only).
+    """
+    from mcp_server.tools import stix_correlation as stix
+    await asyncio.to_thread(stix._load_stix)
+    if stix._stix_error or not stix._stix_data:
+        return {}
+    technique_tactics: dict[str, list[str]] = {}
+    for ap in stix._stix_data.get("by_type", {}).get("attack-pattern", []):
+        eid = stix._mitre_id(ap)
+        if not eid:
+            continue
+        for kcp in ap.get("kill_chain_phases", []):
+            if kcp.get("kill_chain_name") == "mitre-attack":
+                t = (kcp.get("phase_name") or "").strip()
+                if t and t not in technique_tactics.get(eid, []):
+                    technique_tactics.setdefault(eid, []).append(t)
+    return technique_tactics
 
 
 # Wazuh Indexer index patterns (OpenSearch)
@@ -196,20 +226,29 @@ class ThreeSumCorrelationInput(BaseModel):
     engine_a_enabled: bool = Field(default=True)
     engine_b_enabled: bool = Field(default=True)
     time_window_minutes: int = Field(default=DEFAULT_WINDOW_MINUTES, ge=5)
-    threshold_score: int = Field(default=DEFAULT_THRESHOLD_SCORE, ge=6, le=30)
+    threshold_score: int = Field(default=DEFAULT_THRESHOLD_SCORE, ge=6, le=200,
+        description="Engine A trigger threshold (rule.level x MITRE tactic weight, summed across A/B/C). "
+                    "Default 35 ~ requires a cross-category chain or multiple high-severity alerts; "
+                    "a single C2 alert (~25-32) stays below it.")
     z_score_threshold: float = Field(default=DEFAULT_Z_THRESHOLD, ge=1.0, le=5.0)
     response_format: str = Field(default="markdown")
     throttle: int = Field(default=0, ge=0)
-    use_mitre: bool = Field(default=False)
-    category_a_groups: list[str] = Field(default=["web","attack","scan","recon","accesslog"])
-    category_b_groups: list[str] = Field(default=["authentication_failures","bruteforce","blocklist","zimbra","spam","postfix"])
-    category_c_groups: list[str] = Field(default=["firewall_drop","exfiltration","overflow","opencti","backdoor","defacement"])
+    use_mitre: bool = Field(default=True,
+        description="Primary: classify alerts dynamically from the MITRE ATT&CK STIX bundle. "
+                    "rule.mitre.tactic maps via MITRE_TACTIC_TO_CATEGORY; rule.mitre.id "
+                    "(technique) resolves to a tactic via the STIX kill_chain_phases. "
+                    "rule.groups is only a fallback for alerts with no MITRE data. "
+                    "False = legacy rule.groups-only matching.")
+    category_a_groups: list[str] = Field(default=["web","attack","scan","recon","accesslog"],
+        description="Fallback rule.groups tokens for Category A (recon) - used ONLY when an "
+                    "alert has no rule.mitre.tactic.")
+    category_b_groups: list[str] = Field(default=["authentication_failures","bruteforce","blocklist","zimbra","spam","postfix"],
+        description="Fallback rule.groups tokens for Category B (access anomaly).")
+    category_c_groups: list[str] = Field(default=["firewall_drop","exfiltration","overflow","opencti","backdoor","defacement"],
+        description="Fallback rule.groups tokens for Category C (c2/exfil).")
     category_a_label: str = Field(default="recon")
     category_b_label: str = Field(default="access_anomaly")
     category_c_label: str = Field(default="c2_exfil")
-    category_a_score: int = Field(default=3, ge=1, le=10)
-    category_b_score: int = Field(default=4, ge=1, le=10)
-    category_c_score: int = Field(default=4, ge=1, le=10)
     cidr_normalize: bool = Field(default=False)
     exclude_srcips: list[str] = Field(default=[])
     follow_up: str = Field(default="none")
@@ -223,20 +262,19 @@ class ThreeSumCorrelationInput(BaseModel):
                     "this floor contribute Z=0 (prevents single-event spikes in quiet "
                     "categories from driving detections). 0 disables.")
     engine_b_use_mad: bool = Field(default=False,
-        description="Use Median Absolute Deviation (MAD) for Z-scores instead of mean/stddev. "
+        description="Use Median Absolute Deviation for Z-scores instead of mean/stddev. "
                     "More robust to bursty alert volumes from maintenance windows.")
     engine_b_shoulder_ratio: float = Field(default=0.6, ge=0.0, le=1.0,
         description="Adjacent-bucket confirmation ratio for Engine B. A Z-score spike must "
                     "have at least one adjacent bucket with Z >= threshold x ratio. "
                     "Filters single-bucket noise. 0 disables.")
     cat_a_weight: float = Field(default=1.0, ge=0.0, le=10.0,
-        description="Weight multiplier for Category A (recon) scores in Engine A. "
-                    "Lower = less influence on total.")
-    cat_b_weight: float = Field(default=1.5, ge=0.0, le=10.0,
-        description="Weight multiplier for Category B (access anomaly) scores.")
-    cat_c_weight: float = Field(default=2.0, ge=0.0, le=10.0,
-        description="Weight multiplier for Category C (C2/exfil) scores. "
-                    "Higher = stronger signal - C2 is the strongest APT indicator.")
+        description="Optional per-category scalar on top of dynamic MITRE tactic weighting "
+                    "(default 1.0 = no extra weighting).")
+    cat_b_weight: float = Field(default=1.0, ge=0.0, le=10.0,
+        description="Optional per-category scalar for Category B.")
+    cat_c_weight: float = Field(default=1.0, ge=0.0, le=10.0,
+        description="Optional per-category scalar for Category C (strongest APT signal).")
     bypass_redaction: bool = Field(default=False,
         description="Accepted for API consistency. 3-Sum returns computed scores, not raw alert PII.")
     redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
@@ -248,7 +286,7 @@ class ThreeSumCorrelationInput(BaseModel):
     multi_resolution: bool = Field(default=False)
     cross_agent: bool = Field(
         default=False,
-        description="When true, correlate alerts by (srcip × agent.name) instead of srcip only. "
+        description="When true, correlate alerts by (srcip x agent.name) instead of srcip only. "
                     "Detects lateral movement where same IP targets multiple agents.",
     )
 
@@ -302,19 +340,65 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
     since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     until_iso = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    labels = [(data.category_a_label, data.category_a_groups, data.category_a_score),
-              (data.category_b_label, data.category_b_groups, data.category_b_score),
-              (data.category_c_label, data.category_c_groups, data.category_c_score)]
+    categories = [("A", data.category_a_label, data.category_a_groups),
+                  ("B", data.category_b_label, data.category_b_groups),
+                  ("C", data.category_c_label, data.category_c_groups)]
 
-    # Shared query builder (Engine A + B)
-    def _build_filter(groups: list[str]) -> dict:
-        return {"bool": {"filter": [
-            {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
-                                       "format": "strict_date_optional_time"}}},
-            {"bool": {"should": [
+    # Dynamic MITRE technique -> tactic resolution from the ATT&CK STIX bundle.
+    technique_tactics: dict[str, list[str]] = {}
+    category_techniques: dict[str, list[str]] = {"A": [], "B": [], "C": []}
+    if data.use_mitre:
+        technique_tactics = await _load_mitre_technique_map()
+        category_techniques = build_category_techniques(technique_tactics)
+
+    # Shared query builder (Engine A + B). MITRE-first: rule.mitre.tactic is the
+    # primary axis (via MITRE_TACTIC_TO_CATEGORY); rule.mitre.id (technique) is
+    # resolved through the STIX kill_chain_phases; rule.groups is a fallback only
+    # for alerts carrying no MITRE data at all.
+    def _tactic_terms(category: str) -> list[str]:
+        variants: list[str] = []
+        for t in tactics_for_category(category):
+            variants += [t, t.lower(), t.lower().replace(" ", "-")]
+        return variants
+
+    def _build_filter(category: str, groups: list[str], since: str = since_iso,
+                      until: str = until_iso) -> dict:
+        if data.use_mitre:
+            mitre_clauses = [
+                {"terms": {"rule.mitre.tactic": _tactic_terms(category)}},
+                {"terms": {"rule.mitre.tactic.keyword": _tactic_terms(category)}},
+            ]
+            # Technique-ID classification (STIX-resolved), applied only when the
+            # alert lacks a tactic annotation (tactic takes precedence).
+            tech_ids = category_techniques.get(category, [])
+            if tech_ids:
+                mitre_clauses.append({"bool": {
+                    "must": [{"bool": {"should": [
+                        {"terms": {"rule.mitre.id": tech_ids}},
+                        {"terms": {"rule.mitre.id.keyword": tech_ids}},
+                    ], "minimum_should_match": 1}}],
+                    "must_not": [{"exists": {"field": "rule.mitre.tactic"}}],
+                }})
+            group_clauses = [
                 {"terms": {"rule.groups": groups}},
                 {"terms": {"rule.groups.keyword": groups}},
-            ], "minimum_should_match": 1}},
+            ]
+            category_match = {"bool": {"should": [
+                *mitre_clauses,
+                # Fallback: rule.groups only for alerts with NO MITRE data at all
+                {"bool": {"must": group_clauses,
+                          "must_not": [{"exists": {"field": "rule.mitre.tactic"}},
+                                        {"exists": {"field": "rule.mitre.id"}}]}},
+            ], "minimum_should_match": 1}}
+        else:
+            category_match = {"bool": {"should": [
+                {"terms": {"rule.groups": groups}},
+                {"terms": {"rule.groups.keyword": groups}},
+            ], "minimum_should_match": 1}}
+        return {"bool": {"filter": [
+            {"range": {"@timestamp": {"gte": since, "lt": until,
+                                       "format": "strict_date_optional_time"}}},
+            category_match,
         ]}}
 
     engine_a_results = None
@@ -323,25 +407,65 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
     if data.use_attack_graph:
         ctx = await _build_cluster_context()
 
-    # ENGINE A - Multi-IoC Risk Thresholding
+    # ENGINE A - Multi-IoC Risk Thresholding (dynamic MITRE scoring)
     if data.engine_a_enabled:
-        async def _fetch_srcips(label, groups, score):
-            """Engine A srcips per category. Falls back to single-field terms when the
-            multi_terms aggregation is unavailable (older index versions) and surfaces
-            the degradation instead of silently returning empty."""
+        def _agg() -> dict:
+            aggs = {"level_sum": {"sum": {"field": "rule.level"}}}
+            if data.use_mitre:
+                aggs["by_tactic"] = {
+                    "terms": {"field": "rule.mitre.tactic", "size": 32},
+                    "aggs": {"level_sum": {"sum": {"field": "rule.level"}}},
+                }
+                aggs["by_technique"] = {
+                    "filter": {"bool": {
+                        "must": [{"exists": {"field": "rule.mitre.id"}}],
+                        "must_not": [{"exists": {"field": "rule.mitre.tactic"}}],
+                    }},
+                    "aggs": {"techs": {"terms": {"field": "rule.mitre.id", "size": 100},
+                                       "aggs": {"level_sum": {"sum": {"field": "rule.level"}}}}},
+                }
+                aggs["no_mitre"] = {
+                    "filter": {"bool": {"must_not": [
+                        {"exists": {"field": "rule.mitre.tactic"}},
+                        {"exists": {"field": "rule.mitre.id"}},
+                    ]}},
+                    "aggs": {"level_sum": {"sum": {"field": "rule.level"}}},
+                }
+            return aggs
+
+        def _score_bucket(b: dict, category: str) -> float:
+            """Dynamic risk score = rule.level x MITRE tactic weight. Tactic-annotated
+            alerts use their tactic's weight; technique-only alerts use the STIX-resolved
+            technique weight; no-MITRE alerts use the category's mean tactic weight."""
+            if not data.use_mitre:
+                return float(b.get("level_sum", {}).get("value", 0) or 0) * category_default_weight(category)
+            total = 0.0
+            for tb in b.get("by_tactic", {}).get("buckets", []) or []:
+                total += compute_mitre_risk(tb.get("level_sum", {}).get("value", 0) or 0, tb.get("key"))
+            for tech in (b.get("by_technique", {}).get("techs", {}).get("buckets", []) or []):
+                total += compute_technique_risk(tech.get("level_sum", {}).get("value", 0) or 0,
+                                                tech.get("key"), technique_tactics, category)
+            total += (b.get("no_mitre", {}).get("level_sum", {}).get("value", 0) or 0) * category_default_weight(category)
+            return total
+
+        async def _fetch_srcips(category, label, groups):
+            """Engine A srcips per category with dynamic rule.level x tactic-weight scoring.
+            Falls back to single-field terms when multi_terms is unavailable."""
             warning = None
-            body = {"size": 0, "query": _build_filter(groups),
+            body = {"size": 0, "query": _build_filter(category, groups),
                     "aggs": {"unique_srcips": {
                         "multi_terms": {"terms": [{"field": f} for f in _SRCIP_FIELD_PATHS],
-                                         "size": 10000}}}}
+                                         "size": 10000},
+                        "aggs": _agg()}}}
             raw = await _wazuh_indexer_post(body)
             if "error" in raw or not raw.get("aggregations", {}).get("unique_srcips"):
-                # multi_terms unsupported / empty -> fall back to the first srcip field
                 warning = (f"multi_terms agg unavailable or empty for '{label}' "
                            f"(index may not support it) - fell back to {_SRCIP_FIELD_PATHS[0]}")
                 raw = await _wazuh_indexer_post({
-                    "size": 0, "query": _build_filter(groups),
-                    "aggs": {"unique_srcips": {"terms": {"field": _SRCIP_FIELD_PATHS[0], "size": 10000}}}})
+                    "size": 0, "query": _build_filter(category, groups),
+                    "aggs": {"unique_srcips": {
+                        "terms": {"field": _SRCIP_FIELD_PATHS[0], "size": 10000},
+                        "aggs": _agg()}}})
                 if "error" in raw:
                     return (label, [], warning + " ; single-field fallback also failed")
             buckets = raw.get("aggregations", {}).get("unique_srcips", {}).get("buckets", [])
@@ -350,10 +474,10 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
                 key = b.get("key")
                 ip = next((v for v in key if v is not None), "0.0.0.0") if isinstance(key, list) else key
                 if ip and ip != "0.0.0.0":
-                    entries.append((ip, score))
+                    entries.append((ip, round(_score_bucket(b, category), 2)))
             return (label, entries, warning)
 
-        fetched = await asyncio.gather(*[_fetch_srcips(l, g, s) for l, g, s in labels])
+        fetched = await asyncio.gather(*[_fetch_srcips(c, l, g) for c, l, g in categories])
         srcips_by_label = {}
         engine_a_warnings: list[str] = []
         engine_a_query_failures = 0
@@ -399,8 +523,8 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
         else:
             bucket_interval = "1h"
 
-        async def _fetch_time_buckets(groups):
-            body = {"size": 0, "query": _build_filter(groups),
+        async def _fetch_time_buckets(category, groups):
+            body = {"size": 0, "query": _build_filter(category, groups),
                     "aggs": {"over_time": {"date_histogram": {
                         "field": "@timestamp", "fixed_interval": bucket_interval,
                         "min_doc_count": 0,
@@ -416,7 +540,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             Multi-field content match (rule-agnostic): Wazuh decoders store lock events
             in different fields, so match "locked" across the common ones + full_log.
             """
-            lock_filter = _build_filter(data.category_b_groups)["bool"]["filter"] + [{
+            lock_filter = _build_filter("B", data.category_b_groups)["bool"]["filter"] + [{
                 "bool": {"should": [
                     {"match": {"data.error": "locked"}},
                     {"match": {"data.data.error": "locked"}},
@@ -433,9 +557,9 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             return total.get("value", 0) if isinstance(total, dict) else total
 
         (buckets_a, err_a), (buckets_b, err_b), (buckets_c, err_c), lockouts = await asyncio.gather(
-            _fetch_time_buckets(data.category_a_groups),
-            _fetch_time_buckets(data.category_b_groups),
-            _fetch_time_buckets(data.category_c_groups),
+            _fetch_time_buckets("A", data.category_a_groups),
+            _fetch_time_buckets("B", data.category_b_groups),
+            _fetch_time_buckets("C", data.category_c_groups),
             _count_lockouts(),
         )
 
@@ -474,7 +598,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
         result["_degradation_reason"] = (
             "Engine B: all 3 time-bucket queries against the Wazuh Indexer failed "
             "(Indexer may be unreachable). Engine A is disabled. "
-            "Results are unreliable — anomaly_count=0 may indicate an outage, not a clean window.")
+            "Results are unreliable - anomaly_count=0 may indicate an outage, not a clean window.")
     elif engine_a_degraded and engine_b_degraded:
         result["_degraded"] = True
         result["_degradation_reason"] = (
@@ -500,31 +624,27 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             tier_since = datetime.utcnow() - timedelta(minutes=tier["window_minutes"])
             tier_since_iso = tier_since.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-            # Build per-tier filter
-            def _tier_filter(groups):
-                return {"bool": {"filter": [
-                    {"range": {"@timestamp": {"gte": tier_since_iso, "lt": until_iso,
-                                               "format": "strict_date_optional_time"}}},
-                    {"bool": {"should": [
-                        {"terms": {"rule.groups": groups}},
-                        {"terms": {"rule.groups.keyword": groups}},
-                    ], "minimum_should_match": 1}},
-                ]}}
+            # Build per-tier filter (MITRE-first, reuse the shared builder)
+            def _tier_filter(category, groups):
+                return _build_filter(category, groups, tier_since_iso, until_iso)
 
             # Engine A at this tier
             tier_a_results = None
             if data.engine_a_enabled:
-                async def _tier_fetch(label, groups, score):
+                async def _tier_fetch(category, label, groups):
                     w = None
-                    body = {"size": 0, "query": _tier_filter(groups),
+                    body = {"size": 0, "query": _tier_filter(category, groups),
                             "aggs": {"unique_srcips": {"multi_terms": {
-                                "terms": [{"field": f} for f in _SRCIP_FIELD_PATHS], "size": 10000}}}}
+                                "terms": [{"field": f} for f in _SRCIP_FIELD_PATHS], "size": 10000},
+                                "aggs": _agg()}}}
                     raw = await _wazuh_indexer_post(body)
                     if "error" in raw or not raw.get("aggregations", {}).get("unique_srcips"):
                         w = f"multi_terms fallback at {tier['label']}"
                         raw = await _wazuh_indexer_post({
-                            "size": 0, "query": _tier_filter(groups),
-                            "aggs": {"unique_srcips": {"terms": {"field": _SRCIP_FIELD_PATHS[0], "size": 10000}}}})
+                            "size": 0, "query": _tier_filter(category, groups),
+                            "aggs": {"unique_srcips": {
+                                "terms": {"field": _SRCIP_FIELD_PATHS[0], "size": 10000},
+                                "aggs": _agg()}}})
                         if "error" in raw:
                             return (label, [], w + " also failed")
                     buckets = raw.get("aggregations", {}).get("unique_srcips", {}).get("buckets", [])
@@ -533,9 +653,9 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
                         key = b.get("key")
                         ip = next((v for v in key if v is not None), "0.0.0.0") if isinstance(key, list) else key
                         if ip and ip != "0.0.0.0":
-                            entries.append((ip, score))
+                            entries.append((ip, round(_score_bucket(b, category), 2)))
                     return (label, entries, w)
-                fet = await asyncio.gather(*[_tier_fetch(l, g, s) for l, g, s in labels])
+                fet = await asyncio.gather(*[_tier_fetch(c, l, g) for c, l, g in categories])
                 sbl = {}
                 for l, e, _ in fet:
                     sbl[l] = e
@@ -562,8 +682,8 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
                 async def _tier_buckets_batched(cat_groups_list):
                     """Batch all Engine B tier queries into one _msearch call."""
                     bodies = []
-                    for groups in cat_groups_list:
-                        bodies.append({"size": 0, "query": _tier_filter(groups),
+                    for category, groups in cat_groups_list:
+                        bodies.append({"size": 0, "query": _tier_filter(category, groups),
                             "aggs": {"over_time": {"date_histogram": {
                                 "field": "@timestamp", "fixed_interval": bi,
                                 "min_doc_count": 0,
@@ -577,7 +697,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
                             out.append((r.get("aggregations", {}).get("over_time", {}).get("buckets", []), False))
                     return out
                 tba, tbb, tbc = await _tier_buckets_batched([
-                    data.category_a_groups, data.category_b_groups, data.category_c_groups])
+                    ("A", data.category_a_groups), ("B", data.category_b_groups), ("C", data.category_c_groups)])
                 anomalies, bstats = evaluate_engine_b(
                     tba[0], tbb[0], tbc[0],
                     z_score_threshold=tier["z_score_threshold"],
@@ -594,7 +714,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
 
         result["multi_resolution"] = evaluate_multi_resolution(tier_results)
 
-    # FOLLOW-UP ENRICHMENT - auto-enrich top triggers with threat intel
+    # ENRICHMENT - auto-enrich top triggers with threat intel.
     if data.follow_up == "threat_intel" and engine_a_results:
         triggers, _ = engine_a_results
         top_ips = [t["ip"] for t in triggers[:10] if t.get("ip")]
@@ -801,7 +921,7 @@ async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
             count = b.get("doc_count", 0)
             bar_len = int(count / max(max_count, 1) * 30) if max_count > 0 else 0
             bar = "█" * bar_len if bar_len > 0 else "▁"
-            lines.append(f"  `{ts}`  {count:>5,}  {bar}")
+            lines.append(f"`{ts}` {count:>5,} {bar}")
         lines.append("")
 
     # Geo

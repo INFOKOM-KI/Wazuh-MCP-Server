@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-
 Shared global constants and state used across Wazuh tools and correlation engine.
-
 Centralizes module-global variables that were scattered across the monolith.
 Import from here instead of duplicating across tool modules.
-
-Note: _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _SRCIP_FIELD_PATHS now
-live in ``mcp_server.wazuh.indexer`` (canonical source of truth).
+Note: _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _SRCIP_FIELD_PATHS now live in ``mcp_server.wazuh.indexer``.
 """
 from __future__ import annotations
 import re
@@ -30,6 +26,26 @@ MITRE_TACTIC_TO_CATEGORY: Dict[str, str] = {
     "Exfiltration":            "C",
     "Impact":                  "C",
     "Collection":              "C",
+}
+
+# MITRE ATT&CK tactic -> APT signal weight (dynamic risk scoring, MCP-TAXONOMY-V2).
+# Higher = stronger APT indicator. C2/exfil/impact weigh most; recon weighs least.
+# Tunable by the correlation-engineer role (AGENTS.md §1.5) against production telemetry.
+MITRE_TACTIC_WEIGHTS: Dict[str, float] = {
+    "Reconnaissance":        0.5,
+    "Resource Development":  0.5,
+    "Discovery":             0.7,
+    "Initial Access":        1.0,
+    "Execution":             1.2,
+    "Persistence":           1.5,
+    "Privilege Escalation":  1.3,
+    "Defense Evasion":       1.4,
+    "Credential Access":     1.2,
+    "Lateral Movement":      1.3,
+    "Collection":            1.2,
+    "Command and Control":   2.5,
+    "Exfiltration":          2.0,
+    "Impact":                1.8,
 }
 
 # Known attack chain patterns (for blueteam_attack_chain)

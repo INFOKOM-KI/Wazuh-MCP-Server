@@ -8,9 +8,14 @@ or ``logging``. All API/orchestration logic lives in ``engine.py`` and ``investi
 from __future__ import annotations
 import ipaddress
 from typing import Any
+from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY, MITRE_TACTIC_WEIGHTS
 
-# Default thresholds
-DEFAULT_THRESHOLD_SCORE: int = 10
+# Default thresholds (Aul Tunning;P)
+# threshold_score=35: with dynamic scoring (rule.level x MITRE tactic weight),
+# a single high-severity C2 alert lands ~25-32 (level 12-13 x 2.5). 35 therefore
+# requires either a cross-category chain or multiple high-severity alerts before
+# Engine A triggers - suppresses single-alert false positives.
+DEFAULT_THRESHOLD_SCORE: int = 35
 DEFAULT_Z_THRESHOLD: float = 2.5
 DEFAULT_WINDOW_MINUTES: int = 10080  # 7 days
 DEFAULT_SPARSE_FLOOR: int = 10  # suppress single-event spikes in quiet categories
@@ -19,15 +24,86 @@ DEFAULT_SHOULDER_RATIO: float = 0.6  # adjacent-bucket Z threshold fraction
 # Multi-resolution tiers for M12 slow-burn APT detection.
 # Tighter thresholds on short windows (high signal-to-noise),
 # looser on long windows (catch slow periodic patterns).
+# Re-scaled for dynamic rule.level × tactic-weight scoring (MCP-TAXONOMY-V2):
+# all tiers stay above the ~32 single-alert C2 ceiling.
 _MULTI_RES_TIERS: list[dict[str, Any]] = [
-    {"label": "1h",  "window_minutes": 60,    "threshold_score": 12, "z_score_threshold": 3.0},
-    {"label": "24h", "window_minutes": 1440,  "threshold_score": 10, "z_score_threshold": 2.5},
-    {"label": "7d",  "window_minutes": 10080, "threshold_score": 8,  "z_score_threshold": 2.0},
+    {"label": "1h",  "window_minutes": 60,    "threshold_score": 50, "z_score_threshold": 3.0},
+    {"label": "24h", "window_minutes": 1440,  "threshold_score": 40, "z_score_threshold": 2.5},
+    {"label": "7d",  "window_minutes": 10080, "threshold_score": 35, "z_score_threshold": 2.0},
 ]
 _EXCLUDE_IP_FALLBACKS: set[str] = {"0.0.0.0", "unknown", ""}
 
 # Active Response wrapper rule IDs - these duplicate the underlying alert
 _DEDUP_WRAPPER_RULES: set[str] = {"606029", "651"}
+
+
+# MITRE ATT&CK -> 3-Sum dynamic classification (MCP-TAXONOMY-V2) (Aul Tunning;P)
+# MITRE_TACTIC_TO_CATEGORY is the PRIMARY classification engine; rule.groups
+# string tokens are only a fallback for alerts lacking rule.mitre.* data.
+def normalize_tactic(tactic: str) -> str:
+    """Lowercase + hyphen-to-space normalization (case/format-insensitive lookup)."""
+    return (tactic or "").strip().replace("-", " ").lower()
+
+
+_MITRE_CATEGORY: dict[str, str] = {normalize_tactic(k): v for k, v in MITRE_TACTIC_TO_CATEGORY.items()}
+_MITRE_WEIGHTS: dict[str, float] = {normalize_tactic(k): v for k, v in MITRE_TACTIC_WEIGHTS.items()}
+
+
+def classify_mitre_tactic(tactic: str) -> str | None:
+    """Map an ATT&CK tactic name -> 3-Sum category ('A'/'B'/'C'). None if unknown."""
+    if not tactic:
+        return None
+    return _MITRE_CATEGORY.get(normalize_tactic(tactic))
+
+
+def tactics_for_category(category: str) -> list[str]:
+    """Title-case ATT&CK tactic names belonging to a 3-Sum category (for query filters)."""
+    return [t for t, c in MITRE_TACTIC_TO_CATEGORY.items() if c == category]
+
+
+def compute_mitre_risk(rule_level: float, tactic: str | None) -> float:
+    """Dynamic risk score = rule.level x MITRE tactic weight. Unknown tactic -> weight 1.0."""
+    w = _MITRE_WEIGHTS.get(normalize_tactic(tactic), 1.0) if tactic else 1.0
+    return rule_level * w
+
+
+def category_default_weight(category: str) -> float:
+    """Mean MITRE tactic weight for a category (fallback for alerts lacking a tactic)."""
+    tactics = tactics_for_category(category)
+    if not tactics:
+        return 1.0
+    return sum(MITRE_TACTIC_WEIGHTS.get(t, 1.0) for t in tactics) / len(tactics)
+
+
+def build_category_techniques(technique_tactics: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Derive {category: [technique IDs]} dynamically from STIX technique->tactics.
+
+    Uses the MITRE ATT&CK STIX bundle's kill_chain_phases to resolve each technique
+    to its tactics, then MITRE_TACTIC_TO_CATEGORY to bucket into A/B/C. A technique
+    spanning multiple categories appears in each of its categories.
+    """
+    result: dict[str, list[str]] = {"A": [], "B": [], "C": []}
+    for tid, tactics in technique_tactics.items():
+        for t in tactics:
+            cat = classify_mitre_tactic(t)
+            if cat and tid not in result[cat]:
+                result[cat].append(tid)
+    return result
+
+
+def compute_technique_risk(rule_level: float, technique_id: str,
+                           technique_tactics: dict[str, list[str]],
+                           category: str) -> float:
+    """Risk for a technique-only alert: rule.level x max tactic weight among the
+    technique's tactics that resolve to `category`. Falls back to the category mean
+    weight when the technique is unknown or maps to no tactic in that category."""
+    w = 0.0
+    for t in technique_tactics.get((technique_id or "").strip().upper(), []):
+        if classify_mitre_tactic(t) == category:
+            w = max(w, compute_mitre_risk(1.0, t))
+    if w <= 0.0:
+        w = category_default_weight(category)
+    return rule_level * w
 
 
 def normalize_srcip_to_cidr(ip: str, prefix: int = 24) -> str:
@@ -65,8 +141,10 @@ def evaluate_engine_a(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Engine A - Multi-IoC Risk Thresholding (graph-integrated).
 
-    Finds source IPs appearing in all 3 alert categories, sums their per-category
-    risk scores (weighted), and returns those exceeding ``threshold_score``.
+    Finds source IPs appearing in at least 2 alert categories (chained-attack
+    gate), sums their per-category risk scores (weighted), and returns those
+    exceeding ``threshold_score``. An IP concentrated in a single category never
+    triggers, regardless of score (suppresses single-category false positives).
 
     Per-category weights default to A=1.0, B=1.5, C=2.0 - C2/Exfil (C) carries
     the most weight because it is the strongest APT signal; Recon (A) the least
@@ -116,19 +194,25 @@ def evaluate_engine_a(
     confirmed = confirmed_ips or set()
 
     triggers: list[dict[str, Any]] = []
-    spanning = 0
+    spanning = 0        # IPs present in all 3 categories (classic 3-Sum intersection)
+    multi_category = 0  # IPs present in >= 2 categories (chained-attack gate)
     for ip in sorted(candidates):
         score_a = _coverage(map_a, ip)
         score_b = _coverage(map_b, ip)
         score_c = _coverage(map_c, ip)
-        if score_a > 0 and score_b > 0 and score_c > 0:
-            spanning += 1  # cluster (or single IP) spans all 3 categories
+        present = sum(1 for s in (score_a, score_b, score_c) if s > 0)
+        if present == 3:
+            spanning += 1
+        if present >= 2:
+            multi_category += 1
         total = score_a * cat_a_weight + score_b * cat_b_weight + score_c * cat_c_weight
         if ppr_scores and ppr_boost_factor:
             total += ppr_scores.get(ip, 0.0) * ppr_boost_factor
         if confirmed_bonus and ip in confirmed:
             total += confirmed_bonus
-        if total >= threshold_score:
+        # Chained-attack gate: require >= 2 distinct categories before the score
+        # may trigger. A single-category burst stays silent even if score >= threshold.
+        if present >= 2 and total >= threshold_score:
             triggers.append({
                 "ip": ip,
                 "score_a": score_a,
@@ -142,6 +226,7 @@ def evaluate_engine_a(
         "total_unique_b": len(map_b),
         "total_unique_c": len(map_c),
         "intersection_count": spanning,
+        "multi_category_count": multi_category,
         "triggers_count": len(triggers),
         "cluster_aware": bool(cluster_map),
     }
@@ -173,7 +258,6 @@ def evaluate_engine_b(
     shoulder_ratio: float = DEFAULT_SHOULDER_RATIO,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Engine B - 3-Source Volumetric Z-Score (sparse-guard + robust-stats aware).
-
     Computes rolling μ/σ (or median/MAD when ``use_mad=True``) across three
     time-bucketed alert sources and flags buckets where all three simultaneously
     exceed the Z-threshold.

@@ -9,7 +9,7 @@ Catches the regression patterns that caused every production outage:
   4. ORDER - eager eval refs defined below their dependency
   5. IMPORT - runtime-evaluated types missing from imports
   6. CLOSURE - inner functions referencing params fields as free variables
-  7. KWARG   - call-site keyword args missing from the callee's signature (TypeError class)
+  7. KWARG - call-site keyword args missing from the callee's signature (TypeError class)
 
 Usage:
   python3 check_guardrails.py             # exit 0=clean, 1=warnings
@@ -165,7 +165,7 @@ def check_overaggressive(source: str, lines: list[str]) -> list[dict]:
     return issues
 
 
-# Check 4: ORDER — eager eval ref before definition
+# Check 4: ORDER - eager eval ref before definition
 
 def check_order(source: str, lines: list[str]) -> list[dict]:
     issues = []
@@ -187,7 +187,7 @@ def check_order(source: str, lines: list[str]) -> list[dict]:
     return issues
 
 
-# Check 5: IMPORT — missing runtime imports
+# Check 5: IMPORT - missing runtime imports
 
 def check_imports(source: str, lines: list[str]) -> list[dict]:
     issues = []
@@ -214,7 +214,7 @@ def check_imports(source: str, lines: list[str]) -> list[dict]:
     return issues
 
 
-# Check 6: CLOSURE — inner func free variables
+# Check 6: CLOSURE - inner func free variables
 
 def check_closure(source: str, lines: list[str]) -> list[dict]:
     issues = []
@@ -271,7 +271,7 @@ def check_unexpected_kwargs(source: str, lines: list[str]) -> list[dict]:
     # {func_name: set(param_names)} for ALL functions (module-level + nested).
     # Name collisions union the params (conservative: fewer false positives).
     sigs: dict[str, set[str]] = {}
-    catchall: set[str] = set()  # functions with **kwargs — any kwarg legal
+    catchall: set[str] = set()  # functions with **kwargs - any kwarg legal
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             params = {a.arg for a in node.args.args} | {a.arg for a in node.args.kwonlyargs}
