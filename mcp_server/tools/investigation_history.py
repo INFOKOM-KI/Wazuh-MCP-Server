@@ -12,6 +12,8 @@ from pydantic import field_validator, BaseModel, ConfigDict, Field
 from mcp_server import (mcp, _INVESTIGATION_HISTORY_FILE)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.attacker_registry import register_attacker_ioc
+from mcp_server.core.false_positive_kb import (register_false_positive,
+    false_positive_iocs, false_positive_stats, is_false_positive)
 
 _INVESTIGATION_HISTORY_MAX_ENTRIES = int(os.environ.get("BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES", "10000"))
 
@@ -51,6 +53,8 @@ async def blueteam_mark_investigated(params: MarkInvestigatedInput) -> str:
     _audit_log("blueteam_mark_investigated", {"srcip": params.srcip, "verdict": params.verdict})
     if params.verdict == "true_positive":
         register_attacker_ioc(params.srcip, source="verdict")  # confirmed attacker - keep IOC unmasked
+    if params.verdict == "false_positive":
+        register_false_positive(params.srcip, source="verdict", reason=params.notes)  # auto-suppress in 3-Sum
     if not _INVESTIGATION_HISTORY_FILE:
         return json.dumps({"error": "BLUETEAM_INVESTIGATION_HISTORY env var not set.",
                            "detail": "Set this to a writable JSONL file path for investigation persistence."}, indent=2)
@@ -303,3 +307,50 @@ async def blueteam_investigation_history(params: InvestigationHistoryInput) -> s
 # Graph-integration scoring constants (Engine A)
 _PPR_BOOST_FACTOR = 5.0      # total += ppr_score * factor
 _CONFIRMED_BONUS = 2.0       # flat bonus for registry-confirmed attacker IOCs
+
+
+class FalsePositiveKbInput(BaseModel):
+    """Input model for blueteam_false_positive_kb."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    response_format: Literal["markdown", "json"] = Field(
+        default="markdown", description="'markdown' or 'json'.")
+
+
+@mcp.tool(
+    name="blueteam_false_positive_kb",
+    annotations={"readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False},
+)
+async def blueteam_false_positive_kb(params: FalsePositiveKbInput) -> str:
+    """List the false-positive knowledge base - IOC the 3-Sum engine auto-suppresses.
+
+    Shows active (unexpired) false-positive IOCs and their sources. These are
+    auto-excluded from `three_sum_correlation` results via the FP knowledge base.
+    Populated by `blueteam_mark_investigated(verdict="false_positive")`.
+
+    **Worked Examples**
+
+    1. *See what the engine is suppressing*:
+       ``blueteam_false_positive_kb()``
+
+    2. *Machine-readable list*:
+       ``blueteam_false_positive_kb(response_format="json")``
+    """
+    _audit_log("blueteam_false_positive_kb", {})
+    iocs = sorted(false_positive_iocs())
+    stats = false_positive_stats()
+    if params.response_format == "json":
+        return json.dumps({"stats": stats, "iocs": iocs}, indent=2, ensure_ascii=False)
+    lines = ["# False-Positive Knowledge Base", "",
+             f"- **Active entries**: {stats['entries']}",
+             f"- **TTL**: {stats['ttl_seconds']}s",
+             f"- **Path**: {stats['persisted_path'] or '(not persisted)'}", ""]
+    if iocs:
+        lines.append("## Suppressed IOCs")
+        for i in iocs[:100]:
+            lines.append(f"- `{i}`")
+        if len(iocs) > 100:
+            lines.append(f"- … and {len(iocs) - 100} more")
+    else:
+        lines.append("*No false positives recorded.*")
+    return _truncate_if_needed("\n".join(lines))

@@ -37,6 +37,7 @@ _CONFIRMED_BONUS = 2.0       # flat bonus for registry-confirmed attacker IOCs
 from mcp_server.correlation.three_sum_core import (tactics_for_category,
     compute_mitre_risk, category_default_weight, build_category_techniques,
     compute_technique_risk)
+from mcp_server.core.false_positive_kb import false_positive_iocs
 
 async def _build_cluster_context() -> dict:
     """Attack-graph context for Engine A: cluster_map, ppr_scores, confirmed_ips.
@@ -64,7 +65,6 @@ async def _build_cluster_context() -> dict:
 
 async def _load_mitre_technique_map() -> dict[str, list[str]]:
     """Resolve technique ID -> [tactic names] from the MITRE ATT&CK STIX bundle.
-
     Reads the enterprise-attack.json kill_chain_phases (via the cached loader in
     stix_correlation) so technique classification tracks ATT&CK framework updates
     with no code change. Returns {} on any load failure (classification degrades
@@ -323,7 +323,8 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
         if elapsed < data.throttle:
             return dict(_three_sum_global_throttle["result"] or {})
 
-    # Feedback loop: auto-exclude FP-verified IPs from investigation history
+    # Feedback loop: auto-exclude FP-verified IPs from the investigation history
+    # and the false-positive knowledge base (a dedicated, TTL suppression set).
     exclude_set: set[str] = set(data.exclude_srcips or [])
     if _INVESTIGATION_HISTORY_FILE:
         try:
@@ -333,6 +334,10 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
                     exclude_set.add(ip)
         except Exception:
             pass
+    try:
+        exclude_set |= false_positive_iocs()
+    except Exception:
+        pass
 
     # Time window
     since_dt = datetime.utcnow() - timedelta(minutes=data.time_window_minutes)
@@ -714,7 +719,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
 
         result["multi_resolution"] = evaluate_multi_resolution(tier_results)
 
-    # ENRICHMENT - auto-enrich top triggers with threat intel.
+    # Auto-enrich top triggers with threat intel.
     if data.follow_up == "threat_intel" and engine_a_results:
         triggers, _ = engine_a_results
         top_ips = [t["ip"] for t in triggers[:10] if t.get("ip")]

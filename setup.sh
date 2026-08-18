@@ -159,6 +159,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_ATTACKER_REGISTRY="/var/log/blue-team-mcp/attacker_registry.jsonl"
 # export BLUETEAM_ATTACKER_REGISTRY_TTL="604800"  # 7 days
 # export BLUETEAM_ATTACKER_REGISTRY_MAX="10000"
+# export BLUETEAM_FALSE_POSITIVE_KB="/var/log/blue-team-mcp/false_positive_kb.jsonl"
+# export BLUETEAM_FALSE_POSITIVE_TTL="2592000"  # 30 days — FP suppression TTL
+# export BLUETEAM_FALSE_POSITIVE_MAX="5000"
 
 # LangGraph workflow persistence
 # export BLUETEAM_LANGGRAPH_DB="/var/log/blue-team-mcp/langgraph.db"  # SQLite state; unset = InMemorySaver (lost on restart)
@@ -235,6 +238,9 @@ export BLUETEAM_ALLOW_FORENSIC_BYPASS="${BLUETEAM_ALLOW_FORENSIC_BYPASS:-false}"
 export BLUETEAM_ATTACKER_REGISTRY="${BLUETEAM_ATTACKER_REGISTRY:-/var/log/blue-team-mcp/attacker_registry.jsonl}"
 export BLUETEAM_ATTACKER_REGISTRY_TTL="${BLUETEAM_ATTACKER_REGISTRY_TTL:-604800}"
 export BLUETEAM_ATTACKER_REGISTRY_MAX="${BLUETEAM_ATTACKER_REGISTRY_MAX:-10000}"
+export BLUETEAM_FALSE_POSITIVE_KB="${BLUETEAM_FALSE_POSITIVE_KB:-/var/log/blue-team-mcp/false_positive_kb.jsonl}"
+export BLUETEAM_FALSE_POSITIVE_TTL="${BLUETEAM_FALSE_POSITIVE_TTL:-2592000}"
+export BLUETEAM_FALSE_POSITIVE_MAX="${BLUETEAM_FALSE_POSITIVE_MAX:-5000}"
 export BLUETEAM_IOC_STORE="${BLUETEAM_IOC_STORE:-/var/log/blue-team-mcp/ioc_store.jsonl}"
 export BLUETEAM_IOC_STORE_MAX="${BLUETEAM_IOC_STORE_MAX:-50000}"
 export BLUETEAM_IOC_STORE_TTL="${BLUETEAM_IOC_STORE_TTL:-7776000}"

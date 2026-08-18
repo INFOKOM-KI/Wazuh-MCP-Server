@@ -81,7 +81,7 @@ optional — tools degrade gracefully without them.
 | Redaction | `BLUETEAM_REDACTION_POLICY`, `BLUETEAM_OWNED_DOMAINS`, `BLUETEAM_REDACT_*` | see Security & Privacy |
 | Forensic gate | `BLUETEAM_ALLOW_FORENSIC_BYPASS`, `BLUETEAM_FORENSIC_TOKEN` | default `false` / empty |
 | Audit | `BLUETEAM_AUDIT_LOG` | JSONL audit trail (optional) |
-| Persistence | `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_CAMPAIGN_SNAPSHOTS`, `BLUETEAM_EXPORT_DIR`, `BLUETEAM_CMDB_FILE` | JSONL stores + export dir |
+| Persistence | `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CAMPAIGN_SNAPSHOTS`, `BLUETEAM_EXPORT_DIR`, `BLUETEAM_CMDB_FILE` | JSONL stores + export dir |
 | Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES` | skip destructive tools / tool categories |
 
 ---
@@ -115,8 +115,10 @@ weighted `blueteam_unified_threat_score`. Plus 3 RapidAPI capability lookups:
 
 ### Investigation, Graphs & Workflows
 `blueteam_investigate_ip`, `blueteam_attack_graph` (networkx clusters + PageRank suspicion),
-`blueteam_campaign_watch`, `blueteam_stix_killchain`, `blueteam_investigation_workflow` and
-`blueteam_playbook_run` (LangGraph), plus investigation history and false-positive tracking.
+`blueteam_pivot_suggest` (PageRank-driven next-step recommendations), `blueteam_campaign_watch`,
+`blueteam_stix_killchain`, `blueteam_investigation_workflow` and `blueteam_playbook_run` (LangGraph),
+plus investigation history and a false-positive knowledge base (`blueteam_false_positive_kb`) that
+auto-suppresses known-noisy IOCs in 3-Sum.
 
 ### Host & Domain Forensics
 WHOIS / CRT.sh, IOC extraction, webshell scanning, server-side JSONL export,
