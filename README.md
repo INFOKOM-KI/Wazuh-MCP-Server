@@ -149,8 +149,17 @@ Two-tier unmasking on top of the policy:
 A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two output formats —
 **Markdown** (inline report, no extra deps) and **DOCX** (OfficeCLI report).
 
-> **DOCX requires OfficeCLI** — install first: `sudo bash setup.sh` (installs `officecli-sdk`) or
-> `pip install officecli-sdk`. The Markdown path needs nothing extra.
+> **DOCX requires OfficeCLI** — install it first (see below). The Markdown path needs nothing extra.
+
+**OfficeCLI install**:
+
+```bash
+# macOS / Linux — or: brew install officecli / npm install -g @officecli/officecli
+curl -fsSL https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1 | iex
+```
 
 ```
 ⚠️ EXECUTION RULES (parameter guardrails — prevents false positives):
