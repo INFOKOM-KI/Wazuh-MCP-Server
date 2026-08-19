@@ -4,7 +4,7 @@
 Audit logging, response truncation, markdown escaping, rate limiting, response pipeline.
 """
 from __future__ import annotations
-import functools, json, os, time, hashlib, logging, queue, threading
+import functools, json, os, time, hashlib, logging, queue, threading, atexit, signal
 from datetime import datetime
 from mcp_server import CHARACTER_LIMIT, BLUETEAM_AUDIT_LOG, BLUETEAM_ALLOW_UNTRUNCATED, BLUETEAM_RATE_LIMIT
 from mcp_server.core.redact import _redact_alert_data
@@ -70,6 +70,30 @@ def flush_audit_log() -> None:
                 f.write(json.dumps(e) + "\n")
     except Exception:
         logger.warning("audit log flush failed", exc_info=True)
+
+
+# Drain queued audit entries on normal exit and on SIGTERM/SIGINT,
+# then re-raise the signal so the process still terminates normally. Without
+# this, the daemon writer thread is killed abruptly and queued entries are lost.
+def _flush_audit_on_shutdown(*_args) -> None:
+    try:
+        flush_audit_log()
+    except Exception:
+        pass
+
+
+def _flush_audit_on_signal(signum, _frame) -> None:
+    _flush_audit_on_shutdown()
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+atexit.register(_flush_audit_on_shutdown)
+for _sig in (signal.SIGTERM, signal.SIGINT):
+    try:
+        signal.signal(_sig, _flush_audit_on_signal)
+    except (ValueError, OSError):
+        pass  # not the main thread (e.g. under a test runner)
 
 
 # Audit logging

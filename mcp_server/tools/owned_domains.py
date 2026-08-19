@@ -12,7 +12,7 @@ from __future__ import annotations
 import json, re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from mcp_server import mcp, BLUETEAM_REDACTION_POLICY
+from mcp_server import mcp, BLUETEAM_REDACTION_POLICY, BLUETEAM_ALLOW_RUNTIME_DOMAINS
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import get_owned_domains, set_owned_domains
 
@@ -96,6 +96,12 @@ async def blueteam_set_owned_domains(params: OwnedDomainsSetInput) -> str:
     2. ``blueteam_set_owned_domains(domains="anu.example.org,anuan.example.com")``
     """
     _audit_log("blueteam_set_owned_domains", {"domains": params.domains})
+    if not BLUETEAM_ALLOW_RUNTIME_DOMAINS:
+        return json.dumps({
+            "error": "Runtime owned-domain updates are disabled.",
+            "detail": "Set BLUETEAM_ALLOW_RUNTIME_DOMAINS=true to enable this operator action. "
+                      "Use BLUETEAM_OWNED_DOMAINS for the persistent default.",
+        }, indent=2, ensure_ascii=False)
     new_set = set_owned_domains(params.domains)
     return json.dumps({
         "status": "updated",

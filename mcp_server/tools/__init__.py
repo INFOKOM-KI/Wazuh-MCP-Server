@@ -93,6 +93,7 @@ def register_all_tools() -> None:
         ("wazuh_sca",             "wazuh_sca",             False),  # 3 tools (SCA compliance)
         ("wazuh_rules_files",     "wazuh_rules_files",     False),  # 2 tools (rule XML)
         ("owned_domains",          "owned_domains",          False),  # 2 tools (view/set victim domains)
+        ("jarm",                   "jarm",                   False),  # 1 tool (TLS fingerprinting)
     ]
 
     for attr, category, skip_ro in _MODULES:

@@ -114,6 +114,7 @@ BLUETEAM_REDACT_UAS       = _c.redaction.redact_uas
 # Redaction policy & forensic bypass gate
 BLUETEAM_REDACTION_POLICY     = _c.redaction.policy
 BLUETEAM_OWNED_DOMAINS        = _c.redaction.owned_domains
+BLUETEAM_ALLOW_RUNTIME_DOMAINS = _c.redaction.allow_runtime_domains
 BLUETEAM_ALLOW_FORENSIC_BYPASS = _c.redaction.allow_forensic_bypass
 BLUETEAM_FORENSIC_TOKEN        = _c.redaction.forensic_token
 

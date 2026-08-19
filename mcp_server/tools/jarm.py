@@ -7,17 +7,17 @@ probes and hashes the ServerHello fields. C2 frameworks and malware families
 negotiate TLS in characteristic ways, so identical JARM hashes indicate the
 same underlying software. This stdlib implementation probes the server with multiple TLS configurations
 and hashes the negotiated cipher + version + certificate properties. It is a
-*TLS fingerprint* in the spirit of JARM — not a byte-for-byte reproduction of
+*TLS fingerprint* in the spirit of JARM - not a byte-for-byte reproduction of
 Salesforce's 10-probe algorithm (which requires raw ClientHello crafting that Python's ssl module does not expose).
 Use it to fingerprint attacker infrastructure and C2 servers.
 """
 from __future__ import annotations
-import hashlib, json, socket, ssl
+import asyncio, hashlib, json, socket, ssl
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.core.attacker_registry import register_attacker_ioc
+from mcp_server.core.http_client import _is_private_or_reserved
 
 
 class JarmFingerprintInput(BaseModel):
@@ -44,6 +44,11 @@ class JarmFingerprintInput(BaseModel):
         v = v.strip().lower()
         if not v or any(c in v for c in " \t\n/\\"):
             raise ValueError(f"Invalid hostname: '{v}'")
+        # SSRF guard: this is a defensive tool targeting *public* C2 infrastructure.
+        # Reject literal private/reserved IPs so a prompt can't scan internal infra.
+        if _is_private_or_reserved(v):
+            raise ValueError(f"'{v}' is a private/reserved IP - this tool targets public C2 infrastructure.")
+        return v
         return v
 
 
@@ -72,6 +77,16 @@ def _probe_tls(host: str, port: int, timeout: int, tls_min: int, tls_max: int) -
                 "error": "TLS handshake failed"}
 
 
+def _probe_all(host: str, port: int, timeout: int) -> list[dict]:
+    """Run the 3 TLS probes and return only successful (version-known) results."""
+    probes = [
+        _probe_tls(host, port, timeout, ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_2),
+        _probe_tls(host, port, timeout, ssl.TLSVersion.TLSv1_3, ssl.TLSVersion.TLSv1_3),
+        _probe_tls(host, port, timeout, ssl.TLSVersion.MINIMUM_SUPPORTED, ssl.TLSVersion.MAXIMUM_SUPPORTED),
+    ]
+    return [p for p in probes if p.get("version") is not None]
+
+
 def _jarm_hash(probes: list[dict]) -> str:
     """Hash the probe results into a fingerprint string."""
     parts = []
@@ -93,9 +108,12 @@ async def jarm_fingerprint(params: JarmFingerprintInput) -> str:
     """Fingerprint a TLS server (JARM-style) to identify C2/malware infrastructure.
     Probes the server with multiple TLS configurations and hashes the
     negotiated cipher + version + certificate. Identical fingerprints indicate
-    the same underlying software - useful for attributing C2 servers and
-    detecting known-malware TLS signatures.
-    **No API key required** - uses stdlib ssl/socket only.
+    the same underlying software - useful for attributing C2 servers.
+    **No API key required** - uses stdlib ssl/socket only. Read-only: it does not
+    mutate the attacker registry.
+    **Note**: this is a *JARM-style* hash (SHA256 over negotiated TLS fields), not
+    Salesforce's 10-probe JARM algorithm it is NOT comparable to public JARM
+    databases (jarmdb). Use it for self-consistent clustering of C2 infra.
     **Worked Examples**
 
     1. *Fingerprint a suspected C2 server*:
@@ -109,29 +127,19 @@ async def jarm_fingerprint(params: JarmFingerprintInput) -> str:
     """
     _audit_log("jarm_fingerprint", {"host": params.host, "port": params.port})
 
-    # Probe with 4 TLS configurations: TLS1.2/1.3 x default/restricted ciphers
-    probes = [
-        _probe_tls(params.host, params.port, params.timeout,
-                   ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_2),
-        _probe_tls(params.host, params.port, params.timeout,
-                   ssl.TLSVersion.TLSv1_3, ssl.TLSVersion.TLSv1_3),
-        _probe_tls(params.host, params.port, params.timeout,
-                   ssl.TLSVersion.MINIMUM_SUPPORTED, ssl.TLSVersion.MAXIMUM_SUPPORTED),
-    ]
-    # Filter out failed probes
-    successful = [p for p in probes if p.get("version") is not None]
+    # Offload the blocking TLS probes to a worker thread so the async event loop
+    # never stalls on socket I/O (a slow/unreachable host would otherwise block
+    # the whole server for up to timeout*3 seconds).
+    successful = await asyncio.to_thread(_probe_all, params.host, params.port, params.timeout)
 
     if not successful:
         result = {"host": params.host, "port": params.port, "fingerprint": None,
-                  "note": "TLS handshake failed — port may not be TLS or host unreachable."}
+                  "note": "TLS handshake failed - port may not be TLS or host unreachable."}
         if params.response_format == "json":
             return json.dumps(result, indent=2)
         return f"# JARM Fingerprint — `{params.host}:{params.port}`\n\n⚠️ **TLS handshake failed** - not a TLS service or host unreachable."
 
     fingerprint = _jarm_hash(successful)
-    # Register confirmed C2-looking infrastructure (non-standard port) as attacker IOC
-    if params.port != 443:
-        register_attacker_ioc(f"{params.host}:{params.port}", source="jarm_fingerprint")
 
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps({

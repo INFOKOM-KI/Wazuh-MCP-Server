@@ -78,7 +78,7 @@ optional — tools degrade gracefully without them.
 | Wazuh Manager | `WAZUH_API_URL` / `_USER` / `_PASSWORD` | Manager API (55000) — rules/agents/config |
 | TLS | `WAZUH_INDEXER_VERIFY_SSL`, `WAZUH_API_VERIFY_SSL` | default `true` |
 | Threat intel | `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `GREYNOISE_BASE_URL`, `RAPIDAPI_KEY` | 9 providers + 3 RapidAPI lookups; all optional |
-| Redaction | `BLUETEAM_REDACTION_POLICY`, `BLUETEAM_OWNED_DOMAINS`, `BLUETEAM_REDACT_*` | see Security & Privacy |
+| Redaction | `BLUETEAM_REDACTION_POLICY`, `BLUETEAM_OWNED_DOMAINS`, `BLUETEAM_ALLOW_RUNTIME_DOMAINS`, `BLUETEAM_REDACT_*` | see Security & Privacy |
 | Forensic gate | `BLUETEAM_ALLOW_FORENSIC_BYPASS`, `BLUETEAM_FORENSIC_TOKEN` | default `false` / empty |
 | Audit | `BLUETEAM_AUDIT_LOG` | JSONL audit trail (optional) |
 | Persistence | `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CAMPAIGN_SNAPSHOTS`, `BLUETEAM_EXPORT_DIR`, `BLUETEAM_CMDB_FILE` | JSONL stores + export dir |
@@ -123,9 +123,9 @@ plus investigation history and a false-positive knowledge base (`blueteam_false_
 auto-suppresses known-noisy IOCs in 3-Sum.
 
 ### Host & Domain Forensics
-WHOIS / CRT.sh, IOC extraction, webshell scanning, server-side JSONL export,
-DOCX/XLSX/PPTX report export, and 23 host-forensics tools (log readers, fail2ban, rootkit scan,
-lynis, process/cron/users).
+WHOIS / CRT.sh, IOC extraction, JARM TLS fingerprinting (`jarm_fingerprint`), webshell scanning,
+server-side JSONL export, DOCX/XLSX/PPTX report export, and 23 host-forensics tools (log readers,
+fail2ban, rootkit scan, lynis, process/cron/users).
 
 ---
 
@@ -151,7 +151,8 @@ Two-tier unmasking on top of the policy:
 **Your own domains**: set `BLUETEAM_OWNED_DOMAINS` to your org's domains (comma-separated, e.g.
 `tangerangkota.go.id`). Under `protect_victim`, only these domains' emails/subdomains are masked.
 Inspect with `blueteam_owned_domains`; update at runtime (in-memory) with
-`blueteam_set_owned_domains` — or set the env var for a persistent default.
+`blueteam_set_owned_domains` — gated by `BLUETEAM_ALLOW_RUNTIME_DOMAINS=true` (default off) —
+or set the env var for a persistent default.
 
 ---
 
@@ -195,6 +196,28 @@ irm https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1 | iex
 - DEFAULT MODEL = protect_victim: the LLM sees attacker public IPs/payloads/rule/severity/MITRE;
   never internal emails, internal subdomains, private IPs (RFC1918), or internal paths.
 
+⚠️ DIGITAL FORENSICS SCENARIO (when the analyst must unmask internal data):
+
+  TIER 1 — ATTRIBUTION FORENSICS (LLM-SAFE, reveal_owned=true):
+  - Unmasks ONLY your own assets: *.tangerangkota.go.id + @tangerangkota.go.id.
+  - Use for: identifying WHICH subdomain/email was attacked (attack attribution).
+  - Tools (pass reveal_owned=true): wazuh_domain_lookup, wazuh_email_lookup,
+    blueteam_wazuh_indexer_search, wazuh_compromised_emails_analysis,
+    blueteam_curated_threat_report, blueteam_wazuh_alert_summarize.
+  - reveal_owned NEVER exposes third-party PII — it only affects YOUR domains.
+
+  TIER 2 — RAW FORENSICS (HUMAN-ONLY, bypass_redaction=true + forensic_token):
+  - Writes FULLY UNMASKED data (attacker payloads, all domains/emails) DIRECTLY TO DISK.
+  - The LLM NEVER sees raw content — it only receives the file path.
+  - Steps:
+      1. blueteam_wazuh_export(since="<window>", bypass_redaction=true,
+           forensic_token="<BLUETEAM_FORENSIC_TOKEN>",
+           path="/var/log/blue-team-mcp/exports/forensic_<window>.jsonl")
+      2. The ANALYST reads the file on the server (cat/jq) — raw data never passes the LLM.
+      3. The LLM assists only with the REDACTED analysis (protect_victim).
+  - Requires: BLUETEAM_ALLOW_FORENSIC_BYPASS=true + BLUETEAM_FORENSIC_TOKEN set.
+  - Layer 1 credentials are ALWAYS masked, even in raw forensics.
+
 LANGKAH 0  — BM25 Prompt Routing (optional):
 blueteam_prompt_route(prompt="<isi_prompt>", mode="buckets")
 
@@ -227,17 +250,20 @@ sangfor_blocklist_list(date_start="<24h_ago>", date_end="<now>", response_format
 LANGKAH 5  — Extract IOCs:
 blueteam_extract_iocs(text=<alert_text_from_step_1>)
 
-LANGKAH 6  — Unified threat intel (all providers):
+LANGKAH 6  — Unified threat intel (all providers + RapidAPI):
 blueteam_threat_intel_aggregate(indicator=<ip>, response_format="json")
 argus_ip_lookup(ip=<ip>); netra_ip_analysis(ip=<ip>, response_format="json")
 otx_lookup(indicator=<ip>, section="general"); urlhaus_hash_lookup(file_hash=<hash>)
+blueteam_ip_blacklist(ip=<ip>, response_format="json")   # RapidAPI — blacklist verdict
+blueteam_ioc_search(ip=<ip>, response_format="json")     # RapidAPI — IOC/malware matches
 
 LANGKAH 7  — 3-Sum APT + auto-enrich:
 three_sum_correlation(time_window_minutes=1440, follow_up="threat_intel",
   multi_resolution=true, response_format="json", redaction_policy="protect_victim")
 
-LANGKAH 8  — Attack graph + campaign watch:
+LANGKAH 8  — Attack graph + pivot + campaign watch:
 blueteam_attack_graph(since_days=30, top_n=20, response_format="json")
+blueteam_pivot_suggest(ioc=<top_attacker_ip>)             # PageRank next-step recommendations
 blueteam_campaign_watch(response_format="json")
 
 LANGKAH 9  — LangGraph investigation (top 10):
@@ -252,6 +278,7 @@ blueteam_playbook_run(alert_text="<...>", rule_groups="<...>", window="24h",
 LANGKAH 11 — Compromised emails (locked):
 wazuh_compromised_emails_analysis(since="24h", response_format="json")
 wazuh_compromised_emails_analysis(since="24h", reveal_owned=true, response_format="json")  # TIER 1
+blueteam_breach_check(email=<email_dinas>, response_format="json")  # RapidAPI — breach status
 
 LANGKAH 12 — Semantic search (dominant attack patterns):
 blueteam_semantic_search(query="<pattern>", source="alerts", since="24h",
@@ -259,6 +286,14 @@ blueteam_semantic_search(query="<pattern>", source="alerts", since="24h",
 
 LANGKAH 13 — MITRE kill-chain (top 10):
 blueteam_stix_killchain(srcip=<ip>, since="24h")
+
+LANGKAH 13b — JARM TLS fingerprinting (C2 infrastructure):
+jarm_fingerprint(host=<c2_domain_or_ip>, response_format="json")
+→ Cluster C2 servers by TLS fingerprint; identical hashes = same software.
+
+LANGKAH 13c — Suppression + owned-domains review:
+blueteam_false_positive_kb()      # IOCs the 3-Sum engine is auto-suppressing
+blueteam_owned_domains()          # active redaction policy + owned domains
 
 LANGKAH 14 — Geo heatmap:
 blueteam_wazuh_geo_heatmap(since="24h", response_format="json")

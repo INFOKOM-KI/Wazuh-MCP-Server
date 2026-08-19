@@ -212,13 +212,14 @@ class SangforConfig:
 @dataclass
 class RedactionConfig:
     """PII redaction policy and layer toggles."""
-    policy: str = "full"             # full | protect_victim | raw
+    policy: str = "full"     # full | protect_victim | raw
     redact_pii: bool = True
     redact_emails: bool = True
     redact_domains: bool = True
     redact_locations: bool = True
     redact_uas: bool = True
     owned_domains: str = ""
+    allow_runtime_domains: bool = False   # gate for blueteam_set_owned_domains
     allow_forensic_bypass: bool = False
     forensic_token: str = ""
 
@@ -234,6 +235,7 @@ class RedactionConfig:
             redact_locations=_bool(os.environ.get("BLUETEAM_REDACT_LOCATIONS", "true"), True),
             redact_uas=_bool(os.environ.get("BLUETEAM_REDACT_UAS", "true"), True),
             owned_domains=os.environ.get("BLUETEAM_OWNED_DOMAINS", ""),
+            allow_runtime_domains=_bool(os.environ.get("BLUETEAM_ALLOW_RUNTIME_DOMAINS", "false")),
             allow_forensic_bypass=_bool(os.environ.get("BLUETEAM_ALLOW_FORENSIC_BYPASS", "false")),
             forensic_token=os.environ.get("BLUETEAM_FORENSIC_TOKEN", ""),
         )
