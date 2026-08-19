@@ -105,7 +105,9 @@ lookups, and Manager API tools (rules, decoders, groups, agents, security events
 ### Threat Intelligence
 9 providers — CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise, AbuseIPDB, VirusTotal, Netra, Argus —
 with a unified `blueteam_threat_intel_aggregate` (fans out to six sources concurrently) and a
-weighted `blueteam_unified_threat_score`. Plus 3 RapidAPI capability lookups:
+weighted `blueteam_unified_threat_score`. Plus `stealer_log_check` (HudsonRock — is this email's
+password already stolen by info-stealer malware?) and `jarm_fingerprint` (TLS server fingerprint
+for C2/malware attribution, no API key). Plus 3 RapidAPI capability lookups:
 `blueteam_ip_blacklist` (blacklist verdict), `blueteam_ioc_search` (IOC/malware matches), and
 `blueteam_breach_check` (email breach status) — all keyed by `RAPIDAPI_KEY`.
 

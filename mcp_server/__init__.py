@@ -63,6 +63,7 @@ OTX_API_KEY_ENV = "OTX_API_KEY"
 OTX_CACHE_TTL   = _c.threat_intel.otx_cache_ttl
 URLHAUS_API_KEY_ENV = "URLHAUS_API_KEY"
 URLHAUS_CACHE_TTL   = _c.threat_intel.urlhaus_cache_ttl
+HUDSONROCK_API_KEY_ENV = "HUDSONROCK_API_KEY"
 RAPIDAPI_KEY_ENV    = "RAPIDAPI_KEY"
 
 # External API Base URLs
@@ -76,6 +77,7 @@ RDAP_BASE_URL      = _c.threat_intel.rdap_base_url
 CRTSH_BASE_URL     = _c.threat_intel.crtsh_base_url
 OTX_BASE_URL       = _c.threat_intel.otx_base_url
 URLHAUS_BASE_URL   = _c.threat_intel.urlhaus_base_url
+HUDSONROCK_BASE_URL = _c.threat_intel.hudsonrock_base_url
 
 # Wazuh Manager API
 WAZUH_API_URL        = _c.wazuh_manager.url

@@ -80,6 +80,8 @@ def register_all_tools() -> None:
         ("urlhaus",                "urlhaus",                False),  # 2 tools - URLhaus malware URL database
         ("asset_context",           "asset_context",           False),  # 1 tool - CMDB asset context
         ("index_schema",             "index_schema",             False),  # 1 tool - index field schema explorer
+        ("stealer_log",              "stealer_log",              False),  # 1 tool - HudsonRock stealer log check
+        ("jarm",                     "jarm",                     False),  # 1 tool - JARM TLS fingerprint
         ("semantic_search",       "semantic_search",       False),  # 1 tool
         ("report_export",         "report_export",         False),  # 1 tool
         ("stix_correlation",      "stix_correlation",      False),  # 2 tools

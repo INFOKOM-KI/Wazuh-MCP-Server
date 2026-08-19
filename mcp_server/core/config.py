@@ -142,6 +142,9 @@ class ThreatIntelConfig:
     urlhaus_api_key: str = ""
     urlhaus_cache_ttl: int = 1800
     urlhaus_base_url: str = "https://urlhaus-api.abuse.ch/v1/"
+    # HudsonRock (stealer logs)
+    hudsonrock_api_key: str = ""
+    hudsonrock_base_url: str = "https://cavalier.hudsonrock.com/api/json/v2"
     # RapidAPI capability lookups (IP blacklist, IOC search, breach check)
     rapidapi_key: str = ""
     rapidapi_cache_ttl: int = 1800
@@ -174,6 +177,8 @@ class ThreatIntelConfig:
             urlhaus_api_key=os.environ.get("URLHAUS_API_KEY", ""),
             urlhaus_cache_ttl=int(os.environ.get("URLHAUS_CACHE_TTL", "1800")),
             urlhaus_base_url=os.environ.get("URLHAUS_BASE_URL", "https://urlhaus-api.abuse.ch/v1/"),
+            hudsonrock_api_key=os.environ.get("HUDSONROCK_API_KEY", ""),
+            hudsonrock_base_url=os.environ.get("HUDSONROCK_BASE_URL", "https://cavalier.hudsonrock.com/api/json/v2"),
             rapidapi_key=os.environ.get("RAPIDAPI_KEY", ""),
             rapidapi_cache_ttl=int(os.environ.get("RAPIDAPI_CACHE_TTL", "1800")),
         )
@@ -246,7 +251,7 @@ class RedactionConfig:
             )
         # Fail-safe: 'protect_victim' with no owned domains masks NOTHING (every
         # email/domain is treated as attacker). Fall back to 'full' to prevent
-        # accidental PII leaks - loudly, so operators know to set owned domains.
+        # accidental PII leaks, so operators know to set owned domains.
         if self.policy == "protect_victim" and not self.owned_domains.strip():
             logger.warning(
                 "BLUETEAM_REDACTION_POLICY='protect_victim' requires BLUETEAM_OWNED_DOMAINS, "
