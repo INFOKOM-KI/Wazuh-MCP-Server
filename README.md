@@ -249,8 +249,9 @@ LANGKAH 4  — Sangfor blocklist (BY TIMESTAMP, scoped to report window):
 sangfor_blocklist_list(date_start="<24h_ago>", date_end="<now>", response_format="json")
 → For each attacker: sangfor_blocklist_check(ip=<ip>, response_format="json")
 
-LANGKAH 5  — Extract IOCs:
+LANGKAH 5  — Extract IOCs + attach to case:
 blueteam_extract_iocs(text=<alert_text_from_step_1>)
+blueteam_case_add_iocs(case_id=<case_id>, iocs=<extracted_iocs>)
 
 LANGKAH 6  — Unified threat intel (all providers + RapidAPI):
 blueteam_threat_intel_aggregate(indicator=<ip>, response_format="json")
@@ -302,7 +303,8 @@ LANGKAH 13c — Suppression, owned-domains, telemetry + case review:
 blueteam_false_positive_kb()      # IOCs the 3-Sum engine is auto-suppressing
 blueteam_owned_domains()          # active redaction policy + owned domains
 blueteam_metrics()                # per-tool latency/call counts (find slow tools)
-blueteam_case_list()              # open cases; blueteam_case_create/get/add_verdict to persist
+blueteam_case_list()              # open cases
+blueteam_case_get(case_id=<case_id>)  # full case + chronological timeline + verdicts
 
 LANGKAH 14 — Geo heatmap:
 blueteam_wazuh_geo_heatmap(since="24h", response_format="json")
