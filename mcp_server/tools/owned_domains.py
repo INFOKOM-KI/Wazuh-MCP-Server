@@ -35,7 +35,7 @@ class OwnedDomainsViewInput(BaseModel):
 async def blueteam_owned_domains(params: OwnedDomainsViewInput) -> str:
     """Show the active redaction policy and the configured owned (victim) domains.
 
-    Under `protect_victim`, only these domains' emails/subdomains are masked — attacker
+    Under `protect_victim`, only these domains' emails/subdomains are masked - attacker
     IOCs stay visible. Configure them via the `BLUETEAM_OWNED_DOMAINS` env var
     (comma-separated) or at runtime via `blueteam_set_owned_domains`.
 
