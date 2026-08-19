@@ -244,11 +244,22 @@ class RedactionConfig:
                 "BLUETEAM_REDACTION_POLICY='raw' requires "
                 "BLUETEAM_ALLOW_FORENSIC_BYPASS=true."
             )
+        # Fail-safe: 'protect_victim' with no owned domains masks NOTHING (every
+        # email/domain is treated as attacker). Fall back to 'full' to prevent
+        # accidental PII leaks - loudly, so operators know to set owned domains.
+        if self.policy == "protect_victim" and not self.owned_domains.strip():
+            logger.warning(
+                "BLUETEAM_REDACTION_POLICY='protect_victim' requires BLUETEAM_OWNED_DOMAINS, "
+                "but it is empty - falling back to 'full' to prevent accidental PII leaks. "
+                "Set BLUETEAM_OWNED_DOMAINS to a comma-separated list of your owned domains "
+                "(e.g. tangerangkota.go.id)."
+            )
+            self.policy = "full"
         if self.allow_forensic_bypass and self.forensic_token:
             # Token is set - validate it's non-empty and reasonable length
             if len(self.forensic_token) < 8:
                 raise ConfigurationError(
-                    "BLUETEAM_FORENSIC_TOKEN must be at least 8 characters."
+                    "BLUETEAM_FORENSIC_TOKEN must be at least 8 characters." # use openssl rand fot generate it.
                 )
 
 
@@ -425,7 +436,7 @@ class Config:
         )
 
     def validate(self) -> None:
-        """Validate all config groups.  Raises ConfigurationError on the first fatal issue."""
+        """Validate all config groups. Raises ConfigurationError on the first fatal issue."""
         self.server.validate()
         self.wazuh_manager.validate()
         self.wazuh_indexer.validate()
@@ -456,6 +467,8 @@ class Config:
             logger.warning("ABUSEIPDB_API_KEY not set - AbuseIPDB lookup disabled.")
         if not self.threat_intel.virustotal_api_key:
             logger.warning("VIRUSTOTAL_API_KEY not set - VirusTotal lookups disabled.")
+        if not self.threat_intel.rapidapi_key:
+            logger.warning("RAPIDAPI_KEY not set - RapidAPI lookups (IP blacklist / IOC search / breach check) disabled.")
         if self.limits.allow_untruncated:
             logger.warning("BLUETEAM_ALLOW_UNTRUNCATED=true - character-limit bypass ENABLED.")
         if self.redaction.allow_forensic_bypass:
@@ -487,6 +500,7 @@ def init_config() -> Config:
             config.threat_intel.virustotal_api_key,
             config.threat_intel.netra_api_key,
             config.threat_intel.argus_api_key,
+            config.threat_intel.rapidapi_key,
         ] if k),
     )
     return config

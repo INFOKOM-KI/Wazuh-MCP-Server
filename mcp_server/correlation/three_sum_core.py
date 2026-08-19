@@ -77,7 +77,6 @@ def category_default_weight(category: str) -> float:
 
 def build_category_techniques(technique_tactics: dict[str, list[str]]) -> dict[str, list[str]]:
     """Derive {category: [technique IDs]} dynamically from STIX technique->tactics.
-
     Uses the MITRE ATT&CK STIX bundle's kill_chain_phases to resolve each technique
     to its tactics, then MITRE_TACTIC_TO_CATEGORY to bucket into A/B/C. A technique
     spanning multiple categories appears in each of its categories.

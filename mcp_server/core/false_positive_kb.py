@@ -65,7 +65,7 @@ def _sweep(force: bool = False) -> int:
 
 
 def _flush() -> None:
-    """Rewrite the JSONL file atomically with the current (pruned) entries"""
+    """Rewrite the JSONL file atomically with the current entries"""
     if not _KB_PATH:
         return
     _sweep(force=True)
@@ -153,7 +153,7 @@ def false_positive_stats() -> dict:
 
 
 def clear_false_positive_kb() -> None:
-    """Clear all entries from memory (and the file if configured)"""
+    """Clear all entries from memory"""
     _ENTRIES.clear()
     if _KB_PATH:
         try:

@@ -2,16 +2,13 @@
 """
 © NAuliajati - TangerangKota-CSIRT
 AlienVault OTX threat intelligence integration.
-
 OTX (Open Threat Exchange) is the largest open threat intel community.
 Unlike CrowdSec/ThreatFox (reputation-only), OTX provides *pulses* - curated
 IOC collections with malware families, adversaries, industries, and MITRE
 techniques. This gives attribution + campaign context.
-
 Endpoints:
-/api/v1/indicators/{type}/{indicator}/general     - reputation summary
-/api/v1/indicators/{type}/{indicator}/{section}   - pulses, geo, malware, etc.
-
+/api/v1/indicators/{type}/{indicator}/general - reputation summary
+/api/v1/indicators/{type}/{indicator}/{section} - pulses, geo, malware, etc.
 Sections: general, reputation, geo, malware, url_list, passive_dns
 """
 from __future__ import annotations
@@ -21,12 +18,11 @@ import httpx
 from mcp_server import OTX_API_KEY_ENV, OTX_BASE_URL, OTX_CACHE_TTL
 from mcp_server.core.http_client import _api_call, _handle_api_error
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.threat_intel._cache import TTLCache, AsyncRateLimiter
+from mcp_server.threat_intel._cache import cache_get, cache_set, get_limiter
 
 logger = logging.getLogger("blue_team_mcp.otx")
 
-_otx_cache = TTLCache(maxsize=1000)
-_otx_limiter = AsyncRateLimiter(max_concurrent=5, min_interval=0.2)  # 5 req/sec
+_otx_limiter = get_limiter("otx", max_concurrent=5, min_interval=0.2)  # 5 req/sec
 
 # Indicator type resolution
 _IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
@@ -76,7 +72,7 @@ async def _otx_request(indicator: str, section: str = "general") -> dict[str, An
                          "Supported: IP, domain, hostname, URL, MD5/SHA1/SHA256 hash."}
 
     cache_key = f"{ind_type}:{indicator}:{section}"
-    cached = _otx_cache.get(cache_key)
+    cached = cache_get("otx", cache_key)
     if cached is not None:
         return cached
 
@@ -90,7 +86,7 @@ async def _otx_request(indicator: str, section: str = "general") -> dict[str, An
         resp = await _api_call("get", url, headers=headers)
         data = resp.json()
 
-    _otx_cache.set(cache_key, data, OTX_CACHE_TTL)
+    cache_set("otx", cache_key, data, OTX_CACHE_TTL)
     return data
 
 
@@ -131,7 +127,7 @@ def _extract_pulse_summary(pulses: list[dict]) -> list[dict]:
 
 def _format_otx_markdown(indicator: str, ind_type: str, general: dict, pulses: list[dict]) -> str:
     """Format OTX result as a markdown threat card."""
-    lines = [f"# OTX AlienVault — `{indicator}`", ""]
+    lines = [f"# OTX AlienVault - `{indicator}`", ""]
 
     pulse_info = general.get("pulse_info", {})
     pulse_count = pulse_info.get("count", 0)

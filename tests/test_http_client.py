@@ -45,7 +45,7 @@ class TestClientPool:
     async def test_recreates_closed_client(self):
         """If client.is_closed, a new one is created."""
         c1 = await _get_client("recreate-test", verify=True)
-        c1.is_closed = True
+        await c1.aclose()  # is_closed is a read-only property - close for real
         c2 = await _get_client("recreate-test", verify=True)
         assert c1 is not c2
 

@@ -6,7 +6,7 @@ URLhaus tracks URLs that distribute malware. Complements blueteam_check_webshell
 that tool finds suspicious URLs on your infrastructure; this tool tells you if
 those URLs are known malware distributors.
 Endpoints (POST JSON):
-/url/     - query a single URL or host
+/url/ - query a single URL or host
 /payload/ - query a malware payload (MD5/SHA256)
 """
 from __future__ import annotations
@@ -16,12 +16,11 @@ import httpx
 from mcp_server import URLHAUS_API_KEY_ENV, URLHAUS_BASE_URL, URLHAUS_CACHE_TTL
 from mcp_server.core.http_client import _api_call, _handle_api_error
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.threat_intel._cache import TTLCache, AsyncRateLimiter
+from mcp_server.threat_intel._cache import cache_get, cache_set, get_limiter
 
 logger = logging.getLogger("blue_team_mcp.urlhaus")
 
-_urlhaus_cache = TTLCache(maxsize=2000)
-_urlhaus_limiter = AsyncRateLimiter(max_concurrent=3, min_interval=0.2)  # 5 req/sec
+_urlhaus_limiter = get_limiter("urlhaus", max_concurrent=3, min_interval=0.2)  # 5 req/sec
 
 
 def _get_urlhaus_api_key() -> str:
@@ -50,7 +49,7 @@ async def _urlhaus_payload_request(file_hash: str) -> dict[str, Any]:
 async def _urlhaus_post(endpoint: str, body: dict) -> dict[str, Any]:
     """Shared POST helper for URLhaus endpoints (url/ and payload/)."""
     cache_key = f"{endpoint}:{json.dumps(body, sort_keys=True)}"
-    cached = _urlhaus_cache.get(cache_key)
+    cached = cache_get("urlhaus", cache_key)
     if cached is not None:
         return cached
 
@@ -66,7 +65,7 @@ async def _urlhaus_post(endpoint: str, body: dict) -> dict[str, Any]:
         resp = await _api_call("post", URLHAUS_BASE_URL + endpoint, headers=headers, json=body)
         data = resp.json()
 
-    _urlhaus_cache.set(cache_key, data, URLHAUS_CACHE_TTL)
+    cache_set("urlhaus", cache_key, data, URLHAUS_CACHE_TTL)
     return data
 
 
@@ -95,6 +94,6 @@ def _format_urlhaus_markdown(result: dict) -> str:
     if payloads:
         lines.append(f"**Malware Payloads**: {len(payloads)}")
         for p in payloads[:5]:
-            lines.append(f"- `{p.get('response_md5','?')[:12]}...` — {p.get('signature','?')} ({p.get('file_type','?')})")
+            lines.append(f"- `{p.get('response_md5','?')[:12]}...` - {p.get('signature','?')} ({p.get('file_type','?')})")
 
     return "\n".join(lines)

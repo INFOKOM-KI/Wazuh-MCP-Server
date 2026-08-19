@@ -129,11 +129,11 @@ lynis, process/cron/users).
 
 ## Security & Privacy
 
-Three-state redaction policy (`BLUETEAM_REDACTION_POLICY`, default **`full`**):
+Three-state redaction policy (`BLUETEAM_REDACTION_POLICY`, default **`protect_victim`**):
 
 | Policy | Behavior |
 |--------|----------|
-| `full` | Shape-based masking of emails, private IPs, all domains, paths, user-agents |
+| `full` | Shape-based masking of emails, private IPs, all domains, paths, user-agents — conservative fallback when `protect_victim` has no owned domains |
 | `protect_victim` | Mask only victim-owned indicators (owned domains, private IPs, identities); attacker IOCs stay visible. Recommended for SOC triage. |
 | `raw` | Layer-1 credential strip only — hard-gated behind `BLUETEAM_ALLOW_FORENSIC_BYPASS=true` + `BLUETEAM_FORENSIC_TOKEN` |
 
@@ -145,6 +145,11 @@ Two-tier unmasking on top of the policy:
 - **Tier 1 — `reveal_owned=true`** — reveals only owned `*.tangerangkota.go.id` assets to the LLM.
 - **Tier 2 — `bypass_redaction=true` + `forensic_token`** — writes raw data **to disk**; the LLM
   receives only the file path, never the raw content.
+
+**Your own domains**: set `BLUETEAM_OWNED_DOMAINS` to your org's domains (comma-separated, e.g.
+`tangerangkota.go.id`). Under `protect_victim`, only these domains' emails/subdomains are masked.
+Inspect with `blueteam_owned_domains`; update at runtime (in-memory) with
+`blueteam_set_owned_domains` — or set the env var for a persistent default.
 
 ---
 

@@ -13,20 +13,21 @@ changing third-party schemas never break the tool.
 from __future__ import annotations
 import json, os, re
 from typing import Any, Literal
+from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import mcp, RAPIDAPI_KEY_ENV
 from mcp_server.core.http_client import _api_call, _handle_api_error, ValidPublicIp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.threat_intel._cache import TTLCache, AsyncRateLimiter
+from mcp_server.core.redact import _redact_alert_data
+from mcp_server.threat_intel._cache import cache_get, cache_set, get_limiter
 
 # RapidAPI host endpoints (The key is shared via RAPIDAPI_KEY).
 _IP_BLACKLIST_HOST = "ip-blacklist-lookup-api-apiverve.p.rapidapi.com"
 _IOC_SEARCH_HOST = "ioc-search.p.rapidapi.com"
 _BREACH_CHECK_HOST = "breachcheck-api.p.rapidapi.com"
 
-_cache = TTLCache(maxsize=3000)
-_limiter = AsyncRateLimiter(max_concurrent=3, min_interval=0.15)  # RapidAPI free tier ~5 req/s
+_limiter = get_limiter("rapidapi", max_concurrent=3, min_interval=0.15)  # RapidAPI free tier ~5 req/s
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -50,13 +51,13 @@ def _rapidapi_headers(host: str) -> dict[str, str]:
 async def _rapidapi_get(host: str, path: str, ttl: int = 1800) -> dict[str, Any]:
     """GET a RapidAPI endpoint with TTL caching + rate limiting. Returns parsed JSON."""
     cache_key = f"{host}{path}"
-    cached = _cache.get(cache_key)
+    cached = cache_get("rapidapi", cache_key)
     if cached is not None:
         return cached
     async with _limiter:
         resp = await _api_call("get", f"https://{host}{path}", headers=_rapidapi_headers(host))
         data = resp.json()
-    _cache.set(cache_key, data, ttl)
+    cache_set("rapidapi", cache_key, data, ttl)
     return data
 
 
@@ -87,9 +88,11 @@ def _dynamic_markdown(title: str, raw: dict[str, Any]) -> str:
     return _truncate_if_needed("\n".join(lines))
 
 
-def _envelope(query: str, source: str, raw: dict[str, Any]) -> str:
-    """Normalized JSON envelope: query + source + the dynamic raw body."""
-    return json.dumps({"query": query, "source": source, "result": raw}, indent=2, ensure_ascii=False)
+def _envelope(query: str, source: str, raw: dict[str, Any], params=None) -> str:
+    """Normalized JSON envelope: query + source + the dynamic raw body (redacted)."""
+    return json.dumps(_redact_alert_data(
+        {"query": query, "source": source, "result": raw}, params=params),
+        indent=2, ensure_ascii=False)
 
 
 class _IpInput(BaseModel):
@@ -102,7 +105,7 @@ class _IpInput(BaseModel):
 class BreachCheckInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     email: str = Field(..., min_length=6, max_length=254,
-                       description="Email address to check (e.g. an official '@…go.id' account from Wazuh).")
+                       description="Email address to check (e.g. an official 'user_x@mail.go.id' account from Wazuh).")
     response_format: Literal["markdown", "json"] = Field(default="markdown")
 
     @field_validator("email")
@@ -118,7 +121,7 @@ class BreachCheckInput(BaseModel):
           annotations={"readOnlyHint": True, "destructiveHint": False,
                        "idempotentHint": True, "openWorldHint": True})
 async def blueteam_ip_blacklist(params: _IpInput) -> str:
-    """Check whether a source IP is present on blacklists (Apiverve IP Blacklist Lookup).
+    """Check whether a source IP is present on blacklists (IP Blacklist Lookup).
 
     Feed the `srcip` from a Wazuh alert directly. Returns the blacklist verdict for the IP.
     Requires `RAPIDAPI_KEY` (subscribe to "IP Blacklist Lookup" by Apiverve on RapidAPI).
@@ -129,12 +132,12 @@ async def blueteam_ip_blacklist(params: _IpInput) -> str:
     """
     _audit_log("blueteam_ip_blacklist", {"ip": params.ip})
     try:
-        raw = await _rapidapi_get(_IP_BLACKLIST_HOST, f"/v1/ipblacklistlookup?ip={params.ip}")
+        raw = await _rapidapi_get(_IP_BLACKLIST_HOST, f"/v1/ipblacklistlookup?ip={quote(params.ip)}")
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError, ValueError) as e:
         return _handle_api_error(e, context="blueteam_ip_blacklist")
     if params.response_format == "json":
-        return _envelope(params.ip, "apiverve_ip_blacklist", raw)
-    return _dynamic_markdown(f"IP Blacklist — {params.ip}", raw)
+        return _envelope(params.ip, "apiverve_ip_blacklist", raw, params=params)
+    return _redact_alert_data(_dynamic_markdown(f"IP Blacklist - {params.ip}", raw), params=params)
 
 
 @mcp.tool(name="blueteam_ioc_search",
@@ -152,12 +155,12 @@ async def blueteam_ioc_search(params: _IpInput) -> str:
     """
     _audit_log("blueteam_ioc_search", {"ip": params.ip})
     try:
-        raw = await _rapidapi_get(_IOC_SEARCH_HOST, f"/rapid/v1/ioc/search/ip?query={params.ip}")
+        raw = await _rapidapi_get(_IOC_SEARCH_HOST, f"/rapid/v1/ioc/search/ip?query={quote(params.ip)}")
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError, ValueError) as e:
         return _handle_api_error(e, context="blueteam_ioc_search")
     if params.response_format == "json":
-        return _envelope(params.ip, "rapidapi_ioc_search", raw)
-    return _dynamic_markdown(f"IOC Search — {params.ip}", raw)
+        return _envelope(params.ip, "rapidapi_ioc_search", raw, params=params)
+    return _redact_alert_data(_dynamic_markdown(f"IOC Search - {params.ip}", raw), params=params)
 
 
 @mcp.tool(name="blueteam_breach_check",
@@ -176,9 +179,9 @@ async def blueteam_breach_check(params: BreachCheckInput) -> str:
     """
     _audit_log("blueteam_breach_check", {"email": params.email})
     try:
-        raw = await _rapidapi_get(_BREACH_CHECK_HOST, f"/email-check?email={params.email}")
+        raw = await _rapidapi_get(_BREACH_CHECK_HOST, f"/email-check?email={quote(params.email)}")
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError, ValueError) as e:
         return _handle_api_error(e, context="blueteam_breach_check")
     if params.response_format == "json":
-        return _envelope(params.email, "rapidapi_breach_check", raw)
-    return _dynamic_markdown(f"Breach Check — {params.email}", raw)
+        return _envelope(params.email, "rapidapi_breach_check", raw, params=params)
+    return _redact_alert_data(_dynamic_markdown(f"Breach Check - {params.email}", raw), params=params)

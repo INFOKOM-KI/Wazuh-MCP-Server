@@ -4,6 +4,7 @@ Tests for blueteam_pivot_suggest helpers (no graph build, no Wazuh).
 """
 from __future__ import annotations
 import os
+
 os.environ.setdefault("WAZUH_INDEXER_URL", "https://idx:9200")
 os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "pw")
 

@@ -2,21 +2,20 @@
 """
 © NAuliajati - TangerangKota-CSIRT
 PII redaction pipeline 6 layers. Layer 1 (credentials) Never bypassable.
-
 Three redaction policies (BLUETEAM_REDACTION_POLICY env / per-call param):
-  - "full" (default):   shape-based masking - emails, private IPs, ALL domains,
+- "full" (default):    Shape-based masking - emails, private IPs, ALL domains,
                         paths, UAs. Registered attacker IOCs are exempt.
-  - "protect_victim":   mask ONLY victim-owned indicators - emails/domains at
+- "protect_victim":    Mask ONLY victim-owned indicators - emails/domains at
                         owned domains (BLUETEAM_OWNED_DOMAINS), private IPs,
                         paths, identity fields, agent names. Attacker domains,
                         attacker emails and payload contents stay intact.
-  - "raw":              Layer 1 credential strip ONLY. Hard-gated behind
+- "raw":               Layer 1 credential strip ONLY. Hard-gated behind
                         BLUETEAM_ALLOW_FORENSIC_BYPASS (default false).
 """
 from __future__ import annotations
 import hashlib, os, re, logging
 from typing import Any
-from collections import Counter
+from collections import Counter, OrderedDict
 from mcp_server import (BLUETEAM_REDACT_PII, BLUETEAM_REDACT_EMAILS, BLUETEAM_REDACT_DOMAINS,
                          BLUETEAM_REDACT_LOCATIONS, BLUETEAM_REDACT_UAS,
                          BLUETEAM_ALLOW_FORENSIC_BYPASS, BLUETEAM_REDACTION_POLICY,
@@ -33,9 +32,37 @@ _REDACT_SALT = os.environ.get(
 
 _REDACT_EMAIL_RE = re.compile(r"([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})")
 
+# Memoize string redaction results. The string path is pure given (data, policy,
+# reveal, layer toggles), so repeated identical payloads are redacted once.
+# Bounded LRU - the redaction boundary is a hot path (called per tool + audit),
+# and identical alert text recurs constantly across batch lookups.
+_REDACT_MEMO: OrderedDict = OrderedDict()
+_REDACT_MEMO_MAX = 2000
+_REDACT_MEMO_MAX_STR = 50_000  # don't memoize very large strings (memory)
+
 # Owned parent domains (victim infrastructure) - mask these subdomains/emails
 _OWNED_DOMAINS: set[str] = {d.strip().lower().rstrip(".")
                             for d in BLUETEAM_OWNED_DOMAINS.split(",") if d.strip()}
+
+
+def get_owned_domains() -> set[str]:
+    """Return the current runtime owned-domains set (read-only view)."""
+    return set(_OWNED_DOMAINS)
+
+
+def set_owned_domains(domains: str) -> set[str]:
+    """Update the runtime owned-domains set (comma-separated), clearing the redaction memo.
+
+    In-memory only - the persistent default is the BLUETEAM_OWNED_DOMAINS env var.
+    Call this to switch which domains are treated as victim infrastructure without
+    a restart. The redaction memo is cleared because cached masks may reflect the
+    previous owned-domain set.
+    """
+    global _OWNED_DOMAINS
+    _OWNED_DOMAINS = {d.strip().lower().rstrip(".")
+                      for d in (domains or "").split(",") if d.strip()}
+    _REDACT_MEMO.clear()
+    return set(_OWNED_DOMAINS)
 
 # Identity fields masked under protect_victim (victim accounts, not attacker srcip)
 _IDENTITY_KEYS = ("account", "srcuser", "dstuser", "user", "username")
@@ -151,7 +178,7 @@ def _should_mask_email(email: str, policy: str, reveal_owned: bool = False) -> b
     if is_attacker_ioc(domain):
         return False
     if reveal_owned and _is_owned_domain(domain):
-        return False  # forensic: owned-domain emails exposed unmasked
+        return False  # forensic: owned domain emails exposed unmasked
     if policy == "protect_victim":
         return _is_owned_domain(domain)
     return True  # full
@@ -204,7 +231,6 @@ def _strip_credentials(data: Any) -> Any:
 # Each layer is a function (data: str, pol: str, reveal: bool) -> str.
 # To add a new layer, define it here and append to _STRING_REDACTION_LAYERS
 # inside _redact_alert_data.
-
 # Layer functions live in redact_layers.py - imported explicitly for clean AST edges.
 from mcp_server.core.redact_layers import (_apply_email_layer, _apply_ip_layer,
     _apply_domain_layer, _apply_location_layer, _apply_ua_layer)
@@ -285,6 +311,24 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
     # Pre-define layer functions (closures capture pol/reveal from outer scope)
 
     if isinstance(data, str):
+        if not data or len(data) > _REDACT_MEMO_MAX_STR:
+            # Too large to memoize (or empty) - redact directly.
+            data = _apply_credential_layer(data)
+            for layer_name, check, apply_fn in _STRING_REDACTION_LAYERS:
+                if not check():
+                    continue
+                try:
+                    data = apply_fn(data, pol, reveal)
+                except Exception:
+                    logger.debug("redaction layer '%s' failed - continuing", layer_name)
+            return data
+        memo_key = (data, pol, reveal, BLUETEAM_REDACT_EMAILS, BLUETEAM_REDACT_PII,
+                    BLUETEAM_REDACT_DOMAINS, BLUETEAM_REDACT_LOCATIONS, BLUETEAM_REDACT_UAS)
+        cached = _REDACT_MEMO.get(memo_key)
+        if cached is not None:
+            _REDACT_MEMO.move_to_end(memo_key)
+            return cached
+
         # Layer 1: Credential stripping (ALWAYS)
         data = _apply_credential_layer(data)
 
@@ -298,8 +342,12 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
             try:
                 data = apply_fn(data, pol, reveal)
             except Exception:
-                logger.debug("redaction layer '%s' failed — continuing", layer_name)
+                logger.debug("redaction layer '%s' failed - continuing", layer_name)
 
+        _REDACT_MEMO[memo_key] = data
+        _REDACT_MEMO.move_to_end(memo_key)
+        if len(_REDACT_MEMO) > _REDACT_MEMO_MAX:
+            _REDACT_MEMO.popitem(last=False)
         return data
 
     if isinstance(data, dict):

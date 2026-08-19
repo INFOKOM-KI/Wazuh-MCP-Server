@@ -2,6 +2,7 @@
 """
 Tests for RapidAPI capability lookups - pure helpers + input validation.
 No network calls: the request helper and tools are exercised indirectly.
+Hope my LLM doing greate during test processing, cause i'm to lazy write a test case...;P
 """
 from __future__ import annotations
 import os
@@ -53,3 +54,18 @@ def test_ip_input_rejects_private():
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         r._IpInput(ip="192.168.1.1")  # RFC1918 -> public-IP validator rejects
+
+
+def test_envelope_redacts_email():
+    # S1 fix: the JSON envelope now runs the uniform redaction boundary, so a
+    # victim email never reaches the LLM unredacted (breach-check PII leak).
+    raw = {"email": "csirt@tangerangkota.go.id", "breaches": ["Adobe"]}
+    out = r._envelope("csirt@tangerangkota.go.id", "rapidapi_breach_check", raw)
+    assert "csirt@tangerangkota.go.id" not in out  # email masked
+    assert "Adobe" in out  # non-PII breach name stays visible
+
+
+def test_envelope_keeps_public_ip():
+    # Public attacker IPs are NOT masked (protect_victim keeps attacker IOCs visible).
+    out = r._envelope("103.107.116.202", "apiverve_ip_blacklist", {"ip": "103.107.116.202"})
+    assert "103.107.116.202" in out

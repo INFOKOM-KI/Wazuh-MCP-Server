@@ -73,3 +73,44 @@ class AsyncRateLimiter:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         self._last_request = time.monotonic()
         self._semaphore.release()
+
+
+# Shared namespaced cache + limiter registry
+# One backing TTLCache shared across all threat-intel providers; keys are
+# namespaced ("provider:key") so each provider keeps its own TTL (passed to
+# cache_set) while memory is consolidated in a single store. Rate limiters stay
+# per-provider via a registry because different APIs have different
+# concurrency / min-interval limits.
+
+_SHARED_CACHE = TTLCache(maxsize=10_000)
+
+
+def cache_get(namespace: str, key: str) -> Any | None:
+    """Return the cached value for a namespaced key, or None if absent/expired."""
+    return _SHARED_CACHE.get(f"{namespace}:{key}")
+
+
+def cache_set(namespace: str, key: str, value: Any, ttl: float) -> None:
+    """Store a value under a namespaced key with the provider's TTL."""
+    _SHARED_CACHE.set(f"{namespace}:{key}", value, ttl)
+
+
+_limiters: dict[str, AsyncRateLimiter] = {}
+
+
+def get_limiter(namespace: str, max_concurrent: int = 3,
+                min_interval: float = 0.1) -> AsyncRateLimiter:
+    """Return (or lazily create) the rate limiter for a provider namespace."""
+    if namespace not in _limiters:
+        _limiters[namespace] = AsyncRateLimiter(max_concurrent=max_concurrent,
+                                                min_interval=min_interval)
+    return _limiters[namespace]
+
+
+def cache_stats() -> dict:
+    """Operational stats for the shared cache + limiter registry."""
+    return {
+        "cache_entries": len(_SHARED_CACHE),
+        "cache_maxsize": _SHARED_CACHE.maxsize,
+        "limiter_namespaces": sorted(_limiters.keys()),
+    }

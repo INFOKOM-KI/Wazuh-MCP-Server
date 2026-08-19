@@ -2,7 +2,6 @@
 """
 © NAuliajati - TangerangKota-CSIRT
 Decorator that wraps @mcp.tool with cross-cutting SOC concerns.
-
 Usage:
     @blueteam_tool(
         name="blueteam_my_tool",
@@ -10,22 +9,19 @@ Usage:
                       "idempotentHint": True, "openWorldHint": False},
         audit=True,      # log every invocation to BLUETEAM_AUDIT_LOG
         truncate=True,   # cap response at CHARACTER_LIMIT
-        redact=False,    # apply 6-layer PII masking (opt-in - many tools don't expose PII)
+        redact=True,     # apply 6-layer PII masking by default (opt out with redact=False)
     )
     async def blueteam_my_tool(params: MyInput) -> str:
         ...
-
-The decorator applies:  audit -> call -> catch BlueTeamMCPError -> redact -> truncate.
+The decorator applies: audit -> call -> catch BlueTeamMCPError -> redact -> truncate.
 The original function signature is preserved so FastMCP generates the correct tool schema.
 """
 from __future__ import annotations
-
 import functools
 import inspect
 import json
 import time
 from typing import Any, Callable
-
 from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data
@@ -62,16 +58,18 @@ def blueteam_tool(
     *,
     audit: bool = True,
     truncate: bool = True,
-    redact: bool = False,
+    redact: bool = True,
 ) -> Callable:
     """Register a FastMCP tool with automatic audit, truncation, and error handling.
-
     Args:
         name: MCP tool name (e.g. ``"blueteam_wazuh_agents"``).
         annotations: MCP tool hints dict.  Defaults to read-only blue-team safe values.
         audit: If True, log every invocation to ``BLUETEAM_AUDIT_LOG``.
         truncate: If True, cap the response at ``CHARACTER_LIMIT`` with a cursor hint.
-        redact: If True, apply 6-layer PII/credential masking to dict/list results.
+        redact: If True (default), apply 6-layer PII/credential masking to the result
+            (str/dict/list). This is the uniform security boundary - opt out with
+            redact=False only for tools returning attacker-only data that
+            _redact_alert_data already keeps visible under protect_victim.
 
     Returns:
         A decorator that wraps the async function and registers it with FastMCP.
@@ -110,8 +108,8 @@ def blueteam_tool(
             # timing
             metrics.record_timing(name, (time.monotonic() - _t0) * 1000)
 
-            # post-call: redact (opt-in)
-            if redact and isinstance(result, (dict, list)):
+            # post-call: redact (default ON uniform security boundary)
+            if redact:
                 result = _redact_alert_data(result, params=params)
                 if not isinstance(result, str):
                     result = json.dumps(result, indent=2, ensure_ascii=False)

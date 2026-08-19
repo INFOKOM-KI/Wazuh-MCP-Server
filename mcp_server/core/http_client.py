@@ -9,15 +9,23 @@ from typing import Any, Dict, Optional, Annotated
 import httpx
 from pydantic import AfterValidator
 from mcp_server import WAZUH_INDEXER_VERIFY_SSL
-
 from mcp_server import HTTP_TIMEOUT, WAZUH_API_VERIFY_SSL, WAZUH_INDEXER_VERIFY_SSL, ARGUS_VERIFY_SSL
 
 logger = logging.getLogger("blue_team_mcp.http")
 
+# http2 requires the optional 'h2' package (httpx[http2] extra). Degrade to
+# http/1.1 gracefully when it's absent (e.g. minimal test/CI environments), so
+# the server never fails to boot just because the optional dependency is missing.
+try:
+    import h2  # noqa: F401
+    _HTTP2 = True
+except ImportError:
+    _HTTP2 = False
+
 # Private / reserved IP ranges threat-intel tools are for public IPs only
 _PRIVATE_NETWORKS: list = []
 
-# Shared HTTP clients by name lazy-init, pooled per SSL trust domain
+# Shared HTTP clients by name, pooled per SSL trust domain.
 _clients: dict[str, httpx.AsyncClient] = {}
 
 _MSEARCH_FALLBACK_ERROR: dict = {"error": "_msearch_failed"}
@@ -29,22 +37,21 @@ async def _get_client(
     max_keepalive: int = 20,
     max_connections: int = 100,
 ) -> httpx.AsyncClient:
-    """Return a pooled httpx.AsyncClient by name, creating lazily if needed."""
+    """Return a pooled httpx.AsyncClient by name"""
     if name not in _clients or _clients[name].is_closed:
         _clients[name] = httpx.AsyncClient(
             timeout=httpx.Timeout(HTTP_TIMEOUT),
             limits=httpx.Limits(max_keepalive_connections=max_keepalive, max_connections=max_connections),
             verify=verify,
-            http2=True,
+            http2=_HTTP2,
         )
     return _clients[name]
 
 # Unified API call
 async def _api_call(method: str, url: str, *, client_name: str = "http", verify: bool = True, **kw) -> httpx.Response:
     """Unified async HTTP helper. Returns raw response - caller calls .json() or .text.
-
     Retries once on 5xx server errors, network failures (200ms backoff), and
-    429 rate limits (honors Retry-After when present).
+    429 rate limits (retry after when present).
     """
     client = await _get_client(client_name, verify=verify)
     last_exc: Exception | None = None
@@ -84,14 +91,14 @@ def _handle_api_error(e: Exception, context: str = "") -> str:
     if isinstance(e, httpx.HTTPStatusError):
         status = e.response.status_code
         if status == 400:
-            return f"{prefix}Error: Bad request (400) — the API rejected the parameters. Try a smaller limit."
+            return f"{prefix}Error: Bad request (400) - the API rejected the parameters. Try a smaller limit."
         if status == 401:
             return f"{prefix}Error: Invalid or missing API key (401). Check your environment variables."
         if status == 404:
             return f"{prefix}Error: No data found for this target (404)."
         if status == 429:
             retry_after = e.response.headers.get("Retry-After")
-            hint = f" Retry after {retry_after} seconds." if retry_after else ""
+            hint = f"Retry after {retry_after} seconds." if retry_after else ""
             return f"{prefix}Error: Rate limit reached (429).{hint}"
         return f"{prefix}Error: API request failed with status {status}."
     if isinstance(e, httpx.TimeoutException):
@@ -112,10 +119,10 @@ def _is_private_or_reserved(ip: str) -> bool:
 
 
 def _validate_public_ip(v: str) -> str:
-    """Reject private/reserved IPs for public threat-intel tools (SSRF guard)."""
+    """Reject private/reserved IP for public threat-intel tools (SSRF guard/prevention)."""
     if _is_private_or_reserved(v):
         raise ValueError(
-            f"'{v}' is a private/reserved IP address. "
+            f"'{v}' is a private/reserved IP address."
             "This tool only accepts public IPs for threat intelligence lookup."
         )
     return v

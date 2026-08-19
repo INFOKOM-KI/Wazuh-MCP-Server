@@ -4,17 +4,77 @@
 Audit logging, response truncation, markdown escaping, rate limiting, response pipeline.
 """
 from __future__ import annotations
-import functools, json, os, time, hashlib
+import functools, json, os, time, hashlib, logging, queue, threading
 from datetime import datetime
-
 from mcp_server import CHARACTER_LIMIT, BLUETEAM_AUDIT_LOG, BLUETEAM_ALLOW_UNTRUNCATED, BLUETEAM_RATE_LIMIT
-
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core import metrics
 
+logger = logging.getLogger("blue_team_mcp.audit")
+
+# Async audit writer
+# _audit_log is called synchronously from every tool handler (a hot path, the
+# 1 god node). Synchronous open().write() per call blocks the event loop on disk
+# I/O. Instead we enqueue onto a thread-safe queue and a single daemon writer
+# thread drains it in batches, so the hot path is a non-blocking queue.put().
+_AUDIT_QUEUE: "queue.Queue[dict]" = queue.Queue()
+_AUDIT_WORKER_STARTED = False
+_AUDIT_WORKER_LOCK = threading.Lock()
+
+
+def _audit_worker_loop() -> None:
+    """Drain the audit queue and write entries in batches (runs on a daemon thread)."""
+    while True:
+        batch = [_AUDIT_QUEUE.get()]  # block until the first entry
+        # Opportunistically drain anything else queued to amortize the file open.
+        while True:
+            try:
+                batch.append(_AUDIT_QUEUE.get_nowait())
+            except queue.Empty:
+                break
+        try:
+            with open(BLUETEAM_AUDIT_LOG, "a") as f:
+                for e in batch:
+                    f.write(json.dumps(e) + "\n")
+        except Exception:
+            logger.warning("audit log write failed (dropping %d entries)", len(batch), exc_info=True)
+
+
+def _ensure_audit_worker() -> None:
+    global _AUDIT_WORKER_STARTED
+    if _AUDIT_WORKER_STARTED or not BLUETEAM_AUDIT_LOG:
+        return
+    with _AUDIT_WORKER_LOCK:
+        if _AUDIT_WORKER_STARTED:
+            return
+        threading.Thread(target=_audit_worker_loop, daemon=True, name="blue-team-audit-writer").start()
+        _AUDIT_WORKER_STARTED = True
+
+
+def flush_audit_log() -> None:
+    """Synchronously drain any queued audit entries (graceful shutdown / tests).
+    Best-effort: races with the daemon writer are possible, so it is only
+    guaranteed to flush entries the writer has not yet consumed.
+    """
+    batch = []
+    while True:
+        try:
+            batch.append(_AUDIT_QUEUE.get_nowait())
+        except queue.Empty:
+            break
+    if not batch:
+        return
+    try:
+        with open(BLUETEAM_AUDIT_LOG, "a") as f:
+            for e in batch:
+                f.write(json.dumps(e) + "\n")
+    except Exception:
+        logger.warning("audit log flush failed", exc_info=True)
+
+
 # Audit logging
 def _audit_log(tool_name: str, params: dict, result_preview: str = "") -> None:
-    """Append audit entry to BLUETEAM_AUDIT_LOG if configured."""
+    """Enqueue an audit entry for async, batched write to BLUETEAM_AUDIT_LOG."""
     metrics.record_call(tool_name)
     if not BLUETEAM_AUDIT_LOG:
         return
@@ -27,8 +87,8 @@ def _audit_log(tool_name: str, params: dict, result_preview: str = "") -> None:
             "result_preview": _redact_alert_data((result_preview or "")[:200]),
             "redaction_bypassed": params.get("bypass_redaction", False),
         }
-        with open(BLUETEAM_AUDIT_LOG, "a") as f:
-            f.write(json.dumps(entry) + "\n")
+        _ensure_audit_worker()
+        _AUDIT_QUEUE.put(entry)
     except Exception:
         pass
 
@@ -37,7 +97,7 @@ def _audit_log(tool_name: str, params: dict, result_preview: str = "") -> None:
 def _truncate_if_needed(text: str, *, bypass: bool = False) -> str:
     """Cap response at CHARACTER_LIMIT. When bypass=True, prepends forensic warning."""
     if bypass:
-        banner = "⚠️ UNREDACTED — FORENSIC USE ONLY. Contains PII/internal IPs.\n"
+        banner = "⚠️ UNREDACTED - FORENSIC USE ONLY. Contains PII/internal IP.\n"
         text = banner + text
         if BLUETEAM_AUDIT_LOG:
             try:
@@ -95,7 +155,6 @@ def _check_rate_limit() -> bool:
 # String-returning tools should use _audit_log() + _truncate_if_needed() directly.
 def response_pipeline(tool_name: str):
     """Decorator: auto-applies redact -> json.dumps -> truncate -> audit.
-
     For async tool handlers that return structured data (dict/list).
     String-returning tools should call _audit_log()/_truncate_if_needed() directly.
     """

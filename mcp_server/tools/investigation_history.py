@@ -291,14 +291,14 @@ async def blueteam_investigation_history(params: InvestigationHistoryInput) -> s
         verdict = entry.get("verdict", "unknown")
         summary = entry.get("summary", {})
         return (
-            f"# Investigation History — `{params.srcip}`\n\n"
+            f"# Investigation History - `{params.srcip}`\n\n"
             f"- **Last analyzed**: {ts}\n"
             f"- **Verdict**: {verdict}\n"
             f"- **Summary**: {json.dumps(summary, indent=2)}\n\n"
             f"_History file: {_INVESTIGATION_HISTORY_FILE}_"
         )
     return (
-        f"# Investigation History — `{params.srcip}`\n\n"
+        f"# Investigation History - `{params.srcip}`\n\n"
         f"**No prior investigation found**. This IP has not been analyzed before.\n\n"
         f"_History file: {_INVESTIGATION_HISTORY_FILE or '(not configured)'}_"
     )

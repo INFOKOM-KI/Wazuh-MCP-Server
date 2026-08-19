@@ -30,7 +30,6 @@ MITRE_TACTIC_TO_CATEGORY: Dict[str, str] = {
 
 # MITRE ATT&CK tactic -> APT signal weight (dynamic risk scoring, MCP-TAXONOMY-V2).
 # Higher = stronger APT indicator. C2/exfil/impact weigh most; recon weighs least.
-# Tunable by the correlation-engineer role (AGENTS.md §1.5) against production telemetry.
 MITRE_TACTIC_WEIGHTS: Dict[str, float] = {
     "Reconnaissance":        0.5,
     "Resource Development":  0.5,
@@ -55,7 +54,7 @@ _KNOWN_ATTACK_CHAINS: list[dict[str, Any]] = [
         "phases": ["recon", "bruteforce"],
         "pattern": [re.compile(r"^(600029|5710|5760|60100|33100)$"),
                      re.compile(r"^(5710|5712|5716|5760|6020|5551)$")],
-        "description": "Reconnaissance → Brute-force / credential attack",
+        "description": "Reconnaissance -> Brute-force / credential attack",
         "confidence": 0.75,
     },
     {
@@ -63,7 +62,7 @@ _KNOWN_ATTACK_CHAINS: list[dict[str, Any]] = [
         "phases": ["recon", "exploit"],
         "pattern": [re.compile(r"^(600029|5710|5760|60100|33100)$"),
                      re.compile(r"^(31100|31300|31500|31700|33300|33800)$")],
-        "description": "Reconnaissance → Exploitation / payload delivery",
+        "description": "Reconnaissance -> Exploitation / payload delivery",
         "confidence": 0.80,
     },
     {
@@ -71,7 +70,7 @@ _KNOWN_ATTACK_CHAINS: list[dict[str, Any]] = [
         "phases": ["bruteforce", "access"],
         "pattern": [re.compile(r"^(5710|5712|5716|5760|6020|5551)$"),
                      re.compile(r"^(5500|5501|5502|5503|60106|60122)$")],
-        "description": "Brute-force → Successful authentication",
+        "description": "Brute-force -> Successful authentication",
         "confidence": 0.90,
     },
     {
@@ -79,7 +78,7 @@ _KNOWN_ATTACK_CHAINS: list[dict[str, Any]] = [
         "phases": ["recon", "c2_response"],
         "pattern": [re.compile(r"^(600029|5710|5760|60100|33100)$"),
                      re.compile(r"^(606029|510|520|530|540|550|560)$")],
-        "description": "Reconnaissance → Active Response / C2 trigger",
+        "description": "Reconnaissance -> Active Response / C2 trigger",
         "confidence": 0.60,
     },
     {
@@ -91,12 +90,12 @@ _KNOWN_ATTACK_CHAINS: list[dict[str, Any]] = [
             re.compile(r"^(5500|5501|5502|5503|60106|60122)$"),
             re.compile(r"^(606029|510|520|530|540|550|560)$"),
         ],
-        "description": "Full kill-chain: Recon → Brute-force → Access → C2/Response",
+        "description": "Full kill-chain: Recon -> Brute-force -> Access -> C2/Response",
         "confidence": 0.95,
     },
 ]
 
-# Deduplication patterns (parent-child alert relationships)
+# Deduplication patterns (parent child alert relationships)
 _DEDUP_PATTERNS: list[tuple[str, str]] = [
     ("606029", "data.parameters.alert.rule.id"),
     ("651",   "data.parameters.alert.rule.id"),

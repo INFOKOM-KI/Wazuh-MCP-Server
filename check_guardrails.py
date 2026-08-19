@@ -140,7 +140,7 @@ def check_drift(source: str, lines: list[str]) -> list[dict]:
                         'func': node.name,
                         'line': int(bl),
                         'field': field,
-                        'detail': f"'params.{field}' also used — bare '{field}' is likely a bug",
+                        'detail': f"'params.{field}' also used - bare '{field}' is likely a bug",
                         'context': lines[int(bl) - 1].strip()[:80],
                     })
 

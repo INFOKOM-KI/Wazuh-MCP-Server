@@ -31,7 +31,7 @@ from mcp_server.correlation.three_sum_core import (evaluate_engine_a, evaluate_e
 _GRAPH_MAX_IOCS = 500
 # Engine A graph-integration boost factors
 _PPR_BOOST_FACTOR = 5.0      # total += ppr_score * factor
-_CONFIRMED_BONUS = 2.0       # flat bonus for registry-confirmed attacker IOCs
+_CONFIRMED_BONUS = 2.0       # flat bonus for registry confirmed attacker IOCs
 
 # MITRE ATT&CK dynamic classification helpers (three_sum_core)
 from mcp_server.correlation.three_sum_core import (tactics_for_category,
@@ -41,7 +41,6 @@ from mcp_server.core.false_positive_kb import false_positive_iocs
 
 async def _build_cluster_context() -> dict:
     """Attack-graph context for Engine A: cluster_map, ppr_scores, confirmed_ips.
-
     Built from the IOC store + attacker registry (store-backed, no indexer needed):
       - cluster_map: {ip: {cluster member IPs}} for multi-node co-occurrence clusters
       - ppr_scores: personalized-PageRank suspicion scores (confirmed-seeded)

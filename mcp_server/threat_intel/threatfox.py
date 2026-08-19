@@ -8,11 +8,10 @@ import json, logging, time, os, re, asyncio
 from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 from mcp_server import mcp, THREATFOX_API_KEY_ENV, THREATFOX_BASE_URL, THREATFOX_CACHE_TTL
 from mcp_server.core.http_client import _api_call, _handle_api_error, _is_private_or_reserved
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.threat_intel._cache import TTLCache, AsyncRateLimiter
+from mcp_server.threat_intel._cache import cache_get, cache_set, get_limiter
 
 logger = logging.getLogger("blue_team_mcp.threatfox")
 
@@ -21,8 +20,7 @@ if not os.environ.get(THREATFOX_API_KEY_ENV):
     logger.warning("%s not set - threatfox_ioc_search will return an error at call time. "
                    "Get a free key at https://threatfox.abuse.ch/api", THREATFOX_API_KEY_ENV)
 
-_threatfox_cache = TTLCache(maxsize=1000)
-_threatfox_limiter = AsyncRateLimiter(max_concurrent=3, min_interval=0.1)  # 10 req/sec
+_threatfox_limiter = get_limiter("threatfox", max_concurrent=3, min_interval=0.1)  # 10 req/sec
 
 # Patterns for detecting IOC type (used for SSRF guard scoping)
 _IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
@@ -61,7 +59,7 @@ async def _threatfox_request(search_term: str, exact_match: bool = False) -> dic
         RuntimeError: If API key is missing.
     """
     cache_key = f"{search_term}:{exact_match}"
-    cached = _threatfox_cache.get(cache_key)
+    cached = cache_get("threatfox", cache_key)
     if cached is not None:
         return cached
 
@@ -75,12 +73,12 @@ async def _threatfox_request(search_term: str, exact_match: bool = False) -> dic
         body = {"query": "search_ioc", "search_term": search_term, "exact_match": exact_match}
         resp = await _api_call("post", THREATFOX_BASE_URL, headers=headers, json=body)
         data = resp.json()
-    _threatfox_cache.set(cache_key, data, THREATFOX_CACHE_TTL)
+    cache_set("threatfox", cache_key, data, THREATFOX_CACHE_TTL)
     return data
 
 
 def _format_threatfox_markdown(search_term: str, data: dict[str, Any]) -> str:
-    """Format ThreatFox API response as a human-readable markdown threat card.
+    """Format ThreatFox API response as a human readable markdown threat card.
 
     Args:
         search_term: The IOC that was searched.
@@ -92,8 +90,8 @@ def _format_threatfox_markdown(search_term: str, data: dict[str, Any]) -> str:
     query_status = data.get("query_status", "unknown")
     results = data.get("data", [])
 
-    lines = [f"# ThreatFox IOC Search — `{search_term}`", ""]
-    lines.append(f"**Status**: `{query_status}`  |  **Matches**: {len(results)}")
+    lines = [f"# ThreatFox IOC Search - `{search_term}`", ""]
+    lines.append(f"**Status**: `{query_status}` | **Matches**: {len(results)}")
 
     if query_status != "ok" or not results:
         lines.append("")
@@ -257,7 +255,7 @@ async def threatfox_ioc_search(params: ThreatFoxSearchInput) -> str:
 
 
 class ThreatFoxBulkInput(BaseModel):
-    """Input model for threatfox_ioc_search_bulk — concurrent multi-IOC lookup."""
+    """Input model for threatfox_ioc_search_bulk - concurrent multi-IOC lookup."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     search_terms: list[str] = Field(
@@ -355,9 +353,9 @@ async def threatfox_ioc_search_bulk(params: ThreatFoxBulkInput) -> str:
     lines = ["# ThreatFox Bulk IOC Search", ""]
     for r in results:
         if "error" in r:
-            lines.append(f"- **{r['search_term']}** — ⚠️ {r['error']}")
+            lines.append(f"- **{r['search_term']}** - ⚠️ {r['error']}")
         elif r["matches"] == 0:
-            lines.append(f"- `{r['search_term']}` — clean")
+            lines.append(f"- `{r['search_term']}` - clean")
         else:
             lines.append(
                 f"- `{r['search_term']}` - {r['matches']} matches, "
