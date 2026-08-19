@@ -323,8 +323,8 @@ async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
     if params.response_format == "json":
         return json.dumps({"total": total, "cities": [
             {"city": b["key"], "alerts": b["doc_count"],
-             "lat": round(b.get("lat", {}).get("value", 0), 4),
-             "lon": round(b.get("lon", {}).get("value", 0), 4),
+             "lat": round(b.get("lat", {}).get("value") or 0, 4),
+             "lon": round(b.get("lon", {}).get("value") or 0, 4),
              "unique_ips": b.get("unique_ips", {}).get("value", 0)}
             for b in buckets
         ]}, indent=2, ensure_ascii=False)
@@ -335,8 +335,8 @@ async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
     lines.extend(["", "| City | Alerts | Lat | Lon | Unique IPs |",
                    "|------|--------|-----|-----|------------|"])
     for b in buckets[:25]:
-        lat = round(b.get("lat", {}).get("value", 0), 2)
-        lon = round(b.get("lon", {}).get("value", 0), 2)
+        lat = round(b.get("lat", {}).get("value") or 0, 2)
+        lon = round(b.get("lon", {}).get("value") or 0, 2)
         ips = b.get("unique_ips", {}).get("value", 0)
         lines.append(f"| {b['key']} | {b['doc_count']:,} | {lat} | {lon} | {ips:,} |")
     if total == 0:

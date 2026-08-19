@@ -40,22 +40,36 @@ from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.subprocess import _run_async
 
 
+class WazuhAlertsInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    agent_name: Optional[str] = Field(default=None, max_length=256, description="Filter by agent name")
+    srcip: Optional[str] = Field(default=None, max_length=45, description="Filter by source IP")
+    since: Optional[str] = Field(default=None, max_length=24, description="Start time (ISO 8601 or relative like '24h')")
+    until: Optional[str] = Field(default=None, max_length=24, description="End time (ISO 8601 or relative)")
+    limit: int = Field(default=500, ge=1, le=2000, description="Max alerts to return")
+    cursor: Optional[str] = Field(default=None, description="Pagination cursor from a previous response")
+    bypass_redaction: bool = Field(default=False, description="When true, skip PII/credential redaction")
+    redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(default=None, description="Redaction policy")
+
+
 @mcp.tool(
     name="blueteam_wazuh_alerts",
     annotations={"readOnlyHint": True, "destructiveHint": False,
                   "idempotentHint": True, "openWorldHint": False}
 )
-async def blueteam_wazuh_alerts(
-    agent_name: Optional[str] = None,
-    srcip: Optional[str] = None,
-    since: Optional[str] = None,
-    until: Optional[str] = None,
-    limit: int = 500,
-    cursor: Optional[str] = None,
-    bypass_redaction: bool = False,
-    redaction_policy: Optional[str] = None,
-) -> str:
-    """Read Wazuh security alerts - local alerts.json first, auto-fallback to Indexer."""
+async def blueteam_wazuh_alerts(params: WazuhAlertsInput) -> str:
+    """Read Wazuh security alerts - local alerts.json first, auto-fallback to Indexer.
+
+    Args:
+        params.agent_name: Filter by agent name
+        params.srcip: Filter by source IP
+        params.since: Start time (ISO 8601 or relative like '24h')
+        params.until: End time (ISO 8601 or relative)
+        params.limit: Max alerts to return
+        params.cursor: Pagination cursor
+        params.bypass_redaction: When true, skip PII/credential redaction
+        params.redaction_policy: 'full', 'protect_victim', or 'raw'
+    """
     _audit_log("blueteam_wazuh_alerts", {})
     p = Path(_WAZUH_ALERTS_PATH)
     if not p.exists():
@@ -68,22 +82,22 @@ async def blueteam_wazuh_alerts(
                          "or use blueteam_wazuh_manager_logs."
             }, indent=2)
         search_after = None
-        since_iso, until_iso = _parse_time_window(since or "24h", until)
-        if cursor:
-            decoded = _decode_cursor(cursor)
+        since_iso, until_iso = _parse_time_window(params.since or "24h", params.until)
+        if params.cursor:
+            decoded = _decode_cursor(params.cursor)
             if decoded:
                 search_after = decoded.get("search_after")
         must = [{"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                            "format": "strict_date_optional_time"}}}]
-        if agent_name:
-            must.append({"match": {"agent.name": agent_name}})
-        if srcip:
+        if params.agent_name:
+            must.append({"match": {"agent.name": params.agent_name}})
+        if params.srcip:
             must.append({"bool": {"should": [
-                {"match": {"data.srcip": srcip}},
-                {"match_phrase": {"full_log": srcip}},
+                {"match": {"data.srcip": params.srcip}},
+                {"match_phrase": {"full_log": params.srcip}},
             ], "minimum_should_match": 1}})
         body = {
-            "size": min(limit, 2000),
+            "size": min(params.limit, 2000),
             "sort": [{"@timestamp": {"order": "asc"}}],
             "query": {"bool": {"must": must}},
         }
@@ -96,38 +110,38 @@ async def blueteam_wazuh_alerts(
         docs = [h.get("_source", h) for h in hits.get("hits", [])]
         next_cursor = None
         hit_list = hits.get("hits", [])
-        if hit_list and len(docs) >= limit:
+        if hit_list and len(docs) >= params.limit:
             last_sort = hit_list[-1].get("sort")
             if last_sort:
                 next_cursor = _encode_cursor({"search_after": last_sort})
         return _truncate_if_needed(json.dumps({
             "source": "wazuh-indexer",
-            "alerts": _redact_alert_data(docs, bypass=bypass_redaction,
-                                          policy=redaction_policy),
+            "alerts": _redact_alert_data(docs, bypass=params.bypass_redaction,
+                                          policy=params.redaction_policy),
             "count": len(docs),
             "next_cursor": next_cursor,
         }, indent=2))
 
     # Local alerts.json path
     skip = 0
-    if cursor:
-        decoded = _decode_cursor(cursor)
+    if params.cursor:
+        decoded = _decode_cursor(params.cursor)
         if decoded:
             skip = decoded.get("scanned", 0)
-    page = min((skip + limit) * 3, _WAZUH_ALERTS_MAX_LINES)
+    page = min((skip + params.limit) * 3, _WAZUH_ALERTS_MAX_LINES)
     r = await _run_async(["tail", "-n", str(page), _WAZUH_ALERTS_PATH])
     if r.get("returncode", 0) != 0:
         return json.dumps({"error": "Failed to read alerts",
                             "stderr": r.get("stderr", "")})
     alerts = []
-    af = (agent_name or "").strip()
-    ipf = (srcip or "").strip()
+    af = (params.agent_name or "").strip()
+    ipf = (params.srcip or "").strip()
     scanned = 0
     for line in (r.get("stdout") or "").strip().splitlines():
         scanned += 1
         if scanned <= skip:
             continue
-        if len(alerts) >= limit:
+        if len(alerts) >= params.limit:
             break
         line = line.strip()
         if not line:
@@ -149,14 +163,28 @@ async def blueteam_wazuh_alerts(
             alerts.append(a)
         except json.JSONDecodeError:
             continue
-    next_cursor = _encode_cursor({"scanned": scanned}) if len(alerts) >= limit else None
+    next_cursor = _encode_cursor({"scanned": scanned}) if len(alerts) >= params.limit else None
     return _truncate_if_needed(json.dumps({
         "source": "local",
-        "alerts": _redact_alert_data(alerts, bypass=bypass_redaction,
-                                      policy=redaction_policy),
+        "alerts": _redact_alert_data(alerts, bypass=params.bypass_redaction,
+                                      policy=params.redaction_policy),
         "count": len(alerts),
         "next_cursor": next_cursor,
     }, indent=2))
+
+
+class WazuhIndexerSearchInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    agent_name: Optional[str] = Field(default=None, max_length=256, description="Filter by agent name")
+    srcip: Optional[str] = Field(default=None, max_length=45, description="Filter by source IP")
+    since: Optional[str] = Field(default=None, max_length=24, description="Start time (ISO 8601 or relative like '24h')")
+    until: Optional[str] = Field(default=None, max_length=24, description="End time (ISO 8601 or relative)")
+    limit: int = Field(default=500, ge=1, le=10000, description="Max alerts per page")
+    max_scanned: int = Field(default=0, ge=0, le=100000, description="When >0, auto-paginate up to this many documents")
+    cursor: Optional[str] = Field(default=None, description="Pagination cursor from a previous response")
+    keyword: Optional[str] = Field(default=None, max_length=256, description="Free-text keyword to narrow results")
+    response_format: str = Field(default="json", description="'markdown' or 'json'")
+    redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(default=None, description="Redaction policy")
 
 
 @mcp.tool(
@@ -164,21 +192,26 @@ async def blueteam_wazuh_alerts(
     annotations={"readOnlyHint": True, "destructiveHint": False,
                   "idempotentHint": True, "openWorldHint": False}
 )
-async def blueteam_wazuh_indexer_search(
-    agent_name: Optional[str] = None,
-    srcip: Optional[str] = None,
-    since: Optional[str] = None,
-    until: Optional[str] = None,
-    limit: int = 500,
-    max_scanned: int = 0,
-    cursor: Optional[str] = None,
-    keyword: Optional[str] = None,
-    response_format: str = "json",
-    redaction_policy: Optional[str] = None,
-) -> str:
+async def blueteam_wazuh_indexer_search(params: WazuhIndexerSearchInput) -> str:
     """Query Wazuh Indexer (OpenSearch) for alerts/events with cursor pagination.
-    Set max_scanned > 0 for auto-pagination (server fetches up to N documents
-    across multiple pages in a single call).
+
+    Set ``params.max_scanned > 0`` for auto-pagination (server fetches up to N
+    documents across multiple pages in a single call).
+
+    Args:
+        params.agent_name: Optional agent-name filter
+        params.srcip: Optional source-IP filter
+        params.since: ISO 8601 start in UTC (or relative like '24h')
+        params.until: ISO 8601 end in UTC (or relative like 'now')
+        params.limit: Max alerts per page (1-10000, default 500)
+        params.max_scanned: When >0, auto-paginate across pages up to this many docs
+        params.cursor: Pagination cursor from a previous response
+        params.keyword: Free-text keyword to narrow results
+        params.response_format: 'markdown' or 'json'
+        params.redaction_policy: 'full', 'protect_victim', or 'raw'
+
+    Returns:
+        str: JSON with alerts, pagination cursor, and has_more flag.
     """
     _audit_log("blueteam_wazuh_indexer_search", {})
     from mcp_server.wazuh.indexer import (
@@ -190,23 +223,23 @@ async def blueteam_wazuh_indexer_search(
         return json.dumps({
             "error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."
         }, indent=2)
-    since_iso, until_iso = _parse_time_window(since, until)
+    since_iso, until_iso = _parse_time_window(params.since, params.until)
     must: list[dict] = []
-    if agent_name:
-        must.append({"match": {"agent.name": agent_name}})
-    if srcip:
+    if params.agent_name:
+        must.append({"match": {"agent.name": params.agent_name}})
+    if params.srcip:
         must.append({"bool": {"should": [
-            {"match": {"data.srcip": srcip}},
-            {"match": {"data.srcip2": srcip}},
-            {"match": {"srcip": srcip}},
-            {"match_phrase": {"full_log": srcip}},
+            {"match": {"data.srcip": params.srcip}},
+            {"match": {"data.srcip2": params.srcip}},
+            {"match": {"srcip": params.srcip}},
+            {"match_phrase": {"full_log": params.srcip}},
         ], "minimum_should_match": 1}})
     must.append({"range": {"@timestamp": {
         "format": "strict_date_optional_time", "gte": since_iso, "lt": until_iso,
     }}})
-    if keyword:
+    if params.keyword:
         parts = [
-            f"{f}: ({keyword})^{b}" if b else f"{f}: ({keyword})"
+            f"{f}: ({params.keyword})^{b}" if b else f"{f}: ({params.keyword})"
             for f, b in _KEYWORD_SEARCH_FIELDS
         ]
         must.append({"query_string": {
@@ -216,8 +249,8 @@ async def blueteam_wazuh_indexer_search(
         }})
 
     search_after = None
-    if cursor:
-        decoded = _decode_cursor(cursor)
+    if params.cursor:
+        decoded = _decode_cursor(params.cursor)
         if decoded:
             search_after = decoded.get("search_after")
 
@@ -225,9 +258,9 @@ async def blueteam_wazuh_indexer_search(
     total_scanned = 0
     total_val = 0
     total_relation = "eq"
-    page_size = min(limit, 10000)
+    page_size = min(params.limit, 10000)
     _MAX_AUTO_SCAN = 100000
-    effective_max = min(max_scanned, _MAX_AUTO_SCAN) if max_scanned > 0 else page_size
+    effective_max = min(params.max_scanned, _MAX_AUTO_SCAN) if params.max_scanned > 0 else page_size
 
     while total_scanned < effective_max:
         body = {
@@ -268,8 +301,13 @@ async def blueteam_wazuh_indexer_search(
         "retrieved": total_scanned,
         "has_more": has_more,
         "next_cursor": next_cursor,
-        "alerts": _redact_alert_data(all_docs, policy=redaction_policy),
+        "alerts": _redact_alert_data(all_docs, policy=params.redaction_policy),
     }, indent=2))
+
+
+class MitreLookupInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    tactic_or_technique: str = Field(..., max_length=128, description="MITRE ATT&CK tactic or technique ID/name to look up")
 
 
 # blueteam_mitre_lookup
@@ -278,18 +316,22 @@ async def blueteam_wazuh_indexer_search(
     annotations={"readOnlyHint": True, "destructiveHint": False,
                   "idempotentHint": True, "openWorldHint": False}
 )
-async def blueteam_mitre_lookup(tactic_or_technique: str) -> str:
-    """Look up a MITRE ATT&CK tactic or technique in the local mapping."""
-    _audit_log("blueteam_mitre_lookup", {"query": tactic_or_technique})
-    q = tactic_or_technique.strip().upper()
+async def blueteam_mitre_lookup(params: MitreLookupInput) -> str:
+    """Look up a MITRE ATT&CK tactic or technique in the local mapping.
+
+    Args:
+        params.tactic_or_technique: MITRE tactic or technique ID/name to look up
+    """
+    _audit_log("blueteam_mitre_lookup", {"query": params.tactic_or_technique})
+    q = params.tactic_or_technique.strip().upper()
     results: dict[str, str] = {}
     for tactic, category in MITRE_TACTIC_TO_CATEGORY.items():
         if q in tactic.upper() or q in category.upper():
             results[tactic] = category
     if not results:
         return json.dumps({
-            "query": tactic_or_technique,
+            "query": params.tactic_or_technique,
             "result": "not_found",
             "available_tactics": list(MITRE_TACTIC_TO_CATEGORY.keys()),
         }, indent=2)
-    return json.dumps({"query": tactic_or_technique, "matches": results}, indent=2)
+    return json.dumps({"query": params.tactic_or_technique, "matches": results}, indent=2)

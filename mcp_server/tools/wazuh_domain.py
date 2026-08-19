@@ -341,6 +341,10 @@ async def wazuh_domain_lookup(params: WazuhDomainLookupInput) -> str:
         params.response_format: 'markdown' or 'json'
         params.max_scanned: When set, run full-scan auto-pagination (see above)
         params.keyword: Free-text keyword to further narrow results
+        params.bypass_redaction: When true, skip PII/credential redaction
+        params.redaction_policy: 'full', 'protect_victim', or 'raw'
+        params.reveal_owned: When true, unmask emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS)
+        params.forensic_token: Forensic unmask token (BLUETEAM_FORENSIC_TOKEN)
 
     Returns:
         str: Paged alert results (single-page) or aggregated summary (full-scan).

@@ -14,12 +14,20 @@ from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.subprocess import _run, _tool_not_found
 
 
+class BypassRedactionInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    bypass_redaction: bool = Field(default=False, description="When true, skip PII/credential redaction for audit investigations")
+
+
 @mcp.tool(
     name="blueteam_fail2ban_status",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
 )
-async def blueteam_fail2ban_status(bypass_redaction: bool = False) -> str:
+async def blueteam_fail2ban_status(params: BypassRedactionInput) -> str:
     """List all active fail2ban jails and their ban counts.
+
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction
 
     Returns:
         str: Jail list with banned IP counts
@@ -28,7 +36,7 @@ async def blueteam_fail2ban_status(bypass_redaction: bool = False) -> str:
     if not shutil.which("fail2ban-client"):
         return _tool_not_found("fail2ban")
     r = _run(["fail2ban-client", "status"])
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
 
 
 class JailInput(BaseModel):

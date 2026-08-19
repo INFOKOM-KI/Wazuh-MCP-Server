@@ -177,19 +177,24 @@ irm https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1 | iex
 
 ```
 ⚠️ CALLING CONVENTION (applies to EVERY tool — prevents "Field required" errors):
-- Wrap ALL tool arguments in a `params` object:
-    tool_invoke(name="<tool>", params={"field": value, ...})
-  The MCP client exposes a NESTED `params` schema — flat args cause
-  "Field required [type=missing]" validation errors.
+- Every tool now takes a SINGLE ``params`` object (100% uniform). FastMCP wraps
+  each tool's arguments inside a ``params`` key, so the client payload MUST
+  double-nest:
+      tool_invoke(name="<tool>", params={"params": {"field": value, ...}})
+  Outer "params" = the tool_invoke RPC argument; inner "params" = the tool's
+  single Pydantic-model argument. Sending single-nested ({"field": value}) or
+  flat fields both cause "Field required [type=missing]" validation errors.
 - Call tool_inspect FIRST to read a tool's exact signature, then tool_invoke
   with params matching it. Never skip inspect on a tool you haven't used yet.
 - Timestamps use ISO 8601 with Z (e.g. "2026-08-18T17:27:00Z") where a tool
   accepts a date/time — not space-separated strings.
 
 ⚠️ EXECUTION RULES (parameter guardrails — prevents false positives):
-- redaction_policy="protect_victim" is accepted by ONLY 5 tools:
-    blueteam_curated_threat_report, blueteam_wazuh_alert_summarize,
-    blueteam_wazuh_indexer_search, three_sum_correlation, blueteam_investigate_ip
+- redaction_policy="protect_victim" is accepted by 13 tools:
+    blueteam_curated_threat_report, blueteam_threat_card, blueteam_wazuh_alert_summarize,
+    blueteam_wazuh_alerts, blueteam_wazuh_geo_heatmap, blueteam_wazuh_indexer_search,
+    three_sum_correlation, wazuh_alert_aggregate_analysis, wazuh_alert_focused_crawl,
+    wazuh_alert_timeline, wazuh_attack_velocity, wazuh_domain_lookup, wazuh_email_lookup
 - blueteam_wazuh_export uses bypass_redaction (NOT redaction_policy) — forensic export to disk only.
 - Other tools DO NOT accept redaction_policy. If a call returns "extra_forbidden", drop the param and retry.
 - blueteam_export_report does NOT support reveal_owned; it supports ONLY docx/xlsx/pptx.
@@ -198,10 +203,10 @@ irm https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1 | iex
 ⚠️ TWO-TIER UNMASKING:
 - TIER 1 — reveal_owned=true (SAFE for LLM, own assets only): reveals only
   *.tangerangkota.go.id + @tangerangkota.go.id. 12 tools accept it:
-  blueteam_curated_threat_report, blueteam_wazuh_alert_summarize, blueteam_threat_card,
-  three_sum_correlation, blueteam_investigate_ip, wazuh_alert_aggregate_analysis,
-  wazuh_domain_lookup, wazuh_email_lookup, wazuh_alert_focused_crawl,
-  wazuh_alert_timeline, wazuh_attack_velocity, blueteam_wazuh_vulnerabilities.
+  blueteam_curated_threat_report, blueteam_threat_card, blueteam_wazuh_alert_summarize,
+  blueteam_wazuh_geo_heatmap, three_sum_correlation, wazuh_alert_aggregate_analysis,
+  wazuh_alert_focused_crawl, wazuh_alert_timeline, wazuh_attack_velocity,
+  wazuh_compromised_emails_analysis, wazuh_domain_lookup, wazuh_email_lookup
 - TIER 2 — bypass_redaction=true + forensic_token (HUMAN ONLY): raw data to disk via
   blueteam_wazuh_export; the LLM sees only the file path. Requires
   BLUETEAM_ALLOW_FORENSIC_BYPASS=true + BLUETEAM_FORENSIC_TOKEN.

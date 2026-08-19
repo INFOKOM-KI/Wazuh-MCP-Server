@@ -303,9 +303,18 @@ async def blueteam_wazuh_agents(params: WazuhAgentsInput) -> str:
 
 
 # blueteam_wazuh_agents_summary
+class WazuhAgentsSummaryInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    bypass_redaction: bool = Field(default=False, description="When true, skip PII/credential redaction")
+
+
 @blueteam_tool(name="blueteam_wazuh_agents_summary")
-async def blueteam_wazuh_agents_summary() -> str:
-    """Get Wazuh agent count by status."""
+async def blueteam_wazuh_agents_summary(params: WazuhAgentsSummaryInput) -> str:
+    """Get Wazuh agent count by status.
+
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction
+    """
     data = await _wazuh_api_get("/agents/summary/status")
     return json.dumps(data.get("data", data), indent=2)
 

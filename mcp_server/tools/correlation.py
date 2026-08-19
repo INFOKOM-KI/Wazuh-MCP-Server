@@ -302,7 +302,7 @@ _three_sum_global_throttle = {"time": 0.0, "result": None}
     name="three_sum_correlation",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
+async def three_sum_correlation(params: ThreeSumCorrelationInput) -> dict:
     """Evaluate 3-Sum APT detection across 3 Wazuh alert categories.
 
     **Engine A - Multi-IoC Risk Thresholding**: Finds source IPs appearing in
@@ -321,14 +321,14 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
     start_time = time.monotonic()
 
     # Throttle gate
-    if data.throttle > 0 and _three_sum_global_throttle["time"] > 0:
+    if params.throttle > 0 and _three_sum_global_throttle["time"] > 0:
         elapsed = start_time - _three_sum_global_throttle["time"]
-        if elapsed < data.throttle:
+        if elapsed < params.throttle:
             return dict(_three_sum_global_throttle["result"] or {})
 
     # Feedback loop: auto-exclude FP-verified IPs from the investigation history
     # and the false-positive knowledge base (a dedicated, TTL suppression set).
-    exclude_set: set[str] = set(data.exclude_srcips or [])
+    exclude_set: set[str] = set(params.exclude_srcips or [])
     if _INVESTIGATION_HISTORY_FILE:
         try:
             history = _read_history()
@@ -343,19 +343,19 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
         pass
 
     # Time window
-    since_dt = datetime.utcnow() - timedelta(minutes=data.time_window_minutes)
+    since_dt = datetime.utcnow() - timedelta(minutes=params.time_window_minutes)
     until_dt = datetime.utcnow()
     since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     until_iso = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    categories = [("A", data.category_a_label, data.category_a_groups),
-                  ("B", data.category_b_label, data.category_b_groups),
-                  ("C", data.category_c_label, data.category_c_groups)]
+    categories = [("A", params.category_a_label, params.category_a_groups),
+                  ("B", params.category_b_label, params.category_b_groups),
+                  ("C", params.category_c_label, params.category_c_groups)]
 
     # Dynamic MITRE technique -> tactic resolution from the ATT&CK STIX bundle.
     technique_tactics: dict[str, list[str]] = {}
     category_techniques: dict[str, list[str]] = {"A": [], "B": [], "C": []}
-    if data.use_mitre:
+    if params.use_mitre:
         technique_tactics = await _load_mitre_technique_map()
         category_techniques = build_category_techniques(technique_tactics)
 
@@ -371,7 +371,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
 
     def _build_filter(category: str, groups: list[str], since: str = since_iso,
                       until: str = until_iso) -> dict:
-        if data.use_mitre:
+        if params.use_mitre:
             mitre_clauses = [
                 {"terms": {"rule.mitre.tactic": _tactic_terms(category)}},
                 {"terms": {"rule.mitre.tactic.keyword": _tactic_terms(category)}},
@@ -412,14 +412,14 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
     engine_a_results = None
     engine_b_results = None
     ctx = None
-    if data.use_attack_graph:
+    if params.use_attack_graph:
         ctx = await _build_cluster_context()
 
     # ENGINE A - Multi-IoC Risk Thresholding (dynamic MITRE scoring)
-    if data.engine_a_enabled:
+    if params.engine_a_enabled:
         def _agg() -> dict:
             aggs = {"level_sum": {"sum": {"field": "rule.level"}}}
-            if data.use_mitre:
+            if params.use_mitre:
                 aggs["by_tactic"] = {
                     "terms": {"field": "rule.mitre.tactic", "size": 32},
                     "aggs": {"level_sum": {"sum": {"field": "rule.level"}}},
@@ -445,7 +445,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             """Dynamic risk score = rule.level x MITRE tactic weight. Tactic-annotated
             alerts use their tactic's weight; technique-only alerts use the STIX-resolved
             technique weight; no-MITRE alerts use the category's mean tactic weight."""
-            if not data.use_mitre:
+            if not params.use_mitre:
                 return float(b.get("level_sum", {}).get("value", 0) or 0) * category_default_weight(category)
             total = 0.0
             for tb in b.get("by_tactic", {}).get("buckets", []) or []:
@@ -497,24 +497,24 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
                     engine_a_query_failures += 1
 
         triggers, stats = evaluate_engine_a(
-            srcips_by_label.get(data.category_a_label, []),
-            srcips_by_label.get(data.category_b_label, []),
-            srcips_by_label.get(data.category_c_label, []),
-            threshold_score=data.threshold_score,
+            srcips_by_label.get(params.category_a_label, []),
+            srcips_by_label.get(params.category_b_label, []),
+            srcips_by_label.get(params.category_c_label, []),
+            threshold_score=params.threshold_score,
             exclude_srcips=list(exclude_set) if exclude_set else None,
-            cidr_normalize=data.cidr_normalize,
+            cidr_normalize=params.cidr_normalize,
             cluster_map=ctx["cluster_map"] if ctx else None,
             ppr_scores=ctx["ppr_scores"] if ctx else None,
             ppr_boost_factor=_PPR_BOOST_FACTOR if ctx else 0.0,
             confirmed_ips=ctx["confirmed_ips"] if ctx else None,
             confirmed_bonus=_CONFIRMED_BONUS if ctx else 0.0,
-            cat_a_weight=data.cat_a_weight,
-            cat_b_weight=data.cat_b_weight,
-            cat_c_weight=data.cat_c_weight,
+            cat_a_weight=params.cat_a_weight,
+            cat_b_weight=params.cat_b_weight,
+            cat_c_weight=params.cat_c_weight,
         )
         register_attacker_ips([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
         record_iocs([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
-        if data.create_case and triggers:
+        if params.create_case and triggers:
             trigger_ips = [t["ip"] for t in triggers if t.get("ip")]
             case = case_store.create_case(
                 title=f"3-Sum APT — {len(triggers)} trigger(s)", srcips=trigger_ips)
@@ -525,9 +525,9 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
         engine_a_results = (triggers, stats)
 
     # ENGINE B - 3-Source Volumetric Z-Score
-    if data.engine_b_enabled:
+    if params.engine_b_enabled:
         # Compute auto-bucket interval: target ~60 buckets
-        dur_minutes = data.time_window_minutes
+        dur_minutes = params.time_window_minutes
         if dur_minutes <= 60:
             bucket_interval = "1m"
         elif dur_minutes <= 360:
@@ -554,7 +554,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             Multi-field content match (rule-agnostic): Wazuh decoders store lock events
             in different fields, so match "locked" across the common ones + full_log.
             """
-            lock_filter = _build_filter("B", data.category_b_groups)["bool"]["filter"] + [{
+            lock_filter = _build_filter("B", params.category_b_groups)["bool"]["filter"] + [{
                 "bool": {"should": [
                     {"match": {"data.error": "locked"}},
                     {"match": {"data.data.error": "locked"}},
@@ -571,9 +571,9 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             return total.get("value", 0) if isinstance(total, dict) else total
 
         (buckets_a, err_a), (buckets_b, err_b), (buckets_c, err_c), lockouts = await asyncio.gather(
-            _fetch_time_buckets("A", data.category_a_groups),
-            _fetch_time_buckets("B", data.category_b_groups),
-            _fetch_time_buckets("C", data.category_c_groups),
+            _fetch_time_buckets("A", params.category_a_groups),
+            _fetch_time_buckets("B", params.category_b_groups),
+            _fetch_time_buckets("C", params.category_c_groups),
             _count_lockouts(),
         )
 
@@ -581,10 +581,10 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
 
         anomalies, b_stats = evaluate_engine_b(
             buckets_a, buckets_b, buckets_c,
-            z_score_threshold=data.z_score_threshold,
-            sparse_floor=data.engine_b_sparse_floor,
-            use_mad=data.engine_b_use_mad,
-            shoulder_ratio=data.engine_b_shoulder_ratio,
+            z_score_threshold=params.z_score_threshold,
+            sparse_floor=params.engine_b_sparse_floor,
+            use_mad=params.engine_b_use_mad,
+            shoulder_ratio=params.engine_b_shoulder_ratio,
         )
         b_stats["account_lockouts_observed"] = lockouts  # advisory, not a scoring input
         engine_b_results = (anomalies, b_stats)
@@ -599,15 +599,15 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
 
     # DEGRADATION DETECTION - surface total Indexer failure so the LLM
     # agent is never told "NONE / 0 triggers" when the Indexer was simply down.
-    engine_a_degraded = (data.engine_a_enabled and engine_a_query_failures == 3)
-    engine_b_degraded = (data.engine_b_enabled and engine_b_query_failures == 3)
-    if data.engine_a_enabled and not data.engine_b_enabled and engine_a_degraded:
+    engine_a_degraded = (params.engine_a_enabled and engine_a_query_failures == 3)
+    engine_b_degraded = (params.engine_b_enabled and engine_b_query_failures == 3)
+    if params.engine_a_enabled and not params.engine_b_enabled and engine_a_degraded:
         result["_degraded"] = True
         result["_degradation_reason"] = (
             "Engine A: all 3 source-IP queries against the Wazuh Indexer failed "
             "(Indexer may be unreachable). Engine B is disabled. "
             "Results are unreliable - severity=NONE may indicate an outage, not a clean window.")
-    elif data.engine_b_enabled and not data.engine_a_enabled and engine_b_degraded:
+    elif params.engine_b_enabled and not params.engine_a_enabled and engine_b_degraded:
         result["_degraded"] = True
         result["_degradation_reason"] = (
             "Engine B: all 3 time-bucket queries against the Wazuh Indexer failed "
@@ -632,7 +632,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
             "(0 triggers/anomalies) should NOT be interpreted as a clean signal.")
 
     # MULTI-RESOLUTION - re-run at 1h and 24h windows, cross-tier analysis.
-    if data.multi_resolution:
+    if params.multi_resolution:
         tier_results = [result]  # current run is the 7d tier
         for tier in _MULTI_RES_TIERS[:-1]:  # 1h, 24h (7d already done)
             tier_since = datetime.utcnow() - timedelta(minutes=tier["window_minutes"])
@@ -644,7 +644,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
 
             # Engine A at this tier
             tier_a_results = None
-            if data.engine_a_enabled:
+            if params.engine_a_enabled:
                 async def _tier_fetch(category, label, groups):
                     w = None
                     body = {"size": 0, "query": _tier_filter(category, groups),
@@ -674,18 +674,18 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
                 for l, e, _ in fet:
                     sbl[l] = e
                 tta, tts = evaluate_engine_a(
-                    sbl.get(data.category_a_label, []), sbl.get(data.category_b_label, []),
-                    sbl.get(data.category_c_label, []),
+                    sbl.get(params.category_a_label, []), sbl.get(params.category_b_label, []),
+                    sbl.get(params.category_c_label, []),
                     threshold_score=tier["threshold_score"],
                     exclude_srcips=list(exclude_set) if exclude_set else None,
-                    cat_a_weight=data.cat_a_weight, cat_b_weight=data.cat_b_weight,
-                    cat_c_weight=data.cat_c_weight,
+                    cat_a_weight=params.cat_a_weight, cat_b_weight=params.cat_b_weight,
+                    cat_c_weight=params.cat_c_weight,
                 )
                 tier_a_results = (tta, tts)
 
             # Engine B at this tier
             tier_b_results = None
-            if data.engine_b_enabled:
+            if params.engine_b_enabled:
                 tier_dur = tier["window_minutes"]
                 if tier_dur <= 60:
                     bi = "1m"
@@ -711,13 +711,13 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
                             out.append((r.get("aggregations", {}).get("over_time", {}).get("buckets", []), False))
                     return out
                 tba, tbb, tbc = await _tier_buckets_batched([
-                    ("A", data.category_a_groups), ("B", data.category_b_groups), ("C", data.category_c_groups)])
+                    ("A", params.category_a_groups), ("B", params.category_b_groups), ("C", params.category_c_groups)])
                 anomalies, bstats = evaluate_engine_b(
                     tba[0], tbb[0], tbc[0],
                     z_score_threshold=tier["z_score_threshold"],
-                    sparse_floor=data.engine_b_sparse_floor,
-                    use_mad=data.engine_b_use_mad,
-                    shoulder_ratio=data.engine_b_shoulder_ratio,
+                    sparse_floor=params.engine_b_sparse_floor,
+                    use_mad=params.engine_b_use_mad,
+                    shoulder_ratio=params.engine_b_shoulder_ratio,
                 )
                 tier_b_results = (anomalies, bstats)
 
@@ -729,7 +729,7 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
         result["multi_resolution"] = evaluate_multi_resolution(tier_results)
 
     # Auto-enrich top triggers with threat intel.
-    if data.follow_up == "threat_intel" and engine_a_results:
+    if params.follow_up == "threat_intel" and engine_a_results:
         triggers, _ = engine_a_results
         top_ips = [t["ip"] for t in triggers[:10] if t.get("ip")]
         if top_ips:

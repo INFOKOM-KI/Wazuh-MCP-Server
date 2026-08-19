@@ -169,12 +169,18 @@ async def blueteam_journalctl(params: JournalInput) -> str:
     r = _run(cmd)
     return _redact_alert_data(r["stdout"] or r["stderr"], params=params)
 
+
+class BypassRedactionInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    bypass_redaction: bool = Field(default=False, description="When true, skip PII/credential redaction for audit investigations")
+
+
 # NETWORK MONITORING
 @mcp.tool(
     name="blueteam_list_listening_ports",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_list_listening_ports(bypass_redaction: bool = False) -> str:
+async def blueteam_list_listening_ports(params: BypassRedactionInput) -> str:
     """List all TCP/UDP ports currently listening, with owning process.
     Equivalent to 'ss -tulpn'. Identifies unexpected services.
 
@@ -185,14 +191,14 @@ async def blueteam_list_listening_ports(bypass_redaction: bool = False) -> str:
     r = _run(["ss", "-tulpn"])
     if r["returncode"] != 0:
         r = _run(["netstat", "-tulpn"])
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
 
 
 @mcp.tool(
     name="blueteam_list_connections",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_list_connections(bypass_redaction: bool = False) -> str:
+async def blueteam_list_connections(params: BypassRedactionInput) -> str:
     """List all established TCP connections with remote IPs and local processes.
     Useful for spotting unexpected outbound connections (beaconing, exfil).
 
@@ -203,7 +209,7 @@ async def blueteam_list_connections(bypass_redaction: bool = False) -> str:
     r = _run(["ss", "-tnp", "state", "established"])
     if r["returncode"] != 0:
         r = _run(["netstat", "-tnp"])
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
 
 
 class CaptureInput(BaseModel):
@@ -334,7 +340,7 @@ async def blueteam_hash_file(params: HashFileInput) -> str:
     name="blueteam_find_suid_files",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_find_suid_files(bypass_redaction: bool = False) -> str:
+async def blueteam_find_suid_files(params: BypassRedactionInput) -> str:
     """Find all SUID/SGID binaries on the system. Unexpected SUID files
     can indicate privilege escalation backdoors.
 
@@ -343,14 +349,14 @@ async def blueteam_find_suid_files(bypass_redaction: bool = False) -> str:
     """
     _audit_log("blueteam_find_suid_files", {})
     r = _run(["find", "/", "-type", "f", r"-perm", "/6000", "-ls"], timeout=60)
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
 
 
 @mcp.tool(
     name="blueteam_find_world_writable",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_find_world_writable(bypass_redaction: bool = False) -> str:
+async def blueteam_find_world_writable(params: BypassRedactionInput) -> str:
     """Find world-writable files and directories (excluding /proc, /sys, /dev).
     World-writable files in unexpected places are common persistence mechanisms.
 
@@ -368,7 +374,7 @@ async def blueteam_find_world_writable(bypass_redaction: bool = False) -> str:
         "-ls"
     ]
     r = _run(cmd, timeout=60)
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
 
 
 class RootkitInput(BaseModel):
@@ -411,7 +417,7 @@ async def blueteam_rootkit_scan(params: RootkitInput) -> str:
     name="blueteam_lynis_audit",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
 )
-async def blueteam_lynis_audit(bypass_redaction: bool = False) -> str:
+async def blueteam_lynis_audit(params: BypassRedactionInput) -> str:
     """Run a Lynis system hardening audit. Checks hundreds of security controls
     and produces prioritized recommendations. Takes 1-2 minutes.
 
@@ -422,14 +428,14 @@ async def blueteam_lynis_audit(bypass_redaction: bool = False) -> str:
     if not shutil.which("lynis"):
         return _tool_not_found("lynis")
     r = _run(["lynis", "audit", "system", "--quick", "--no-colors"], timeout=180)
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
 
 
 @mcp.tool(
     name="blueteam_check_updates",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
 )
-async def blueteam_check_updates(bypass_redaction: bool = False) -> str:
+async def blueteam_check_updates(params: BypassRedactionInput) -> str:
     """Check for available security updates (Debian/Ubuntu: apt, RHEL: dnf/yum).
 
     Returns:
@@ -438,13 +444,13 @@ async def blueteam_check_updates(bypass_redaction: bool = False) -> str:
     _audit_log("blueteam_check_updates", {})
     if shutil.which("apt"):
         r = _run(["apt", "list", "--upgradeable"], timeout=60)
-        return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+        return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
     elif shutil.which("dnf"):
         r = _run(["dnf", "check-update", "--security"], timeout=60)
-        return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+        return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
     elif shutil.which("yum"):
         r = _run(["yum", "check-update", "--security"], timeout=60)
-        return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+        return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
     return json.dumps({"error": "No supported package manager found (apt, dnf, yum)"})
 
 
@@ -452,7 +458,7 @@ async def blueteam_check_updates(bypass_redaction: bool = False) -> str:
     name="blueteam_check_open_firewall",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_check_open_firewall(bypass_redaction: bool = False) -> str:
+async def blueteam_check_open_firewall(params: BypassRedactionInput) -> str:
     """Show current firewall rules (iptables/nftables/ufw). Identifies
     overly permissive rules or missing protections.
 
@@ -463,13 +469,13 @@ async def blueteam_check_open_firewall(bypass_redaction: bool = False) -> str:
     if shutil.which("ufw"):
         r = _run(["ufw", "status", "verbose"])
         if r["returncode"] == 0:
-            return _redact_alert_data(r["stdout"], bypass=bypass_redaction)
+            return _redact_alert_data(r["stdout"], bypass=params.bypass_redaction)
     if shutil.which("nft"):
         r = _run(["nft", "list", "ruleset"])
         if r["returncode"] == 0:
-            return _redact_alert_data(r["stdout"], bypass=bypass_redaction)
+            return _redact_alert_data(r["stdout"], bypass=params.bypass_redaction)
     r = _run(["iptables", "-L", "-n", "-v"])
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
 
 
 
@@ -478,7 +484,7 @@ async def blueteam_check_open_firewall(bypass_redaction: bool = False) -> str:
     name="blueteam_who_is_logged_in",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_who_is_logged_in(bypass_redaction: bool = False) -> str:
+async def blueteam_who_is_logged_in(params: BypassRedactionInput) -> str:
     """Show currently logged-in users, their source IPs, and session times.
     Useful for detecting unauthorized active sessions.
 
@@ -487,14 +493,14 @@ async def blueteam_who_is_logged_in(bypass_redaction: bool = False) -> str:
     """
     _audit_log("blueteam_who_is_logged_in", {})
     r = _run(["w", "-h"])
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
 
 
 @mcp.tool(
     name="blueteam_last_logins",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_last_logins(bypass_redaction: bool = False) -> str:
+async def blueteam_last_logins(params: BypassRedactionInput) -> str:
     """Show recent login history from /var/log/wtmp. Includes successful
     and failed logins with source IP and timestamps.
 
@@ -503,14 +509,14 @@ async def blueteam_last_logins(bypass_redaction: bool = False) -> str:
     """
     _audit_log("blueteam_last_logins", {})
     r = _run(["last", "-n", "50", "-a", "-i"])
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
 
 
 @mcp.tool(
     name="blueteam_failed_logins",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_failed_logins(bypass_redaction: bool = False) -> str:
+async def blueteam_failed_logins(params: BypassRedactionInput) -> str:
     """Show all failed login attempts from /var/log/btmp (lastb).
     High counts from a single IP indicate brute force.
 
@@ -523,15 +529,15 @@ async def blueteam_failed_logins(bypass_redaction: bool = False) -> str:
         # Try parsing auth.log directly
         r2 = _run(["grep", "-i", r"failed password\|authentication failure", "/var/log/auth.log"])
         lines = r2["stdout"].splitlines()
-        return _redact_alert_data("\n".join(lines[-100:], bypass=bypass_redaction) if lines else "No failed logins found in auth.log")
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+        return _redact_alert_data("\n".join(lines[-100:]) if lines else "No failed logins found in auth.log", bypass=params.bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
 
 
 @mcp.tool(
     name="blueteam_sudo_history",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_sudo_history(bypass_redaction: bool = False) -> str:
+async def blueteam_sudo_history(params: BypassRedactionInput) -> str:
     """Show recent sudo command usage from auth.log.
     Identifies privilege escalation abuse.
 
@@ -541,14 +547,14 @@ async def blueteam_sudo_history(bypass_redaction: bool = False) -> str:
     _audit_log("blueteam_sudo_history", {})
     r = _run(["grep", "sudo:", "/var/log/auth.log"])
     lines = r["stdout"].splitlines()
-    return _redact_alert_data("\n".join(lines[-200:], bypass=bypass_redaction) if lines else "No sudo activity found (or no auth.log)")
+    return _redact_alert_data("\n".join(lines[-200:]) if lines else "No sudo activity found (or no auth.log)", bypass=params.bypass_redaction)
 
 
 @mcp.tool(
     name="blueteam_list_users",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_list_users(bypass_redaction: bool = False) -> str:
+async def blueteam_list_users(params: BypassRedactionInput) -> str:
     """List all local user accounts with UID, GID, home dir, and shell.
     Highlights users with UID 0 (root-level) and users with login shells.
 
@@ -586,14 +592,14 @@ async def blueteam_list_users(bypass_redaction: bool = False) -> str:
 
     # Sort: UID 0 first, then regular users, then system accounts.
     users.sort(key=lambda u: (not u["flags"]["uid_zero_root"], not u["flags"]["has_login_shell"], u["uid"]))
-    return _redact_alert_data(json.dumps(users, indent=2, bypass=bypass_redaction))
+    return _redact_alert_data(json.dumps(users, indent=2), bypass=params.bypass_redaction)
 
 
 @mcp.tool(
     name="blueteam_check_ssh_authorized_keys",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_check_ssh_authorized_keys(bypass_redaction: bool = False) -> str:
+async def blueteam_check_ssh_authorized_keys(params: BypassRedactionInput) -> str:
     """List all SSH authorized_keys files across all user home directories.
     Unexpected keys indicate backdoors or persistence mechanisms.
 
@@ -618,7 +624,7 @@ async def blueteam_check_ssh_authorized_keys(bypass_redaction: bool = False) -> 
         except PermissionError:
             result["root"] = ["<permission denied>"]
 
-    return _redact_alert_data(json.dumps(result, indent=2, bypass=bypass_redaction) if result else json.dumps({"result": "No authorized_keys files found"}))
+    return _redact_alert_data(json.dumps(result, indent=2) if result else json.dumps({"result": "No authorized_keys files found"}), bypass=params.bypass_redaction)
 
 
 # PROCESS & CRON ANALYSIS
@@ -626,7 +632,7 @@ async def blueteam_check_ssh_authorized_keys(bypass_redaction: bool = False) -> 
     name="blueteam_list_processes",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_list_processes(bypass_redaction: bool = False) -> str:
+async def blueteam_list_processes(params: BypassRedactionInput) -> str:
     """List all running processes with CPU, memory, PID, and command line.
     Useful for spotting unexpected processes or cryptominers.
 
@@ -635,14 +641,14 @@ async def blueteam_list_processes(bypass_redaction: bool = False) -> str:
     """
     _audit_log("blueteam_list_processes", {})
     r = _run(["ps", "auxf"])
-    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=bypass_redaction)
+    return _redact_alert_data(r["stdout"] or r["stderr"], bypass=params.bypass_redaction)
 
 
 @mcp.tool(
     name="blueteam_list_cron_jobs",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_list_cron_jobs(bypass_redaction: bool = False) -> str:
+async def blueteam_list_cron_jobs(params: BypassRedactionInput) -> str:
     """List all system and user cron jobs. Attackers often add cron jobs
     for persistence. Check for unexpected entries.
 
@@ -672,7 +678,7 @@ async def blueteam_list_cron_jobs(bypass_redaction: bool = False) -> str:
             if r2["returncode"] == 0:
                 output.append(f"=== crontab for {user} ===\n{r2['stdout']}")
 
-    return _redact_alert_data("\n\n".join(output, bypass=bypass_redaction) if output else "No cron jobs found (or insufficient permissions)")
+    return _redact_alert_data("\n\n".join(output) if output else "No cron jobs found (or insufficient permissions)", bypass=params.bypass_redaction)
 
 
 # SYSTEM HEALTH
@@ -680,7 +686,7 @@ async def blueteam_list_cron_jobs(bypass_redaction: bool = False) -> str:
     name="blueteam_system_health",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_system_health(bypass_redaction: bool = False) -> str:
+async def blueteam_system_health(params: BypassRedactionInput) -> str:
     """Get an overview of system health: uptime, disk, memory, CPU load.
     Useful baseline before deeper investigation.
 
@@ -703,4 +709,4 @@ async def blueteam_system_health(bypass_redaction: bool = False) -> str:
         "memory": mem["stdout"],
         "disk": disk["stdout"],
         "timestamp": datetime.utcnow().isoformat() + "Z",
-    }, indent=2), bypass=bypass_redaction)
+    }, indent=2), bypass=params.bypass_redaction)
