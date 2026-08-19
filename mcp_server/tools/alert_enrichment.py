@@ -185,10 +185,10 @@ class SangforBlocklistCheckInput(BaseModel):
 class SangforBlocklistListInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     limit: int = Field(default=100, ge=1, le=1000000)
-    date_start: str = Field(default="", max_length=19,
-                            description="Start date YYYY-MM-DD HH:MM:SS. Defaults to 30 days ago.")
-    date_end: str = Field(default="", max_length=19,
-                          description="End date YYYY-MM-DD HH:MM:SS. Defaults to now.")
+    date_start: str = Field(default="", max_length=24,
+                            description="Start date. ISO 8601 (e.g. 2026-08-18T17:27:00Z) or YYYY-MM-DD HH:MM:SS. Defaults to 30 days ago.")
+    date_end: str = Field(default="", max_length=24,
+                          description="End date. ISO 8601 (e.g. 2026-08-19T17:27:00Z) or YYYY-MM-DD HH:MM:SS. Defaults to now.")
     response_format: str = Field(default="markdown")
 
 @mcp.tool(

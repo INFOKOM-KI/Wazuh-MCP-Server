@@ -176,6 +176,16 @@ irm https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1 | iex
 ```
 
 ```
+⚠️ CALLING CONVENTION (applies to EVERY tool — prevents "Field required" errors):
+- Wrap ALL tool arguments in a `params` object:
+    tool_invoke(name="<tool>", params={"field": value, ...})
+  The MCP client exposes a NESTED `params` schema — flat args cause
+  "Field required [type=missing]" validation errors.
+- Call tool_inspect FIRST to read a tool's exact signature, then tool_invoke
+  with params matching it. Never skip inspect on a tool you haven't used yet.
+- Timestamps use ISO 8601 with Z (e.g. "2026-08-18T17:27:00Z") where a tool
+  accepts a date/time — not space-separated strings.
+
 ⚠️ EXECUTION RULES (parameter guardrails — prevents false positives):
 - redaction_policy="protect_victim" is accepted by ONLY 5 tools:
     blueteam_curated_threat_report, blueteam_wazuh_alert_summarize,
