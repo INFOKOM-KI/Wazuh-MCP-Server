@@ -202,16 +202,20 @@ irm https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1 | iex
 
 ⚠️ TWO-TIER UNMASKING:
 - TIER 1 — reveal_owned=true (SAFE for LLM, own assets only): reveals only
-  *.tangerangkota.go.id + @tangerangkota.go.id. 12 tools accept it:
+  *.tangerangkota.go.id + @tangerangkota.go.id. 13 tools accept it:
   blueteam_curated_threat_report, blueteam_threat_card, blueteam_wazuh_alert_summarize,
-  blueteam_wazuh_geo_heatmap, three_sum_correlation, wazuh_alert_aggregate_analysis,
-  wazuh_alert_focused_crawl, wazuh_alert_timeline, wazuh_attack_velocity,
-  wazuh_compromised_emails_analysis, wazuh_domain_lookup, wazuh_email_lookup
+  blueteam_wazuh_geo_heatmap, blueteam_wazuh_indexer_search, three_sum_correlation,
+  wazuh_alert_aggregate_analysis, wazuh_alert_focused_crawl, wazuh_alert_timeline,
+  wazuh_attack_velocity, wazuh_compromised_emails_analysis, wazuh_domain_lookup,
+  wazuh_email_lookup
 - TIER 2 — bypass_redaction=true + forensic_token (HUMAN ONLY): raw data to disk via
   blueteam_wazuh_export; the LLM sees only the file path. Requires
   BLUETEAM_ALLOW_FORENSIC_BYPASS=true + BLUETEAM_FORENSIC_TOKEN.
 - DEFAULT MODEL = protect_victim: the LLM sees attacker public IPs/payloads/rule/severity/MITRE;
   never internal emails, internal subdomains, private IPs (RFC1918), or internal paths.
+- A private/RFC1918 srcip (10.x, 172.16-31.x, 192.168.x) is INTERNAL infrastructure, NEVER an
+  attacker. Do NOT run threat-intel on it (blueteam_threat_card, argus_ip_lookup, netra_ip_analysis,
+  otx_lookup, crowdsec, etc.) — those tools reject private IPs by design (SSRF guard).
 
 ⚠️ DIGITAL FORENSICS SCENARIO (when the analyst must unmask internal data):
 
@@ -282,7 +286,7 @@ three_sum_correlation(time_window_minutes=1440, follow_up="threat_intel",
 → create_case=true auto-opens a case (blueteam_case_*) seeded with the trigger IPs.
 
 LANGKAH 8  — Attack graph + pivot + campaign watch:
-blueteam_attack_graph(since_days=30, top_n=20, response_format="json")
+blueteam_attack_graph(window_days=30, top_n=20, response_format="json")
 blueteam_pivot_suggest(ioc=<top_attacker_ip>)             # PageRank next-step recommendations
 blueteam_campaign_watch(response_format="json")
 

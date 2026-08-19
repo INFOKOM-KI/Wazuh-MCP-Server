@@ -185,6 +185,7 @@ class WazuhIndexerSearchInput(BaseModel):
     keyword: Optional[str] = Field(default=None, max_length=256, description="Free-text keyword to narrow results")
     response_format: str = Field(default="json", description="'markdown' or 'json'")
     redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(default=None, description="Redaction policy")
+    reveal_owned: bool = Field(default=False, description="When true, unmask emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS)")
 
 
 @mcp.tool(
@@ -209,6 +210,7 @@ async def blueteam_wazuh_indexer_search(params: WazuhIndexerSearchInput) -> str:
         params.keyword: Free-text keyword to narrow results
         params.response_format: 'markdown' or 'json'
         params.redaction_policy: 'full', 'protect_victim', or 'raw'
+        params.reveal_owned: When true, unmask emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS)
 
     Returns:
         str: JSON with alerts, pagination cursor, and has_more flag.
@@ -301,7 +303,7 @@ async def blueteam_wazuh_indexer_search(params: WazuhIndexerSearchInput) -> str:
         "retrieved": total_scanned,
         "has_more": has_more,
         "next_cursor": next_cursor,
-        "alerts": _redact_alert_data(all_docs, policy=params.redaction_policy),
+        "alerts": _redact_alert_data(all_docs, policy=params.redaction_policy, reveal_owned=params.reveal_owned),
     }, indent=2))
 
 
