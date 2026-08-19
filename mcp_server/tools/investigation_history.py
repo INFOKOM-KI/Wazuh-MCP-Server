@@ -14,6 +14,7 @@ from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.attacker_registry import register_attacker_ioc
 from mcp_server.core.false_positive_kb import (register_false_positive,
     false_positive_iocs, false_positive_stats, is_false_positive)
+from mcp_server.core import case_store
 
 _INVESTIGATION_HISTORY_MAX_ENTRIES = int(os.environ.get("BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES", "10000"))
 
@@ -27,6 +28,8 @@ class MarkInvestigatedInput(BaseModel):
         ..., description="Investigation verdict.")
     notes: str = Field(default="", max_length=1024,
         description="Analyst notes (max 1024 chars).")
+    case_id: str = Field(default="", max_length=64,
+        description="Optional case ID - if set, this verdict is also recorded on that case.")
 
 
 @mcp.tool(
@@ -55,6 +58,8 @@ async def blueteam_mark_investigated(params: MarkInvestigatedInput) -> str:
         register_attacker_ioc(params.srcip, source="verdict")  # confirmed attacker - keep IOC unmasked
     if params.verdict == "false_positive":
         register_false_positive(params.srcip, source="verdict", reason=params.notes)  # auto-suppress in 3-Sum
+    if params.case_id:
+        case_store.add_verdict(params.case_id, params.srcip, params.verdict, params.notes)  # P8: case wiring
     if not _INVESTIGATION_HISTORY_FILE:
         return json.dumps({"error": "BLUETEAM_INVESTIGATION_HISTORY env var not set.",
                            "detail": "Set this to a writable JSONL file path for investigation persistence."}, indent=2)

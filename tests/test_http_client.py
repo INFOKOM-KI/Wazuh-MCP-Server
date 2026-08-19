@@ -52,7 +52,6 @@ class TestClientPool:
 
 class TestRetryLogic:
     """Tests for _api_call - retry on 5xx, 429, and network errors."""
-
     @pytest.mark.asyncio
     async def test_success_first_attempt(self, mock_response):
         """Returns response on first successful attempt."""
@@ -157,10 +156,24 @@ class TestRetryLogic:
                 await _api_call("get", "http://test/api", client_name="retry-4xx")
             assert mock_get.call_count == 1  # no retry
 
+    @pytest.mark.asyncio
+    async def test_configurable_max_retries(self, mock_response):
+        """max_retries=2 -> up to 3 attempts before giving up. LoL"""
+        fail1 = mock_response(status_code=503)
+        fail2 = mock_response(status_code=503)
+        ok = mock_response(status_code=200, json_data={"ok": True})
+        for f in (fail1, fail2):
+            f.raise_for_status.side_effect = httpx.HTTPStatusError("503", request=MagicMock(), response=f)
+        mock_get = AsyncMock(side_effect=[fail1, fail2, ok])
+        with patch.object(httpx.AsyncClient, "get", mock_get):
+            with patch("asyncio.sleep", AsyncMock()):
+                result = await _api_call("get", "http://test/api", client_name="retry-max", max_retries=2)
+                assert result.json() == {"ok": True}
+                assert mock_get.call_count == 3
+
 
 class TestErrorHandling:
     """Tests for _handle_api_error - human-readable error formatting."""
-
     def test_400_bad_request(self):
         resp = MagicMock(spec=httpx.Response)
         resp.status_code = 400
@@ -202,7 +215,6 @@ class TestErrorHandling:
 
 class TestIPValidation:
     """Tests for SSRF guard - _is_private_or_reserved, _validate_public_ip."""
-
     def test_private_ipv4_detected(self):
         assert _is_private_or_reserved("192.168.1.1") is True
         assert _is_private_or_reserved("10.0.0.1") is True

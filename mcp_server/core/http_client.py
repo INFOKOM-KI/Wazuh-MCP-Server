@@ -48,36 +48,37 @@ async def _get_client(
     return _clients[name]
 
 # Unified API call
-async def _api_call(method: str, url: str, *, client_name: str = "http", verify: bool = True, **kw) -> httpx.Response:
+async def _api_call(method: str, url: str, *, client_name: str = "http", verify: bool = True,
+                    max_retries: int = 1, backoff: float = 0.2, **kw) -> httpx.Response:
     """Unified async HTTP helper. Returns raw response - caller calls .json() or .text.
-    Retries once on 5xx server errors, network failures (200ms backoff), and
-    429 rate limits (retry after when present).
+    Retries (default once, configurable via max_retries) on 5xx server errors, network
+    failures (jittered backoff), and 429 rate limits (honors Retry-After when present).
     """
     client = await _get_client(client_name, verify=verify)
     last_exc: Exception | None = None
-    for attempt in range(2):
+    for attempt in range(1 + max_retries):
         try:
             resp = await getattr(client, method.lower())(url, **kw)
             resp.raise_for_status()
             return resp
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429 and attempt == 0:
+            if e.response.status_code == 429 and attempt < max_retries:
                 retry_after = e.response.headers.get("Retry-After")
                 try:
-                    delay = min(float(retry_after), 30.0) if retry_after else 1.0
+                    delay = min(float(retry_after), 30.0) if retry_after else backoff
                 except ValueError:
-                    delay = 1.0
+                    delay = backoff
                 await asyncio.sleep(delay)
                 last_exc = e
                 continue
-            if e.response.status_code >= 500 and attempt == 0:
-                await asyncio.sleep(0.2 + random.uniform(0, 0.2))
+            if e.response.status_code >= 500 and attempt < max_retries:
+                await asyncio.sleep(backoff + random.uniform(0, 0.2))
                 last_exc = e
                 continue
             raise
         except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
-            if attempt == 0:
-                await asyncio.sleep(0.2 + random.uniform(0, 0.2))
+            if attempt < max_retries:
+                await asyncio.sleep(backoff + random.uniform(0, 0.2))
                 last_exc = e
                 continue
             raise

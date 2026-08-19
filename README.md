@@ -77,12 +77,13 @@ optional — tools degrade gracefully without them.
 | Wazuh Indexer | `WAZUH_INDEXER_URL` / `_USER` / `_PASSWORD` | OpenSearch (9200) — alert/event data |
 | Wazuh Manager | `WAZUH_API_URL` / `_USER` / `_PASSWORD` | Manager API (55000) — rules/agents/config |
 | TLS | `WAZUH_INDEXER_VERIFY_SSL`, `WAZUH_API_VERIFY_SSL` | default `true` |
-| Threat intel | `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `GREYNOISE_BASE_URL`, `RAPIDAPI_KEY` | 9 providers + 3 RapidAPI lookups; all optional |
+| Threat intel | `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `GREYNOISE_BASE_URL`, `RAPIDAPI_KEY`, `HUDSONROCK_API_KEY` | 9 providers + RapidAPI + HudsonRock; all optional |
 | Redaction | `BLUETEAM_REDACTION_POLICY`, `BLUETEAM_OWNED_DOMAINS`, `BLUETEAM_ALLOW_RUNTIME_DOMAINS`, `BLUETEAM_REDACT_*` | see Security & Privacy |
 | Forensic gate | `BLUETEAM_ALLOW_FORENSIC_BYPASS`, `BLUETEAM_FORENSIC_TOKEN` | default `false` / empty |
 | Audit | `BLUETEAM_AUDIT_LOG` | JSONL audit trail (optional) |
-| Persistence | `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CAMPAIGN_SNAPSHOTS`, `BLUETEAM_EXPORT_DIR`, `BLUETEAM_CMDB_FILE` | JSONL stores + export dir |
+| Persistence | `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CAMPAIGN_SNAPSHOTS`, `BLUETEAM_EXPORT_DIR`, `BLUETEAM_CMDB_FILE` | JSONL stores + export dir |
 | Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES` | skip destructive tools / tool categories |
+| Performance | `BLUETEAM_INDEXER_CACHE_TTL`, `BLUETEAM_GRAPH_CACHE_TTL` | short-TTL caches for indexer queries + attack graph (default 30s / 60s) |
 
 ---
 
@@ -123,9 +124,10 @@ plus investigation history and a false-positive knowledge base (`blueteam_false_
 auto-suppresses known-noisy IOCs in 3-Sum.
 
 ### Host & Domain Forensics
-WHOIS / CRT.sh, IOC extraction, JARM TLS fingerprinting (`jarm_fingerprint`), webshell scanning,
-server-side JSONL export, DOCX/XLSX/PPTX report export, and 23 host-forensics tools (log readers,
-fail2ban, rootkit scan, lynis, process/cron/users).
+WHOIS / CRT.sh, IOC extraction, JARM TLS fingerprinting (`jarm_fingerprint`), typosquatting
+detection (`blueteam_domain_permute`), webshell scanning, server-side JSONL export, DOCX/XLSX/PPTX
+report export, and 23 host-forensics tools (log readers, fail2ban, rootkit scan, lynis,
+process/cron/users).
 
 ---
 
@@ -257,19 +259,22 @@ otx_lookup(indicator=<ip>, section="general"); urlhaus_hash_lookup(file_hash=<ha
 blueteam_ip_blacklist(ip=<ip>, response_format="json")   # RapidAPI — blacklist verdict
 blueteam_ioc_search(ip=<ip>, response_format="json")     # RapidAPI — IOC/malware matches
 
-LANGKAH 7  — 3-Sum APT + auto-enrich:
+LANGKAH 7  — 3-Sum APT + auto-enrich + case creation:
 three_sum_correlation(time_window_minutes=1440, follow_up="threat_intel",
-  multi_resolution=true, response_format="json", redaction_policy="protect_victim")
+  multi_resolution=true, create_case=true, response_format="json",
+  redaction_policy="protect_victim")
+→ create_case=true auto-opens a case (blueteam_case_*) seeded with the trigger IPs.
 
 LANGKAH 8  — Attack graph + pivot + campaign watch:
 blueteam_attack_graph(since_days=30, top_n=20, response_format="json")
 blueteam_pivot_suggest(ioc=<top_attacker_ip>)             # PageRank next-step recommendations
 blueteam_campaign_watch(response_format="json")
 
-LANGKAH 9  — LangGraph investigation (top 10):
+LANGKAH 9  — LangGraph investigation (top 10) + verdict-to-case:
 blueteam_investigation_workflow(alert_text="<...>", srcip=<ip>, window="24h",
   use_attack_graph=true, generate_report=false, record_verdict=true,
   verdict_label="suspicious")
+blueteam_mark_investigated(srcip=<ip>, verdict="<verdict>", case_id=<case_id>)
 
 LANGKAH 10 — LangGraph playbook (if 3-Sum severity ≥ LOW):
 blueteam_playbook_run(alert_text="<...>", rule_groups="<...>", window="24h",
@@ -279,6 +284,7 @@ LANGKAH 11 — Compromised emails (locked):
 wazuh_compromised_emails_analysis(since="24h", response_format="json")
 wazuh_compromised_emails_analysis(since="24h", reveal_owned=true, response_format="json")  # TIER 1
 blueteam_breach_check(email=<email_dinas>, response_format="json")  # RapidAPI — breach status
+stealer_log_check(email=<email_dinas>, response_format="json")      # HudsonRock — stealer-log check
 
 LANGKAH 12 — Semantic search (dominant attack patterns):
 blueteam_semantic_search(query="<pattern>", source="alerts", since="24h",
@@ -287,13 +293,16 @@ blueteam_semantic_search(query="<pattern>", source="alerts", since="24h",
 LANGKAH 13 — MITRE kill-chain (top 10):
 blueteam_stix_killchain(srcip=<ip>, since="24h")
 
-LANGKAH 13b — JARM TLS fingerprinting (C2 infrastructure):
+LANGKAH 13b — JARM TLS fingerprinting + typosquatting (C2 infrastructure):
 jarm_fingerprint(host=<c2_domain_or_ip>, response_format="json")
-→ Cluster C2 servers by TLS fingerprint; identical hashes = same software.
+blueteam_domain_permute(domain="tangerangkota.go.id")   # lookalike-domain detection
+→ Cluster C2 by TLS fingerprint; check lookalikes against whois/crtsh for typosquatting.
 
-LANGKAH 13c — Suppression + owned-domains review:
+LANGKAH 13c — Suppression, owned-domains, telemetry + case review:
 blueteam_false_positive_kb()      # IOCs the 3-Sum engine is auto-suppressing
 blueteam_owned_domains()          # active redaction policy + owned domains
+blueteam_metrics()                # per-tool latency/call counts (find slow tools)
+blueteam_case_list()              # open cases; blueteam_case_create/get/add_verdict to persist
 
 LANGKAH 14 — Geo heatmap:
 blueteam_wazuh_geo_heatmap(since="24h", response_format="json")

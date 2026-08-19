@@ -38,6 +38,7 @@ from mcp_server.correlation.three_sum_core import (tactics_for_category,
     compute_mitre_risk, category_default_weight, build_category_techniques,
     compute_technique_risk)
 from mcp_server.core.false_positive_kb import false_positive_iocs
+from mcp_server.core import case_store
 
 async def _build_cluster_context() -> dict:
     """Attack-graph context for Engine A: cluster_map, ppr_scores, confirmed_ips.
@@ -251,6 +252,9 @@ class ThreeSumCorrelationInput(BaseModel):
     cidr_normalize: bool = Field(default=False)
     exclude_srcips: list[str] = Field(default=[])
     follow_up: str = Field(default="none")
+    create_case: bool = Field(default=False,
+        description="When Engine A triggers, auto-create a case (blueteam_case_*) seeded with "
+                    "the trigger IPs so the investigation persists as an incident record.")
     use_attack_graph: bool = Field(default=False,
         description="Consume the attack graph: cluster-aware category intersection "
                     "(campaign-level APT detection - a cluster spanning all 3 categories "
@@ -510,6 +514,12 @@ async def three_sum_correlation(data: ThreeSumCorrelationInput) -> dict:
         )
         register_attacker_ips([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
         record_iocs([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
+        if data.create_case and triggers:
+            trigger_ips = [t["ip"] for t in triggers if t.get("ip")]
+            case = case_store.create_case(
+                title=f"3-Sum APT — {len(triggers)} trigger(s)", srcips=trigger_ips)
+            case_store.add_iocs(case["case_id"], trigger_ips)
+            stats["case_id"] = case["case_id"]
         if engine_a_warnings:
             stats["warnings"] = engine_a_warnings  # surfaced, never silent
         engine_a_results = (triggers, stats)

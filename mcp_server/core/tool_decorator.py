@@ -133,13 +133,23 @@ def blueteam_tool(
         # Carry the original function's annotations and module so FastMCP's
         # func_metadata() can resolve Pydantic input-model types via the tool
         # module's import namespace (rather than this decorator module's).
-        # functools.wraps already copies __annotations__, __module__,
-        # __name__, __doc__, and __wrapped__ — we just need __signature__.
-        # ponytail: types.FunctionType globals merge would be cleaner but
-        # __globals__ is read-only on Python 3.12+.  This annotation-based
-        # approach works because FastMCP uses __module__ + __annotations__ to
-        # build the arg model, not __globals__ directly.
-        wrapper.__annotations__ = func.__annotations__
+        # functools.wraps already copies __annotations__, __module__, __name__,
+        # __doc__, and __wrapped__ — but under `from __future__ import annotations`
+        # those are deferred strings, and FastMCP resolves via __globals__ (which is
+        # read-only on Python 3.12+). Resolve the strings into real types here.
+        def _resolve_annotations(anns, globalns):
+            out = {}
+            for k, v in (anns or {}).items():
+                if isinstance(v, str):
+                    try:
+                        out[k] = eval(v, globalns)
+                    except Exception:
+                        out[k] = v  # unresolvable,leave as-is.
+                else:
+                    out[k] = v
+            return out
+
+        wrapper.__annotations__ = _resolve_annotations(func.__annotations__, func.__globals__)
         wrapper.__module__ = func.__module__
 
         # Register with FastMCP.

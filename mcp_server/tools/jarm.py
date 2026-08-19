@@ -99,6 +99,27 @@ def _jarm_hash(probes: list[dict]) -> str:
     return hashlib.sha256(joined.encode()).hexdigest()[:62]
 
 
+def _host_resolves_public(host: str) -> bool:
+    """DNS-rebinding guard: True if the host is a public IP or resolves ONLY to
+    public IPs (no private/reserved RFC1918 / loopback / link-local addresses).
+    A literal private IP is already rejected by the input validator; this closes
+    the gap where a hostname resolves to an internal address (e.g. cloud metadata
+    service 169.254.169.254 or RFC1918 infrastructure).
+    """
+    import ipaddress
+    try:
+        ipaddress.ip_address(host)  # literal IP, check it directly.
+        return not _is_private_or_reserved(host)
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False  # unresolvable - treat as unsafe
+    ips = {info[4][0] for info in infos}
+    return bool(ips) and all(not _is_private_or_reserved(ip) for ip in ips)
+
+
 @mcp.tool(
     name="jarm_fingerprint",
     annotations={"readOnlyHint": True, "destructiveHint": False,
@@ -127,6 +148,16 @@ async def jarm_fingerprint(params: JarmFingerprintInput) -> str:
     """
     _audit_log("jarm_fingerprint", {"host": params.host, "port": params.port})
 
+    # DNS-rebinding guard: reject hosts that resolve to private/reserved IPs.
+    public = await asyncio.to_thread(_host_resolves_public, params.host)
+    if not public:
+        result = {"host": params.host, "port": params.port, "fingerprint": None,
+                  "note": "Host resolves to a private/reserved IP DNS-rebinding guard rejected it."}
+        if params.response_format == "json":
+            return json.dumps(result, indent=2)
+        return (f"# JARM Fingerprint - `{params.host}:{params.port}`\n\n"
+                f"⚠️ **Rejected**: host resolves to a private/reserved IP.")
+
     # Offload the blocking TLS probes to a worker thread so the async event loop
     # never stalls on socket I/O (a slow/unreachable host would otherwise block
     # the whole server for up to timeout*3 seconds).
@@ -137,7 +168,7 @@ async def jarm_fingerprint(params: JarmFingerprintInput) -> str:
                   "note": "TLS handshake failed - port may not be TLS or host unreachable."}
         if params.response_format == "json":
             return json.dumps(result, indent=2)
-        return f"# JARM Fingerprint — `{params.host}:{params.port}`\n\n⚠️ **TLS handshake failed** - not a TLS service or host unreachable."
+        return f"# JARM Fingerprint - `{params.host}:{params.port}`\n\n⚠️ **TLS handshake failed** - not a TLS service or host unreachable."
 
     fingerprint = _jarm_hash(successful)
 

@@ -299,6 +299,44 @@ def check_unexpected_kwargs(source: str, lines: list[str]) -> list[dict]:
     return issues
 
 
+def check_redaction(source: str, lines: list[str]) -> list[dict]:
+    """REDACT (warning): flag @mcp.tool handlers that reference PII-bearing fields
+    (full_log, data.*, email, agent.name, srcuser/dstuser) without calling
+    _redact_alert_data. These are candidates for @blueteam_tool migration."""
+    tree = ast.parse(source)
+    pii_markers = ("full_log", "data.srcip", "data.domain", "data.url",
+                   "email", "agent.name", "srcuser", "dstuser", "data.user_agent")
+    issues = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        is_mcp_tool = any(
+            isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+            and d.func.attr == "tool" and isinstance(d.func.value, ast.Name)
+            and d.func.value.id == "mcp"
+            for d in node.decorator_list
+        )
+        if not is_mcp_tool:
+            continue
+        calls_redact = any(
+            isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+            and c.func.id == "_redact_alert_data"
+            for c in ast.walk(node)
+        )
+        if calls_redact:
+            continue
+        src = ast.get_source_segment(source, node) or ""
+        if any(m in src for m in pii_markers):
+            issues.append({
+                "check": "REDACT",
+                "func": node.name,
+                "line": node.lineno,
+                "detail": "MCP tool references PII fields but does not call _redact_alert_data",
+                "context": lines[node.lineno - 1].strip()[:80],
+            })
+    return issues
+
+
 CHECKS = [
     ('Unbound locals (missing params.)', check_unbound),
     ('Drift (params.x + bare x = bug)', check_drift),
@@ -319,10 +357,14 @@ def main() -> int:
     strict = '--strict' in sys.argv
     all_issues = []
     clean = 0
+    redact_warnings: list[dict] = []
 
     for path in FILES:
         source = path.read_text()
         lines = source.split('\n')
+        for r in check_redaction(source, lines):
+            r['file'] = str(path.relative_to(Path(__file__).parent))
+            redact_warnings.append(r)
         for name, check_fn in CHECKS:
             result = check_fn(source, lines)
             for r in result:
@@ -343,8 +385,19 @@ def main() -> int:
                     print(f"{name} ({path.name}): clean")
 
     if json_out:
-        print(json.dumps({'total': len(all_issues), 'issues': all_issues}, indent=2))
+        print(json.dumps({'total': len(all_issues), 'issues': all_issues,
+                          'redact_warnings': len(redact_warnings)}, indent=2))
         return 0 if len(all_issues) == 0 else (2 if strict else 1)
+
+    # REDACT warnings, informational (not gating): candidates for @blueteam_tool migration.
+    if redact_warnings and not json_out:
+        print(f"\n{'='*60}")
+        print(f"REDACT warnings (PII-touching @mcp.tool tools without _redact_alert_data): {len(redact_warnings)}")
+        print(f"{'='*60}")
+        for r in redact_warnings[:30]:
+            print(f"[REDACT] {r['file']} {r['func']}@{r['line']} -> {r['detail']}")
+        if len(redact_warnings) > 30:
+            print(f"... and {len(redact_warnings) - 30} more")
 
     print(f"\n{'='*60}")
     print(f"{clean}/{len(FILES) * len(CHECKS)} filexcheck passes clean. {len(all_issues)} total issue(s).")

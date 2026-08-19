@@ -69,3 +69,25 @@ def test_envelope_keeps_public_ip():
     # Public attacker IPs are NOT masked (protect_victim keeps attacker IOCs visible).
     out = r._envelope("103.107.116.202", "apiverve_ip_blacklist", {"ip": "103.107.116.202"})
     assert "103.107.116.202" in out
+
+
+def test_sanitize_breach_strips_pii():
+    # S7: leaked passwords/phones/addresses must be dropped; only verdict + metadata stay.
+    raw = {"breached": True, "breaches": [
+        {"name": "Adobe", "date": "2013", "leaked_password": "hunter2", "phone": "555-1234"},
+    ]}
+    out = r._sanitize_breach(raw)
+    assert out["breached"] is True
+    assert out["breaches"] == [{"name": "Adobe", "date": "2013"}]  # PII stripped
+    assert "hunter2" not in json.dumps(out) and "555-1234" not in json.dumps(out)
+
+
+def test_sanitize_breach_string_list():
+    out = r._sanitize_breach({"found": True, "data": ["Adobe", "LinkedIn"]})
+    assert out["breached"] is True
+    assert out["breaches"] == [{"name": "Adobe"}, {"name": "LinkedIn"}]
+
+
+def test_sanitize_breach_unknown_shape():
+    # Unknown shape -> empty dict (nothing unsafe leaks).
+    assert r._sanitize_breach({"unexpected": "shape"}) == {}

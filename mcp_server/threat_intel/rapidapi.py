@@ -2,9 +2,9 @@
 """
 © NAuliajati - TangerangKota-CSIRT
 RapidAPI capability lookups - three providers over a shared RapidAPI transport:
-  1. blueteam_ip_blacklist  - Apiverve IP Blacklist Lookup (is this srcip on a blacklist?)
-  2. blueteam_ioc_search    - RapidAPI IOC Search (malware/IOC matches for a srcip)
-  3. blueteam_breach_check  - RapidAPI Breach Check (was this email in a known breach?)
+1. blueteam_ip_blacklist  - Apiverve IP Blacklist Lookup (is this srcip on a blacklist?)
+2. blueteam_ioc_search    - RapidAPI IOC Search (malware/IOC matches for a srcip)
+3. blueteam_breach_check  - RapidAPI Breach Check (was this email in a known breach?)
 All three accept the indicator (srcip / attacker IP / email) directly so the LLM can feed
 values pulled from Wazuh alerts without any extra plumbing. Responses are handled
 dynamically - the raw JSON is returned verbatim plus a normalized envelope, so unknown or
@@ -63,7 +63,6 @@ async def _rapidapi_get(host: str, path: str, ttl: int = 1800) -> dict[str, Any]
 
 def _dynamic_markdown(title: str, raw: dict[str, Any]) -> str:
     """Render a third-party JSON body without assuming a fixed schema.
-
     Surfaces common keys (status/message/data/result/matches/total/found) when present and
     falls back to a pretty-printed full body when the shape is unrecognized — so a schema
     change upstream never produces an empty or crashing report.
@@ -93,6 +92,35 @@ def _envelope(query: str, source: str, raw: dict[str, Any], params=None) -> str:
     return json.dumps(_redact_alert_data(
         {"query": query, "source": source, "result": raw}, params=params),
         indent=2, ensure_ascii=False)
+
+
+def _sanitize_breach(raw: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a breach-check response to non-PII metadata only.
+    Breach dumps can carry names, phone numbers, physical addresses, and leaked
+    passwords none of which the shape-based redaction layers catch (they only
+    match emails/domains/IPs). We surface only the verdict + breach metadata
+    (name/date/data-classes already public) and drop raw PII.
+    """
+    out: dict[str, Any] = {}
+    for k in ("found", "breached", "is_breached", "breach"):
+        if k in raw and isinstance(raw[k], (bool, int)):
+            out["breached"] = bool(raw[k])
+            break
+    breaches = raw.get("breaches") or raw.get("data") or raw.get("result")
+    if isinstance(breaches, list):
+        meta = []
+        for b in breaches:
+            if isinstance(b, dict):
+                safe = {k: b[k] for k in ("name", "title", "breach_date", "date",
+                                          "domain", "data_classes", "description")
+                        if k in b}
+                if safe:
+                    meta.append(safe)
+            elif isinstance(b, str):
+                meta.append({"name": b})
+        if meta:
+            out["breaches"] = meta[:10]
+    return out
 
 
 class _IpInput(BaseModel):
@@ -183,5 +211,5 @@ async def blueteam_breach_check(params: BreachCheckInput) -> str:
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError, ValueError) as e:
         return _handle_api_error(e, context="blueteam_breach_check")
     if params.response_format == "json":
-        return _envelope(params.email, "rapidapi_breach_check", raw, params=params)
-    return _redact_alert_data(_dynamic_markdown(f"Breach Check - {params.email}", raw), params=params)
+        return _envelope(params.email, "rapidapi_breach_check", _sanitize_breach(raw), params=params)
+    return _redact_alert_data(_dynamic_markdown(f"Breach Check — {params.email}", _sanitize_breach(raw)), params=params)

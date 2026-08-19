@@ -3,17 +3,14 @@
 © NAuliajati - TangerangKota-CSIRT
 Attacker relationship graph (networkx) - converged from the IOC lifecycle store,
 attacker registry, and (optionally) STIX kill-chain data.
-
 Graph:
-  nodes  = IOCs (ip/domain/url/email/hash) + STIX techniques/actors/campaigns
-  edges  = co-occurrence (IOCs observed in the same extraction/trigger batch),
-           STIX usage edges (technique <-> actor / campaign)
-
+nodes  = IOCs (ip/domain/url/email/hash) + STIX techniques/actors/campaigns
+edges  = co-occurrence (IOCs observed in the same extraction/trigger batch), STIX usage edges (technique <-> actor / campaign)
 Analytics (blueteam_attack_graph tool):
-  - connected components -> campaign clusters
-  - degree centrality     -> hub IOCs
-  - betweenness centrality-> bridge IOCs (links otherwise-unrelated clusters)
-  - shortest path         -> srcip <-> actor bridging
+- connected components -> campaign clusters
+- degree centrality     -> hub IOCs
+- betweenness centrality-> bridge IOCs (links otherwise-unrelated clusters)
+- shortest path         -> srcip <-> actor bridging
 """
 from __future__ import annotations
 import json, os, time
@@ -23,16 +20,28 @@ from mcp_server.core.attacker_registry import is_attacker_ioc
 
 _SNAPSHOT_PATH = os.environ.get("BLUETEAM_CAMPAIGN_SNAPSHOTS", "")
 
+# TTL cache for build_attack_graph, the graph is rebuilt from the IOC store on
+# every pivot_suggest/attack_graph call; memoize for a short window so repeated
+# calls in one investigation don't re-query + re-cluster. Callers only read the
+# returned graph (centrality/clustering), so sharing the object is safe.
+_GRAPH_CACHE_TTL = float(os.environ.get("BLUETEAM_GRAPH_CACHE_TTL", "60"))
+_GRAPH_CACHE: dict = {"ts": 0.0, "key": None, "graph": None}
+
 
 async def build_attack_graph(since_days: int = 30, min_count: int = 1,
                              max_iocs: int = 1000, include_stix: bool = True,
                              stix_ips_cap: int = 3) -> nx.Graph:
     """Build the attacker relationship graph from the IOC store.
-
     include_stix: enrich up to `stix_ips_cap` confirmed IPs with MITRE
     technique/actor/campaign nodes via the STIX graph (requires indexer
     credentials; degrades silently without them).
     """
+    cache_key = (since_days, min_count, max_iocs, include_stix, stix_ips_cap)
+    now = time.monotonic()
+    if (_GRAPH_CACHE["key"] == cache_key and _GRAPH_CACHE["graph"] is not None
+            and now - _GRAPH_CACHE["ts"] < _GRAPH_CACHE_TTL):
+        return _GRAPH_CACHE["graph"]
+
     hits = query_iocs(since_days=since_days, min_count=min_count, top_n=max_iocs,
                       include_batches=True)
     G = nx.Graph()
@@ -40,7 +49,7 @@ async def build_attack_graph(since_days: int = 30, min_count: int = 1,
         G.add_node(h["ioc"], kind=h["kind"], weight=h["decay_weight"], count=h["count"],
                    confirmed=is_attacker_ioc(h["ioc"]),
                    batches=set(h.get("batches", [])))
-    # Co-occurrence edges: IOCs sharing extraction/trigger batches.
+    # Co-occurrence edges: IOC sharing extraction/trigger batches.
     # Inverted-index approach: O(b x k²) where b = batch count, k = avg IOCs per
     # batch. Dramatically faster than the O(n²) all-pairs nested loop when the
     # batch count is much smaller than the IOC count (the common case).
@@ -61,6 +70,7 @@ async def build_attack_graph(since_days: int = 30, min_count: int = 1,
                     G.add_edge(iocs[i], iocs[j], weight=1, source="cooccur")
     if include_stix:
         await _add_stix_edges(G, cap=stix_ips_cap)
+    _GRAPH_CACHE.update({"ts": time.monotonic(), "key": cache_key, "graph": G})
     return G
 
 
@@ -178,7 +188,7 @@ def _personalized_pagerank(G: nx.Graph, personalization: dict, alpha: float = 0.
 
 
 def suspicion_rank(G: nx.Graph, alpha: float = 0.85, top_n: int = 10) -> list[dict]:
-    """Personalized PageRank seeded on confirmed attacker IOCs.
+    """Personalized PageRank seeded on confirmed attacker IOC.
     Spreads suspicion across co-occurrence/STIX edges: unconfirmed IOCs that sit
     close to confirmed attackers rank high. Returns ranked entries with
     confirmed-neighbor context.

@@ -10,14 +10,14 @@ Full API (HUDSONROCK_API_KEY): complete stealer-log records.
 Endpoint (free Cavalier):
 - GET {HUDSONROCK_BASE_URL}/preview/search-by-login?email=user@example.com
 """
-from __future__ import annotations
-import json, os, re
 from typing import Optional, Literal
+from urllib.parse import quote
+import json, os, re
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 import httpx
 from mcp_server import mcp, HUDSONROCK_API_KEY_ENV, HUDSONROCK_BASE_URL
 from mcp_server.core.http_client import _api_call, _handle_api_error
-from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.tool_decorator import blueteam_tool
 
 _EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
@@ -61,7 +61,7 @@ def _parse_stealer_logs(raw: dict) -> list[dict]:
     return out
 
 
-@mcp.tool(
+@blueteam_tool(
     name="stealer_log_check",
     annotations={"readOnlyHint": True, "destructiveHint": False,
                  "idempotentHint": True, "openWorldHint": True},
@@ -84,17 +84,15 @@ async def stealer_log_check(params: StealerLogInput) -> str:
     2. *JSON output*:
        ``stealer_log_check(email="user@example.com", response_format="json")``
     """
-    _audit_log("stealer_log_check", {"email": params.email})
-
     api_key = os.environ.get(HUDSONROCK_API_KEY_ENV, "")
     if api_key:
         # Full API - requires key, different auth header
-        url = f"https://api.hudsonrock.com/v1/search-by-login?email={params.email}"
+        url = f"https://api.hudsonrock.com/v1/search-by-login?email={quote(params.email)}"
         headers = {"api-key": api_key, "accept": "application/json",
                    "User-Agent": "blue-team-mcp/1.0.0 (TangerangKota-CSIRT)"}
     else:
         # Free Cavalier preview endpoint
-        url = f"{HUDSONROCK_BASE_URL}/preview/search-by-login?email={params.email}"
+        url = f"{HUDSONROCK_BASE_URL}/preview/search-by-login?email={quote(params.email)}"
         headers = {"accept": "application/json",
                    "User-Agent": "blue-team-mcp/1.0.0 (TangerangKota-CSIRT)"}
 
@@ -113,17 +111,17 @@ async def stealer_log_check(params: StealerLogInput) -> str:
     found = len(logs) > 0
 
     if params.response_format == "json":
-        return _truncate_if_needed(json.dumps({
+        return json.dumps({
             "email": params.email,
             "found": found,
             "stealer_log_count": len(logs),
             "stealer_logs": logs,
             "api_tier": "full" if api_key else "preview",
-        }, indent=2))
+        }, indent=2)
 
-    lines = [f"# Stealer Log Check — `{params.email}`", ""]
+    lines = [f"# Stealer Log Check - `{params.email}`", ""]
     if not found:
-        lines.append("✅ **No stealer-log hits** — this email has not been observed in known info-stealer exfiltration.")
+        lines.append("✅ **No stealer-log hits** - this email has not been observed in known info-stealer exfiltration.")
         return "\n".join(lines)
 
     lines.append(f"🔴 **FOUND in {len(logs)} stealer log(s)** - credentials are circulating. **Reset password immediately.**")
@@ -138,4 +136,4 @@ async def stealer_log_check(params: StealerLogInput) -> str:
         lines.append("")
         lines.append("_Preview tier (no API key) - set `HUDSONROCK_API_KEY` for full credential details._")
 
-    return _truncate_if_needed("\n".join(lines))
+    return "\n".join(lines)

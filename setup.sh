@@ -69,6 +69,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export VIRUSTOTAL_API_KEY="your_key"    # https://www.virustotal.com
 # export CROWDSEC_API_KEY="your_key"      # free tier: https://www.crowdsec.net/en/user/profile
 # export RAPIDAPI_KEY="your_key"           # https://rapidapi.com (IP Blacklist, IOC Search, Breach Check)
+# export HUDSONROCK_API_KEY="your_key"      # https://cavalier.hudsonrock.com (stealer-log check)
 # export NETRA_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
 # export NETRA_VERIFY_SSL="false"         # set to "true" for production / trusted CA
 
@@ -200,6 +201,7 @@ export OTX_CACHE_TTL="${OTX_CACHE_TTL:-1800}"
 export URLHAUS_API_KEY="${URLHAUS_API_KEY:-}"
 export URLHAUS_CACHE_TTL="${URLHAUS_CACHE_TTL:-1800}"
 export RAPIDAPI_KEY="${RAPIDAPI_KEY:-}"
+export HUDSONROCK_API_KEY="${HUDSONROCK_API_KEY:-}"
 export BLUETEAM_CMDB_FILE="${BLUETEAM_CMDB_FILE:-}"
 export NETRA_API_KEY="${NETRA_API_KEY:-}"
 export NETRA_VERIFY_SSL="${NETRA_VERIFY_SSL:-false}"
@@ -240,6 +242,9 @@ export BLUETEAM_ATTACKER_REGISTRY="${BLUETEAM_ATTACKER_REGISTRY:-/var/log/blue-t
 export BLUETEAM_ATTACKER_REGISTRY_TTL="${BLUETEAM_ATTACKER_REGISTRY_TTL:-604800}"
 export BLUETEAM_ATTACKER_REGISTRY_MAX="${BLUETEAM_ATTACKER_REGISTRY_MAX:-10000}"
 export BLUETEAM_FALSE_POSITIVE_KB="${BLUETEAM_FALSE_POSITIVE_KB:-/var/log/blue-team-mcp/false_positive_kb.jsonl}"
+export BLUETEAM_CASE_STORE="${BLUETEAM_CASE_STORE:-/var/log/blue-team-mcp/cases.jsonl}"
+export BLUETEAM_INDEXER_CACHE_TTL="${BLUETEAM_INDEXER_CACHE_TTL:-30}"
+export BLUETEAM_GRAPH_CACHE_TTL="${BLUETEAM_GRAPH_CACHE_TTL:-60}"
 export BLUETEAM_FALSE_POSITIVE_TTL="${BLUETEAM_FALSE_POSITIVE_TTL:-2592000}"
 export BLUETEAM_FALSE_POSITIVE_MAX="${BLUETEAM_FALSE_POSITIVE_MAX:-5000}"
 export BLUETEAM_IOC_STORE="${BLUETEAM_IOC_STORE:-/var/log/blue-team-mcp/ioc_store.jsonl}"

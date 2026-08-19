@@ -4,7 +4,7 @@
 Wazuh Indexer (OpenSearch) query helpers - _search, _msearch, cursor pagination.
 """
 from __future__ import annotations
-import base64, json, logging
+import base64, json, logging, os, time
 from typing import Dict, Optional, List
 import httpx
 
@@ -28,10 +28,15 @@ _SRCIP_FIELD_PATHS: list[str] = [
 ]
 _MSEARCH_FALLBACK_ERROR: dict = {"error": "_msearch_failed"}
 
+# (3-Sum, pivot, threat-card) re-fire identical aggregations within seconds;
+# dedupe those round-trips. TTL is deliberately short so relative time windows
+# (now-24h) don't serve stale results. Errors are never cached.
+_INDEXER_CACHE_TTL = float(os.environ.get("BLUETEAM_INDEXER_CACHE_TTL", "30"))
+_INDEXER_CACHE: dict = {}  # {cache_key: (expiry_monotonic, response)}
+
 
 async def _wazuh_indexer_mapping(index_pattern: Optional[str] = None) -> Dict:
     """Fetch index field mappings from the OpenSearch _mapping endpoint.
-
     Returns the raw mapping dict keyed by index name. Used by the schema
     explorer tool to discover field names/types before building aggregations
     (prevents the `.keyword` vs `keyword` field-mapping false-negative class).
@@ -57,12 +62,22 @@ async def _wazuh_indexer_post(body: dict, index_pattern: Optional[str] = None) -
         index_pattern = _WAZUH_INDEX_PATTERNS["alerts"]
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
         return {"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."}
+    cache_key = (index_pattern, json.dumps(body, sort_keys=True, default=str))
+    now = time.monotonic()
+    cached = _INDEXER_CACHE.get(cache_key)
+    if cached and now < cached[0]:
+        return cached[1]
     url = f"{WAZUH_INDEXER_URL}/{index_pattern}/_search"
     try:
         resp = await _api_call("post", url, client_name="indexer", verify=WAZUH_INDEXER_VERIFY_SSL,
                                 auth=(WAZUH_INDEXER_USER, WAZUH_INDEXER_PASSWORD),
                                 json=body, headers={"Content-Type": "application/json"})
-        return resp.json()
+        data = resp.json()
+        if _INDEXER_CACHE_TTL > 0:
+            _INDEXER_CACHE[cache_key] = (now + _INDEXER_CACHE_TTL, data)
+            if len(_INDEXER_CACHE) > 1000:  # bound the cache
+                _INDEXER_CACHE.pop(next(iter(_INDEXER_CACHE)))
+        return data
     except httpx.HTTPStatusError as e:
         return {"error": f"Indexer API error: {e.response.status_code}", "detail": e.response.text[:500]}
     except Exception as e:
@@ -105,7 +120,6 @@ async def _wazuh_indexer_msearch(bodies: list[dict], index_pattern: Optional[str
                                "detail": str(r.get("error", {}))[:300]})
                 else:
                     out.append(r)
-            # Pad if fewer responses than bodies (unlikely but defensive)
             while len(out) < len(bodies):
                 out.append({"error": f"_msearch query {len(out)}: no response"})
             return out

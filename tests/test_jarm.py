@@ -56,3 +56,11 @@ def test_host_validator_rejects_injection_chars():
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         j.JarmFingerprintInput(host="evil.com/path")
+
+
+def test_dns_rebinding_guard_literal_ips():
+    # Literal private/reserved IPs must be rejected by the resolution guard too.
+    assert j._host_resolves_public("192.168.1.1") is False
+    assert j._host_resolves_public("127.0.0.1") is False
+    assert j._host_resolves_public("169.254.169.254") is False
+    assert j._host_resolves_public("8.8.8.8") is True
