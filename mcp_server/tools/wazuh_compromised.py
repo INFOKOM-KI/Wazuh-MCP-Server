@@ -107,13 +107,14 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
     enriched regardless of ``params.top_ips``).
 
     Args:
-        params.emails: List of email addresses to analyze (1-50)
+        params.emails: List of email addresses to analyze (max 50; empty = auto-discover compromised emails from the indexer)
         params.agent_name: Optional agent filter
         params.since: ISO 8601 start (default: 365 days ago)
         params.until: ISO 8601 end (default: now)
         params.top_ips: Number of top attacker IPs to rank (1-100, default 20)
         params.enrich_with_netra: Query Netra for top IPs (default false)
         params.response_format: 'markdown' or 'json'
+        params.reveal_owned: When true, unmask emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS)
 
     Returns:
         str: Ranked attacker IP list with targeted email counts, plus per-email
