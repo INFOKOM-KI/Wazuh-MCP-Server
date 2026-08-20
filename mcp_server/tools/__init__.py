@@ -59,7 +59,6 @@ def register_all_tools() -> None:
         ("alert_compare",          "alert_compare",          False),  # F-6 Side-by-side IP comparison
         ("alert_curated_report",   "alert_curated_report",   False),  # G-3 Curated threat report
         ("baseline",              "baseline",              False),  # 3 tools
-        ("investigation",         "investigation",         False),  # Investigation history + FP tracker + summary
         ("investigation_history",  "investigation_history",  False),  # Investigation state (mark_investigated, FP tracker, summary)
         ("correlation",            "correlation",            False),  # 3-Sum correlation + IP investigation + enrichment
         ("geo",                   "geo",                   False),  # 1 tool
