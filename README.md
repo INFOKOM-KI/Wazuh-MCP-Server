@@ -161,11 +161,11 @@ or set the env var for a persistent default.
 ## SOC Analysis Prompt (copy-paste for your LLM)
 
 A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two output formats —
-**Markdown** (inline report, no extra deps) and **DOCX** (OfficeCLI report).
+**Markdown** (inline report, no extra deps.) and **DOCX** (OfficeCLI report).
 
-> **DOCX requires OfficeCLI** — install it first (see below). The Markdown path needs nothing extra.
+> **DOCX requires OfficeCLI** — install it first (see below).
 
-**OfficeCLI install**:
+**OfficeCLI Install**:
 
 ```bash
 # macOS / Linux — or: brew install officecli / npm install -g @officecli/officecli
