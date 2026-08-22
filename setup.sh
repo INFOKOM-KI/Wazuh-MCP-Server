@@ -104,6 +104,11 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export MCP_HOST="0.0.0.0"
 # export MCP_PORT="8000"
 
+# Inbound auth for remote HTTP (REQUIRED when MCP_HOST is not 127.0.0.1)
+# Generate: python3 -c "import secrets; print('btm_' + secrets.token_urlsafe(32))"
+# export MCP_API_KEY="btm_<43-char-base64>"
+# export MCP_API_KEY_SCOPES="wazuh:read wazuh:write"   # default: wazuh:read (read-only)
+
 # Logging level: DEBUG, INFO (default), WARNING, ERROR
 # export LOG_LEVEL="INFO"
 
@@ -132,7 +137,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export SANGFOR_BLOCKLIST_TIMEOUT="15"
 # export SANGFOR_BLOCKLIST_VERIFY_SSL="false"   # set to "true" for production / trusted CA
 
-# Data masking (see SECURITY.md §4 for the six-layer model)
+# Data masking
 # export BLUETEAM_REDACT_EMAILS="true"
 # export BLUETEAM_REDACT_PII="true"
 # export BLUETEAM_REDACT_DOMAINS="true"
@@ -289,6 +294,9 @@ export WAZUH_INDEXER_VERIFY_SSL="${WAZUH_INDEXER_VERIFY_SSL:-true}"
 export MCP_TRANSPORT="${MCP_TRANSPORT:-stdio}"
 export MCP_HOST="${MCP_HOST:-127.0.0.1}"
 export MCP_PORT="${MCP_PORT:-8000}"
+# Inbound auth: non-loopback bind without MCP_API_KEY refuses to start.
+export MCP_API_KEY="${MCP_API_KEY:-}"
+export MCP_API_KEY_SCOPES="${MCP_API_KEY_SCOPES:-wazuh:read}"
 # Main entry point — modular M14 architecture (main.py + mcp_server/ package)
 exec /opt/blue-team-mcp/venv/bin/python3 /opt/blue-team-mcp/main.py "$@"
 EOF
@@ -328,6 +336,9 @@ echo "  CROWDSEC_API_KEY (free tier at crowdsec.net), NETRA_API_KEY, ARGUS_API_K
 echo "  WAZUH_API_URL, WAZUH_API_USER, WAZUH_API_PASSWORD,"
 echo "  WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD."
 echo ""
+echo "  MCP_API_KEY (REQUIRED for remote HTTP beyond 127.0.0.1):"
+echo "    python3 -c \"import secrets; print('btm_' + secrets.token_urlsafe(32))\""
+echo ""
 echo "  Performance tuning (all optional, defaults shown):"
 echo "    BLUETEAM_CHARACTER_LIMIT=100000"
 echo "    WAZUH_INDEXER_MAX_SIZE=10000      (docs per page in indexer search)"
@@ -346,7 +357,8 @@ echo "  mcp-server-greynoise   — DEPRECATED — redirects to mcp-server-bluete
 echo ""
 echo "Run as a remote HTTP service (no SSH needed):"
 echo ""
-echo "  MCP_TRANSPORT=streamable_http MCP_HOST=0.0.0.0 MCP_PORT=8000 mcp-server-blueteam"
+echo "  MCP_TRANSPORT=streamable_http MCP_HOST=0.0.0.0 MCP_PORT=8000"
+echo "    MCP_API_KEY=\"btm_<43-char-base64>\" mcp-server-blueteam   # MCP_API_KEY is REQUIRED here"
 echo ""
 echo "Then add to your Claude Desktop config on macOS/Windows:"
 echo ""
