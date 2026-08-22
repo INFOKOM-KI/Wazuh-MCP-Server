@@ -28,6 +28,10 @@ most-connected nodes in the code graph:
 audit (_audit_log) → call → redact (_redact_alert_data) → truncate (_truncate_if_needed)
 ```
 
+All outbound HTTP flows through a per-pool circuit breaker (`http_client.CircuitBreaker`:
+5 consecutive failures → open, 60s cooldown, single half-open trial). 429 and 4xx never count
+as failures, so an outage on one upstream fails fast instead of stacking retries across tools.
+
 | Transport | Use case |
 |-----------|----------|
 | `stdio` | Local subprocess / SSH pipe (default) |
