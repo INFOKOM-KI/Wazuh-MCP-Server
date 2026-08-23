@@ -109,6 +109,10 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export MCP_API_KEY="btm_<43-char-base64>"
 # export MCP_API_KEY_SCOPES="wazuh:read wazuh:write"   # default: wazuh:read (read-only)
 
+# Inbound HTTP hardening (optional — streamable_http only)
+# export BLUETEAM_HTTP_RATE_LIMIT="60"          # sliding-window requests/min per client IP; 0 = disabled
+# export BLUETEAM_ALLOWED_ORIGINS="https://app.example.com"  # comma-separated exact Origins; loopback always allowed
+
 # Logging level: DEBUG, INFO (default), WARNING, ERROR
 # export LOG_LEVEL="INFO"
 
@@ -175,7 +179,6 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 
 # Beacon detection exclusions (comma-separated IPs — known health-check/monitoring infra)
 # export BLUETEAM_BEACON_EXCLUDE_IPS="10.0.0.1,10.0.0.2"
-# export BLUETEAM_RATE_LIMIT="0"
 
 # Path restrictions (defaults shown)
 # export BLUETEAM_ALLOWED_PATHS="/var:/etc:/home:/opt:/usr"

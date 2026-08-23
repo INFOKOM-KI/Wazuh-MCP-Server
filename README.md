@@ -12,7 +12,7 @@ workflows, and host forensics. Read-only by default.
 ## Architecture
 
 ```
-main.py  ──►  mcp_server/  (package)
+main.py -> mcp_server/  (package)
                  ├─ core/          HTTP client, redaction, audit, config, attack graph, IOC store
                  ├─ wazuh/         Indexer (OpenSearch) + Manager API (JWT auth)
                  ├─ correlation/   3-Sum engine (pure computation, MITRE-driven)
@@ -25,11 +25,11 @@ Every tool call flows through a single pipeline in the `@blueteam_tool` decorato
 most-connected nodes in the code graph:
 
 ```
-audit (_audit_log) → call → redact (_redact_alert_data) → truncate (_truncate_if_needed)
+audit (_audit_log) -> call -> redact (_redact_alert_data) -> truncate (_truncate_if_needed)
 ```
 
 All outbound HTTP flows through a per-pool circuit breaker (`http_client.CircuitBreaker`:
-5 consecutive failures → open, 60s cooldown, single half-open trial). 429 and 4xx never count
+5 consecutive failures -> open, 60s cooldown, single half-open trial). 429 and 4xx never count
 as failures, so an outage on one upstream fails fast instead of stacking retries across tools.
 
 | Transport | Use case |
@@ -95,6 +95,7 @@ optional — tools degrade gracefully without them.
 | Redaction | `BLUETEAM_REDACTION_POLICY`, `BLUETEAM_OWNED_DOMAINS`, `BLUETEAM_REDACT_*` | see Security & Privacy |
 | Forensic gate | `BLUETEAM_ALLOW_FORENSIC_BYPASS`, `BLUETEAM_FORENSIC_TOKEN` | default `false` / empty |
 | Inbound auth | `MCP_API_KEY`, `MCP_API_KEY_SCOPES` | pre-shared API key + scopes for `streamable_http` |
+| Inbound hardening | `BLUETEAM_HTTP_RATE_LIMIT`, `BLUETEAM_ALLOWED_ORIGINS` | per-IP sliding-window rate limit (req/min, `0`=off) + Origin allowlist (loopback always allowed) |
 | Audit & persistence | `BLUETEAM_AUDIT_LOG`, `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CMDB_FILE` | JSONL audit trail + stores (optional) |
 | Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories |
 
@@ -156,6 +157,18 @@ export, and 23 host-forensics tools (log readers, fail2ban, rootkit scan, lynis,
 - **Bind guard** (`main.py::_start_http_transport`): a non-loopback bind without `MCP_API_KEY`
   raises `ConfigurationError` and refuses to start. Loopback stays auth-less only when no key is
   configured; when a key is set it is enforced on every request.
+- **JSON depth guard** (`parse_json_body_safe`): every POST body is capped at 1 MB
+  (`MAX_BODY_BYTES`) and rejected if nesting exceeds 100 levels (`MAX_JSON_DEPTH`) *before*
+  `json.loads` runs — blocks the stack-exhaustion DoS from deeply nested JSON-RPC payloads.
+- **Inbound rate limiter** (`SlidingWindowRateLimiter`): per-client-IP sliding-window cap
+  (`BLUETEAM_HTTP_RATE_LIMIT`, requests/min, default `0` = disabled) → `429` on excess. Distinct
+  from `BLUETEAM_RATE_LIMIT`, which gates destructive tools (fail2ban unban, tcpdump capture)
+  with a per-minute global cap.
+- **Origin validation** (`_origin_allowed`): an `Origin` header must be a loopback origin or in
+  `BLUETEAM_ALLOWED_ORIGINS` (comma-separated exact origins), else `403`. Blocks browser-based
+  DNS-rebinding / localhost-exfiltration. Requests without an `Origin` header (non-browser
+  clients) are unaffected. The middleware is always installed — rate limiting + origin validation
+  apply even on an auth-less loopback bind.
 
 ### Redaction policy
 

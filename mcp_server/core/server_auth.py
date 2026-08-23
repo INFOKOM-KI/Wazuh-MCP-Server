@@ -14,12 +14,17 @@ automatically protected with nothing extra to update.
 from __future__ import annotations
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
 import secrets
+import threading
+import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
+from urllib.parse import urlparse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -104,6 +109,115 @@ class ServerAuthManager:
 # Module
 auth_manager = ServerAuthManager()
 
+
+MAX_BODY_BYTES = 1_000_000   # 1 MB JSON-RPC request cap
+MAX_JSON_DEPTH = 100         # reject deeper nesting before json.loads exhausts the stack
+
+_OPEN = (0x5B, 0x7B)    # [ {
+_CLOSE = (0x5D, 0x7D)   # ] }
+_QUOTE = 0x22           # "
+_BACKSLASH = 0x5C       # \
+
+
+def _max_json_depth(data: bytes) -> int:
+    depth = max_depth = 0
+    in_string = escaped = False
+    for b in data:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif b == _BACKSLASH:
+                escaped = True
+            elif b == _QUOTE:
+                in_string = False
+        elif b == _QUOTE:
+            in_string = True
+        elif b in _OPEN:
+            depth += 1
+            max_depth = max(max_depth, depth)
+        elif b in _CLOSE:
+            depth -= 1
+    return max_depth
+
+
+def parse_json_body_safe(body: bytes) -> Optional[dict]:
+    if len(body) > MAX_BODY_BYTES:
+        logger.warning("Rejected oversized JSON-RPC body (%d bytes).", len(body))
+        return None
+    if _max_json_depth(body) > MAX_JSON_DEPTH:
+        logger.warning("Rejected deeply nested JSON-RPC body.")
+        return None
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+class SlidingWindowRateLimiter:
+    """Per-key sliding-window request limiter (opt-in, 60s window).
+    one global lock + a deque of monotonic timestamps per key. Memory
+    is bounded by pruning expired hits and sweeping stale keys past 10k clients.
+    """
+
+    _MAX_KEYS = 10_000
+
+    def __init__(self, limit: int, window_seconds: float = 60.0):
+        self.limit = max(0, int(limit))
+        self.window = window_seconds
+        self._hits: dict[str, deque] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> bool:
+        if self.limit <= 0:
+            return True
+        now = time.monotonic()
+        with self._lock:
+            dq = self._hits.get(key)
+            if dq is None:
+                dq = deque()
+                self._hits[key] = dq
+            while dq and now - dq[0] >= self.window:
+                dq.popleft()
+            if len(dq) >= self.limit:
+                return False
+            dq.append(now)
+            if len(self._hits) > self._MAX_KEYS:
+                stale = [k for k, d in self._hits.items() if not d or now - d[-1] >= self.window]
+                for k in stale:
+                    self._hits.pop(k, None)
+            return True
+
+
+def _origin_allowed(origin: str, allowed: frozenset[str]) -> bool:
+    """True if an Origin header is safe: exact allowlist hit or a loopback origin."""
+    if origin in allowed:
+        return True
+    host = urlparse(origin).hostname
+    if host is None:
+        return False  # opaque origin (e.g. "null") always reject
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+# Inbound HTTP rate limit (requests/min per client IP; 0 = disabled). Separate
+# from BLUETEAM_RATE_LIMIT, which gates destructive tools (fail2ban unban,
+# tcpdump capture) with a per-minute global cap not request admission.
+_http_rate_limit = 0
+try:
+    _http_rate_limit = max(0, int(os.environ.get("BLUETEAM_HTTP_RATE_LIMIT", "0")))
+except ValueError:
+    _http_rate_limit = 0
+_rate_limiter = SlidingWindowRateLimiter(_http_rate_limit)
+_allowed_origins = frozenset(
+    o.strip() for o in os.environ.get("BLUETEAM_ALLOWED_ORIGINS", "").split(",") if o.strip()
+)
+
+
 def _write_tool_names() -> frozenset[str]:
     """Derive the write-tool set from FastMCP registry annotations.
     Fail-closed: a tool is write-scoped when readOnlyHint is *not explicitly
@@ -136,17 +250,41 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
         self._write_tools = _write_tool_names()
 
     async def dispatch(self, request: Request, call_next):
-        key = auth_manager.authenticate(request.headers.get("authorization"))
-        if key is None:
-            return JSONResponse(
-                {"error": "Unauthorized: valid MCP_API_KEY required"},
-                status_code=401,
-                headers={"WWW-Authenticate": 'Bearer realm="blue_team_mcp"'},
-            )
+        # 1. Inbound rate limit (per client IP) before any other work.
+        client_ip = request.client.host if request.client else "unknown"
+        if not _rate_limiter.allow(client_ip):
+            return JSONResponse({"error": "Too many requests"}, status_code=429)
 
+        # 2. Origin validation reject cross-origin browser requests.
+        origin = request.headers.get("origin")
+        if origin is not None and not _origin_allowed(origin, _allowed_origins):
+            return JSONResponse({"error": "Forbidden: origin not allowed"}, status_code=403)
+
+        # 3. Inbound API-key auth (only enforced when a key is configured).
+        key = None
+        if auth_manager.configured:
+            key = auth_manager.authenticate(request.headers.get("authorization"))
+            if key is None:
+                return JSONResponse(
+                    {"error": "Unauthorized: valid MCP_API_KEY required"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": 'Bearer realm="blue_team_mcp"'},
+                )
+
+        # 4. Body guard + write scope check (POST only body is cached for downstream).
         if request.method == "POST":
-            tool_name = await _extract_tool_name(request)
-            if tool_name and tool_name in self._write_tools and not key.has_scope(WRITE_SCOPE):
+            try:
+                body = await request.body()
+            except Exception:  # client disconnect / read error reject, don't crash.
+                return JSONResponse({"error": "Bad request"}, status_code=400)
+            payload = parse_json_body_safe(body)
+            if payload is None:
+                return JSONResponse({"error": "Invalid or oversized JSON body"}, status_code=400)
+            tool_name = None
+            if payload.get("method") == "tools/call" and isinstance(payload.get("params"), dict):
+                name = (payload.get("params") or {}).get("name")
+                tool_name = name if isinstance(name, str) else None
+            if key is not None and tool_name and tool_name in self._write_tools and not key.has_scope(WRITE_SCOPE):
                 return JSONResponse(
                     {"error": f"Forbidden: tool '{tool_name}' requires '{WRITE_SCOPE}' scope"},
                     status_code=403,
@@ -155,27 +293,14 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-async def _extract_tool_name(request: Request) -> Optional[str]:
-    """Best-effort extract of the target tool name from a JSON-RPC body."""
-    try:
-        body = await request.body()
-        payload = json.loads(body)
-    except (ValueError, RuntimeError):
-        return None
-    if isinstance(payload, dict) and payload.get("method") == "tools/call":
-        params = payload.get("params") or {}
-        return params.get("name") if isinstance(params, dict) else None
-    return None
-
-
 def serve_authenticated(mcp, host: str, port: int, log_level: str = "INFO") -> None:
-    """Serve the streamable-http transport, enforcing auth when configured."""
+    """Serve the streamable-http transport with hardening middleware."""
     import uvicorn
-
     app = mcp.streamable_http_app()
-    if auth_manager.configured:
-        app.add_middleware(APIAuthMiddleware)
-    else:
+    # Always install: rate limiting + origin validation apply even without a key;
+    # auth itself is a no-op branch unless MCP_API_KEY is configured.
+    app.add_middleware(APIAuthMiddleware)
+    if not auth_manager.configured:
         logger.warning(
             "MCP_API_KEY not set - serving HTTP transport WITHOUT inbound auth "
             "(loopback only; non-loopback bind is refused at startup)."

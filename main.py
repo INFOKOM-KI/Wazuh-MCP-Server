@@ -74,7 +74,7 @@ def main() -> None:
             verify_ssl=config.wazuh_manager.verify_ssl,
         )
 
-    # 4: Register tools (respects tool-gating config)
+    # 4: Register tools
     from mcp_server.tools import register_all_tools
     register_all_tools()
 

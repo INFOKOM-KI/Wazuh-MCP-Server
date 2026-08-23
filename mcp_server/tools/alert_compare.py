@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-F-6: Side-by-side IP comparison via 0-doc aggregations with verdict
+IP comparison via 0-doc aggregations with verdict
 """
 from __future__ import annotations
 import json, re, math, asyncio, os
@@ -19,7 +19,7 @@ from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_ta
 from mcp_server.core.http_client import ValidPublicIp
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call, _get_client
-from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
+from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups, ValidAgentId
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
@@ -68,12 +68,10 @@ class AlertCompareInput(BaseModel):
     },
 )
 async def blueteam_wazuh_alert_compare(params: AlertCompareInput) -> str:
-    """Compare alert profiles of two source IPs side-by-side.
-
+    """Compare alert profiles of two source IP side-by-side.
     Fetches alert counts, top rules, max severity, MITRE tactics, and
     beacon scores for both IPs and returns a structured comparison with
     a verdict on which IP is more suspicious.
-
     Saves the LLM from orchestrating 4+ sequential calls to analyze two
     IPs independently.
 
@@ -220,7 +218,7 @@ async def blueteam_wazuh_alert_compare(params: AlertCompareInput) -> str:
     return _truncate_if_needed("\n".join(lines))
 
 
-# Sprint 6: Geo-Aware Curated Threat Intelligence Pipeline (AUL Adjust)
+# Geo-Aware Curated Threat Intelligence Pipeline (AUL Adjust)
 # Composable filter specification - any combination of dimensions can be AND'd.
 # Cross-source deduplication patterns (parent-child alert relationships).
 # Each entry: (child_rule_id_regex, parent_rule_field_path_in_nested_alert)
@@ -276,8 +274,8 @@ class CuratedReportFilters(BaseModel):
         description="Target agent name, e.g. 'thezoo-prod'.")
     agent_ip: Optional[str] = Field(default=None, max_length=45,
         description="Target agent internal IP, e.g. '172.16.10.135'.")
-    agent_id: Optional[str] = Field(default=None, max_length=32,
-        description="Target agent ID, e.g. '227'.")
+    agent_id: ValidAgentId = Field(default=None, max_length=5,
+        description="Target agent ID, e.g. '227' (zero-padded to 3 digits).")
     decoder: Optional[str] = Field(default=None, max_length=64,
         description="Decoder name, e.g. 'web-accesslog', 'ar_log_json', 'sysmon'.")
 

@@ -20,31 +20,37 @@ def _relative_delta(n: int, unit: str) -> timedelta:
     return timedelta(**{_UNIT_MAP[unit]: n})
 
 
+def _parse_now_math(expr: str, now: datetime) -> datetime:
+    """Resolve an OpenSearch date-math expression ('now', 'now-24h', 'now-7d/d')."""
+    body = expr[3:].lower().split("/")[0]  # strip 'now' and any '/d' rounding suffix
+    dt = now
+    for m in re.finditer(r"([+-])(\d+)([smhdw])", body):
+        sign, n, unit = m.group(1), int(m.group(2)), m.group(3)
+        delta = _relative_delta(n, unit)
+        dt = dt - delta if sign == "-" else dt + delta
+    return dt
+
+
 def _parse_time_window(
     since: Optional[str], until: Optional[str], default_back: timedelta = timedelta(days=365),
 ) -> tuple[str, str]:
     now = datetime.utcnow()
-    until_dt = now
-    if until and until.strip():
-        u = until.strip()
-        if _ISO_TIME_RE.match(u):
-            until_dt = datetime.fromisoformat(u.replace("Z", "+00:00").rstrip("Z"))
-        else:
-            m = _RELATIVE_TIME_RE.match(u)
-            if m:
-                until_dt = now - _relative_delta(int(m.group(1)), m.group(2))
-    if since and since.strip():
-        s = since.strip()
-        if _ISO_TIME_RE.match(s):
-            since_dt = datetime.fromisoformat(s.replace("Z", "+00:00").rstrip("Z"))
-        else:
-            m = _RELATIVE_TIME_RE.match(s)
-            if m:
-                since_dt = now - _relative_delta(int(m.group(1)), m.group(2))
-            else:
-                since_dt = now - default_back
-    else:
-        since_dt = now - default_back
+
+    def _resolve(expr: str, default: datetime) -> datetime:
+        expr = expr.strip()
+        if not expr:
+            return default
+        if _ISO_TIME_RE.match(expr):
+            return datetime.fromisoformat(expr.replace("Z", "+00:00").rstrip("Z"))
+        m = _RELATIVE_TIME_RE.match(expr)
+        if m:
+            return now - _relative_delta(int(m.group(1)), m.group(2))
+        if expr.lower().startswith("now"):
+            return _parse_now_math(expr, now)
+        return default
+
+    until_dt = _resolve(until, now) if until else now
+    since_dt = _resolve(since, now - default_back) if since else (now - default_back)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     return since_dt.strftime(fmt), until_dt.strftime(fmt)
 
