@@ -185,7 +185,9 @@ attacker-IOC registry (`core/attacker_registry.py`) exempts confirmed attacker i
 shape-based masking — never from Layer 1.
 
 Two-tier unmasking on top of the policy:
-- **Tier 1 — `reveal_owned=true`** — reveals only owned `*.tangerangkota.go.id` assets to the LLM.
+- **Tier 1 — `reveal_owned=true`** — reveals only owned `*.tangerangkota.go.id` assets to the LLM,
+  and unmask owned-domain bucket keys in the aggregation tools (including
+  `wazuh_alert_dsl_query`). Never expands beyond `BLUETEAM_OWNED_DOMAINS`.
 - **Tier 2 — `bypass_redaction=true` + `forensic_token`** — writes raw data **to disk**; the LLM
   receives only the file path, never the raw content.
 
@@ -210,6 +212,9 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
 - A private/RFC1918 srcip (10.x, 172.16-31.x, 192.168.x) is INTERNAL, never an attacker — do not
   run threat-intel on it (those tools reject private IPs by design — SSRF guard).
 - reveal_owned=true (Tier 1, LLM-safe): reveals only *.tangerangkota.go.id + @tangerangkota.go.id.
+  Accepted by the alert/aggregation tools — wazuh_domain_lookup, wazuh_alert_focused_crawl,
+  wazuh_email_lookup, wazuh_alert_dsl_query (unmasks owned-domain bucket keys), and others —
+  never expands beyond BLUETEAM_OWNED_DOMAINS.
 - bypass_redaction=true + forensic_token (Tier 2, HUMAN ONLY): writes raw data to disk via
   blueteam_wazuh_export; the LLM sees only the file path.
 - redaction_policy="protect_victim" is accepted by 13 tools (blueteam_curated_threat_report,
@@ -218,6 +223,7 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
   wazuh_alert_aggregate_analysis, wazuh_alert_focused_crawl, wazuh_alert_timeline,
   wazuh_attack_velocity, wazuh_domain_lookup, wazuh_email_lookup). blueteam_wazuh_export uses
   bypass_redaction (NOT redaction_policy). Other tools reject redaction_policy — drop it and retry.
+  (Separately, wazuh_alert_dsl_query accepts reveal_owned=true but NOT redaction_policy.)
 - Export path MUST be /var/log/blue-team-mcp/exports/.
 
 LANGKAH 0  — Index schema (before any aggregation):
