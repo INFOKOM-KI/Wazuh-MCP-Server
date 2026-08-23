@@ -276,10 +276,45 @@ blueteam_case_list(); blueteam_case_get(case_id=<case_id>)
 LANGKAH 10 — Geo heatmap:
 blueteam_wazuh_geo_heatmap(since="24h", response_format="json")
 
-Supplementary (when needed): sangfor_blocklist_list/check (Sangfor blocklist),
-blueteam_semantic_search (dominant attack patterns), blueteam_extract_iocs +
-blueteam_case_add_iocs (IOC → case), blueteam_check_webshell + urlhaus_lookup (forensic URL
-scan), blueteam_prompt_route (BM25 prompt routing).
+Supplementary tools (by category — the full 122-tool set; LANGKAH 0–10 is the default path):
+
+- Alert search/aggregation: blueteam_wazuh_indexer_search, blueteam_wazuh_alerts,
+  wazuh_alert_aggregate_analysis, wazuh_alert_focused_crawl, wazuh_alert_dsl_query,
+  wazuh_alert_timeline, wazuh_attack_velocity, blueteam_wazuh_alert_summarize,
+  blueteam_wazuh_alert_compare.
+- Threat intel: crowdsec_ip_reputation(/bulk), threatfox_ioc_search(/bulk),
+  greynoise_ip_context, netra_ip_analysis, otx_lookup_bulk, urlhaus_lookup(/bulk),
+  urlhaus_hash_lookup, blueteam_lookup_domain_virustotal, blueteam_lookup_hash_virustotal,
+  blueteam_unified_threat_score, blueteam_mitre_lookup.
+- Baselines & anomaly: blueteam_baseline_profile, blueteam_baseline_drift,
+  blueteam_calendar_heatmap, blueteam_beacon_detect.
+- Wazuh Manager (agents/rules/config): blueteam_wazuh_agents, blueteam_wazuh_agents_summary,
+  blueteam_wazuh_get_cluster_nodes, blueteam_wazuh_get_rules, blueteam_wazuh_get_groups,
+  blueteam_wazuh_get_decoders, blueteam_wazuh_get_security_events, blueteam_wazuh_manager_logs,
+  blueteam_wazuh_get_rule_files, blueteam_wazuh_get_rule_file_content,
+  blueteam_wazuh_get_agent_sca, blueteam_wazuh_list_sca_policies, blueteam_wazuh_get_sca_policy_checks.
+- Compliance/SCA/vuln: blueteam_wazuh_syscheck, blueteam_wazuh_compliance,
+  blueteam_wazuh_vulnerabilities.
+- Host forensics: blueteam_read_auth_log, blueteam_read_syslog, blueteam_read_web_log,
+  blueteam_failed_logins, blueteam_last_logins, blueteam_who_is_logged_in,
+  blueteam_find_suid_files, blueteam_find_world_writable, blueteam_list_connections,
+  blueteam_list_listening_ports, blueteam_list_processes, blueteam_list_cron_jobs,
+  blueteam_list_users, blueteam_hash_file, blueteam_journalctl, blueteam_rootkit_scan,
+  blueteam_lynis_audit, blueteam_system_health, blueteam_sudo_history,
+  blueteam_check_open_firewall, blueteam_check_ssh_authorized_keys, blueteam_check_updates,
+  blueteam_fail2ban_status, blueteam_fail2ban_jail_status, blueteam_fail2ban_unban,
+  blueteam_capture_traffic.
+- Domain/asset: blueteam_whois_lookup, blueteam_crtsh_lookup, blueteam_asset_context.
+- Case/IOC/history: blueteam_case_create, blueteam_case_add_iocs, blueteam_case_add_verdict,
+  blueteam_case_list, blueteam_case_get, blueteam_extract_iocs, blueteam_ioc_lifecycle,
+  blueteam_investigate_ip, blueteam_playbook_run, blueteam_investigation_history,
+  blueteam_investigation_summary, blueteam_false_positive_tracker.
+- Geo: blueteam_wazuh_geo_distribution (by country).
+- Forensics/scanning/other: blueteam_check_webshell, blueteam_semantic_search,
+  blueteam_threat_hunt, blueteam_stix_analyze, blueteam_prompt_route.
+- Sangfor blocklist: sangfor_blocklist_check(ip=<ip>) for a single IP;
+  sangfor_blocklist_list(limit=…, date_start="YYYY-MM-DD HH:MM:SS", date_end=…) for the list —
+  no ``since`` / ``offset`` params (use date_start/date_end).
 
 —— FORMAT MARKDOWN: compose the report from steps 1–10 (ringkasan → subdomain → IOC →
    threat intel → 3-Sum → attack graph → LangGraph → email → MITRE → geo).
