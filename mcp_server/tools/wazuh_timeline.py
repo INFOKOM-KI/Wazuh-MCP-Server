@@ -24,7 +24,7 @@ class WazuhAlertTimelineInput(BaseModel):
     since: str = Field(
         default="1h",
         max_length=30,
-        description="Start of time window — ISO 8601 ('2026-07-07T00:00:00Z') or relative "
+        description="Start of time window - ISO 8601 ('2026-07-07T00:00:00Z') or relative "
                     "('5m', '1h', '24h', '7d', '30d'). Default: '1h'.",
     )
     until: Optional[str] = Field(
@@ -58,7 +58,7 @@ class WazuhAlertTimelineInput(BaseModel):
         default=None,
         max_length=1024,
         description="Free-text keyword search to narrow the timeline. Same syntax as "
-                    "blueteam_wazuh_indexer_search — supports +term, -term, OR, *wildcard*, "
+                    "blueteam_wazuh_indexer_search supports +term, -term, OR, *wildcard*, "
                     '\"exact phrase\". Example: \'gambling OR "brute force"\'',
     )
     response_format: Literal["markdown", "json"] = Field(
@@ -113,7 +113,7 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
         params.since: Start of time window (default '1h').  Accepts ISO 8601 or relative
                      expressions ('5m', '1h', '24h', '7d', '30d').
         params.until: End of time window.  Defaults to now.
-        params.bucket: Bucket size — '1m', '5m', '15m', '1h', '6h', '1d', or 'auto'.
+        params.bucket: Bucket size '1m', '5m', '15m', '1h', '6h', '1d', or 'auto'.
         params.agent_name: Optional agent filter.
         params.rule_groups: Optional comma-separated rule groups filter.
         params.rule_level_min: Only count alerts at or above this severity.
@@ -186,7 +186,7 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
         )
 
     total_alerts = sum(b.get("doc_count", 0) for b in buckets)
-    buckets = _redact_alert_data(buckets)  # mask victim emails/IPs/domains in bucket keys
+    buckets = _redact_alert_data(buckets, reveal_owned=params.reveal_owned)  # mask victim emails/IP/domains in bucket keys
 
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps({

@@ -317,7 +317,7 @@ async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
     raw = await _wazuh_indexer_post(body)
     if "error" in raw:
         return json.dumps(raw, indent=2)
-    aggs = _redact_alert_data(raw.get("aggregations", {}))
+    aggs = _redact_alert_data(raw.get("aggregations", {}), reveal_owned=params.reveal_owned)
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
     buckets = aggs.get("by_city", {}).get("buckets", [])
     if params.response_format == "json":

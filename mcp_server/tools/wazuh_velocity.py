@@ -183,8 +183,8 @@ async def wazuh_attack_velocity(params: WazuhAttackVelocityInput = WazuhAttackVe
 
     current_buckets = current_raw.get("aggregations", {}).get("over_time", {}).get("buckets", [])
     previous_buckets = previous_raw.get("aggregations", {}).get("over_time", {}).get("buckets", [])
-    current_buckets = _redact_alert_data(current_buckets)  # mask victim identifiers in bucket keys
-    previous_buckets = _redact_alert_data(previous_buckets)
+    current_buckets = _redact_alert_data(current_buckets, reveal_owned=params.reveal_owned)  # mask victim identifiers in bucket keys
+    previous_buckets = _redact_alert_data(previous_buckets, reveal_owned=params.reveal_owned)
 
     current_total = sum(b.get("doc_count", 0) for b in current_buckets)
     previous_total = sum(b.get("doc_count", 0) for b in previous_buckets)

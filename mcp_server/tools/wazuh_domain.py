@@ -138,7 +138,7 @@ async def _wazuh_domain_lookup_full_scan(
             body["search_after"] = sa
         return await _wazuh_indexer_post(body)
 
-    async def _full_scan_paginate(max_scanned, fetch_page, initial_sa, redact=True, bypass=False):
+    async def _full_scan_paginate(max_scanned, fetch_page, initial_sa, redact=True, bypass=False, reveal_owned=False):
         """Generic pagination loop. Returns {total_scanned, pages, exhausted, all_docs, ...}."""
         total_scanned = 0
         pages = []
@@ -153,7 +153,7 @@ async def _wazuh_domain_lookup_full_scan(
             hit_list = hits.get("hits", [])
             docs = [h.get("_source", h) for h in hit_list]
             if redact:
-                docs = _redact_alert_data(docs, bypass=bypass)
+                docs = _redact_alert_data(docs, bypass=bypass, reveal_owned=reveal_owned)
             if not docs:
                 break
             total_scanned += len(docs)
@@ -173,6 +173,7 @@ async def _wazuh_domain_lookup_full_scan(
     result = await _full_scan_paginate(
         params.max_scanned, _fetch_page, initial_search_after, redact=True,
         bypass=params.bypass_redaction,
+        reveal_owned=params.reveal_owned,
     )
     if result.get("_error"):
         return json.dumps({"error": result["_error"]}, indent=2)
