@@ -128,7 +128,12 @@ async def wazuh_email_lookup(params: WazuhEmailLookupInput) -> str:
         params.top_n: How many top emails to return (1-500, default 100)
         params.rule_groups: Comma-separated groups filter
         params.max_scanned: Hard cap on documents scanned (1000-200000, default 50000)
+        params.keyword: Free-text keyword to further narrow results
         params.response_format: 'markdown' or 'json'
+        params.bypass_redaction: When true, skip PII/credential redaction
+        params.redaction_policy: 'full', 'protect_victim', or 'raw'
+        params.reveal_owned: When true, unmask emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS)
+        params.forensic_token: Forensic unmask token (BLUETEAM_FORENSIC_TOKEN)
 
     Returns:
         str: Ranked table of email addresses with counts, unique IPs,
