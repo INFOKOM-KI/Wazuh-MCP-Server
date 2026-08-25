@@ -229,7 +229,9 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
   wazuh_attack_velocity, wazuh_domain_lookup, wazuh_email_lookup). blueteam_wazuh_export uses
   bypass_redaction (NOT redaction_policy). Other tools reject redaction_policy — drop it and retry.
   (Separately, wazuh_alert_dsl_query accepts reveal_owned=true but NOT redaction_policy.)
-- Export path MUST be /var/log/blue-team-mcp/exports/.
+- blueteam_wazuh_export writes to BLUETEAM_EXPORT_DIR (default /var/log/blue-team-mcp/exports/)
+  with an AUTO-GENERATED filename (export_<timestamp>.jsonl). It has NO ``path`` parameter —
+  do not pass one (it will be rejected). Only blueteam_export_report accepts a ``path``.
 
 LANGKAH 0  — Index schema (before any aggregation):
 blueteam_index_schema(fields=["data.srcip","rule.id","rule.groups","agent.name",
@@ -329,9 +331,11 @@ Supplementary tools (by category — the full 123-tool set; LANGKAH 0–10 is th
    path="/var/log/blue-team-mcp/exports/laporan_24jam_<date>.docx", docx_sections=[...])
 
 —— FORENSIC EXPORT (HUMAN ONLY): blueteam_wazuh_export(since="24h", bypass_redaction=true,
-   forensic_token="<BLUETEAM_FORENSIC_TOKEN>",
-   path="/var/log/blue-team-mcp/exports/forensic_24jam_<date>.jsonl")
-   → analyst reads the file on the server (cat/jq); the LLM assists only with REDACTED analysis.
+   forensic_token="<BLUETEAM_FORENSIC_TOKEN>")
+   → streams to /var/log/blue-team-mcp/exports/export_<timestamp>.jsonl (filename auto-generated;
+     NO ``path`` parameter). WITHOUT ``bypass_redaction=true`` the export is protect_victim-masked
+     (subdomains stay masked). Analyst reads the file on the server (cat/jq); the LLM assists only
+     with REDACTED analysis.
 ```
 
 ---

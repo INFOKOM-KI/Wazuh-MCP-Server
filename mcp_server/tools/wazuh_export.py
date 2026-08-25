@@ -101,9 +101,22 @@ async def blueteam_wazuh_export(params: WazuhExportInput) -> str:
 
     **Result**: JSONL file at {BLUETEAM_EXPORT_DIR}/export_<timestamp>.jsonl
 
+    Args:
+        params.since: Time window start (ISO 8601 or relative, e.g. '24h').
+        params.until: Time window end (defaults to now).
+        params.agent_name: Optional agent name filter.
+        params.srcip: Optional source IP filter.
+        params.keyword: Optional free-text keyword in full_log.
+        params.rule_groups: Comma-separated rule groups filter.
+        params.max_docs: Max documents to export (0 = unlimited).
+        params.bypass_redaction: When true, write RAW (unmasked) data. Requires
+            BLUETEAM_ALLOW_FORENSIC_BYPASS=true on the server.
+        params.forensic_token: Operator token (matches BLUETEAM_FORENSIC_TOKEN),
+            required when bypass_redaction=true and that env is set.
+
     **Worked Examples**
 
-    1. *Export last 24h*:
+    1. *Export last 24h (protect_victim-masked by default)*:
        ``blueteam_wazuh_export(since="24h")``
 
     2. *Export 90 days for a specific IP*:
@@ -111,6 +124,9 @@ async def blueteam_wazuh_export(params: WazuhExportInput) -> str:
 
     3. *Export with keyword filter, max 100k docs*:
        ``blueteam_wazuh_export(since="7d", keyword="locked OR brute", max_docs=100000)``
+
+    4. *Forensic raw export (HUMAN ONLY - unmasked subdomains/emails)*:
+       ``blueteam_wazuh_export(since="24h", bypass_redaction=true, forensic_token="<token>")``
     """
     _audit_log("blueteam_wazuh_export", {"since": params.since, "max_docs": params.max_docs})
     # Forensic bypass gate: requires BLUETEAM_ALLOW_FORENSIC_BYPASS=true + matching token

@@ -206,6 +206,9 @@ async def wazuh_alert_dsl_query(params: DslQueryInput) -> str:
         params.query_json: [DEPRECATED] Raw OpenSearch DSL JSON string.
         params.index_pattern: Index pattern (default 'wazuh-alerts-*').
         params.response_format: 'json' (default) or 'markdown'.
+        params.reveal_owned: When true (forensic), expose emails/subdomains at owned
+            domains (BLUETEAM_OWNED_DOMAINS) unmasked while all other protect_victim
+            masking stays on. Layer 1 credentials remain masked.
 
     Returns:
         str: OpenSearch aggregation response (JSON by default, markdown on request).
