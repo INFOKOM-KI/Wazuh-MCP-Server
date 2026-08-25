@@ -62,6 +62,7 @@ def register_all_tools() -> None:
         ("investigation_history",  "investigation_history",  False),  # Investigation state (mark_investigated, FP tracker, summary)
         ("correlation",            "correlation",            False),  # 3-Sum correlation + IP investigation + enrichment
         ("geo",                   "geo",                   False),  # 1 tool
+        ("ai_bot_recon",           "ai_bot_recon",           False),  # 1 tool - AI/LLM-driven scanning detection
         ("dsl_query",             "dsl_query",             False),  # 1 tool
         ("wazuh_email",           "wazuh_email",           False),  # 1 tool
         ("wazuh_domain",          "wazuh_domain",          False),  # 1 tool

@@ -1,7 +1,7 @@
 # Blue Team MCP Server (Wazuh SIEM)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **122 tools + 4 resources** across Wazuh SIEM, multi-provider threat
+offensive tooling. **123 tools + 4 resources** across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, and host forensics. Read-only by default.
 
@@ -281,7 +281,7 @@ blueteam_case_list(); blueteam_case_get(case_id=<case_id>)
 LANGKAH 10 — Geo heatmap:
 blueteam_wazuh_geo_heatmap(since="24h", response_format="json")
 
-Supplementary tools (by category — the full 122-tool set; LANGKAH 0–10 is the default path):
+Supplementary tools (by category — the full 123-tool set; LANGKAH 0–10 is the default path):
 
 - Alert search/aggregation: blueteam_wazuh_indexer_search, blueteam_wazuh_alerts,
   wazuh_alert_aggregate_analysis, wazuh_alert_focused_crawl, wazuh_alert_dsl_query,
@@ -317,6 +317,7 @@ Supplementary tools (by category — the full 122-tool set; LANGKAH 0–10 is th
 - Geo: blueteam_wazuh_geo_distribution (by country).
 - Forensics/scanning/other: blueteam_check_webshell, blueteam_semantic_search,
   blueteam_threat_hunt, blueteam_stix_analyze, blueteam_prompt_route.
+- AI/LLM attack detection: blueteam_ai_bot_recon (AI-agent user-agents probing exploit paths).
 - Sangfor blocklist: sangfor_blocklist_check(ip=<ip>) for a single IP;
   sangfor_blocklist_list(limit=…, date_start="YYYY-MM-DD HH:MM:SS", date_end=…) for the list —
   no ``since`` / ``offset`` params (use date_start/date_end).
