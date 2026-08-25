@@ -11,7 +11,7 @@ from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _BYPASS_R
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window
 
-from mcp_server.core.audit import response_pipeline
+from mcp_server.core.tool_decorator import blueteam_tool
 
 class GeoDistributionInput(BaseModel):
     """Input model for blueteam_wazuh_geo_distribution."""
@@ -31,8 +31,7 @@ class GeoDistributionInput(BaseModel):
         default=False, description=_BYPASS_REDACTION_DESC)
 
 
-@response_pipeline("blueteam_wazuh_geo_distribution")
-@mcp.tool(
+@blueteam_tool(
     name="blueteam_wazuh_geo_distribution",
     annotations={"readOnlyHint": True, "destructiveHint": False,
                  "idempotentHint": True, "openWorldHint": False},

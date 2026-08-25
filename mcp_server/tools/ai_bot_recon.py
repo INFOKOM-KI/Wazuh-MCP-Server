@@ -8,10 +8,10 @@ import json
 import re
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field
-from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _BYPASS_REDACTION_DESC
+from mcp_server import WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _BYPASS_REDACTION_DESC
 from mcp_server.wazuh.indexer import _wazuh_indexer_post
 from mcp_server.wazuh.time_utils import _parse_time_window
-from mcp_server.core.audit import response_pipeline
+from mcp_server.core.tool_decorator import blueteam_tool
 
 # Known + suspicious AI-agent user-agents, matched against ``full_log`` (the raw
 # log line, which carries the UA). No ``data.user_agent`` field exists in the
@@ -46,8 +46,7 @@ class AiBotReconInput(BaseModel):
         default=False, description=_BYPASS_REDACTION_DESC)
 
 
-@response_pipeline("blueteam_ai_bot_recon")
-@mcp.tool(
+@blueteam_tool(
     name="blueteam_ai_bot_recon",
     annotations={"readOnlyHint": True, "destructiveHint": False,
                  "idempotentHint": True, "openWorldHint": False},

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _BYPASS_REDACTION_DESC, _INVESTIGATION_HISTORY_FILE)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.core.audit import response_pipeline
+from mcp_server.core.tool_decorator import blueteam_tool
 from mcp_server.correlation.three_sum_core import evaluate_baseline_drift, DEFAULT_Z_THRESHOLD
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window
@@ -37,8 +37,7 @@ class BaselineProfileInput(BaseModel):
         default="markdown", description="'markdown' or 'json'.")
 
 
-@response_pipeline("blueteam_baseline_profile")
-@mcp.tool(
+@blueteam_tool(
     name="blueteam_baseline_profile",
     annotations={"readOnlyHint": True, "destructiveHint": False,
                  "idempotentHint": True, "openWorldHint": False},
@@ -396,13 +395,12 @@ class BaselineDriftInput(BaseModel):
         default="markdown", description="'markdown' (default) or 'json'.")
 
 
-@response_pipeline("blueteam_baseline_drift")
-@mcp.tool(
+@blueteam_tool(
     name="blueteam_baseline_drift",
     annotations={"readOnlyHint": True, "destructiveHint": False,
                  "idempotentHint": True, "openWorldHint": False},
 )
-async def blueteam_baseline_drift(params: BaselineDriftInput) -> dict:
+async def blueteam_baseline_drift(params: BaselineDriftInput) -> str:
     """Detect alert-volume anomalies: current window vs a historical baseline via Z-score.
 
     Computes μ/σ over the baseline window's per-bucket counts and Z-scores each
