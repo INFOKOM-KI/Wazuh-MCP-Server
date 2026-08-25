@@ -3,7 +3,6 @@
 © NAuliajati - TangerangKota-CSIRT
 Baseline profiling + calendar heatmap tools
 """
-from __future__ import annotations
 import json, math, os, re
 from datetime import datetime, timedelta
 from typing import Optional, Literal

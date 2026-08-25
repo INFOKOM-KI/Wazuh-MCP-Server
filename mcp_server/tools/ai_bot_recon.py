@@ -3,7 +3,6 @@
 © NAuliajati - TangerangKota-CSIRT
 AI-agent reconnaissance detection - surfaces LLM-driven scanning/exploit activity.
 """
-from __future__ import annotations
 import json
 import re
 from typing import Optional, Literal

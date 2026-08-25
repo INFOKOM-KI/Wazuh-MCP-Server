@@ -3,7 +3,6 @@
 © NAuliajati - TangerangKota-CSIRT
 Geo distribution tool - country-level attack ranking
 """
-from __future__ import annotations
 import json
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field
