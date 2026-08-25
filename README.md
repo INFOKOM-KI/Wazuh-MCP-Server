@@ -217,6 +217,11 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
   never expands beyond BLUETEAM_OWNED_DOMAINS.
 - bypass_redaction=true + forensic_token (Tier 2, HUMAN ONLY): writes raw data to disk via
   blueteam_wazuh_export; the LLM sees only the file path.
+- ⚠️ NEVER pass redaction_policy="raw" OR bypass_redaction=true in a tool call — both are
+  HUMAN-ONLY and gated behind the operator forensic token, which the LLM does NOT hold. The
+  call fails with "requires the operator forensic token". For owned-domain visibility use
+  reveal_owned=true (above, no token); full raw forensics is blueteam_wazuh_export run by the
+  analyst on the server.
 - redaction_policy="protect_victim" is accepted by 13 tools (blueteam_curated_threat_report,
   blueteam_threat_card, blueteam_wazuh_alert_summarize, blueteam_wazuh_alerts,
   blueteam_wazuh_geo_heatmap, blueteam_wazuh_indexer_search, three_sum_correlation,
