@@ -142,7 +142,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 
 # Tier-2 forensic bypass — raw (unmasked) data to disk via blueteam_wazuh_export (HUMAN ONLY)
 # export BLUETEAM_ALLOW_FORENSIC_BYPASS="false"
-# export BLUETEAM_FORENSIC_TOKEN="change-me-per-deployment"
+# export BLUETEAM_FORENSIC_TOKEN="change-me-per-deployment"   # change this adjust based on your server prods
 # export BLUETEAM_EXPORT_RETENTION_DAYS="7"     # auto-prune export_*.jsonl older than N days; 0 = keep forever
 
 # Sangfor Blocklist Integration (optional — set SANGFOR_BLOCKLIST_TOKEN to enable sangfor_blocklist_* tools)
@@ -162,7 +162,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_REDACTION_POLICY="protect_victim"
 
 # Owned domains for Tier-1 forensic unmasking (reveal_owned=true) — comma-separated
-# export BLUETEAM_OWNED_DOMAINS="tangerangkota.go.id"
+# export BLUETEAM_OWNED_DOMAINS="tangerangkota.go.id"   # change this, use comma to multiple domain names
 # export BLUETEAM_ALLOW_RUNTIME_DOMAINS="false"   # allow blueteam_set_owned_domains at runtime
 
 # Forensic email/path hashing salt (change per deployment)
