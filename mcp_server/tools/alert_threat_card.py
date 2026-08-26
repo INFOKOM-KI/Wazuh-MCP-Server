@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-F-5: Threat cards — single-call report: alerts + CrowdSec/GreyNoise + MITRE + actions
+Threat cards single-call report: alerts + CrowdSec/GreyNoise + MITRE + actions.
 """
 from __future__ import annotations
 import json, re, math, asyncio, os
@@ -26,7 +26,7 @@ from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 
 # 1: Alert Summarization
-# Auto-extracted from alert_enrichment.py - modular refactor (2026-08-11)
+# Auto-extracted from alert_enrichment.py - modular refactor by Aul
 class ThreatCardInput(BaseModel):
     """Input model for blueteam_threat_card."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -80,12 +80,18 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     """Generate a comprehensive threat card for a source IP.
     Collapses alert summarization, attack chain analysis, MITRE ATT&CK
     mapping, and threat intelligence (CrowdSec + GreyNoise) into a single
-    structured report. Designed as the one-stop triage tool — the LLM can
+    structured report. Designed as the one-stop triage tool the LLM can
     understand the full threat context in one call.
 
     **Required Permissions**: Wazuh Indexer ``read`` access.
     CrowdSec/GreyNoise lookups are best-effort (fail gracefully if keys
     are not configured).
+
+    Args:
+        params.redaction_policy: 'full' (shape-based, default), 'protect_victim' (mask victim-owned indicators only), 'raw' (Layer 1 credential strip only, requires BLUETEAM_ALLOW_FORENSIC_BYPASS).
+        params.reveal_owned: When true (forensic), expose emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS) unmasked; Layer 1 credentials remain masked.
+        params.forensic_token: Operator forensic token (matches BLUETEAM_FORENSIC_TOKEN); required for redaction_policy='raw' / bypass_redaction when that env is set.
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     **Worked Examples**
 
@@ -167,7 +173,7 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     docs = _redact_alert_data(docs, params=params)
 
     if not docs:
-        return "# Threat Card — `" + params.srcip + "`\n\n**No alerts found** for this IP in the selected time window."
+        return "# Threat Card - `" + params.srcip + "`\n\n**No alerts found** for this IP in the selected time window."
 
     # Extract common data
     rule_counts: Counter[str] = Counter()
@@ -227,9 +233,9 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
 
     # Markdown threat card
     lines = [
-        f"# 🛡️ Threat Card — `{params.srcip}`",
+        f"# 🛡️ Threat Card - `{params.srcip}`",
         "",
-        f"**Window**: `{since_iso}` → `{until_iso}` | **Total events**: {len(docs)}",
+        f"**Window**: `{since_iso}` -> `{until_iso}` | **Total events**: {len(docs)}",
         "",
         "---",
         "",
@@ -298,19 +304,19 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
         behaviors = [b.get("name", "") for b in crowdsec_data.get("behaviors", [])]
         lines.append(f"- **CrowdSec**: reputation `{rep}`")
         if behaviors:
-            lines.append(f"  - Behaviors: {', '.join(behaviors[:5])}")
+            lines.append(f"- Behaviors: {', '.join(behaviors[:5])}")
         cves = crowdsec_data.get("cves", [])
         if cves:
-            lines.append(f"  - Related CVEs: {', '.join(cves[:5])}")
+            lines.append(f"- Related CVEs: {', '.join(cves[:5])}")
     if greynoise_data:
         noise = greynoise_data.get("noise")
         riot = greynoise_data.get("riot")
         classification = greynoise_data.get("classification", "unknown")
         lines.append(f"- **GreyNoise**: classification `{classification}`")
         if noise:
-            lines.append(f"  - Internet scanner: ✅ (background noise)")
+            lines.append(f"- Internet scanner: ✅ (background noise)")
         if riot:
-            lines.append(f"  - Known business service: ✅ (likely benign)")
+            lines.append(f"- Known business service: ✅ (likely benign)")
     if crowdsec_data or greynoise_data:
         lines.append("")
 

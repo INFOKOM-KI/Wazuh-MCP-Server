@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Wazuh alert timeline tool - time-bucketed aggregation
+Wazuh alert timeline tool - time bucketed aggregation
 """
 from __future__ import annotations
 import json, re
@@ -119,6 +119,10 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
         params.rule_level_min: Only count alerts at or above this severity.
         params.keyword: Optional free-text keyword filter (e.g. 'gambling OR "brute force"').
         params.response_format: 'markdown' or 'json'.
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
+        params.redaction_policy: 'full' (shape-based, default), 'protect_victim' (mask victim-owned indicators only), 'raw' (Layer 1 credential strip only, requires BLUETEAM_ALLOW_FORENSIC_BYPASS).
+        params.reveal_owned: When true (forensic), expose emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS) unmasked; Layer 1 credentials remain masked.
+        params.forensic_token: Operator forensic token (matches BLUETEAM_FORENSIC_TOKEN); required for redaction_policy='raw' / bypass_redaction when that env is set.
 
     Returns:
         str: Timeline table with per-params.bucket counts, severity bands, and top indicators.
@@ -222,7 +226,7 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
     # Markdown
     dur_str = f"{_duration_minutes(since_str, until_str):.0f} min" if _duration_minutes(since_str, until_str) < 120 else f"{_duration_minutes(since_str, until_str) / 60:.1f}h"
     lines: list[str] = [
-        f"# Alert Timeline — Last {dur_str}",
+        f"# Alert Timeline Last {dur_str}",
         f"**Window**: {since_str} -> {until_str}  |  **Bucket**: {bucket_interval}  |  **Total alerts**: {total_alerts:,}",
         "",
         "| Time (UTC) | Total | Low (≤4) | Med (5-9) | High (≥10) | Top Rule | Top Src IP |",

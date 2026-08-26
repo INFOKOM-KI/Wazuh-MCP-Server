@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-G-3: Curated threat report — one-call filter→aggregate→enrich→report pipeline
+Curated threat report - one-call filter -> aggregate -> enrich -> report pipeline
 """
 from __future__ import annotations
 import json, re, math, asyncio, os
@@ -26,7 +26,7 @@ from mcp_server.threat_intel.crowdsec import _crowdsec_request
 from mcp_server.tools.alert_compare import CuratedReportFilters, _build_curated_query
 
 # 1: Alert Summarization
-# Auto-extracted from alert_enrichment.py - modular refactor (2026-08-11)
+# Auto-extracted from alert_enrichment.py - modular refactor
 class CuratedThreatReportInput(BaseModel):
     """Input model for blueteam_curated_threat_report."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -60,7 +60,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
     """Generate a geo/domain/rule-filtered threat intelligence report in one call.
 
     Combines alert aggregation, IP extraction, and multi-source threat intel
-    enrichment into a single structured report. Replace 8–12 sequential LLM
+    enrichment into a single structured report. Replace 8-12 sequential LLM
     tool calls with one.
 
     **Filter dimensions** (any combination, all AND'd):
@@ -84,6 +84,17 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
 
     **Required Permissions**: Wazuh Indexer read access. CROWDSEC_API_KEY for
     CrowdSec enrichment. ARGUS_API_KEY for Argus enrichment.
+
+    Args:
+        params.redaction_policy: 'full' (shape-based, default), 'protect_victim' (mask
+            victim-owned indicators only), 'raw' (Layer 1 credential strip only,
+            requires BLUETEAM_ALLOW_FORENSIC_BYPASS).
+        params.reveal_owned: When true (forensic), expose emails/subdomains at owned
+            domains (BLUETEAM_OWNED_DOMAINS) unmasked; Layer 1 credentials remain masked.
+        params.forensic_token: Operator forensic token (matches BLUETEAM_FORENSIC_TOKEN);
+            required for redaction_policy='raw' / bypass_redaction when that env is set.
+        params.bypass_redaction: When true, skip PII/credential redaction for audit
+            investigations.
 
     **Worked Example**
 
@@ -109,7 +120,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
     since_iso, until_iso = _parse_time_window(params.since, params.until)
     f = params.filters
 
-    # Phase 1: Aggregation query (size: 0, no documents fetched)
+    # 1: Aggregation query (size: 0, no documents fetched)
     clauses = _build_curated_query(since_iso, until_iso, f)
 
     # Time-decay weighting via function_score gauss decay on @timestamp
@@ -264,7 +275,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             b["_diversity_score"] = distinct_rules * math.log(1 + alert_count)
         entity_buckets.sort(key=lambda b: b.get("_diversity_score", 0), reverse=True)
 
-    # Phase 2: Concurrent threat intel enrichment
+    # 2: Concurrent threat intel enrichment
     threat_data: dict[str, dict] = {}
     if params.include_threat_intel and entity_buckets and params.group_by == "srcip":
         top_ips = [b["key"] for b in entity_buckets[:min(params.max_entities, 15)]]
@@ -340,7 +351,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
         enrich_results = await asyncio.gather(*[_enrich_ip(ip) for ip in top_ips])
         threat_data = dict(enrich_results)
 
-    # Phase 3: Format report
+    # 3: Format report
     if params.response_format == "json":
         result = {
             "window": {"since": since_iso, "until": until_iso},
@@ -387,7 +398,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
     lines = [
         f"# 🛡️ Curated Threat Report",
         "",
-        f"**Window**: `{since_iso}` → `{until_iso}`",
+        f"**Window**: `{since_iso}` -> `{until_iso}`",
         f"**Filters**: {filter_desc}",
         "",
         "---",

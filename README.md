@@ -18,7 +18,7 @@ main.py -> mcp_server/  (package)
                  ├─ correlation/   3-Sum engine (pure computation, MITRE-driven)
                  ├─ threat_intel/  CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise + shared cache
                  ├─ agents/        LangGraph investigation + playbook workflows
-                 └─ tools/         47 tool modules
+                 └─ tools/         49 tool modules
 ```
 
 Every tool call flows through a single pipeline in the `@blueteam_tool` decorator — the three

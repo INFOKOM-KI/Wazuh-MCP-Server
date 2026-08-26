@@ -41,7 +41,7 @@ async def blueteam_lookup_ip_abuseipdb(ip: ValidPublicIp, max_age_days: int = 90
         data = resp.json().get("data", {})
         if response_format == "json":
             return _truncate_if_needed(json.dumps({"ip": ip, "abuse_score": data.get("abuseConfidenceScore"), "total_reports": data.get("totalReports"), "country": data.get("countryCode")}, indent=2))
-        return _truncate_if_needed(f"# AbuseIPDB — {ip}\n\n- **Abuse Score**: {data.get('abuseConfidenceScore','?')}%\n- **Reports**: {data.get('totalReports','?')}\n- **Country**: {data.get('countryCode','?')}")
+        return _truncate_if_needed(f"# AbuseIPDB - {ip}\n\n- **Abuse Score**: {data.get('abuseConfidenceScore','?')}%\n- **Reports**: {data.get('totalReports','?')}\n- **Country**: {data.get('countryCode','?')}")
     except Exception as e:
         return _handle_api_error(e, context="abuseipdb")
 
@@ -77,7 +77,7 @@ async def blueteam_lookup_hash_virustotal(params: VirusTotalHashInput) -> str:
         stats = data.get("last_analysis_stats", {})
         if params.response_format == "json":
             return _truncate_if_needed(json.dumps({"hash": params.hash, "malicious": stats.get("malicious", 0), "suspicious": stats.get("suspicious", 0), "harmless": stats.get("harmless", 0)}, indent=2))
-        return _truncate_if_needed(f"# VirusTotal Hash — {params.hash}\n\n- **Malicious**: {stats.get('malicious',0)}\n- **Suspicious**: {stats.get('suspicious',0)}\n- **Harmless**: {stats.get('harmless',0)}")
+        return _truncate_if_needed(f"# VirusTotal Hash - {params.hash}\n\n- **Malicious**: {stats.get('malicious',0)}\n- **Suspicious**: {stats.get('suspicious',0)}\n- **Harmless**: {stats.get('harmless',0)}")
     except Exception as e:
         return _handle_api_error(e, context="virustotal")
 
@@ -186,6 +186,7 @@ async def netra_ip_analysis(params: NetraIpAnalysisInput) -> str:
     Args:
         params.ip: Public IP to analyze
         params.response_format: 'markdown' or 'json'
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
     """
     _audit_log("netra_ip_analysis", {"ip": params.ip})
     from mcp_server import NETRA_API_KEY_ENV, NETRA_VERIFY_SSL, NETRA_BASE_URL
@@ -255,7 +256,7 @@ async def sangfor_blocklist_check(params: SangforBlocklistCheckInput) -> str:
         if params.response_format == "json":
             return _truncate_if_needed(json.dumps(raw, indent=2))
         blocked = raw.get("blocked", False)
-        return _truncate_if_needed(f"# Sangfor Blocklist — {params.ip}\n\n- **Blocked**: {blocked}")
+        return _truncate_if_needed(f"# Sangfor Blocklist - {params.ip}\n\n- **Blocked**: {blocked}")
     except Exception as e:
         return _handle_api_error(e, context="sangfor")
 
@@ -306,7 +307,7 @@ class UnifiedThreatScoreInput(BaseModel):
         except ValueError as exc:
             raise ValueError(f"Invalid IP: '{v}'") from exc
         if __import__("ipaddress").ip_address(v).is_private:
-            raise ValueError(f"'{v}' is a private IP — this tool accepts public IPs only.")
+            raise ValueError(f"'{v}' is a private IP - this tool accepts public IPs only.")
         return v
 
 
@@ -366,7 +367,7 @@ async def blueteam_unified_threat_score(params: UnifiedThreatScoreInput) -> str:
     elif unified>=0.5: v="HIGH - Likely malicious, investigate"
     elif unified>=0.2: v="MEDIUM - Suspicious, monitor"
     elif parts: v="LOW — Probably benign"
-    else: v="UNKNOWN — No threat intel sources available"
+    else: v="UNKNOWN - No threat intel sources available"
 
     if params.response_format=="json":
         return _truncate_if_needed(json.dumps({"ip":params.ip,"unified_score":round(unified,2),"verdict":v,

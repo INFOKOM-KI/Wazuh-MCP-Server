@@ -149,7 +149,14 @@ class AggregateAnalysisInput(BaseModel):
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
 )
 async def wazuh_alert_aggregate_analysis(params: AggregateAnalysisInput) -> str:
-    """Zero-doc statistical analysis of Wazuh alerts across the full index."""
+    """Zero-doc statistical analysis of Wazuh alerts across the full index.
+
+    Args:
+        params.redaction_policy: 'full' (shape-based, default), 'protect_victim' (mask victim-owned indicators only), 'raw' (Layer 1 credential strip only, requires BLUETEAM_ALLOW_FORENSIC_BYPASS).
+        params.reveal_owned: When true (forensic), expose emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS) unmasked; Layer 1 credentials remain masked.
+        params.forensic_token: Operator forensic token (matches BLUETEAM_FORENSIC_TOKEN); required for redaction_policy='raw' / bypass_redaction when that env is set.
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
+    """
     _audit_log("wazuh_alert_aggregate_analysis", {"mode": params.mode})
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
         return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."}, indent=2)

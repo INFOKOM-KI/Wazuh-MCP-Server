@@ -128,12 +128,22 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export WAZUH_INDEXER_PASSWORD="your_indexer_password"
 # export WAZUH_INDEXER_VERIFY_SSL="true"  # TLS verification ON by default — disable only for self-signed labs
 
+# Tool gating (optional — hide write tools or specific categories/tools)
+# export WAZUH_READ_ONLY="false"                     # true = block write tools
+# export WAZUH_DISABLED_CATEGORIES="host_forensics"  # comma-separated categories
+# export WAZUH_DISABLED_TOOLS="tool_name_1,tool_name_2"
+
 # Performance & Response Limits
 # export BLUETEAM_CHARACTER_LIMIT="100000"       # max chars per tool response before truncation
 # export WAZUH_INDEXER_MAX_SIZE="10000"          # max documents per page in Wazuh Indexer search
 
 # Forensic Mode (ADMIN GATE — off by default)
 # export BLUETEAM_ALLOW_UNTRUNCATED="false"
+
+# Tier-2 forensic bypass — raw (unmasked) data to disk via blueteam_wazuh_export (HUMAN ONLY)
+# export BLUETEAM_ALLOW_FORENSIC_BYPASS="false"
+# export BLUETEAM_FORENSIC_TOKEN="change-me-per-deployment"
+# export BLUETEAM_EXPORT_RETENTION_DAYS="7"     # auto-prune export_*.jsonl older than N days; 0 = keep forever
 
 # Sangfor Blocklist Integration (optional — set SANGFOR_BLOCKLIST_TOKEN to enable sangfor_blocklist_* tools)
 # export SANGFOR_BLOCKLIST_URL="http://sangfor.local:8088/blocklist"
@@ -147,6 +157,13 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_REDACT_DOMAINS="true"
 # export BLUETEAM_REDACT_LOCATIONS="true"
 # export BLUETEAM_REDACT_UAS="true"
+
+# Redaction policy: full | protect_victim (default) | raw
+# export BLUETEAM_REDACTION_POLICY="protect_victim"
+
+# Owned domains for Tier-1 forensic unmasking (reveal_owned=true) — comma-separated
+# export BLUETEAM_OWNED_DOMAINS="tangerangkota.go.id"
+# export BLUETEAM_ALLOW_RUNTIME_DOMAINS="false"   # allow blueteam_set_owned_domains at runtime
 
 # Forensic email/path hashing salt (change per deployment)
 # export BLUETEAM_REDACT_SALT="change-me-per-deployment"
@@ -193,7 +210,7 @@ fi
 # Wrapper scripts
 echo "[5/7] Creating MCP server wrapper scripts..."
 
-# Main wrapper: mcp-server-blueteam (all 87 tools)
+# Main wrapper: mcp-server-blueteam (all 123 tools)
 cat > /usr/local/bin/mcp-server-blueteam << 'EOF'
 #!/usr/bin/env bash
 # Wrapper - Claude Desktop calls this via SSH (MAESTRO-compliant)
@@ -352,7 +369,7 @@ echo "  ThreatFox needs a free key — https://threatfox.abuse.ch/api"
 echo ""
 echo "Wrapper entry points installed:"
 echo ""
-echo "  mcp-server-blueteam    — All 87 tools (Wazuh, threat intel, host forensics,"
+echo "  mcp-server-blueteam    — All 123 tools (Wazuh, threat intel, host forensics,"
 echo "                            Sangfor blocklist, 3-Sum correlation, curated reports,"
 echo "                            CrowdSec, GreyNoise, ThreatFox)"
 echo "  mcp-server-crowdsec    — DEPRECATED — redirects to mcp-server-blueteam"

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-F-1: Alert summarization — IoC extraction, rule grouping, MITRE mapping, compact digest
+Alert summarization IoC extraction, rule grouping, MITRE mapping, compact digest.
 """
 from __future__ import annotations
 import json, re, math, asyncio, os
@@ -95,6 +95,12 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
     raw alert documents.
 
     **Required Permissions**: Wazuh Indexer user with ``read`` access.
+
+    Args:
+        params.redaction_policy: 'full' (shape-based, default), 'protect_victim' (mask victim-owned indicators only), 'raw' (Layer 1 credential strip only, requires BLUETEAM_ALLOW_FORENSIC_BYPASS).
+        params.reveal_owned: When true (forensic), expose emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS) unmasked; Layer 1 credentials remain masked.
+        params.forensic_token: Operator forensic token (matches BLUETEAM_FORENSIC_TOKEN); required for redaction_policy='raw' / bypass_redaction when that env is set.
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     **Worked Examples**
 

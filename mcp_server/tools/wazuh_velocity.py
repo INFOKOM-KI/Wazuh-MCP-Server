@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Wazuh attack velocity tool - dual-window comparison
+Wazuh attack velocity tool - dual window comparison
 """
 from __future__ import annotations
 import json, re, asyncio
@@ -87,7 +87,7 @@ async def wazuh_attack_velocity(params: WazuhAttackVelocityInput = WazuhAttackVe
 
     Queries the Wazuh Indexer for two adjacent windows of equal duration (current
     and previous), computes per-bucket deltas, and scores the overall trend:
-    **accelerating** (>+25%), **steady** (−25% to +25%), or **decelerating** (<−25%).
+    **accelerating** (>+25%), **steady** (-25% to +25%), or **decelerating** (<−25%).
 
     Also reports the top accelerating rules and source IPs across the two windows.
 
@@ -99,6 +99,10 @@ async def wazuh_attack_velocity(params: WazuhAttackVelocityInput = WazuhAttackVe
         params.bucket: Bucket granularity within each params.window. 'auto' picks based on
                       params.window size.
         params.response_format: 'markdown' or 'json'.
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
+        params.redaction_policy: 'full' (shape-based, default), 'protect_victim' (mask victim-owned indicators only), 'raw' (Layer 1 credential strip only, requires BLUETEAM_ALLOW_FORENSIC_BYPASS).
+        params.reveal_owned: When true (forensic), expose emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS) unmasked; Layer 1 credentials remain masked.
+        params.forensic_token: Operator forensic token (matches BLUETEAM_FORENSIC_TOKEN); required for redaction_policy='raw' / bypass_redaction when that env is set.
 
     Returns:
         str: Velocity report with trend classification, per-bucket comparison table,
@@ -243,11 +247,11 @@ async def wazuh_attack_velocity(params: WazuhAttackVelocityInput = WazuhAttackVe
     trend_emoji = {"accelerating": "🔺", "decelerating": "🔻", "steady": "➡️",
                    "new_activity": "🆕", "inactive": "⏸️"}
     lines = [
-        f"# Attack Velocity — {trend_emoji.get(trend, '')} {trend.replace('_', ' ').title()}",
+        f"# Attack Velocity - {trend_emoji.get(trend, '')} {trend.replace('_', ' ').title()}",
         "",
         f"**Window**: {window_str}  |  **Bucket**: {bucket_interval}",
-        f"**Current**: {current_since} → {current_until}",
-        f"**Previous**: {previous_since} → {previous_until}",
+        f"**Current**: {current_since} -> {current_until}",
+        f"**Previous**: {previous_since} -> {previous_until}",
         "",
         f"| Period | Alert Count |",
         f"|--------|-------------|",
@@ -276,8 +280,8 @@ async def wazuh_attack_velocity(params: WazuhAttackVelocityInput = WazuhAttackVe
         lines.append("")
 
     if trend == "accelerating":
-        lines.append("⚠️ **Attack activity is accelerating** — investigate immediately.")
+        lines.append("⚠️ **Attack activity is accelerating** - investigate immediately.")
     elif trend == "new_activity":
-        lines.append("🆕 **New activity detected** — no prior baseline for comparison.")
+        lines.append("🆕 **New activity detected** - no prior baseline for comparison.")
 
     return _truncate_if_needed("\n".join(lines))

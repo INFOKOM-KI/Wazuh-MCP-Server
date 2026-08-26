@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Host forensics tools - 23 tools for log reading, network, capture, files, hardening, users, processes
+Host forensics tools: 23 tools for log reading, network, capture, files, hardening, users, processes.
 """
 from __future__ import annotations
 import json, os, re, shutil, hashlib
@@ -9,7 +9,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field
-
 from mcp_server import mcp, MAX_LOG_LINES
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _check_rate_limit
 from mcp_server.core.redact import _redact_alert_data
@@ -31,6 +30,7 @@ async def blueteam_read_auth_log(params: LogInput) -> str:
     Args:
         params.lines (int): How many tail lines to read (default 200, max 2000)
         params.grep (str, optional): Filter to params.lines containing this pattern
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: Matching log params.lines or error JSON
@@ -63,6 +63,7 @@ async def blueteam_read_syslog(params: LogInput) -> str:
     Args:
         params.lines (int): Lines to return
         params.grep (str, optional): Filter pattern
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: Log content
@@ -104,6 +105,7 @@ async def blueteam_read_web_log(params: WebLogInput) -> str:
         params.log_type: 'access' or 'error'
         params.lines: Lines to read
         params.grep: Optional filter
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: Log params.lines
@@ -150,10 +152,11 @@ async def blueteam_journalctl(params: JournalInput) -> str:
     """Query systemd journal for any service. Useful for services without flat log files.
 
     Args:
-        params.unit: Systemd unit (optional — omit for all units)
+        params.unit: Systemd unit (omit for all units)
         params.since: Time range string
         params.lines: Max lines
         params.grep: Filter pattern
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: Journal output
@@ -184,6 +187,9 @@ async def blueteam_list_listening_ports(params: BypassRedactionInput) -> str:
     """List all TCP/UDP ports currently listening, with owning process.
     Equivalent to 'ss -tulpn'. Identifies unexpected services.
 
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
+
     Returns:
         str: Port table with process names and PIDs
     """
@@ -201,6 +207,9 @@ async def blueteam_list_listening_ports(params: BypassRedactionInput) -> str:
 async def blueteam_list_connections(params: BypassRedactionInput) -> str:
     """List all established TCP connections with remote IPs and local processes.
     Useful for spotting unexpected outbound connections (beaconing, exfil).
+
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: Active connection table
@@ -235,6 +244,7 @@ async def blueteam_capture_traffic(params: CaptureInput) -> str:
         params.count: Packet count to capture then stop
         params.filter_expr: BPF filter (optional)
         params.output_file: Save pcap to this params.path (optional, under CAPTURE_OUTPUT_DIR)
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: Packet summary or params.path to saved pcap
@@ -266,8 +276,8 @@ async def blueteam_capture_traffic(params: CaptureInput) -> str:
     if output_path and r["returncode"] == 0:
         result = json.dumps({"status": "captured", "file": output_path, "packets": params.count})
     else:
-        # Redact internal RFC1918 IPs from stdout text output.
-        # Connection metadata contains internal endpoint IPs; mask them without altering
+        # Redact internal RFC1918 IP from stdout text output.
+        # Connection metadata contains internal endpoint IP; mask them without altering
         # the packet-capture file itself (which is forensic evidence and always unredacted).
         result = _redact_alert_data(result, params=params)
     _audit_log("blueteam_capture_traffic", {"interface": params.interface, "count": params.count}, result[:200])
@@ -292,6 +302,7 @@ async def blueteam_hash_file(params: HashFileInput) -> str:
     Args:
         params.path: File params.path
         params.algorithm: Hash algorithm
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: JSON with file params.path, size, hash params.algorithm, and hash value
@@ -344,6 +355,9 @@ async def blueteam_find_suid_files(params: BypassRedactionInput) -> str:
     """Find all SUID/SGID binaries on the system. Unexpected SUID files
     can indicate privilege escalation backdoors.
 
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
+
     Returns:
         str: List of SUID/SGID files with permissions and owner
     """
@@ -359,6 +373,9 @@ async def blueteam_find_suid_files(params: BypassRedactionInput) -> str:
 async def blueteam_find_world_writable(params: BypassRedactionInput) -> str:
     """Find world-writable files and directories (excluding /proc, /sys, /dev).
     World-writable files in unexpected places are common persistence mechanisms.
+
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: List of world-writable paths
@@ -392,6 +409,7 @@ async def blueteam_rootkit_scan(params: RootkitInput) -> str:
 
     Args:
         params.tool: Scanner to use
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: Scan output with warnings and clean checks
@@ -421,6 +439,9 @@ async def blueteam_lynis_audit(params: BypassRedactionInput) -> str:
     """Run a Lynis system hardening audit. Checks hundreds of security controls
     and produces prioritized recommendations. Takes 1-2 minutes.
 
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
+
     Returns:
         str: Lynis audit output with hardening index and suggestions
     """
@@ -437,6 +458,9 @@ async def blueteam_lynis_audit(params: BypassRedactionInput) -> str:
 )
 async def blueteam_check_updates(params: BypassRedactionInput) -> str:
     """Check for available security updates (Debian/Ubuntu: apt, RHEL: dnf/yum).
+
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: List of packages with available updates
@@ -461,6 +485,9 @@ async def blueteam_check_updates(params: BypassRedactionInput) -> str:
 async def blueteam_check_open_firewall(params: BypassRedactionInput) -> str:
     """Show current firewall rules (iptables/nftables/ufw). Identifies
     overly permissive rules or missing protections.
+
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: Current firewall ruleset
@@ -488,6 +515,9 @@ async def blueteam_who_is_logged_in(params: BypassRedactionInput) -> str:
     """Show currently logged-in users, their source IPs, and session times.
     Useful for detecting unauthorized active sessions.
 
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
+
     Returns:
         str: Active user session table
     """
@@ -504,6 +534,9 @@ async def blueteam_last_logins(params: BypassRedactionInput) -> str:
     """Show recent login history from /var/log/wtmp. Includes successful
     and failed logins with source IP and timestamps.
 
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
+
     Returns:
         str: Login history (last 50 entries)
     """
@@ -519,6 +552,9 @@ async def blueteam_last_logins(params: BypassRedactionInput) -> str:
 async def blueteam_failed_logins(params: BypassRedactionInput) -> str:
     """Show all failed login attempts from /var/log/btmp (lastb).
     High counts from a single IP indicate brute force.
+
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: Failed login history (last 100 entries)
@@ -541,6 +577,9 @@ async def blueteam_sudo_history(params: BypassRedactionInput) -> str:
     """Show recent sudo command usage from auth.log.
     Identifies privilege escalation abuse.
 
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
+
     Returns:
         str: Lines from auth.log containing sudo activity
     """
@@ -557,6 +596,9 @@ async def blueteam_sudo_history(params: BypassRedactionInput) -> str:
 async def blueteam_list_users(params: BypassRedactionInput) -> str:
     """List all local user accounts with UID, GID, home dir, and shell.
     Highlights users with UID 0 (root-level) and users with login shells.
+
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: JSON array of user accounts with risk flags
@@ -590,7 +632,7 @@ async def blueteam_list_users(params: BypassRedactionInput) -> str:
     except Exception as e:
         return json.dumps({"error": str(e)})
 
-    # Sort: UID 0 first, then regular users, then system accounts.
+    # Sort UID 0 first, then regular users, then system accounts.
     users.sort(key=lambda u: (not u["flags"]["uid_zero_root"], not u["flags"]["has_login_shell"], u["uid"]))
     return _redact_alert_data(json.dumps(users, indent=2), bypass=params.bypass_redaction)
 
@@ -602,6 +644,9 @@ async def blueteam_list_users(params: BypassRedactionInput) -> str:
 async def blueteam_check_ssh_authorized_keys(params: BypassRedactionInput) -> str:
     """List all SSH authorized_keys files across all user home directories.
     Unexpected keys indicate backdoors or persistence mechanisms.
+
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: JSON with each user's authorized keys (fingerprints)
@@ -636,6 +681,9 @@ async def blueteam_list_processes(params: BypassRedactionInput) -> str:
     """List all running processes with CPU, memory, PID, and command line.
     Useful for spotting unexpected processes or cryptominers.
 
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
+
     Returns:
         str: Process table sorted by CPU usage
     """
@@ -651,6 +699,9 @@ async def blueteam_list_processes(params: BypassRedactionInput) -> str:
 async def blueteam_list_cron_jobs(params: BypassRedactionInput) -> str:
     """List all system and user cron jobs. Attackers often add cron jobs
     for persistence. Check for unexpected entries.
+
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: All cron jobs across system and users
@@ -689,6 +740,9 @@ async def blueteam_list_cron_jobs(params: BypassRedactionInput) -> str:
 async def blueteam_system_health(params: BypassRedactionInput) -> str:
     """Get an overview of system health: uptime, disk, memory, CPU load.
     Useful baseline before deeper investigation.
+
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: JSON with system vitals

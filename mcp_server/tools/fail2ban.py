@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Fail2Ban tools - jail status, banned IPs, unban
+Fail2Ban tools - jail status, banned IP, unban.
 """
 from __future__ import annotations
 import json, shutil, ipaddress
 from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _check_rate_limit
 from mcp_server.core.redact import _redact_alert_data
@@ -54,6 +53,7 @@ async def blueteam_fail2ban_jail_status(params: JailInput) -> str:
 
     Args:
         params.jail: Jail name
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: Jail stats and list of currently banned IPs
@@ -94,6 +94,7 @@ async def blueteam_fail2ban_unban(params: UnbanInput) -> str:
     Args:
         params.jail: Jail name
         params.ip: IP address to unban
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
         str: Result of unban operation

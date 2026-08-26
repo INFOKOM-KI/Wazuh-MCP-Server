@@ -111,7 +111,7 @@ class SyscheckInput(BaseModel):
 async def blueteam_wazuh_syscheck(params: SyscheckInput) -> str:
     """Query Wazuh File Integrity Monitoring (syscheck) events from the indexer.
 
-    Detects file changes - additions, modifications, deletions — across agents.
+    Detects file changes - additions, modifications, deletions across agents.
     Essential for finding unauthorized file modifications, backdoor persistence,
     and configuration tampering.
 
@@ -196,7 +196,7 @@ async def blueteam_wazuh_compliance(params: ComplianceInput) -> str:
     """Summarize Wazuh alerts by compliance framework (CIS, PCI DSS, GDPR, HIPAA, NIST 800-53).
 
     Wazuh maps rules to compliance controls. This tool aggregates alerts by
-    framework, showing which controls have the most findings — essential for
+    framework, showing which controls have the most findings essential for
     audit preparation and compliance gap analysis.
 
     **Worked Examples**
@@ -242,7 +242,7 @@ async def blueteam_wazuh_compliance(params: ComplianceInput) -> str:
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
     if params.response_format == "json":
         return json.dumps({"total": total, "aggregations": aggs_result}, indent=2, ensure_ascii=False)
-    lines = [f"# 📋 Compliance Summary — `{since_iso}` → `{until_iso}`", "",
+    lines = [f"# 📋 Compliance Summary - `{since_iso}` -> `{until_iso}`", "",
              f"**Framework**: {params.framework}", f"**Total alerts with compliance data**: {total:,}", ""]
     for fw in frameworks:
         buckets = aggs_result.get(f"by_{fw}", {}).get("buckets", [])
@@ -286,6 +286,12 @@ async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
     coordinates for external heatmap visualization (e.g. Leaflet, Kepler.gl).
     Returns top attacking cities with coordinates, alert counts, and IP counts.
 
+    Args:
+        params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
+        params.redaction_policy: 'full' (shape-based, default), 'protect_victim' (mask victim-owned indicators only), 'raw' (Layer 1 credential strip only, requires BLUETEAM_ALLOW_FORENSIC_BYPASS).
+        params.reveal_owned: When true (forensic), expose emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS) unmasked; Layer 1 credentials remain masked.
+        params.forensic_token: Operator forensic token (matches BLUETEAM_FORENSIC_TOKEN); required for redaction_policy='raw' / bypass_redaction when that env is set.
+
     **Worked Examples**
 
     1. *Global attack heatmap last 24h*:
@@ -328,7 +334,7 @@ async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
              "unique_ips": b.get("unique_ips", {}).get("value", 0)}
             for b in buckets
         ]}, indent=2, ensure_ascii=False)
-    lines = [f"# 🗺️ Geo Heatmap — `{since_iso}` → `{until_iso}`", "",
+    lines = [f"# 🗺️ Geo Heatmap - `{since_iso}` -> `{until_iso}`", "",
              f"**Total alerts with coordinates**: {total:,}", ""]
     if params.srcip:
         lines.append(f"**Source IP filter**: `{params.srcip}`")

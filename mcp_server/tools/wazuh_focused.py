@@ -19,7 +19,7 @@ from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.core.validators import ValidAgentName
 
 class FocusedCrawlInput(BaseModel):
-    """Input model for wazuh_alert_focused_crawl - surgical deep-dive into specific alert clusters."""
+    """Input model for wazuh_alert_focused_crawl - surgical deep dive into specific alert clusters."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     src_ip: Optional[str] = Field(
@@ -152,6 +152,9 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
         params.bypass_redaction: Skip PII masking for audit (if BLUETEAM_REDACT_PII allows).
         params.fields: Comma-separated extra _source fields to include.
         params.response_format: 'markdown' (default) or 'json'.
+        params.redaction_policy: 'full' (shape-based, default), 'protect_victim' (mask victim-owned indicators only), 'raw' (Layer 1 credential strip only, requires BLUETEAM_ALLOW_FORENSIC_BYPASS).
+        params.reveal_owned: When true (forensic), expose emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS) unmasked; Layer 1 credentials remain masked.
+        params.forensic_token: Operator forensic token (matches BLUETEAM_FORENSIC_TOKEN); required for redaction_policy='raw' / bypass_redaction when that env is set.
 
     Returns:
         str: Representative alert documents with full context, PII-redacted.
@@ -164,7 +167,7 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
 
     Error Handling:
         - "No data found for this target" if the slice has no matching alerts
-        - Circuit breaker open → actionable retry message
+        - Circuit breaker open -> actionable retry message
         - PII redaction applied automatically (bypass with bypass_redaction=True)
     """
     _audit_log("wazuh_alert_focused_crawl", {"src_ip": params.src_ip, "rule_id": params.rule_id, "sample_size": params.sample_size})
@@ -272,7 +275,7 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
     lines = [
         "# Wazuh Alert Focused Crawl",
         "",
-        f"**Window**: {since_str} → {until_str}",
+        f"**Window**: {since_str} -> {until_str}",
         "",
         "| Filter | Value |",
         "|--------|-------|",
@@ -307,8 +310,8 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
             lvl = rule.get("level", d.get("rule.level", "?"))
             src = d.get("data", {}).get("srcip") if isinstance(d.get("data"), dict) else d.get("data.srcip", "?")
             agent = d.get("agent", {}).get("name") if isinstance(d.get("agent"), dict) else d.get("agent.name", "?")
-            lines.append(f"**{i}.** `{ts}` | Level {lvl} | Rule {rid} — {desc}")
-            lines.append(f"   - Source: `{src}` | Agent: `{agent}`")
+            lines.append(f"**{i}.** `{ts}` | Level {lvl} | Rule {rid} - {desc}")
+            lines.append(f"- Source: `{src}` | Agent: `{agent}`")
             full = d.get("full_log", "")
             if full:
                 lines.append(f"- Log: `{str(full)[:200]}{'...' if len(str(full)) > 200 else ''}`")
@@ -318,6 +321,6 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
 
     if next_cursor:
         lines.append("")
-        lines.append(f"**next_cursor**: `{next_cursor}` — pass this to the `cursor` parameter of `blueteam_wazuh_indexer_search` to continue paginating this slice.")
+        lines.append(f"**next_cursor**: `{next_cursor}` - pass this to the `cursor` parameter of `blueteam_wazuh_indexer_search` to continue paginating this slice.")
 
     return _truncate_if_needed("\n".join(lines))

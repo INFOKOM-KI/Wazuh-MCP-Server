@@ -38,7 +38,7 @@ def _start_http_transport(host: str, port: int, log_level: str) -> None:
             f"Refusing to bind HTTP transport to non-loopback address '{host}' "
             "without a configured MCP_API_KEY. Generate one with:\n"
             "python3 -c \"import secrets; print('btm_' + secrets.token_urlsafe(32))\"\n"
-            "then set MCP_API_KEY (optionally MCP_API_KEY_SCOPES='wazuh:read wazuh:write'), "
+            "then set MCP_API_KEY (MCP_API_KEY_SCOPES='wazuh:read wazuh:write'), "
             "or bind to 127.0.0.1."
         )
     serve_authenticated(mcp, host, port, log_level=log_level)
