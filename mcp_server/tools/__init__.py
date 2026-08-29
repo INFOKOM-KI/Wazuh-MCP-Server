@@ -78,6 +78,7 @@ def register_all_tools() -> None:
         ("otx_lookup",             "otx_lookup",             False),  # 2 tools - AlienVault OTX threat intel
         ("threat_intel_aggregate",  "threat_intel_aggregate",  False),  # 1 tool - unified multi-provider aggregation
         ("urlhaus",                "urlhaus",                False),  # 2 tools - URLhaus malware URL database
+        ("cve_enrichment",         "cve_enrichment",         False),  # 5 tools - CVE enrichment (NVD/EPSS/KEV/PoC/score)
         ("asset_context",           "asset_context",           False),  # 1 tool - CMDB asset context
         ("index_schema",             "index_schema",             False),  # 1 tool - index field schema explorer
         ("stealer_log",              "stealer_log",              False),  # 1 tool - HudsonRock stealer log check

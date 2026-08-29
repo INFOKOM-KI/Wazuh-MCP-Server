@@ -260,6 +260,21 @@ Choose the tool by what the analyst wants — never invent tools.
 | URLhaus hash/URL | `urlhaus_hash_lookup` / `urlhaus_lookup` |
 | Netra | `netra_ip_analysis(ip)` |
 
+### CVE / vulnerability enrichment
+When an alert or `blueteam_wazuh_vulnerabilities` surfaces a `CVE-YYYY-NNNN`,
+enrich it with exploitation data the Indexer does not carry:
+| Want | Tool |
+|---|---|
+| Full NVD record (desc, CVSS, refs) | `blueteam_cve_lookup(cve_id)` |
+| Composite risk + patch urgency | `blueteam_cve_score(cve_id)` |
+| Exploitation probability (EPSS) | `blueteam_cve_epss(cve_ids=[...])` |
+| CISA KEV (actively exploited?) | `blueteam_cve_kev(cve_id)` |
+| Public PoC exists? (GitHub/Nuclei) | `blueteam_cve_poc(cve_id)` |
+
+`blueteam_cve_score` fans out NVD + EPSS + KEV + PoC in one call and returns a
+0-100 score with a severity label. KEV membership forces CRITICAL. No API key
+required (optional `NVD_API_KEY` / `GITHUB_TOKEN` raise rate limits).
+
 ### Correlation / APT detection
 | Want | Tool |
 |---|---|

@@ -73,6 +73,10 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export NETRA_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
 # export NETRA_VERIFY_SSL="false"         # set to "true" for production / trusted CA
 
+# CVE enrichment (optional - all tools work without keys, at lower rate limits)
+# export NVD_API_KEY="your_key"            # free: https://nvd.nist.gov/developers/request-an-api-key (5->50 req/30s)
+# export GITHUB_TOKEN="your_token"         # optional: enables Nuclei PoC code-search + higher GitHub rate limit
+
 # Argus Threat Intelligence (optional — TangerangKota-CSIRT)
 # export ARGUS_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
 # export ARGUS_BASE_URL="http://<host>:<port>/lookup-jobs"  # full endpoint
