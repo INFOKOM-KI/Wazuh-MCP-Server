@@ -270,10 +270,16 @@ enrich it with exploitation data the Indexer does not carry:
 | Exploitation probability (EPSS) | `blueteam_cve_epss(cve_ids=[...])` |
 | CISA KEV (actively exploited?) | `blueteam_cve_kev(cve_id)` |
 | Public PoC exists? (GitHub/Nuclei) | `blueteam_cve_poc(cve_id)` |
+| CVE → ATT&CK techniques + groups | `blueteam_cve_attack_mapping(cve_id)` |
 
 `blueteam_cve_score` fans out NVD + EPSS + KEV + PoC in one call and returns a
 0-100 score with a severity label. KEV membership forces CRITICAL. No API key
 required (optional `NVD_API_KEY` / `GITHUB_TOKEN` raise rate limits).
+
+The investigation workflow auto-extracts CVEs from alert text, enriches them
+(score + attack mapping), and feeds the techniques into `three_sum_correlation`
+Engine A as a `vuln_boost` category signal — a KEV-listed CVE lands at ~8-10 in
+its ATT&CK category, never a hard gate.
 
 ### Correlation / APT detection
 | Want | Tool |
