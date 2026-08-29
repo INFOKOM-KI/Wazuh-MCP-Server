@@ -2,11 +2,9 @@
 """
 © NAuliajati - TangerangKota-CSIRT
 CVE enrichment - NVD / EPSS / CISA KEV / public-PoC lookups for Wazuh alerts.
-
 Ported from the cve-mcp-server (TangerangKota-CSIRT) Tier-1 toolset. Reuses this
 repo's ``_api_call`` (retry + circuit breaker) and shared TTL cache instead of the
 CVE server's TokenBucketRateLimiter + SQLite VulnCache.
-
 Endpoints are FIXED (no user-controlled host), so there is no SSRF surface: the
 only user input is a CVE ID, validated by ``CVE_RE`` before any request is made.
 """
@@ -16,9 +14,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
-
 import httpx
-
 from mcp_server.core.http_client import _api_call
 from mcp_server.threat_intel._cache import cache_get, cache_set, get_limiter
 
@@ -28,7 +24,7 @@ logger = logging.getLogger("blue_team_mcp.cve")
 NVD_BASE = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 EPSS_BASE = "https://api.first.org/data/v1/epss"
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-KEV_FALLBACK = "https://raw.githubusercontent.com/cisagov/kev-data/main/data/known_exploited_vulnerabilities.json"
+KEV_FALLBACK = "https://raw.githubusercontent.com/cisagov/kev-data/refs/heads/develop/known_exploited_vulnerabilities.json"
 GITHUB_REPO_SEARCH_URL = "https://api.github.com/search/repositories"
 NUCLEI_SEARCH_URL = "https://api.github.com/search/code"
 
@@ -76,7 +72,6 @@ def _guard_size(resp: httpx.Response) -> None:
         raise ValueError("response too large (>10 MB)")
 
 
-# ── NVD ──────────────────────────────────────────────────────────────────────
 async def _fetch_nvd(cve_id: str) -> dict | None:
     """Fetch a CVE record from NVD. Returns None when the CVE is unknown."""
     key = f"cve:{cve_id}"
@@ -96,7 +91,6 @@ async def _fetch_nvd(cve_id: str) -> dict | None:
     return record
 
 
-# ── EPSS ─────────────────────────────────────────────────────────────────────
 async def _fetch_epss(cve_ids: list[str]) -> list[dict]:
     """Fetch EPSS scores for one or more CVE IDs (chunked, cached per CVE)."""
     results: list[dict] = []
@@ -128,7 +122,6 @@ async def _fetch_epss(cve_ids: list[str]) -> list[dict]:
     return results
 
 
-# ── CISA KEV ─────────────────────────────────────────────────────────────────
 async def _fetch_kev_catalog() -> list[dict]:
     cached = cache_get("kev", "catalog")
     if cached is not None:
@@ -156,7 +149,6 @@ def _lookup_kev(catalog: list[dict], cve_id: str) -> dict | None:
     return None
 
 
-# ── Public PoC search (GitHub + Nuclei) ──────────────────────────────────────
 def _score_github_repo(repo: dict) -> int:
     score = 0
     stars = repo.get("stargazers_count", 0)
@@ -272,7 +264,6 @@ async def search_poc(cve_id: str) -> dict:
     }
 
 
-# ── Composite risk scoring (pure) ────────────────────────────────────────────
 def _extract_cvss_score(nvd_data: dict | None) -> float:
     """Extract the best CVSS base score from an NVD record (v3.1 > v3.0 > v2)."""
     if not nvd_data:
@@ -314,7 +305,6 @@ def score_cve(
     poc_result: dict | None,
 ) -> dict:
     """Compute a composite 0-100 risk score (CVSS + EPSS + KEV + PoC).
-
     KEV membership is the strongest exploitation signal and acts as a hard
     floor: a KEV-listed CVE can never score below CRITICAL.
     """
