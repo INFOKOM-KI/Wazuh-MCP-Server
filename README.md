@@ -1,5 +1,9 @@
 # Blue Team MCP Server (Wazuh SIEM)
 
+[![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/card.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
+
+[![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
+
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
 offensive tooling. **123 tools + 4 resources** across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
