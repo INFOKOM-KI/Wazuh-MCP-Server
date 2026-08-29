@@ -35,7 +35,7 @@ _CONFIRMED_BONUS = 2.0       # flat bonus for registry confirmed attacker IOCs
 # MITRE ATT&CK dynamic classification helpers (three_sum_core)
 from mcp_server.correlation.three_sum_core import (tactics_for_category,
     compute_mitre_risk, category_default_weight, build_category_techniques,
-    compute_technique_risk)
+    compute_technique_risk, vuln_category_scores)
 from mcp_server.core.false_positive_kb import false_positive_iocs
 from mcp_server.core import case_store
 
@@ -298,6 +298,14 @@ class ThreeSumCorrelationInput(BaseModel):
         description="When true, correlate alerts by (srcip x agent.name) instead of srcip only. "
                     "Detects lateral movement where same IP targets multiple agents.",
     )
+    vuln_srcip: Optional[str] = Field(default=None, max_length=45,
+        description="Source IP to attribute CVE enrichment to. When set with vuln_context, "
+                    "each CVE's techniques map to 3-Sum categories (A/B/C) and add an "
+                    "exploitability signal to Engine A for this IP.")
+    vuln_context: Optional[list[dict]] = Field(default=None,
+        description="CVE enrichment from the investigation workflow: "
+                    "[{cve_id, risk_score, techniques: [{technique_id, tactics}]}]. "
+                    "Pure data - feeds Engine A category weighting, never a hard gate.")
 
 
 _three_sum_global_throttle = {"time": 0.0, "result": None}
@@ -501,6 +509,18 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
                 if "also failed" in w:
                     engine_a_query_failures += 1
 
+        # CVE enrichment -> Engine A exploitability signal (seam 3).
+        # Each CVE's techniques map to categories via MITRE_TACTIC_TO_CATEGORY;
+        # the composite risk_score / 10 is added as that IP's category score.
+        vuln_boost: dict[str, float] = {"A": 0.0, "B": 0.0, "C": 0.0}
+        if params.vuln_context and params.vuln_srcip:
+            vuln_boost = vuln_category_scores(params.vuln_context)
+            _cat_labels = {"A": params.category_a_label, "B": params.category_b_label,
+                           "C": params.category_c_label}
+            for cat, score in vuln_boost.items():
+                if score > 0 and params.vuln_srcip not in exclude_set:
+                    srcips_by_label[_cat_labels[cat]].append((params.vuln_srcip, score))
+
         triggers, stats = evaluate_engine_a(
             srcips_by_label.get(params.category_a_label, []),
             srcips_by_label.get(params.category_b_label, []),
@@ -517,6 +537,7 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
             cat_b_weight=params.cat_b_weight,
             cat_c_weight=params.cat_c_weight,
         )
+        stats["vuln_boost"] = vuln_boost  # transparency: CVE-derived category signal
         register_attacker_ips([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
         record_iocs([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
         if params.create_case and triggers:

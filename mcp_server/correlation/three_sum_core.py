@@ -90,6 +90,38 @@ def build_category_techniques(technique_tactics: dict[str, list[str]]) -> dict[s
     return result
 
 
+def vuln_techniques_to_categories(techniques: list[dict]) -> set[str]:
+    """Categories (A/B/C) spanned by a list of {technique_id, tactics} mappings."""
+    cats: set[str] = set()
+    for t in techniques or []:
+        for tactic in t.get("tactics", []) or []:
+            cat = classify_mitre_tactic(tactic)
+            if cat:
+                cats.add(cat)
+    return cats
+
+
+def vuln_category_scores(vuln_context: list[dict]) -> dict[str, float]:
+    """Map CVE enrichment to per-category exploitability scores.
+
+    Each CVE contributes ``risk_score / 10`` (0-10) to every category its
+    techniques map to. Per-category, the strongest CVE wins (max, not sum) so
+    multiple CVEs cannot stack into a single category. KEV-listed CVEs
+    (risk_score >= 76) land at ~8-10 in their categories; low-risk CVEs 0-2.
+    """
+    scores = {"A": 0.0, "B": 0.0, "C": 0.0}
+    for v in vuln_context or []:
+        try:
+            contribution = float(v.get("risk_score") or 0) / 10.0
+        except (TypeError, ValueError):
+            contribution = 0.0
+        if contribution <= 0:
+            continue
+        for cat in vuln_techniques_to_categories(v.get("techniques", [])):
+            scores[cat] = max(scores[cat], contribution)
+    return scores
+
+
 def compute_technique_risk(rule_level: float, technique_id: str,
                            technique_tactics: dict[str, list[str]],
                            category: str) -> float:

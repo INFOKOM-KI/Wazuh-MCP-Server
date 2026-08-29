@@ -141,12 +141,24 @@ async def enrich_step(state: InvestigationState) -> dict:
 
 async def correlate_step(state: InvestigationState) -> dict:
     from mcp_server.tools.correlation import three_sum_correlation, ThreeSumCorrelationInput
+    vuln_context: list[dict] = []
+    for v in state.get("vulnerabilities") or []:
+        mapping = v.get("attack_mapping") or {}
+        if mapping.get("techniques"):
+            score = v.get("score") or {}
+            vuln_context.append({
+                "cve_id": v.get("cve_id"),
+                "risk_score": score.get("risk_score"),
+                "techniques": mapping.get("techniques", []),
+            })
     try:
         out = await _with_timeout(
             three_sum_correlation(ThreeSumCorrelationInput(
                 response_format="json",
                 follow_up="threat_intel" if state.get("srcip") else "none",
                 use_attack_graph=state.get("use_attack_graph", True),
+                vuln_srcip=state.get("srcip"),
+                vuln_context=vuln_context or None,
             )), "correlate")
         result = json.loads(out)
         if isinstance(result, dict) and result.get("error"):
