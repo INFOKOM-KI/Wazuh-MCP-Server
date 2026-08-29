@@ -20,6 +20,7 @@ _URL_RE = re.compile(r"https?://[^\s<>\"'{}|\\^`[\]]+", re.IGNORECASE)
 _MD5_RE = re.compile(r"\b[a-fA-F0-9]{32}\b")
 _SHA1_RE = re.compile(r"\b[a-fA-F0-9]{40}\b")
 _SHA256_RE = re.compile(r"\b[a-fA-F0-9]{64}\b")
+_CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,}\b", re.IGNORECASE)
 
 # IPs that are noise - never flag these
 _SKIP_IPS = {"0.0.0.0", "127.0.0.1", "255.255.255.255", "::1", "8.8.8.8", "8.8.4.4",
@@ -56,11 +57,14 @@ def _extract_iocs(text: str) -> dict:
             seen_ips.add(ip)
             unique_ips.append(ip)
 
+    cves = list(dict.fromkeys(m.group(0).upper() for m in _CVE_RE.finditer(text)))
+
     return {
         "ips": unique_ips,
         "domains": domains,
         "urls": urls,
         "emails": emails,
+        "cves": cves,
         "hashes": {
             "md5": md5s,
             "sha1": sha1s,
@@ -116,12 +120,13 @@ async def blueteam_extract_iocs(params: IocExtractInput) -> str:
 
     total = len(iocs["ips"]) + len(iocs["domains"]) + len(iocs["urls"]) + \
             len(iocs["emails"]) + len(iocs["hashes"]["md5"]) + \
-            len(iocs["hashes"]["sha1"]) + len(iocs["hashes"]["sha256"])
+            len(iocs["hashes"]["sha1"]) + len(iocs["hashes"]["sha256"]) + \
+            len(iocs.get("cves", []))
 
     if params.response_format == "json":
         return json.dumps({"total_iocs": total, **iocs}, indent=2, ensure_ascii=False)
 
-    lines = [f"# 🔍 IOC Extraction — {total} indicators found", ""]
+    lines = [f"# 🔍 IOC Extraction - {total} indicators found", ""]
 
     if iocs["ips"]:
         lines.append(f"## IPs ({len(iocs['ips'])})")
@@ -165,6 +170,12 @@ async def blueteam_extract_iocs(params: IocExtractInput) -> str:
             lines.append(f"- SHA256: `{h}`")
         if hash_total > 15:
             lines.append(f"- ... and {hash_total - 15} more")
+        lines.append("")
+
+    if iocs.get("cves"):
+        lines.append(f"## CVEs ({len(iocs['cves'])})")
+        for c in iocs["cves"][:10]:
+            lines.append(f"- `{c}`")
         lines.append("")
 
     if total == 0:

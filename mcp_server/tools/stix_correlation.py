@@ -431,3 +431,161 @@ async def blueteam_stix_killchain(params: StixKillchainInput) -> str:
     lines.append(f"*Chain for `{srcip}` over [{since_iso} → {until_iso}]. "
                  f"Techniques ordered by ATT&CK kill-chain phase.*")
     return _truncate_if_needed("\n".join(lines))
+
+
+# CVE -> ATT&CK mapping (port of cve-mcp-server get_attack_mapping)
+def _find_techniques_for_cve(cve_id: str) -> list[dict]:
+    """ATT&CK techniques whose description or external references mention a CVE."""
+    if _stix_data is None:
+        return []
+    cve_upper = cve_id.upper()
+    matching: list[dict] = []
+    for obj in _stix_data["by_type"].get("attack-pattern", []):
+        if obj.get("revoked") or obj.get("x_mitre_deprecated"):
+            continue
+        desc = obj.get("description", "") or ""
+        found = cve_upper in desc.upper()
+        if not found:
+            for ref in obj.get("external_references", []):
+                if (cve_upper in (ref.get("description", "") or "").upper()
+                        or cve_upper in (ref.get("url", "") or "").upper()):
+                    found = True
+                    break
+        if not found:
+            continue
+        tactics = [_normalize_tactic(p.get("phase_name", ""))
+                   for p in obj.get("kill_chain_phases", [])
+                   if p.get("kill_chain_name") == "mitre-attack"]
+        matching.append({
+            "technique_id": _mitre_id(obj),
+            "name": obj.get("name", ""),
+            "description": desc[:500],
+            "tactics": tactics,
+        })
+    return matching
+
+
+def _find_groups_using_techniques(technique_ids: set[str]) -> list[str]:
+    """Threat groups (intrusion-sets) that use any of the given techniques."""
+    if not technique_ids or _stix_data is None:
+        return []
+    by_type = _stix_data["by_type"]
+    id_to_technique: dict[str, str] = {}
+    id_to_group: dict[str, str] = {}
+    for obj in by_type.get("attack-pattern", []):
+        mid = _mitre_id(obj)
+        if mid in technique_ids:
+            id_to_technique[obj.get("id", "")] = mid
+    for obj in by_type.get("intrusion-set", []):
+        if not obj.get("revoked") and not obj.get("x_mitre_deprecated"):
+            id_to_group[obj.get("id", "")] = obj.get("name", "")
+    groups: set[str] = set()
+    for rel in _stix_data["relationships"]:
+        if rel.get("relationship_type") != "uses":
+            continue
+        src, tgt = rel.get("source_ref"), rel.get("target_ref")
+        if src in id_to_group and tgt in id_to_technique:
+            groups.add(id_to_group[src])
+    return sorted(groups)
+
+
+def get_attack_mapping(cve_id: str) -> dict:
+    """Map a CVE to MITRE ATT&CK techniques + threat groups.
+
+    Reuses this module's cached STIX bundle (no second 50MB download). Blocking
+    load is offloaded by callers via ``asyncio.to_thread``. Result cached 24h in
+    the shared TTL cache under the ``cve_attack`` namespace.
+    """
+    from mcp_server.threat_intel._cache import cache_get, cache_set
+    cached = cache_get("cve_attack", cve_id)
+    if cached is not None:
+        return cached
+
+    _load_stix()
+    if _stix_error or _stix_data is None:
+        return {"cve_id": cve_id, "techniques": [], "threat_groups": [],
+                "error": _stix_error or "STIX bundle not loaded"}
+
+    techniques = _find_techniques_for_cve(cve_id)
+    result: dict = {"cve_id": cve_id, "techniques": techniques, "threat_groups": []}
+    if techniques:
+        tids = {t["technique_id"] for t in techniques if t["technique_id"]}
+        result["threat_groups"] = _find_groups_using_techniques(tids)
+    cache_set("cve_attack", cve_id, result, 86400)
+    return result
+
+
+class CveAttackMappingInput(BaseModel):
+    """Input model for blueteam_cve_attack_mapping."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    cve_id: str = Field(..., min_length=10, max_length=20,
+                        description="CVE ID to map to MITRE ATT&CK techniques + threat groups.")
+    response_format: Literal["markdown", "json"] = Field(default="markdown")
+
+    @field_validator("cve_id")
+    @classmethod
+    def validate_cve(cls, v: str) -> str:
+        from mcp_server.threat_intel.cve_enrichment import normalize_cve
+        norm = normalize_cve(v)
+        if norm is None:
+            raise ValueError("cve_id must match CVE-YYYY-NNNN, e.g. CVE-2024-6387")
+        return norm
+
+
+@mcp.tool(name="blueteam_cve_attack_mapping",
+          annotations={"readOnlyHint": True, "destructiveHint": False,
+                       "idempotentHint": True, "openWorldHint": True})
+async def blueteam_cve_attack_mapping(params: CveAttackMappingInput) -> str:
+    """Map a CVE to MITRE ATT&CK techniques and the threat groups that use them.
+
+    Searches the ATT&CK enterprise STIX bundle for techniques whose description
+    or external references mention the CVE, then resolves which intrusion-sets
+    (threat groups) use those techniques via ``uses`` relationships. Feeds the
+    3-Sum category engine (technique → tactic → A/B/C) and STIX kill-chain.
+
+    **Required**: MITRE_ATTACK_STIX bundle (already fetched/cached by
+    blueteam_stix_killchain / blueteam_stix_analyze).
+
+    **Worked Examples**
+
+    1. *Attribute a CVE to attacker techniques + groups*:
+       ``blueteam_cve_attack_mapping(cve_id="CVE-2024-6387")``
+
+    2. *JSON output for the 3-Sum category engine*:
+       ``blueteam_cve_attack_mapping(cve_id="CVE-2021-44228", response_format="json")``
+
+    3. *Feed the kill-chain enrichment*:
+       ``blueteam_cve_attack_mapping(cve_id="cve-2023-4863")``
+    """
+    _audit_log("blueteam_cve_attack_mapping", {"cve_id": params.cve_id})
+
+    try:
+        result = await asyncio.to_thread(get_attack_mapping, params.cve_id)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+    if params.response_format == "json":
+        return _truncate_if_needed(json.dumps(result, indent=2, ensure_ascii=False))
+
+    lines = [f"# CVE → ATT&CK - `{result['cve_id']}`", ""]
+    if result.get("error"):
+        lines.append(f"_Error: {result['error']}_")
+        return _truncate_if_needed("\n".join(lines))
+    techs = result.get("techniques", [])
+    groups = result.get("threat_groups", [])
+    lines.append(f"**Techniques**: {len(techs)} | **Threat groups**: {len(groups)}")
+    if techs:
+        lines.append("")
+        lines.append("## Techniques")
+        for t in techs:
+            tactics = ", ".join(t.get("tactics", [])) or "?"
+            lines.append(f"- **{t['technique_id']}** — {t['name']} (`{tactics}`)")
+    if groups:
+        lines.append("")
+        lines.append("## Threat groups")
+        lines.append(", ".join(f"**{g}**" for g in groups))
+    if not techs and not groups:
+        lines.append("")
+        lines.append("_No ATT&CK technique references this CVE._")
+    return _truncate_if_needed("\n".join(lines))

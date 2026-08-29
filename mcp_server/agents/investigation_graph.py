@@ -49,6 +49,7 @@ class InvestigationState(TypedDict, total=False):
     # step outputs
     extract_iocs: Optional[dict]
     enrichment: Optional[dict]
+    vulnerabilities: Optional[list]
     correlation: Optional[dict]
     attack_graph: Optional[dict]
     killchain: Optional[dict]
@@ -80,23 +81,62 @@ async def extract_step(state: InvestigationState) -> dict:
     all_iocs = (iocs["ips"] + iocs["domains"] + iocs["urls"] + iocs["emails"]
                 + iocs["hashes"]["md5"] + iocs["hashes"]["sha1"] + iocs["hashes"]["sha256"])
     record_iocs(all_iocs, source="investigation_graph")
+    cve_count = len(iocs.get("cves", []))
     return {"extract_iocs": iocs,
-            "steps": [f"extract: {len(all_iocs)} IOCs extracted + recorded"]}
+            "steps": [f"extract: {len(all_iocs)} IOCs + {cve_count} CVEs extracted"]}
 
 
 async def enrich_step(state: InvestigationState) -> dict:
-    ips = list((state.get("extract_iocs") or {}).get("ips", []))
+    iocs = state.get("extract_iocs") or {}
+    ips = list(iocs.get("ips", []))
     if state.get("srcip") and state["srcip"] not in ips:
         ips.insert(0, state["srcip"])
     ips = ips[:10]
-    if not ips:
-        return {"steps": ["enrich: skipped (no IPs)"]}
-    from mcp_server.tools.correlation import _enrich_ips
-    try:
-        enr = await _with_timeout(_enrich_ips(ips), "enrich")
-    except Exception:
-        return {"errors": ["enrich: degraded"], "steps": ["enrich: degraded"]}
-    return {"enrichment": enr, "steps": [f"enrich: {len(enr)} IPs enriched"]}
+    cves = list(iocs.get("cves", []))[:5]
+
+    steps: list[str] = []
+    errors: list[str] = []
+    update: dict = {}
+
+    if ips:
+        from mcp_server.tools.correlation import _enrich_ips
+        try:
+            enr = await _with_timeout(_enrich_ips(ips), "enrich")
+            update["enrichment"] = enr
+            steps.append(f"enrich: {len(enr)} IPs enriched")
+        except Exception:
+            errors.append("enrich: degraded")
+            steps.append("enrich: degraded")
+
+    if cves:
+        from mcp_server.tools.cve_enrichment import blueteam_cve_score, CveScoreInput
+        from mcp_server.tools.stix_correlation import get_attack_mapping
+        vulns: list[dict] = []
+        for cid in cves:
+            entry: dict = {"cve_id": cid}
+            try:
+                raw = await _with_timeout(
+                    blueteam_cve_score(CveScoreInput(cve_id=cid, response_format="json")),
+                    "vuln_score")
+                entry["score"] = json.loads(raw)
+            except Exception:
+                entry["score"] = None
+            try:
+                entry["attack_mapping"] = await asyncio.to_thread(get_attack_mapping, cid)
+            except Exception:
+                entry["attack_mapping"] = None
+            vulns.append(entry)
+        update["vulnerabilities"] = vulns
+        steps.append(f"vuln: {len(vulns)} CVEs enriched")
+
+    if not ips and not cves:
+        return {"steps": ["enrich: skipped (no IPs or CVEs)"]}
+
+    out: dict = {"steps": steps}
+    out.update(update)
+    if errors:
+        out["errors"] = errors
+    return out
 
 
 async def correlate_step(state: InvestigationState) -> dict:
@@ -299,6 +339,7 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
         "errors": final.get("errors", []),
         "extract_iocs": (final.get("extract_iocs") or {}).get("ips", [])[:10],
         "enrichment": final.get("enrichment"),
+        "vulnerabilities": final.get("vulnerabilities"),
         "correlation": (final.get("correlation") or {}).get("unified_scoring"),
         "attack_graph": final.get("attack_graph"),
         "killchain": (final.get("killchain") or {}).get("tactics_seen"),
