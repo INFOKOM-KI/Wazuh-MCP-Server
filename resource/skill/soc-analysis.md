@@ -15,7 +15,7 @@ description: >
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into ~100
+Manager (config/agent data) plus 7+ external threat-intel providers into ~130
 tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
@@ -68,19 +68,29 @@ enrich it with exploitation data the Indexer does not carry:
 |---|---|
 | Full NVD record (desc, CVSS, refs) | `blueteam_cve_lookup(cve_id)` |
 | Composite risk + patch urgency | `blueteam_cve_score(cve_id)` |
+| SSVC action band (Act/Attend/Track*/Track) | `blueteam_cve_ssvc(cve_id, exposure="open")` |
 | Exploitation probability (EPSS) | `blueteam_cve_epss(cve_ids=[...])` |
 | CISA KEV (actively exploited?) | `blueteam_cve_kev(cve_id)` |
 | Public PoC exists? (GitHub/Nuclei) | `blueteam_cve_poc(cve_id)` |
 | CVE → ATT&CK techniques + groups | `blueteam_cve_attack_mapping(cve_id)` |
+| Vendor remediation (MSRC/RedHat/Ubuntu) | `blueteam_cve_advisory(cve_id)` |
+| Scan a dependency manifest for CVEs | `blueteam_dependency_scan(raw_text="<requirements.txt / package.json / pom.xml>")` |
 
 `blueteam_cve_score` fans out NVD + EPSS + KEV + PoC in one call and returns a
-0-100 score with a severity label. KEV membership forces CRITICAL. No API key
-required (optional `NVD_API_KEY` / `GITHUB_TOKEN` raise rate limits).
+0-100 score with a severity label. KEV membership forces CRITICAL.
+`blueteam_cve_ssvc` walks the CISA Deployer SSVC tree and returns an action band
+with an explainable rationale — `Act` means patch now, `Track` means schedule.
+`blueteam_cve_advisory` returns MSRC / Red Hat / Ubuntu patch guidance
+(RHSA / USN IDs). `blueteam_dependency_scan` parses a manifest and maps every
+package to live CVEs via OSV — feed the returned `cve_ids` to the tools above.
+No API key required (optional `NVD_API_KEY` / `GITHUB_TOKEN` raise rate limits).
 
-The investigation workflow auto-extracts CVEs from alert text, enriches them
-(score + attack mapping), and feeds the techniques into `three_sum_correlation`
-Engine A as a `vuln_boost` category signal — a KEV-listed CVE lands at ~8-10 in
-its ATT&CK category, never a hard gate.
+The investigation workflow auto-extracts CVEs from alert text (and, when given
+`dependency_manifest`, discovers more via `blueteam_dependency_scan`), enriches
+each with score + SSVC + attack mapping in its `vuln` step, and feeds the
+techniques into `three_sum_correlation` Engine A as a `vuln_boost` category
+signal — a KEV-listed CVE lands at ~8-10 in its ATT&CK category, never a hard
+gate. SSVC stays advisory metadata, never a correlation input.
 
 ### Correlation / APT detection
 | Want | Tool |
@@ -96,7 +106,7 @@ its ATT&CK category, never a hard gate.
 ### Investigation / case management
 | Want | Tool |
 |---|---|
-| Full langgraph workflow | `blueteam_investigation_workflow(srcip or alert_text)` |
+| Full langgraph workflow | `blueteam_investigation_workflow(srcip or alert_text or dependency_manifest)` |
 | Comprehensive IP profile | `blueteam_investigate_ip(srcip)` |
 | Record verdict | `blueteam_mark_investigated(...)` |
 | Case lifecycle | `blueteam_case_create/get/list/add_iocs/add_verdict` |
@@ -169,6 +179,14 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 2. wazuh_compromised_emails_analysis(emails=["<top emails>"], enrich_with_netra=false)
 3. blueteam_breach_check(email="<official dinas email>")
 4. stealer_log_check(email="<official dinas email>")
+```
+
+### Workflow E — vulnerability triage (manifest → patch)
+```
+1. blueteam_dependency_scan(raw_text="<paste requirements.txt / package.json / pom.xml>", response_format="json")
+2. blueteam_cve_score(cve_id="<top CVE>")          # or blueteam_cve_ssvc for an action band
+3. blueteam_cve_attack_mapping(cve_id="<top CVE>") # MITRE techniques → 3-Sum Engine A
+4. blueteam_cve_advisory(cve_id="<top CVE>")       # vendor patch guidance (RHSA / USN)
 ```
 
 ## 3. Redaction & the forensic token (read before touching PII)
