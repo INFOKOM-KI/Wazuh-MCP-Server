@@ -3,14 +3,12 @@
 © NAuliajati - TangerangKota-CSIRT
 LangGraph SOC investigation workflow - orchestrates the platform's in-process
 tool functions as a stateful, conditionally-routed graph.
-
-Graph: START -> extract -> enrich -> correlate -> graph -> killchain -> baseline -> report -> verdict -> END
+Graph: START -> extract -> enrich -> vuln -> correlate -> analytics -> baseline -> report -> verdict -> END
 Conditional routing:
-  - enrich/correlate skipped when there are no IOCs and no srcip
-  - killchain runs only when a srcip is provided
-  - baseline runs only when 3-Sum flagged anomalies
-  - report/verdict run only when requested (generate_report / record_verdict)
-
+- enrich/vuln/correlate skipped when there are no IOCs, no srcip, and no manifest
+- killchain runs only when a srcip is provided
+- baseline runs only when 3-Sum flagged anomalies
+- report/verdict run only when requested (generate_report / record_verdict)
 Every node degrades gracefully: steps without required credentials (indexer,
 API keys) are recorded in `errors` and the workflow continues.
 """
@@ -41,6 +39,7 @@ class InvestigationState(TypedDict, total=False):
     alert_text: str
     srcip: Optional[str]
     window: str
+    dependency_manifest: Optional[str]
     use_attack_graph: bool
     generate_report: bool
     record_verdict: bool
@@ -87,56 +86,94 @@ async def extract_step(state: InvestigationState) -> dict:
 
 
 async def enrich_step(state: InvestigationState) -> dict:
+    """IP threat-intel enrichment only. CVE handling lives in vuln_step."""
     iocs = state.get("extract_iocs") or {}
     ips = list(iocs.get("ips", []))
     if state.get("srcip") and state["srcip"] not in ips:
         ips.insert(0, state["srcip"])
     ips = ips[:10]
-    cves = list(iocs.get("cves", []))[:5]
 
-    steps: list[str] = []
-    errors: list[str] = []
-    update: dict = {}
+    if not ips:
+        return {"steps": ["enrich: skipped (no IPs)"]}
 
-    if ips:
-        from mcp_server.tools.correlation import _enrich_ips
+    from mcp_server.tools.correlation import _enrich_ips
+    try:
+        enr = await _with_timeout(_enrich_ips(ips), "enrich")
+        return {"enrichment": enr, "steps": [f"enrich: {len(enr)} IPs enriched"]}
+    except Exception as e:
+        return {"errors": [f"enrich: degraded ({e})"],
+                "steps": ["enrich: degraded"]}
+
+
+async def vuln_step(state: InvestigationState) -> dict:
+    """CVE pipeline: optional dependency-manifest scan, then composite risk
+    score + SSVC action band + MITRE attack mapping for every discovered CVE.
+    Populates `vulnerabilities`, which `correlate_step` consumes as the 3-Sum
+    `vuln_context` (risk_score + techniques). SSVC stays out of the scoring
+    math; it rides along as advisory triage metadata in the final state."""
+    iocs = state.get("extract_iocs") or {}
+    cves: list[str] = list(iocs.get("cves", []))[:5]
+
+    manifest = state.get("dependency_manifest")
+    if manifest:
+        from mcp_server.tools.dependency_scan import (
+            blueteam_dependency_scan, DependencyScanInput)
         try:
-            enr = await _with_timeout(_enrich_ips(ips), "enrich")
-            update["enrichment"] = enr
-            steps.append(f"enrich: {len(enr)} IPs enriched")
+            raw = await _with_timeout(
+                blueteam_dependency_scan(DependencyScanInput(
+                    raw_text=manifest, response_format="json")), "vuln_depscan")
+            dep = json.loads(raw)
+            for r in dep.get("results", []):
+                for v in r.get("vulns", []):
+                    for cid in v.get("cve_ids", []):
+                        if cid and cid not in cves:
+                            cves.append(cid)
         except Exception:
-            errors.append("enrich: degraded")
-            steps.append("enrich: degraded")
+            pass  # depscan is best-effort; alert-text CVEs still process
+        cves = cves[:10]
 
-    if cves:
-        from mcp_server.tools.cve_enrichment import blueteam_cve_score, CveScoreInput
-        from mcp_server.tools.stix_correlation import get_attack_mapping
-        vulns: list[dict] = []
-        for cid in cves:
-            entry: dict = {"cve_id": cid}
-            try:
-                raw = await _with_timeout(
-                    blueteam_cve_score(CveScoreInput(cve_id=cid, response_format="json")),
-                    "vuln_score")
-                entry["score"] = json.loads(raw)
-            except Exception:
-                entry["score"] = None
-            try:
-                entry["attack_mapping"] = await asyncio.to_thread(get_attack_mapping, cid)
-            except Exception:
-                entry["attack_mapping"] = None
-            vulns.append(entry)
-        update["vulnerabilities"] = vulns
-        steps.append(f"vuln: {len(vulns)} CVEs enriched")
+    if not cves:
+        return {"steps": ["vuln: skipped (no CVEs)"]}
 
-    if not ips and not cves:
-        return {"steps": ["enrich: skipped (no IPs or CVEs)"]}
+    from mcp_server.tools.cve_enrichment import _gather_cve_data
+    from mcp_server.threat_intel.cve_enrichment import (
+        _extract_cvss_score, _lookup_kev, score_cve)
+    from mcp_server.threat_intel.ssvc import ssvc_decision
+    from mcp_server.tools.stix_correlation import get_attack_mapping
 
-    out: dict = {"steps": steps}
-    out.update(update)
-    if errors:
-        out["errors"] = errors
-    return out
+    vulns: list[dict] = []
+    for cid in cves:
+        entry: dict = {"cve_id": cid}
+        # One fetch per CVE (NVD + EPSS + KEV + PoC, all cached), then derive both
+        # the numeric score and the SSVC band from the same data - avoids
+        # doubling NVD requests (the 5 req/30s unauth limit is the constraint).
+        try:
+            nvd, epss_entries, kev_catalog, poc = await _with_timeout(
+                _gather_cve_data(cid), "vuln_score")
+            cvss = _extract_cvss_score(nvd)
+            epss_entry = next((e for e in epss_entries if e.get("cve") == cid), None)
+            epss_probability = float(epss_entry["epss"]) if epss_entry else 0.0
+            kev_entry = _lookup_kev(kev_catalog, cid)
+            epss_data = {"probability": epss_probability} if epss_entry else None
+            entry["score"] = score_cve(cid, nvd, epss_data, kev_entry, poc)
+            entry["ssvc"] = ssvc_decision(
+                in_kev=bool(kev_entry),
+                epss_probability=epss_probability,
+                poc_confidence=(poc or {}).get("confidence", "NONE"),
+                cvss_score=cvss,
+                exposure="open",
+            )
+        except Exception:
+            entry["score"] = None
+            entry["ssvc"] = None
+        try:
+            entry["attack_mapping"] = await asyncio.to_thread(get_attack_mapping, cid)
+        except Exception:
+            entry["attack_mapping"] = None
+        vulns.append(entry)
+
+    return {"vulnerabilities": vulns,
+            "steps": [f"vuln: {len(vulns)} CVEs enriched (score+SSVC+MITRE)"]}
 
 
 async def correlate_step(state: InvestigationState) -> dict:
@@ -266,7 +303,10 @@ async def verdict_step(state: InvestigationState) -> dict:
 
 # Conditional routing
 def _has_targets(state: InvestigationState) -> str:
-    return "enrich" if (state.get("extract_iocs") or state.get("srcip")) else "analytics"
+    if (state.get("extract_iocs") or state.get("srcip")
+            or state.get("dependency_manifest")):
+        return "enrich"
+    return "analytics"
 
 
 def _correlate_flagged(state: InvestigationState) -> bool:
@@ -294,13 +334,13 @@ def _after_report(state: InvestigationState) -> str:
 
 def build_investigation_graph():
     """Build and compile the StateGraph. Uses module-level checkpointer.
-
-    Graph: START -> extract -> enrich -> correlate -> analytics -> baseline -> report -> verdict -> END
+    Graph: START -> extract -> enrich -> vuln -> correlate -> analytics -> baseline -> report -> verdict -> END
     analytics runs graph (networkx) and killchain (STIX) concurrently.
     """
     g = StateGraph(InvestigationState)
     g.add_node("extract", extract_step)
     g.add_node("enrich", enrich_step)
+    g.add_node("vuln", vuln_step)
     g.add_node("correlate", correlate_step)
     g.add_node("analytics", analytics_step)
     g.add_node("baseline", baseline_step)
@@ -308,7 +348,8 @@ def build_investigation_graph():
     g.add_node("verdict", verdict_step)
     g.add_edge(START, "extract")
     g.add_conditional_edges("extract", _has_targets, {"enrich": "enrich", "graph": "analytics"})
-    g.add_edge("enrich", "correlate")
+    g.add_edge("enrich", "vuln")
+    g.add_edge("vuln", "correlate")
     g.add_edge("correlate", "analytics")
     g.add_conditional_edges("analytics", _after_analytics, {
         "baseline": "baseline", "report": "report", "verdict": "verdict", END: END})
@@ -327,13 +368,15 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
                             window: str = "24h", use_attack_graph: bool = True,
                             generate_report: bool = False,
                             record_verdict: bool = False, verdict_label: str = "suspicious",
-                            report_dir: str = "/tmp") -> dict:
+                            report_dir: str = "/tmp",
+                            dependency_manifest: str | None = None) -> dict:
     """Run the investigation workflow end-to-end and return the final state summary."""
     graph = _investigation_graph  # reuse pre-compiled singleton
     initial: InvestigationState = {
         "alert_text": alert_text or "",
         "srcip": srcip,
         "window": window,
+        "dependency_manifest": dependency_manifest,
         "use_attack_graph": use_attack_graph,
         "generate_report": generate_report,
         "record_verdict": record_verdict,

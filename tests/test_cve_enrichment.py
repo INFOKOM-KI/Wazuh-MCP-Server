@@ -9,6 +9,7 @@ from mcp_server.threat_intel.cve_enrichment import (
     normalize_cve,
     score_cve,
     _extract_cvss_score,
+    _extract_published_date,
 )
 
 
@@ -53,3 +54,21 @@ def test_score_cve_poc_and_epss_boost():
     assert "KEV+PoC" in result["boosters_applied"]
     assert "CVSS>=9+EPSS>0.7" in result["boosters_applied"]
     assert result["urgency"] == "PATCH IMMEDIATELY"
+
+
+def test_extract_published_date_naive_string_is_aware():
+    # NVD 2.0 emits published without a tz suffix; must normalize to UTC.
+    dt = _extract_published_date({"published": "2021-12-10T01:02:03.000"})
+    assert dt is not None
+    assert dt.tzinfo is not None
+
+
+def test_score_cve_naive_published_does_not_raise():
+    nvd = {
+        "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 10.0}}]},
+        "published": "2021-12-10T01:02:03.000",  # no tz suffix (NVD 2.0 format)
+    }
+    result = score_cve("CVE-2021-44228", nvd, {"probability": 0.99},
+                       {"cveID": "CVE-2021-44228"}, {"confidence": "PUBLIC_EXPLOIT"})
+    assert result["risk_score"] == 100.0
+    assert isinstance(result["days_since_published"], int)

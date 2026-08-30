@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-CVE enrichment - NVD / EPSS / CISA KEV / public-PoC lookups for Wazuh alerts.
+CVE enrichment, NVD / EPSS / CISA KEV / public-PoC lookups for Wazuh alerts.
 Ported from the cve-mcp-server (TangerangKota-CSIRT) Tier-1 toolset. Reuses this
 repo's ``_api_call`` (retry + circuit breaker) and shared TTL cache instead of the
 CVE server's TokenBucketRateLimiter + SQLite VulnCache.
@@ -194,7 +194,7 @@ async def _search_github_pocs(cve_id: str) -> list[dict]:
                     repos.append(repo)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (403, 422):
-                continue  # rate-limited / bad query - degrade silently
+                continue  # rate-limited / bad query, degrade silently.
             logger.warning("GitHub PoC search failed (%d) for %s",
                            exc.response.status_code, cve_id)
         except httpx.TimeoutException:
@@ -292,9 +292,11 @@ def _extract_published_date(nvd_data: dict | None) -> datetime | None:
     if isinstance(raw, datetime):
         return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
     try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except (ValueError, AttributeError):
         return None
+    # NVD omits the tz suffix (e.g. "2021-12-10T01:02:03.000"); treat as UTC.
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def score_cve(

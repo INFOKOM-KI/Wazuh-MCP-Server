@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Investigation workflow tool - runs the langgraph SOC investigation end-to-end.
+Investigation workflow tool runs the langgraph SOC investigation end-to-end.
 """
 from __future__ import annotations
 import json, ipaddress
@@ -22,6 +22,10 @@ class InvestigationWorkflowInput(BaseModel):
         description="Source IP to investigate (enables 3-Sum + STIX kill-chain steps).")
     window: str = Field(default="24h", max_length=30,
         description="Time window for indexer steps ('24h', '7d', ISO 8601).")
+    dependency_manifest: Optional[str] = Field(default=None, max_length=1_000_000,
+        description="Dependency manifest (requirements.txt / package.json / pom.xml "
+                    "contents) to scan for vulnerable packages via OSV. Discovered CVEs "
+                    "are scored and MITRE-mapped in the vuln step.")
     use_attack_graph: bool = Field(default=True,
         description="Run the 3-Sum correlation in graph mode: cluster-aware category "
                     "intersection (campaign-level APT detection), PPR suspicion boost, "
@@ -52,10 +56,11 @@ class InvestigationWorkflowInput(BaseModel):
     @field_validator("alert_text")
     @classmethod
     def require_target(cls, v: Optional[str], info):
-        """At least one target required: alert_text or srcip."""
+        """At least one target required: alert_text, srcip, or dependency_manifest."""
         srcip = info.data.get("srcip")
-        if not v and not srcip:
-            raise ValueError("Provide either 'alert_text' or 'srcip' to start an investigation.")
+        manifest = info.data.get("dependency_manifest")
+        if not v and not srcip and not manifest:
+            raise ValueError("Provide 'alert_text', 'srcip', or 'dependency_manifest' to start an investigation.")
         return v
 
 
@@ -66,12 +71,12 @@ class InvestigationWorkflowInput(BaseModel):
 )
 async def blueteam_investigation_workflow(params: InvestigationWorkflowInput) -> str:
     """Run the full SOC investigation workflow (langgraph) end-to-end.
-
     Orchestrates the platform's analyzers as a stateful graph:
-    extract IOCs -> threat-intel enrichment -> 3-Sum correlation -> attack graph ->
-    STIX kill-chain (if srcip) -> baseline drift (if 3-Sum flagged) -> optional
-    report + verdict. Steps without required credentials degrade gracefully and
-    are reported in `errors`.
+    extract IOCs -> threat-intel enrichment -> CVE pipeline (dependency scan +
+    score + SSVC + MITRE) -> 3-Sum correlation -> attack graph -> STIX kill-chain
+    (if srcip) -> baseline drift (if 3-Sum flagged) -> optional report + verdict.
+    Steps without required credentials degrade gracefully and are reported in
+    `errors`.
 
     **Worked Examples**
 
@@ -94,6 +99,7 @@ async def blueteam_investigation_workflow(params: InvestigationWorkflowInput) ->
         report_dir=params.report_dir,
         record_verdict=params.record_verdict,
         verdict_label=params.verdict_label,
+        dependency_manifest=params.dependency_manifest,
     )
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(_redact_alert_data(result), indent=2, ensure_ascii=False))
@@ -120,7 +126,7 @@ async def blueteam_investigation_workflow(params: InvestigationWorkflowInput) ->
                   f"- **Nodes**: {ag.get('num_nodes', 0)} | **Edges**: {ag.get('num_edges', 0)} | "
                   f"**Campaign clusters**: {ag.get('num_components', 0)}"]
     if result.get("killchain"):
-        lines += ["", f"## STIX Kill Chain — tactics: {', '.join(result['killchain'])}"]
+        lines += ["", f"## STIX Kill Chain tactics: {', '.join(result['killchain'])}"]
     if result.get("report_path"):
         lines += ["", f"📄 **Report**: `{result['report_path']}`"]
     if result.get("verdict"):
