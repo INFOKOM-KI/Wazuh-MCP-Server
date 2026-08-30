@@ -21,7 +21,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 logger = logging.getLogger("blue_team_mcp.investigation_graph")
 
-# Per-node timeout (seconds) - prevents a stuck Indexer call from blocking
+# Per-node timeout (seconds), prevents a stuck Indexer call from blocking.
 # the entire workflow indefinitely.
 _NODE_TIMEOUT = float(os.environ.get("BLUETEAM_LANGGRAPH_NODE_TIMEOUT", "120"))
 
@@ -263,6 +263,44 @@ async def baseline_step(state: InvestigationState) -> dict:
         return {"errors": [f"baseline: {e}"], "steps": ["baseline: degraded"]}
 
 
+async def _advisory_paragraphs(cve_ids: list[str]) -> list[str]:
+    """Flatten vendor advisories for the top CVEs into report paragraphs.
+    One line per CVE, best-effort: a failed/timed-out lookup degrades to a note."""
+    if not cve_ids:
+        return []
+    from mcp_server.threat_intel.vendor_advisory import get_vendor_advisory
+    lines: list[str] = []
+    for cid in cve_ids[:5]:
+        try:
+            adv = await _with_timeout(get_vendor_advisory(cid), "report_advisory")
+        except Exception:
+            lines.append(f"{cid}: advisory lookup failed")
+            continue
+        if not isinstance(adv, dict) or "microsoft" not in adv:
+            lines.append(f"{cid}: advisory lookup timed out")
+            continue
+        ms = adv.get("microsoft") or {}
+        rh = adv.get("redhat") or {}
+        ub = adv.get("ubuntu") or {}
+        parts = [cid]
+        if ms.get("_error"):
+            parts.append("Microsoft: lookup failed")
+        elif ms.get("title"):
+            parts.append(f"Microsoft: {ms['title'][:80]}")
+        if rh.get("_error"):
+            parts.append("Red Hat: lookup failed")
+        elif rh.get("severity"):
+            ids = [a["advisory"] for a in rh.get("advisories", []) if a.get("advisory")][:3]
+            parts.append(f"Red Hat: {rh['severity']}" + (f" ({', '.join(ids)})" if ids else ""))
+        if ub.get("_error"):
+            parts.append("Ubuntu: lookup failed")
+        elif ub.get("priority"):
+            notices = [n["id"] for n in ub.get("notices", []) if n.get("id")][:3]
+            parts.append(f"Ubuntu: {ub['priority']}" + (f" ({', '.join(notices)})" if notices else ""))
+        lines.append(" | ".join(parts))
+    return lines
+
+
 async def report_step(state: InvestigationState) -> dict:
     if not state.get("generate_report"):
         return {"steps": ["report: skipped"]}
@@ -271,15 +309,27 @@ async def report_step(state: InvestigationState) -> dict:
         steps = list(state.get("steps") or [])
         corr = state.get("correlation") or {}
         summary = f"{len(steps)} investigation steps executed"
+        vulns = state.get("vulnerabilities") or []
+        cve_ids = [v.get("cve_id") for v in vulns if v.get("cve_id")]
+
+        sections: list[dict] = [{
+            "heading": "Investigation Summary",
+            "paragraphs": [summary, json.dumps(corr.get("unified_scoring", {}), indent=2)],
+            "bullets": steps[-10:],
+        }]
+        if cve_ids:
+            advisory = await _advisory_paragraphs(cve_ids)
+            sections.append({
+                "heading": "Vendor Advisories",
+                "paragraphs": advisory or ["No vendor advisories returned."],
+                "bullets": [],
+            })
+
         out = await blueteam_export_report(ReportExportInput(
             format="docx",
             path=f"{state.get('report_dir', '/tmp')}/investigation_{uuid.uuid4().hex[:8]}.docx",
             title="SOC Investigation — Blue Team MCP",
-            docx_sections=[{
-                "heading": "Investigation Summary",
-                "paragraphs": [summary, json.dumps(corr.get("unified_scoring", {}), indent=2)],
-                "bullets": steps[-10:],
-            }],
+            docx_sections=sections,
         ))
         d = json.loads(out)
         return {"report_path": d.get("path"), "steps": [f"report: {d.get('path')}"]}
