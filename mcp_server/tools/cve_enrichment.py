@@ -25,6 +25,7 @@ from mcp_server.threat_intel.cve_enrichment import (
     score_cve,
     _extract_cvss_score,
 )
+from mcp_server.threat_intel.ssvc import ssvc_decision
 
 
 class CveLookupInput(BaseModel):
@@ -455,3 +456,109 @@ async def _gather_cve_data(cve_id: str):
         search_poc(cve_id),
     )
     return nvd, epss, kev, poc
+
+
+class CveSsvcInput(BaseModel):
+    """Input model for blueteam_cve_ssvc."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    cve_id: str = Field(..., min_length=10, max_length=20,
+                        description="CVE ID to triage with SSVC, e.g. 'CVE-2024-6387'.")
+    exposure: Literal["small", "controlled", "open"] = Field(
+        default="open",
+        description="SSVC System Exposure: 'open' = internet-facing, "
+                    "'controlled' = behind an access-controlled boundary, "
+                    "'small' = local/limited. Defaults to 'open' (conservative).",
+    )
+    response_format: Literal["markdown", "json"] = Field(default="markdown")
+
+    @field_validator("cve_id")
+    @classmethod
+    def validate_cve(cls, v: str) -> str:
+        norm = normalize_cve(v)
+        if norm is None:
+            raise ValueError("cve_id must match CVE-YYYY-NNNN, e.g. CVE-2024-6387")
+        return norm
+
+
+@mcp.tool(
+    name="blueteam_cve_ssvc",
+    annotations={"readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": True},
+)
+async def blueteam_cve_ssvc(params: CveSsvcInput) -> str:
+    """Triage a CVE with the CISA SSVC Deployer tree (Act / Attend / Track* / Track).
+
+    Walks the Stakeholder-Specific Vulnerability Categorization decision tree
+    using the same NVD/EPSS/KEV/PoC signals as ``blueteam_cve_score``, but emits
+    an action band with an explainable rationale instead of a 0-100 number.
+    Unknown exposure defaults to ``open`` (conservative, per CISA guidance).
+
+    **Required Permissions**: none (optional ``NVD_API_KEY`` / ``GITHUB_TOKEN``
+    raise rate limits).
+
+    **Rate Limit**: same upstreams as ``blueteam_cve_score`` (NVD 5 req/30s
+    unauth); results cached (NVD/EPSS/KEV 24h, PoC 1h).
+
+    **Worked Examples**
+
+    1. *Triage a KEV listed CVE on an internet-facing host*:
+       ``blueteam_cve_ssvc(cve_id="CVE-2024-6387", exposure="open")``
+
+    2. *Same CVE on an access-controlled (internal) host*:
+       ``blueteam_cve_ssvc(cve_id="CVE-2024-6387", exposure="controlled")``
+
+    3. *JSON output for 3-Sum correlation metadata*:
+       ``blueteam_cve_ssvc(cve_id="CVE-2021-44228", response_format="json")``
+    """
+    _audit_log("blueteam_cve_ssvc", {"cve_id": params.cve_id, "exposure": params.exposure})
+
+    try:
+        nvd, epss_entries, kev_catalog, poc = await _gather_cve_data(params.cve_id)
+    except (httpx.HTTPStatusError, httpx.TimeoutException, ValueError) as e:
+        return _handle_api_error(e, context="blueteam_cve_ssvc")
+
+    if nvd is None:
+        return json.dumps({"cve_id": params.cve_id, "found": False,
+                           "detail": "No NVD record for this CVE."}, indent=2)
+
+    cvss = _extract_cvss_score(nvd)
+    epss_entry = next((e for e in epss_entries if e.get("cve") == params.cve_id), None)
+    epss_probability = float(epss_entry["epss"]) if epss_entry else 0.0
+    kev_entry = _lookup_kev(kev_catalog, params.cve_id)
+    poc_confidence = (poc or {}).get("confidence", "NONE")
+
+    result = ssvc_decision(
+        in_kev=bool(kev_entry),
+        epss_probability=epss_probability,
+        poc_confidence=poc_confidence,
+        cvss_score=cvss,
+        exposure=params.exposure,
+    )
+
+    if params.response_format == "json":
+        result["cve_id"] = params.cve_id
+        result["signals"] = {
+            "cvss_score": cvss,
+            "epss_probability": epss_probability,
+            "in_kev": bool(kev_entry),
+            "poc_confidence": poc_confidence,
+        }
+        return _truncate_if_needed(json.dumps(result, indent=2, default=str))
+
+    d = result["decision"]
+    lines = [f"# SSVC Decision - `{params.cve_id}`", ""]
+    lines.append(f"**Action**: `{result['action']}` (priority {d['outcome_priority']}/3)")
+    lines.append("")
+    lines.append("| Decision point | Value |")
+    lines.append("|----------------|-------|")
+    lines.append(f"| Exploitation | {d['exploitation']} |")
+    lines.append(f"| System Exposure | {d['exposure']} |")
+    lines.append(f"| Automatable | {d['automatable']} |")
+    lines.append(f"| Technical Impact | {d['technical_impact']} |")
+    lines.append(f"| Mission & Well-being | {d['mission_wellbeing']} |")
+    lines.append(f"| CVSS (proxy) | {cvss} |")
+    lines.append(f"| EPSS | {epss_probability:.1%} |")
+    lines.append("")
+    lines.append(result["rationale"])
+    return _truncate_if_needed("\n".join(lines))
