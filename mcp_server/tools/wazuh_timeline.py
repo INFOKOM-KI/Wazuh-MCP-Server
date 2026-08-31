@@ -178,7 +178,7 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
         return json.dumps(data, indent=2)
 
     aggs = data.get("aggregations", {})
-    timeline = aggs.get("alerts_over_time", {})
+    timeline = aggs.get("over_time", {})
     buckets = timeline.get("buckets", [])
 
     if not buckets:

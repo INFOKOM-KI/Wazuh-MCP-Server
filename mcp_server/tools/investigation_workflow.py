@@ -6,7 +6,7 @@ Investigation workflow tool runs the langgraph SOC investigation end-to-end.
 from __future__ import annotations
 import json, ipaddress
 from typing import Literal, Optional
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data
@@ -53,15 +53,12 @@ class InvestigationWorkflowInput(BaseModel):
             raise ValueError(f"Invalid IP address: '{v}'") from None
         return v
 
-    @field_validator("alert_text")
-    @classmethod
-    def require_target(cls, v: Optional[str], info):
+    @model_validator(mode="after")
+    def require_target(self):
         """At least one target required: alert_text, srcip, or dependency_manifest."""
-        srcip = info.data.get("srcip")
-        manifest = info.data.get("dependency_manifest")
-        if not v and not srcip and not manifest:
+        if not self.alert_text and not self.srcip and not self.dependency_manifest:
             raise ValueError("Provide 'alert_text', 'srcip', or 'dependency_manifest' to start an investigation.")
-        return v
+        return self
 
 
 @mcp.tool(

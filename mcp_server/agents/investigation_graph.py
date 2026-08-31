@@ -397,7 +397,7 @@ def build_investigation_graph():
     g.add_node("report", report_step)
     g.add_node("verdict", verdict_step)
     g.add_edge(START, "extract")
-    g.add_conditional_edges("extract", _has_targets, {"enrich": "enrich", "graph": "analytics"})
+    g.add_conditional_edges("extract", _has_targets, {"enrich": "enrich", "analytics": "analytics"})
     g.add_edge("enrich", "vuln")
     g.add_edge("vuln", "correlate")
     g.add_edge("correlate", "analytics")
