@@ -49,6 +49,8 @@ Choose the tool by what the analyst wants — never invent tools.
 | Compare two IPs | `blueteam_wazuh_alert_compare(srcip_a, srcip_b)` |
 | Velocity (accelerating?) | `wazuh_attack_velocity(srcip)` |
 | Timeline buckets | `wazuh_alert_timeline(srcip)` |
+| Raw alert search (Indexer) | `blueteam_wazuh_indexer_search(...)` |
+| Local alerts file (fallback Indexer) | `blueteam_wazuh_alerts(srcip, since, limit)` |
 
 ### Threat intel (enrichment)
 | Want | Tool |
@@ -60,6 +62,7 @@ Choose the tool by what the analyst wants — never invent tools.
 | OTX pulse | `otx_lookup(indicator)` |
 | URLhaus hash/URL | `urlhaus_hash_lookup` / `urlhaus_lookup` |
 | Netra | `netra_ip_analysis(ip)` |
+| VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
 
 ### CVE / vulnerability enrichment
 When an alert or `blueteam_wazuh_vulnerabilities` surfaces a `CVE-YYYY-NNNN`,
@@ -191,6 +194,17 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | `blueteam_wazuh_agents` / `_summary` / `get_*` / `list_*` | Manager API: agents, SCA, decoders, groups, rules, security events |
 | `blueteam_metrics` | Prometheus metrics |
 | `blueteam_playbook_run` | run a named playbook workflow |
+| `blueteam_export_report` | export a report to DOCX/XLSX/PPTX (officecli) |
+| `blueteam_owned_domains` / `blueteam_set_owned_domains` | view/set the runtime owned (victim) domains for `protect_victim` redaction |
+
+### Resources (read via MCP resource reads, not tool calls)
+
+| URI | What it provides |
+|---|---|
+| `wazuh://rules/taxonomy` | Wazuh rule taxonomy — rule IDs grouped by category/groups |
+| `wazuh://mitre/attack` | MITRE ATT&CK tactic/technique mapping (feeds 3-Sum Engine A) |
+| `metrics://prometheus` | Server telemetry (tool-call counters, timings) in Prometheus text format |
+| `metrics://prometheus/json` | Same telemetry as a JSON snapshot |
 
 ## 2. Standard investigation workflows
 
@@ -244,6 +258,10 @@ bypassable**. Policies:
   otherwise the server silently falls back to `full`.
 - `raw`: Layer-1 strip only. **Hard-gated** behind `BLUETEAM_ALLOW_FORENSIC_BYPASS`
   AND `BLUETEAM_FORENSIC_TOKEN`.
+
+The runtime owned-domains set (used by `protect_victim`) is viewable/settable
+at runtime via `blueteam_owned_domains` / `blueteam_set_owned_domains` — the
+env var `BLUETEAM_OWNED_DOMAINS` only sets the initial value.
 
 **Forensic token rule**: the token lives in the *server's* env
 (`BLUETEAM_FORENSIC_TOKEN`) — you cannot read it. To use `raw` or full unmask,
@@ -442,6 +460,9 @@ provide it once at session start and you reuse it across calls.
 
 - Default `response_format="markdown"` for analyst-facing reports; **always
   `"json"`** when piping into follow-up tools.
+- Export a finished report to DOCX/XLSX/PPTX with `blueteam_export_report`
+  (officecli) — markdown/JSON are the in-session formats; officecli is for
+  deliverables.
 - Never claim a tool "succeeded" without evidence of execution. If a tool needs
   a live credential and fails, state "not verified — requires valid key/cluster".
 - **Redacted-but-real protocol**: for PII-adjacent data (citizen IP, email),

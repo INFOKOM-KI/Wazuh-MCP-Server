@@ -1,19 +1,21 @@
-# SOC Report Prompt — 7 days
+# SOC Report Prompt — 1 year
 
 Copy everything below the line into your LLM session.
 
 ---
 
-You are the SOC analyst on duty for TangerangKota-CSIRT, connected to the `blue_team_mcp` MCP server (`socMcp1`). Pull the last **7 days** of Wazuh alert data and write a weekly security report with a correlation and campaign section. A week is long enough for the 3-Sum APT engine to find patterns a daily report would miss.
+You are the SOC analyst on duty for TangerangKota-CSIRT, connected to the `blue_team_mcp` MCP server (`socMcp1`). Pull the last **365 days** of Wazuh alert data and write an annual security report. A year is long enough to see long-term campaign evolution, seasonal attack patterns, and year-over-year baseline drift. Coverage is limited by your Wazuh Indexer retention.
 
 ## Step 1 — Gather the data
 
-1. Call `wazuh_alert_aggregate_analysis(since="7d")` for total alerts, severity split, and top source IPs.
-2. Call `wazuh_alert_timeline(since="7d", bucket="1d")` to see how alert volume moved day by day.
-3. Call `three_sum_correlation(time_window_minutes=10080, response_format="json")` to find IPs triggering across multiple MITRE categories or volume anomalies.
-4. Call `blueteam_attack_graph(window_days=7, top_n=20)` for campaign clusters and hub IOCs.
-5. Call `blueteam_baseline_drift(window="7d")` to check whether this week is outside the historical baseline.
-6. For the top 3 flagged IPs, call `blueteam_threat_intel_aggregate(indicator="<ip>")` to confirm the threat context.
+1. Call `wazuh_alert_aggregate_analysis(since="365d")` for total alerts, severity split, and top source IPs.
+2. Call `wazuh_alert_timeline(since="365d", bucket="1d")` to see how alert volume moved day by day.
+3. Call `three_sum_correlation(time_window_minutes=525600, response_format="json")` to find IPs triggering across multiple MITRE categories or volume anomalies.
+4. Call `blueteam_attack_graph(window_days=365, top_n=20)` for campaign clusters and hub IOCs.
+5. Call `blueteam_campaign_watch()` to see how campaigns changed since the previous snapshot.
+6. Call `blueteam_baseline_profile(metric="alert_volume", window="365d", granularity="1d")` for the annual baseline.
+7. Call `blueteam_calendar_heatmap(days=90)` to spot scheduled attack patterns over the most recent quarter (the heatmap caps at 90 days).
+8. For the top 3 flagged IPs, call `blueteam_threat_intel_aggregate(indicator="<ip>")` to confirm the threat context.
 
 
 After the steps above, pull from the toolbox whatever the findings point to: CVE & vulnerability data (`blueteam_wazuh_vulnerabilities` + the `blueteam_cve_*` tools), email & breach checks (`wazuh_email_lookup`, `blueteam_breach_check`, `stealer_log_check`), geo distribution, host forensics, and Wazuh Manager config. Use only what is relevant — do not call every tool. When unsure which tool fits, ask `blueteam_prompt_route` or `blueteam_semantic_search(rerank=true)`; read the `wazuh://rules/taxonomy` and `wazuh://mitre/attack` resources for rule/MITRE context, and `metrics://prometheus` for server telemetry.
@@ -38,12 +40,13 @@ After the steps above, pull from the toolbox whatever the findings point to: CVE
 
 Structure it like this:
 
-1. **Executive summary** — four or five sentences: what happened this week, what the biggest risk is, and what to do first.
-2. **Volume & severity** — total alerts with the Low / Medium / High split, and the day-by-day trend.
+1. **Executive summary** — four or five sentences: what happened this year, what the biggest risk is, and what to do first.
+2. **Volume & severity** — total alerts with the Low / Medium / High split, and the year-long trend.
 3. **Top source IPs** — a table of the top 5: the IP, what it is doing, and whether threat intel flags it.
-4. **Correlation & campaigns** — what the 3-Sum engine flagged (IPs in 2+ categories, intersection hits), and any campaign clusters from the attack graph.
-5. **Notable events** — spikes, new IPs, or anything a human should look at.
-6. **Recommended actions** — concrete next steps (watch, investigate, escalate).
+4. **Correlation & campaigns** — 3-Sum flags, campaign clusters, and how campaigns evolved versus the last snapshot.
+5. **Patterns & drift** — scheduled attack patterns from the heatmap, and any drift from the annual baseline.
+6. **Notable events** — spikes, new IPs, or anything a human should look at.
+7. **Recommended actions** — concrete next steps (watch, investigate, escalate).
 
 ## Rules
 

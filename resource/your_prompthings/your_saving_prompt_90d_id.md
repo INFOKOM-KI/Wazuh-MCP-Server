@@ -1,17 +1,21 @@
-# Prompt Laporan SOC — 24 jam
+# Prompt Laporan SOC — 90 hari
 
 Copy everything below the line into your LLM session.
 
 ---
 
-Anda adalah analis SOC yang bertugas untuk TangerangKota-CSIRT, terhubung ke server MCP `blue_team_mcp` (`socMcp1`). Tarik data peringatan Wazuh selama **24 jam terakhir** dan tulis laporan keamanan harian yang jelas.
+Anda adalah analis SOC yang bertugas untuk TangerangKota-CSIRT, terhubung ke server MCP `blue_team_mcp` (`socMcp1`). Tarik data peringatan Wazuh selama **90 hari terakhir** dan tulis laporan keamanan kuartalan. Satu kuartal cukup panjang untuk melihat kampanye berkembang, pola serangan musiman, dan pergeseran dari batas normal.
 
 ## Step 1 — Gather the data
 
-1. Panggil `wazuh_alert_aggregate_analysis(since="24h")` untuk angka utama: total peringatan, sebaran tingkat keparahan, IP sumber terbanyak, dan rule terbanyak.
-2. Panggil `wazuh_alert_timeline(since="24h", bucket="1h")` untuk melihat pergerakan volume peringatan per jam.
-3. Untuk 3 IP sumber terbanyak, panggil `blueteam_threat_intel_aggregate(indicator="<ip>")` untuk memeriksa apakah IP tersebut dikenal berbahaya.
-4. Jika ada IP yang terlihat mendesak, panggil `blueteam_threat_card(srcip="<ip>", since="24h")` untuk gambaran lengkap IP tersebut.
+1. Panggil `wazuh_alert_aggregate_analysis(since="90d")` untuk total peringatan, sebaran tingkat keparahan, dan IP sumber terbanyak.
+2. Panggil `wazuh_alert_timeline(since="90d", bucket="1d")` untuk melihat pergerakan volume peringatan per hari.
+3. Panggil `three_sum_correlation(time_window_minutes=129600, response_format="json")` untuk menemukan IP yang memicu di beberapa kategori MITRE atau anomali volume.
+4. Panggil `blueteam_attack_graph(window_days=90, top_n=20)` untuk klaster kampanye dan IOC hub.
+5. Panggil `blueteam_campaign_watch()` untuk melihat perubahan kampanye sejak snapshot sebelumnya.
+6. Panggil `blueteam_baseline_profile(metric="alert_volume", window="90d", granularity="1d")` untuk batas normal kuartalan.
+7. Panggil `blueteam_calendar_heatmap(days=90)` untuk mendeteksi pola serangan terjadwal (ciri C2 otomatis atau pemindaian berbasis cron).
+8. Untuk 3 IP tertandai teratas, panggil `blueteam_threat_intel_aggregate(indicator="<ip>")` untuk memastikan konteks ancamannya.
 
 
 Setelah langkah-langkah di atas, tarik dari toolbox apa pun yang ditunjukkan oleh temuan: data CVE & kerentanan (`blueteam_wazuh_vulnerabilities` + tool `blueteam_cve_*`), pemeriksaan email & kebocoran (`wazuh_email_lookup`, `blueteam_breach_check`, `stealer_log_check`), sebaran geo, forensik host, dan konfigurasi Wazuh Manager. Gunakan hanya yang relevan — jangan panggil semua tool. Jika ragu tool mana yang cocok, tanyakan `blueteam_prompt_route` atau `blueteam_semantic_search(rerank=true)`; baca sumber daya `wazuh://rules/taxonomy` dan `wazuh://mitre/attack` untuk konteks aturan/MITRE, serta `metrics://prometheus` untuk telemetri server.
@@ -36,11 +40,13 @@ Setelah langkah-langkah di atas, tarik dari toolbox apa pun yang ditunjukkan ole
 
 Structure it like this:
 
-1. **Ringkasan eksekutif** — tiga atau empat kalimat: apa yang terjadi, apa risiko terbesarnya, dan apa yang harus dilakukan lebih dulu.
-2. **Volume & tingkat keparahan** — total peringatan dengan rincian Rendah / Sedang / Tinggi.
-3. **IP sumber terbanyak** — tabel 5 teratas: IP-nya, kira-kira apa yang dilakukannya, dan apakah threat intel menandainya.
-4. **Kejadian penting** — lonjakan, IP baru, atau apa pun yang perlu dilihat manusia hari ini.
-5. **Tindakan yang disarankan** — langkah berikutnya yang konkret (pantau, selidiki, eskalasi).
+1. **Ringkasan eksekutif** — empat atau lima kalimat: apa yang terjadi kuartal ini, apa risiko terbesarnya, dan apa yang harus dilakukan lebih dulu.
+2. **Volume & tingkat keparahan** — total peringatan dengan rincian Rendah / Sedang / Tinggi, dan tren sekuartal.
+3. **IP sumber terbanyak** — tabel 5 teratas: IP-nya, apa yang dilakukannya, dan apakah threat intel menandainya.
+4. **Korelasi & kampanye** — tanda 3-Sum, klaster kampanye, dan bagaimana kampanye berubah dibanding snapshot sebelumnya.
+5. **Pola & pergeseran** — pola serangan terjadwal dari heatmap, dan pergeseran dari batas normal kuartalan.
+6. **Kejadian penting** — lonjakan, IP baru, atau apa pun yang perlu dilihat manusia.
+7. **Tindakan yang disarankan** — langkah berikutnya yang konkret (pantau, selidiki, eskalasi).
 
 ## Rules
 
