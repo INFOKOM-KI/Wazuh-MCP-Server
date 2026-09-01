@@ -5,7 +5,7 @@ Alert enrichment tools - curated report, threat card, attack chain, beacon detec
 """
 from __future__ import annotations
 import json, re, math, asyncio, os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Literal, Any
 from collections import Counter
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -231,10 +231,14 @@ class SangforBlocklistCheckInput(BaseModel):
 class SangforBlocklistListInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     limit: int = Field(default=100, ge=1, le=1000000)
+    offset: int = Field(default=0, ge=0, le=1000000,
+                        description="Pagination offset for the result set.")
+    ip: Optional[ValidPublicIp] = Field(default=None, min_length=3, max_length=45,
+                                        description="Attacker IP / IoC filter. When provided, only blocklist entries matching this IP are returned.")
     date_start: str = Field(default="", max_length=24,
-                            description="Start date. ISO 8601 (e.g. 2026-08-18T17:27:00Z) or YYYY-MM-DD HH:MM:SS. Defaults to 30 days ago.")
+                            description="Start date. ISO 8601 (e.g. 2026-08-18T17:27:00Z) or YYYY-MM-DD HH:MM:SS. Defaults to 30 days ago (UTC, ISO-8601).")
     date_end: str = Field(default="", max_length=24,
-                          description="End date. ISO 8601 (e.g. 2026-08-19T17:27:00Z) or YYYY-MM-DD HH:MM:SS. Defaults to now.")
+                          description="End date. ISO 8601 (e.g. 2026-08-19T17:27:00Z) or YYYY-MM-DD HH:MM:SS. Defaults to now (UTC, ISO-8601).")
     response_format: str = Field(default="markdown")
 
 @mcp.tool(
@@ -243,6 +247,10 @@ class SangforBlocklistListInput(BaseModel):
 )
 async def sangfor_blocklist_check(params: SangforBlocklistCheckInput) -> str:
     """Check if an IP is currently blocked by Sangfor firewall."""
+    # TODO(sangfor-e2e): the /check/{ip} path is UNVERIFIED against the live Sangfor
+    # API (URL/token redacted). Documented contract is POST /blocklist with
+    # {date_start, date_end, limit, offset, ip} - validate this path, or fold it
+    # into sangfor_blocklist_list(ip=...) with limit=1, once live credentials exist.
     _audit_log("sangfor_blocklist_check", {"ip": params.ip})
     from mcp_server import SANGFOR_BLOCKLIST_URL, SANGFOR_BLOCKLIST_TOKEN, SANGFOR_BLOCKLIST_VERIFY_SSL
     if not SANGFOR_BLOCKLIST_TOKEN or not SANGFOR_BLOCKLIST_URL:
@@ -265,22 +273,31 @@ async def sangfor_blocklist_check(params: SangforBlocklistCheckInput) -> str:
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
 async def sangfor_blocklist_list(params: SangforBlocklistListInput) -> str:
-    """List IPs blocked by Sangfor firewall, optionally filtered by timestamp."""
-    _audit_log("sangfor_blocklist_list", {"limit": params.limit,
-               "date_start": params.date_start, "date_end": params.date_end})
+    """List IP blocked by Sangfor firewall, optionally filtered by timestamp and/or attacker IP/IoC.
+    Sends a POST to the Sangfor /blocklist endpoint (SANGFOR_BLOCKLIST_URL already
+    includes the /blocklist path) with a JSON body {date_start, date_end, limit,
+    offset, ip}. The `ip` key is OMITTED from the body when no IP filter is given
+    (rather than sending null) so the endpoint sees a pure listing query.
+    """
+    _audit_log("sangfor_blocklist_list", {"ip": params.ip, "limit": params.limit,
+               "offset": params.offset, "date_start": params.date_start,
+               "date_end": params.date_end})
     from mcp_server import SANGFOR_BLOCKLIST_URL, SANGFOR_BLOCKLIST_TOKEN, SANGFOR_BLOCKLIST_VERIFY_SSL
     if not SANGFOR_BLOCKLIST_TOKEN or not SANGFOR_BLOCKLIST_URL:
         return json.dumps({"error": "SANGFOR_BLOCKLIST_TOKEN and SANGFOR_BLOCKLIST_URL must be set."})
     try:
-        headers = {"Authorization": f"Bearer {SANGFOR_BLOCKLIST_TOKEN}", "accept": "application/json"}
-        # Build query string with date filters (only when provided)
-        query = [f"limit={params.limit}"]
-        if params.date_start:
-            query.append(f"date_start={params.date_start}")
-        if params.date_end:
-            query.append(f"date_end={params.date_end}")
-        url = f"{SANGFOR_BLOCKLIST_URL}/list?" + "&".join(query)
-        resp = await _api_call("get", url, headers=headers)
+        headers = {"Authorization": f"Bearer {SANGFOR_BLOCKLIST_TOKEN}",
+                   "accept": "application/json", "content-type": "application/json"}
+        # Client-side date defaults: 30 days ago -> now, strict ISO-8601 (UTC, Z suffix)
+        date_start = params.date_start or (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        date_end = params.date_end or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        body: dict = {"date_start": date_start, "date_end": date_end,
+                      "limit": params.limit, "offset": params.offset}
+        if params.ip:
+            body["ip"] = params.ip
+        # POST to SANGFOR_BLOCKLIST_URL directly the URL already ends in /blocklist
+        resp = await _api_call("post", SANGFOR_BLOCKLIST_URL, json=body,
+                               headers=headers, verify=SANGFOR_BLOCKLIST_VERIFY_SSL)
         raw = resp.json()
         if isinstance(raw, list):
             raw = {"blocked": len(raw) > 0, "count": len(raw), "entries": raw}

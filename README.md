@@ -382,7 +382,7 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | `blueteam_mitre_lookup` | ATT&CK technique/group lookup |
 | `blueteam_asset_context` | CMDB asset criticality / owner |
 | `blueteam_false_positive_tracker(rule_id)` | rule_id → FP-summary cross-reference |
-| `sangfor_blocklist_check` / `sangfor_blocklist_list` | Sangfor firewall blocklist |
+| `sangfor_blocklist_check` / `sangfor_blocklist_list(ip=…, date_start, date_end, limit, offset)` | Sangfor firewall blocklist (list POSTs `{date_start,date_end,limit,offset,ip}` to `/blocklist`) |
 | `blueteam_baseline_profile` / `blueteam_calendar_heatmap` | day×hour scheduled-attack profiling |
 | `blueteam_extract_iocs` / `blueteam_ioc_lifecycle` / `blueteam_ioc_search` | IOC extraction & lifecycle store |
 | `blueteam_ip_blacklist` | RapidAPI IP blacklist lookup |

@@ -150,6 +150,8 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_EXPORT_RETENTION_DAYS="7"     # auto-prune export_*.jsonl older than N days; 0 = keep forever
 
 # Sangfor Blocklist Integration (optional — set SANGFOR_BLOCKLIST_TOKEN to enable sangfor_blocklist_* tools)
+# URL must point directly at the /blocklist endpoint. sangfor_blocklist_list POSTs a JSON
+# body {date_start, date_end, limit, offset, ip} to this exact URL (ip key omitted when no IP filter).
 # export SANGFOR_BLOCKLIST_URL="http://sangfor.local:8088/blocklist"
 # export SANGFOR_BLOCKLIST_TOKEN="your_sangfor_bearer_token"
 # export SANGFOR_BLOCKLIST_TIMEOUT="15"
