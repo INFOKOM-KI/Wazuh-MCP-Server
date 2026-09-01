@@ -172,7 +172,8 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | `jarm_fingerprint` | active TLS server fingerprinting (no API key) |
 | `blueteam_unified_threat_score(indicator)` | CrowdSec+ThreatFox+AbuseIPDB → single 0.0–1.0 score |
 | `blueteam_threat_hunt` | named DSL query templates per adversary technique |
-| `blueteam_semantic_search` | BM25 ranking over Wazuh rule descriptions |
+| `blueteam_semantic_search` | BM25 ranking over Wazuh rules/alerts; `rerank=true` adds a local cross-encoder (bge-reranker-v2-m3) for cross-lingual matching |
+| `blueteam_prompt_route` | BM25 prompt→tool router; `rerank=true` re-scores candidates with the same cross-encoder |
 | `blueteam_mitre_lookup` | ATT&CK technique/group lookup |
 | `blueteam_asset_context` | CMDB asset criticality / owner |
 | `blueteam_false_positive_tracker(rule_id)` | rule_id → FP-summary cross-reference |
