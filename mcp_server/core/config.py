@@ -400,6 +400,36 @@ class ToolGatingConfig:
         pass
 
 
+@dataclass
+class RerankConfig:
+    """Optional two stage retrieval reranker (BM25 -> cross-encoder).
+    Off by default: BM25-only is the safe baseline. When enabled, tools expose a
+    ``rerank`` flag that re-scores BM25 candidates with a local INT8-quantized
+    cross-encoder (BAAI/bge-reranker-v2-m3) over ONNX. Never a hosted API.
+    """
+    enabled: bool = False
+    model: str = "BAAI/bge-reranker-v2-m3"
+    cache_path: str = ""            # empty = fastembed default cache dir
+    max_candidates: int = 50        # hard ceiling for the rerank_candidates tool param
+
+    @classmethod
+    def from_env(cls) -> "RerankConfig":
+        return cls(
+            enabled=_bool(os.environ.get("BLUETEAM_RERANK_ENABLED", "false")),
+            model=os.environ.get("BLUETEAM_RERANK_MODEL", "BAAI/bge-reranker-v2-m3").strip(),
+            cache_path=os.environ.get("BLUETEAM_RERANK_CACHE_PATH", ""),
+            max_candidates=int(os.environ.get("BLUETEAM_RERANK_MAX_CANDIDATES", "50")),
+        )
+
+    def validate(self) -> None:
+        if self.enabled and not self.model:
+            raise ConfigurationError(
+                "BLUETEAM_RERANK_MODEL must not be empty when BLUETEAM_RERANK_ENABLED=true"
+            )
+        if self.max_candidates < 1:
+            raise ConfigurationError("BLUETEAM_RERANK_MAX_CANDIDATES must be >= 1")
+
+
 # Top level Config aggregating all groups
 @dataclass
 class Config:
@@ -423,6 +453,7 @@ class Config:
     audit: AuditConfig = field(default_factory=AuditConfig)
     limits: LimitsConfig = field(default_factory=LimitsConfig)
     tool_gating: ToolGatingConfig = field(default_factory=ToolGatingConfig)
+    rerank: RerankConfig = field(default_factory=RerankConfig)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -440,6 +471,7 @@ class Config:
             audit=AuditConfig.from_env(),
             limits=LimitsConfig.from_env(),
             tool_gating=ToolGatingConfig.from_env(),
+            rerank=RerankConfig.from_env(),
         )
 
     def validate(self) -> None:
@@ -456,6 +488,7 @@ class Config:
         self.audit.validate()
         self.limits.validate()
         self.tool_gating.validate()
+        self.rerank.validate()
 
     def emit_warnings(self) -> None:
         """Log warnings for non-fatal configuration issues.
@@ -483,6 +516,13 @@ class Config:
                 "BLUETEAM_ALLOW_FORENSIC_BYPASS=true - forensic raw output enabled "
                 "(bypass_redaction/redaction_policy='raw' will be honored)."
             )
+        if self.rerank.enabled:
+            import importlib.util
+            if importlib.util.find_spec("fastembed") is None:
+                logger.warning(
+                    "BLUETEAM_RERANK_ENABLED=true but fastembed is not installed"
+                    "reranking will fall back to BM25-only."
+                )
 
 
 # Module-level singleton - initialized by mcp_server/__init__.py at startup
