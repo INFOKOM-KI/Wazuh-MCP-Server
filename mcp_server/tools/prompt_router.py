@@ -2,9 +2,8 @@
 """
 © NAuliajati - TangerangKota-CSIRT
 Prompt-to-tool routing via BM25 lexical ranking over MCP tool descriptions.
-Without external dependencies - stdlib-only BM25 reuses the pattern from semantic_search.py.
-
-Given a natural-language security prompt (e.g. "brute force SSH on mail server"),
+Without external dependencies; stdlib-only BM25 reuses the pattern from semantic_search.py.
+Given a natural language security prompt (e.g. "brute force SSH on mail server"),
 tokenizes it, scores each token's IDF against the tool corpus, buckets tokens by
 their strongest tool association, and returns a ranked tool invocation plan.
 """
@@ -13,22 +12,21 @@ import json, math, re, logging
 from collections import defaultdict
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import mcp
+from mcp_server.core.rerank import rerank as _cross_rerank
 
 logger = logging.getLogger("blue_team_mcp.prompt_router")
 
-# Minimal BM25 + tokenizer (same algorithm as semantic_search.py)
+# BM25 + tokenizer
 _K1 = 1.5
 _B = 0.75
-
 
 def _tokenize(text: str) -> list[str]:
     """Lowercase, split, remove short tokens and punctuation."""
     text = re.sub(r"[^a-z0-9\s._-]", " ", text.lower())
     return [t.strip("._-") for t in text.split() if len(t.strip("._-")) >= 2]
 
-
 class _MiniBM25:
-    """Minimal BM25 Okapi scorer - same math as semantic_search._BM25."""
+    """Minimal BM25 Okapi scorer; same math as semantic_search._BM25."""
     def __init__(self, corpus: list[str]):
         self.corpus = corpus
         self.n = len(corpus)
@@ -80,9 +78,9 @@ def _build_tool_corpus() -> list[dict]:
         registered = {}
     for name, tool in sorted(registered.items()):
         desc = (getattr(tool, "description", "") or "").strip()
-        # Take the first paragraph of the docstring - the summary
+        # Take the first paragraph of the docstring, the summary.
         first_para = desc.split("\n\n")[0] if desc else ""
-        # Extract parameter names for additional signal
+        # Extract parameter names for additional signal.
         params = []
         try:
             input_schema = getattr(tool, "inputSchema", None)
@@ -134,9 +132,48 @@ class PromptRouter:
             })
         return results
 
+    def _matched_tokens(self, prompt: str, idx: int) -> list[str]:
+        """Prompt tokens present in the indexed tool document."""
+        return sorted(set(_tokenize(prompt)) & set(self.bm25.tokenized[idx]))
+
+    async def route_reranked(self, prompt: str, top_k: int,
+                             candidates: int = 20) -> tuple[list[dict], str | None]:
+        """BM25 top-M recall + cross-encoder rerank, truncated to top-K.
+        Returns ``(results, status)``; ``status`` is ``None`` on success, else a
+        short fallback reason ("disabled"/"unavailable: …"/"empty"). On fallback
+        the results are the plain BM25 top-K from ``route()``.
+        """
+        if not self.bm25 or not self.tool_corpus:
+            return [], "empty"
+        m = min(max(top_k, candidates), len(self.tool_corpus))
+        bm25_hits = self.bm25.score(prompt)[:m]
+        if not bm25_hits:
+            return [], "empty"
+        indices = [idx for idx, _ in bm25_hits]
+        bm25_by_idx = dict(bm25_hits)
+        docs = [self.tool_corpus[idx]["text"] for idx in indices]
+        scores, status = await _cross_rerank(prompt, docs)
+        if status is not None:
+            return self.route(prompt, top_k=top_k), status
+        # Reorder by cross-encoder score desc, tie-break by BM25 score.
+        order = sorted(range(len(indices)),
+                       key=lambda i: (-scores[i], -bm25_by_idx[indices[i]]))
+        results = []
+        for rank, i in enumerate(order[:top_k], 1):
+            idx = indices[i]
+            t = self.tool_corpus[idx]
+            results.append({
+                "rank": rank,
+                "tool": t["name"],
+                "score": round(scores[i], 4),
+                "bm25_score": round(bm25_by_idx[idx], 4),
+                "description": t["description"],
+                "matched_tokens": self._matched_tokens(prompt, idx),
+            })
+        return results, None
+
     def token_buckets(self, prompt: str) -> dict:
         """Group prompt tokens into buckets by their strongest tool association.
-
         Each token is assigned to the tool whose corpus document gives it the
         highest TF (term frequency). Buckets are sorted by combined IDF score.
         """
@@ -183,7 +220,7 @@ class PromptRouter:
         return {"buckets": sorted_buckets, "unmatched_tokens": unmatched}
 
 
-# Singleton built lazily on first tool call
+# Singleton built on first tool call
 _router: PromptRouter | None = None
 
 
@@ -211,6 +248,12 @@ class PromptRouteInput(BaseModel):
         default=5, ge=1, le=20,
         description="Max tools to return in 'route' mode.",
     )
+    rerank: bool = Field(
+        default=False,
+        description="Re-rank BM25 candidates with the local cross-encoder "
+                    "(BAAI/bge-reranker-v2-m3). Falls back to BM25-only when "
+                    "BLUETEAM_RERANK_ENABLED=false or the model is unavailable.",
+    )
 
 
 @mcp.tool(
@@ -218,13 +261,13 @@ class PromptRouteInput(BaseModel):
     annotations={"readOnlyHint": True, "destructiveHint": False,
                  "idempotentHint": True, "openWorldHint": False},
 )
-def blueteam_prompt_route(params: PromptRouteInput) -> str:
-    """Map a natural-language security prompt to the most relevant Wazuh MCP tools.
-
-    Uses BM25 lexical ranking over all registered tool descriptions. Breaks the
-    prompt into key terms, scores each against the tool corpus, and returns a
-    ranked list of suggested tools. In 'buckets' mode, groups prompt words by
-    their strongest tool association.
+async def blueteam_prompt_route(params: PromptRouteInput) -> str:
+    """Map a natural language security prompt to the most relevant Wazuh MCP tools.
+    Uses BM25 lexical ranking over all registered tool descriptions, with an
+    optional cross-encoder rerank pass (``rerank=True``) for semantic,
+    cross-lingual matching. Breaks the prompt into key terms, scores each against
+    the tool corpus, and returns a ranked list of suggested tools. In 'buckets'
+    mode, groups prompt words by their strongest tool association.
 
     **Worked Examples**
 
@@ -236,6 +279,9 @@ def blueteam_prompt_route(params: PromptRouteInput) -> str:
 
     3. *Top-10 tools for ransomware investigation*:
        ``blueteam_prompt_route(prompt="ransomware encryption files locked", top_k=10)``
+
+    4. *Semantic rerank of a cross-lingual prompt (Indonesia)*:
+       ``blueteam_prompt_route(prompt="Cek apakah IP masuk blocklist Sangfor", rerank=True)``
     """
     router = _get_router()
 
@@ -247,11 +293,24 @@ def blueteam_prompt_route(params: PromptRouteInput) -> str:
             **result,
         }, indent=2, ensure_ascii=False)
 
-    # Default: route mode
+    if params.rerank:
+        ranked, status = await router.route_reranked(
+            params.prompt, top_k=params.top_k)
+        return json.dumps({
+            "prompt": params.prompt,
+            "mode": "route",
+            "reranked": status is None,
+            "rerank_status": status,
+            "tools_indexed": len(router.tool_corpus),
+            "results": ranked,
+        }, indent=2, ensure_ascii=False)
+
+    # Default: route mode (BM25 only)
     ranked = router.route(params.prompt, top_k=params.top_k)
     return json.dumps({
         "prompt": params.prompt,
         "mode": "route",
+        "reranked": False,
         "tools_indexed": len(router.tool_corpus),
         "results": ranked,
     }, indent=2, ensure_ascii=False)
