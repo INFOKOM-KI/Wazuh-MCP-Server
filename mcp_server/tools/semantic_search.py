@@ -11,7 +11,9 @@ from collections import defaultdict
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.config import config
 from mcp_server.core.redact import _redact_alert_data
+from mcp_server.core.rerank import rerank as _cross_rerank
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window
 
@@ -161,6 +163,24 @@ async def _try_load_live_corpus():
         _bm25_corpus = _STATIC_RULE_CORPUS
         _bm25_index = _build_bm25_from_corpus(_STATIC_RULE_CORPUS)
 
+
+async def _rerank_candidates(query: str, indices: list[int], docs: list[str],
+                             bm25_scores: list[float], top_k: int) -> tuple[list[tuple[int, float]] | None, str | None]:
+    """Cross-encoder rerank of BM25 candidates.
+    Returns ``(ordered, status)`` where ``ordered`` is a list of
+    ``(corpus_idx, semantic_score)`` truncated to ``top_k`` and ``status`` is
+    ``None`` on success, else a short fallback reason ("disabled"/"unavailable:
+    …"/"empty"). Returns ``(None, status)`` on fallback so callers reuse the
+    original BM25 ordering.
+    """
+    scores, status = await _cross_rerank(query, docs)
+    if status is not None:
+        return None, status
+    order = sorted(range(len(indices)),
+                   key=lambda i: (-scores[i], -bm25_scores[i]))
+    return [(indices[i], scores[i]) for i in order[:top_k]], None
+
+
 # Semantic Search Tool
 class SemanticSearchInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -176,6 +196,17 @@ class SemanticSearchInput(BaseModel):
         description="Optional exact source-IP filter. When set with source='alerts', BM25 ranks "
                     "ONLY alerts from this IP (exact field filter on data.srcip — the IP itself "
                     "is NOT added to the BM25 corpus).")
+    rerank: bool = Field(
+        default=False,
+        description="Re-rank BM25 candidates with the local cross-encoder "
+                    "(BAAI/bge-reranker-v2-m3). Falls back to BM25-only when "
+                    "BLUETEAM_RERANK_ENABLED=false or the model is unavailable.",
+    )
+    rerank_candidates: int = Field(
+        default=20, ge=1, le=50,
+        description="Number of BM25 candidates to re-score when rerank=true "
+                    "(clamped by BLUETEAM_RERANK_MAX_CANDIDATES).",
+    )
     response_format: Literal["markdown", "json"] = Field(default="markdown")
 
 
@@ -205,32 +236,72 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
     4. *Hybrid: rank alerts semantically but only from one attacker IP*:
        ``blueteam_semantic_search(query="webshell", source="alerts", srcip="117.247.110.24", since="7d")``
        (Exact data.srcip filter — the IP stays OUT of the BM25 corpus)
+
+    5. *Cross-lingual rerank (Indonesian query)*:
+       ``blueteam_semantic_search(query="serangan brute force ssh", source="rules", rerank=True)``
+       (BM25 recall + cross-encoder rerank; falls back to BM25-only if unavailable)
     """
-    _audit_log("blueteam_semantic_search", {"query": params.query, "source": params.source, "top_k": params.top_k})
+    _audit_log("blueteam_semantic_search", {"query": params.query, "source": params.source, "top_k": params.top_k, "rerank": params.rerank})
 
     if params.source == "alerts":
         return await _semantic_search_alerts(params)
 
     # source="rules"
     await _try_load_live_corpus()
-    results = _bm25_index.score(params.query)[:params.top_k]
+    reranked = False
+    rerank_status = None
+    bm25_map = None
+    if params.rerank:
+        m = min(max(params.top_k, params.rerank_candidates),
+                len(_bm25_corpus), config.rerank.max_candidates)
+        hits = _bm25_index.score(params.query)[:m]
+        if hits:
+            indices = [i for i, _ in hits]
+            bm25_scores = [s for _, s in hits]
+            rerank_docs = [f"{_bm25_corpus[i]['id']} {_bm25_corpus[i]['desc']} "
+                           f"{_bm25_corpus[i]['groups']}" for i in indices]
+            ranked, status = await _rerank_candidates(
+                params.query, indices, rerank_docs, bm25_scores, params.top_k)
+            if ranked is not None:
+                results = ranked
+                reranked = True
+                bm25_map = dict(hits)
+            else:
+                results = hits[:params.top_k]
+                rerank_status = status
+        else:
+            results = []
+            rerank_status = "empty"
+    else:
+        results = _bm25_index.score(params.query)[:params.top_k]
 
     if params.response_format == "json":
-        matches = [{"rule_id": _bm25_corpus[idx]["id"],
-                     "description": _bm25_corpus[idx]["desc"],
-                     "groups": _bm25_corpus[idx]["groups"],
-                     "bm25_score": round(score, 4)}
-                   for idx, score in results]
-        return json.dumps({"query": params.query, "source": "rules", "matches": matches},
-                          indent=2, ensure_ascii=False)
+        matches = []
+        for idx, score in results:
+            m = {"rule_id": _bm25_corpus[idx]["id"],
+                 "description": _bm25_corpus[idx]["desc"],
+                 "groups": _bm25_corpus[idx]["groups"],
+                 "bm25_score": round(bm25_map[idx] if bm25_map else score, 4)}
+            if reranked:
+                m["semantic_score"] = round(score, 4)
+            matches.append(m)
+        payload = {"query": params.query, "source": "rules", "matches": matches}
+        if params.rerank:
+            payload["reranked"] = reranked
+            payload["rerank_status"] = rerank_status
+        return json.dumps(payload, indent=2, ensure_ascii=False)
 
+    score_col = "Semantic" if reranked else "BM25"
     lines = [f"# 🔍 Semantic Search - `{params.query}`", "",
              f"**Source**: rules | **Top {len(results)} matches**:", "",
-             "| Rule ID | BM25 Score | Description | Groups |",
+             f"| Rule ID | {score_col} Score | Description | Groups |",
              "|---------|-----------|-------------|--------|"]
-    for idx, score in results[:params.top_k]:
+    for idx, score in results:
         r = _bm25_corpus[idx]
         lines.append(f"| `{r['id']}` | {score:.3f} | {r['desc'][:60]} | {r['groups'][:40]} |")
+    if params.rerank and rerank_status:
+        lines.append("")
+        lines.append(f"*Rerank fallback: {rerank_status} - results are BM25-only.*")
     lines.append("")
     lines.append("*Gunakan `blueteamWazuhIndexerSearch` dengan rule ID dari hasil di atas untuk melihat alert terkait.*")
     return _truncate_if_needed("\n".join(lines))
@@ -313,7 +384,31 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
         corpus.append(" ".join(parts))
 
     bm25_alerts = _BM25(corpus)
-    results = bm25_alerts.score(params.query)[:params.top_k]
+    reranked = False
+    rerank_status = None
+    bm25_map = None
+    if params.rerank:
+        m = min(max(params.top_k, params.rerank_candidates),
+                len(corpus), config.rerank.max_candidates)
+        hits = bm25_alerts.score(params.query)[:m]
+        if hits:
+            indices = [i for i, _ in hits]
+            bm25_scores = [s for _, s in hits]
+            rerank_docs = [corpus[i] for i in indices]
+            ranked, status = await _rerank_candidates(
+                params.query, indices, rerank_docs, bm25_scores, params.top_k)
+            if ranked is not None:
+                results = ranked
+                reranked = True
+                bm25_map = dict(hits)
+            else:
+                results = hits[:params.top_k]
+                rerank_status = status
+        else:
+            results = []
+            rerank_status = "empty"
+    else:
+        results = bm25_alerts.score(params.query)[:params.top_k]
     # Redact before any field is returned - same pipeline as every other data tool.
     redacted_docs = _redact_alert_data(all_docs)
 
@@ -323,8 +418,8 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
             d = redacted_docs[idx]
             rule = d.get("rule", {})
             data = d.get("data", {})
-            top_docs.append({
-                "bm25_score": round(score, 4),
+            doc = {
+                "bm25_score": round(bm25_map[idx] if bm25_map else score, 4),
                 "@timestamp": d.get("@timestamp", "?"),
                 "rule_id": rule.get("id", "?"),
                 "rule_description": str(rule.get("description", ""))[:80],
@@ -332,16 +427,24 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
                 "url": data.get("url", ""),
                 "domain": data.get("domain", ""),
                 "agent": d.get("agent", {}).get("name", ""),
-            })
-        return json.dumps({
+            }
+            if reranked:
+                doc["semantic_score"] = round(score, 4)
+            top_docs.append(doc)
+        payload = {
             "query": params.query, "source": "alerts",
             "scanned": len(all_docs), "total_available": total_val,
             "matches": top_docs,
-        }, indent=2, ensure_ascii=False)
+        }
+        if params.rerank:
+            payload["reranked"] = reranked
+            payload["rerank_status"] = rerank_status
+        return json.dumps(payload, indent=2, ensure_ascii=False)
 
+    score_hdr = "Sem" if reranked else "BM25"
     lines = [f"# 🔍 Semantic Search - `{params.query}`", "",
              f"**Source**: alerts | **Scanned**: {len(all_docs):,} | **Total available**: {total_val:,}",
-             "", "| # | BM25 | Time | Rule | IP | Detail |",
+             "", f"| # | {score_hdr} | Time | Rule | IP | Detail |",
              "|---|------|------|------|----|--------|"]
     for rank, (idx, score) in enumerate(results, 1):
         d = redacted_docs[idx]
@@ -354,6 +457,9 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
                   str(rule.get("description", ""))[:50])
         lines.append(f"| {rank} | {score:.3f} | {ts} | `{rid}` | `{ip}` | {detail} |")
     lines.append("")
+    if params.rerank and rerank_status:
+        lines.append(f"*Rerank fallback: {rerank_status} - results are BM25-only.*")
+        lines.append("")
     if len(all_docs) < total_val:
         lines.append(f"*Scanned {len(all_docs):,} of {total_val:,} alerts. Narrow time window for full coverage.*")
     return _truncate_if_needed("\n".join(lines))
