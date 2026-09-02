@@ -72,14 +72,26 @@ if [[ "$RERANK_ENABLED" == "true" || "$RERANK_ENABLED" == "1" || "$RERANK_ENABLE
   # Resolve the EXACT ONNX file fastembed will load (same path the server's
   # pin check uses: fastembed _model_dir + registry model_file), so a
   # multi-snapshot cache can never pin the wrong file.
-  if RESOLVED_ONNX=$("$INSTALL_DIR/venv/bin/python3" - "$RERANK_MODEL" "$RERANK_CACHE" << 'PYEOF' 2>/dev/null
+  ERR_LOG=$(mktemp)
+  if RESOLVED_ONNX=$("$INSTALL_DIR/venv/bin/python3" - "$RERANK_MODEL" "$RERANK_CACHE" 2>"$ERR_LOG" << 'PYEOF'
 import os, sys
+from pathlib import Path
 from fastembed.rerank.cross_encoder import TextCrossEncoder
 model, cache = sys.argv[1], sys.argv[2]
 enc = TextCrossEncoder(model_name=model, cache_dir=cache, lazy_load=True)
 model_file = next(m["model_file"] for m in TextCrossEncoder.list_supported_models()
                   if m["model"] == model)
-print(os.path.join(str(enc._model_dir), model_file))
+# _model_dir lives on the INNER encoder (enc.model) in fastembed 0.5-0.8.
+# the outer TextCrossEncoder does not expose it. Fall back to a glob only
+# if the attribute is absent (future version tolerance).
+inner = getattr(enc, "model", None)
+mdir = getattr(inner, "_model_dir", None) if inner is not None else None
+if mdir is not None:
+    print(os.path.join(str(mdir), model_file))
+else:
+    cands = sorted(Path(cache).glob("**/snapshots/*/" + model_file))
+    if cands:
+        print(str(cands[0]))
 PYEOF
   ); then
     if [[ -f "$RESOLVED_ONNX" ]]; then
@@ -100,9 +112,11 @@ PYEOF
       echo "  WARNING: fastembed resolved $RESOLVED_ONNX but the file is missing."
     fi
   else
-    echo "  Reranker model bootstrap skipped (offline, or fastembed/model unavailable)."
+    echo "  Reranker model bootstrap skipped:"
+    tail -3 "$ERR_LOG" 2>/dev/null | sed 's/^/    /' || true
     echo "  First rerank=true call will fall back to BM25-only."
   fi
+  rm -f "$ERR_LOG"
 else
   echo "  Reranker disabled (BLUETEAM_RERANK_ENABLED=false) - skipping model bootstrap."
 fi

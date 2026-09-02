@@ -89,14 +89,14 @@ def _install_fake_fastembed(monkeypatch, model_dir):
     captured = {}
 
     class FakeTextCrossEncoder:
-        _model_dir = model_dir
-
         @classmethod
         def list_supported_models(cls):
             return [{"model": "BAAI/bge-reranker-base", "model_file": "onnx/model.onnx"}]
 
         def __init__(self, model_name, cache_dir=None, lazy_load=False,
                      local_files_only=False, **kwargs):
+            # mirror fastembed: _model_dir sits on the inner encoder - bug has been found during test process;P
+            self.model = SimpleNamespace(_model_dir=model_dir)
             captured.update(model_name=model_name, cache_dir=cache_dir,
                             lazy_load=lazy_load, local_files_only=local_files_only)
 

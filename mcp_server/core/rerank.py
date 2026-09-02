@@ -82,9 +82,10 @@ def _ensure_loaded() -> bool:
                     lazy_load=True,
                     local_files_only=True,
                 )
-                # _model_dir is fastembed-internal (verified 0.5.0 and 0.8.0);
-                # it is the dir fastembed's own load path resolves the ONNX from.
-                loaded = os.path.join(str(encoder._model_dir), _model_file_name(config.rerank.model))
+                # _model_dir is fastembed-internal and lives on the INNER
+                # encoder (encoder.model), not the outer TextCrossEncoder
+                # verified on 0.5.0 and 0.8.0; the outer raises AttributeError.
+                loaded = os.path.join(str(encoder.model._model_dir), _model_file_name(config.rerank.model))
                 if not os.path.isfile(loaded):
                     _reason = (
                         f"sha256 pin mismatch: model file not found: {loaded}; "
