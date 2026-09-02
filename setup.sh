@@ -54,44 +54,57 @@ python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --quiet pip-audit 2>/dev/null && \
   "$INSTALL_DIR/venv/bin/pip-audit" 2>/dev/null || true
 
-# Optional reranker model bootstrap (BAAI/bge-reranker-base, ONNX).
-# Pre-caches cross-encoder weights so the first rerank=true call needs no network.
-# Skips cleanly when disabled, offline, or fastembed is unavailable (never fails install).
+# Reranker model bootstrap.
+# Honors BLUETEAM_RERANK_* from config.env if present, downloads the model,
+# auto generates BLUETEAM_RERANK_MODEL_SHA256 when unset. On re-run it
+# also syncs the RERANK block into .env (the file the systemd unit loads),
+# which fixes the config.env-vs-.env mismatch on existing deployments.
+CONFIG_FILE="$INSTALL_DIR/config.env"
+ENV_FILE="$INSTALL_DIR/.env"
+[[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE" || true
+
 RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-false}"
 RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 RERANK_CACHE="${BLUETEAM_RERANK_CACHE_PATH:-$INSTALL_DIR/rerank-cache}"
 RERANK_SHA="${BLUETEAM_RERANK_MODEL_SHA256:-}"
 if [[ "$RERANK_ENABLED" == "true" || "$RERANK_ENABLED" == "1" || "$RERANK_ENABLED" == "yes" ]]; then
   mkdir -p "$RERANK_CACHE"
-  if "$INSTALL_DIR/venv/bin/python3" - "$RERANK_MODEL" "$RERANK_CACHE" << 'PYEOF' 2>/dev/null
-import sys
+  # Resolve the EXACT ONNX file fastembed will load (same path the server's
+  # pin check uses: fastembed _model_dir + registry model_file), so a
+  # multi-snapshot cache can never pin the wrong file.
+  if RESOLVED_ONNX=$("$INSTALL_DIR/venv/bin/python3" - "$RERANK_MODEL" "$RERANK_CACHE" << 'PYEOF' 2>/dev/null
+import os, sys
 from fastembed.rerank.cross_encoder import TextCrossEncoder
 model, cache = sys.argv[1], sys.argv[2]
-TextCrossEncoder(model_name=model, cache_dir=cache)
+enc = TextCrossEncoder(model_name=model, cache_dir=cache, lazy_load=True)
+model_file = next(m["model_file"] for m in TextCrossEncoder.list_supported_models()
+                  if m["model"] == model)
+print(os.path.join(str(enc._model_dir), model_file))
 PYEOF
-  then
-    echo "  Reranker model cached at $RERANK_CACHE"
+  ); then
+    if [[ -f "$RESOLVED_ONNX" ]]; then
+      ACTUAL_SHA=$(sha256sum "$RESOLVED_ONNX" | awk '{print $1}')
+      echo "  Reranker model ready: $RESOLVED_ONNX"
+      if [[ -n "$RERANK_SHA" ]]; then
+        if [[ "$ACTUAL_SHA" == "$RERANK_SHA" ]]; then
+          echo "  BLUETEAM_RERANK_MODEL_SHA256 verified (matches cached ONNX)."
+        else
+          echo "  WARNING: BLUETEAM_RERANK_MODEL_SHA256 mismatch - cached file hashes to $ACTUAL_SHA."
+          echo "  The server will refuse to load the model and fall back to BM25-only."
+        fi
+      else
+        RERANK_SHA="$ACTUAL_SHA"
+        echo "  Generated BLUETEAM_RERANK_MODEL_SHA256=$ACTUAL_SHA"
+      fi
+    else
+      echo "  WARNING: fastembed resolved $RESOLVED_ONNX but the file is missing."
+    fi
   else
     echo "  Reranker model bootstrap skipped (offline, or fastembed/model unavailable)."
     echo "  First rerank=true call will fall back to BM25-only."
   fi
-  if [[ -n "$RERANK_SHA" ]]; then
-    FOUND=""
-    while IFS= read -r f; do
-      H=$(sha256sum "$f" | awk '{print $1}')
-      if [[ "$H" == "$RERANK_SHA" ]]; then FOUND="$f"; fi
-    done < <(find "$RERANK_CACHE" -name '*.onnx' -type f 2>/dev/null)
-    if [[ -n "$FOUND" ]]; then
-      echo "  Reranker model SHA-256 verified ($FOUND)."
-    else
-      echo "  WARNING: BLUETEAM_RERANK_MODEL_SHA256 set but no cached ONNX file matched."
-      echo "  Verify the pinned hash against the trusted model source."
-    fi
-  else
-    echo "  (BLUETEAM_RERANK_MODEL_SHA256 unset — set it to pin model integrity.)"
-  fi
 else
-  echo "  Reranker disabled (BLUETEAM_RERANK_ENABLED=false) — skipping model bootstrap."
+  echo "  Reranker disabled (BLUETEAM_RERANK_ENABLED=false) - skipping model bootstrap."
 fi
 
 # Config file for environment variables
@@ -260,6 +273,34 @@ else
   echo "[4/7] Config file exists at $CONFIG_FILE (not overwritten)"
 fi
 
+# Sync the RERANK block into BOTH env files with effective values.
+# config.env is sourced by the mcp-server-blueteam wrapper; .env is what the
+# systemd unit loads via EnvironmentFile. Keeping them identical prevents the
+# "enabled in one file, ignored by the process" failure mode.
+_sync_env_key() {  # file key value
+  local f="$1" k="$2" v="$3"
+  if [[ -f "$f" ]]; then
+    if grep -qE "^(# *export +)?${k}=" "$f"; then
+      sed -i -E "s|^(# *export +)?${k}=.*|${k}=\"${v}\"|" "$f"
+    else
+      printf '%s="%s"\n' "$k" "$v" >> "$f"
+    fi
+  else
+    printf '%s="%s"\n' "$k" "$v" > "$f"
+  fi
+}
+_sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_ENABLED" "$RERANK_ENABLED"
+_sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_MODEL" "$RERANK_MODEL"
+_sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_CACHE_PATH" "$RERANK_CACHE"
+_sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_MAX_CANDIDATES" "${BLUETEAM_RERANK_MAX_CANDIDATES:-50}"
+_sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_MODEL_SHA256" "$RERANK_SHA"
+_sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_ENABLED" "$RERANK_ENABLED"
+_sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MODEL" "$RERANK_MODEL"
+_sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_CACHE_PATH" "$RERANK_CACHE"
+_sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MAX_CANDIDATES" "${BLUETEAM_RERANK_MAX_CANDIDATES:-50}"
+_sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MODEL_SHA256" "$RERANK_SHA"
+unset -f _sync_env_key 2>/dev/null || true
+
 # Wrapper scripts
 echo "[5/7] Creating MCP server wrapper scripts..."
 
@@ -399,6 +440,17 @@ systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/nul
 echo "[7/7] Granting tcpdump network capture capability..."
 setcap cap_net_raw,cap_net_admin=eip "$(which tcpdump)" 2>/dev/null || \
   echo "  WARNING: Could not set tcpdump capabilities. Run captures as root."
+
+# Restart the systemd service if one is present, so the env + model pin take
+# effect without manual steps (no-op on fresh installs without a unit).
+if systemctl cat blue-team-mcp >/dev/null 2>&1; then
+  systemctl daemon-reload 2>/dev/null || true
+  if systemctl restart blue-team-mcp 2>/dev/null; then
+    echo "  blue-team-mcp.service restarted - rerank env + model pin active."
+  else
+    echo "  WARNING: could not restart blue-team-mcp.service - restart it manually."
+  fi
+fi
 
 # API key configuration
 echo ""
