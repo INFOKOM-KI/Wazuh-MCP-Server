@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Webshell checker - curl + signature scan against unmasked forensic URLs
+Webshell checker with curl + signature scan against unmasked forensic URL.
 Used after blueteam_wazuh_export (forensic unmasking) to confirm whether a URL hosts an active webshell or backdoor
 """
 from __future__ import annotations
 import json, re, uuid, os
 from typing import Literal
+from urllib.parse import urljoin, urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.attacker_registry import register_attacker_ioc
+from mcp_server.core.http_client import _host_pins, _allowed_internal_domains
 from mcp_server.core.subprocess import _run_async
 
 # Webshell signature patterns - community-maintained, extend as needed.
@@ -86,17 +88,12 @@ class WebshellCheckInput(BaseModel):
         v = v.strip()
         if not v.startswith(("http://", "https://")):
             raise ValueError(f"URL must start with http:// or https://, got: {v!r}")
-        # Reject private/reserved IPs in URL host
-        from urllib.parse import urlparse
-        import ipaddress
+        # SSRF guard: reject hosts that resolve to non-public IPs unless allowlisted.
         host = urlparse(v).hostname
         if host:
-            try:
-                ip = ipaddress.ip_address(host)
-            except ValueError:
-                ip = None  # not an IP - domain name, allowed
-            if ip is not None and (ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local):
-                raise ValueError(f"URL host is a private/reserved IP: {host}. This tool only accepts public hosts.")
+            _, err = _host_pins(host, _allowed_internal_domains())
+            if err:
+                raise ValueError(err)
         return v
 
 
@@ -158,10 +155,35 @@ def _verdict(matches: list[dict]) -> str:
     if high >= 1 or medium >= 2:
         return "SUSPICIOUS"
     if login_high >= 1:
-        return "LOGIN_PAGE"  # no active shell code - just a login form, need LLM classification
+        return "LOGIN_PAGE"  # no active shell code; just a login form, need LLM classification
     if matches:
         return "LOW_RISK"
     return "CLEAN"
+
+
+def _pinned_curl_args(url: str) -> tuple[list[str], str | None]:
+    """Build curl ``--resolve`` args so curl connects to a pre-validated IP instead
+    of re-resolving the hostname (closes the DNS-rebinding TOCTOU). Returns
+    (resolve_args, error). Literal-IP hosts need no pinning (no DNS to rebind)."""
+    import ipaddress
+    u = urlparse(url)
+    host = u.hostname
+    if not host:
+        return [], "URL has no host."
+    try:
+        ipaddress.ip_address(host)
+        return [], None
+    except ValueError:
+        pass
+    port = u.port or (443 if u.scheme == "https" else 80)
+    ips, err = _host_pins(host, _allowed_internal_domains())
+    if err:
+        return [], err
+    args: list[str] = []
+    for ip in ips:
+        addr = f"[{ip}]" if ":" in ip else ip
+        args += ["--resolve", f"{host}:{port}:{addr}"]
+    return args, None
 
 
 @mcp.tool(
@@ -171,10 +193,8 @@ def _verdict(matches: list[dict]) -> str:
 )
 async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
     """Check a URL for active webshell or backdoor via curl + signature scan.
-
     Uses ``curl`` to fetch the URL, then scans the response body against
     20 community-maintained webshell signature patterns (b374k, c99, r57, WSO, alfa-rex, eval+base64, obfuscated backdoors, etc.).
-
     Intended for use AFTER forensic unmasking - feed it the raw
     unmasked URLs from ``blueteam_wazuh_export`` to confirm whether
     a webshell is actively hosted on your infrastructure.
@@ -193,39 +213,72 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
        ``blueteam_check_webshell(url="https://...", response_format="json")``
     """
     _audit_log("blueteam_check_webshell", {"url": params.url, "timeout": params.timeout})
-    body_file = f"/tmp/webshell_check_{uuid.uuid4().hex}.body"
 
-    # _run_async expects a LIST of args, not a shell string.
-    cmd = ["curl", "-s", "--insecure", "--max-time", str(params.timeout)]
-    if params.follow_redirects:
-        cmd.append("-L")
-    cmd += [
-        "-o", body_file,
-        "-w", "HTTP_STATUS:%{http_code}\nCONTENT_TYPE:%{content_type}\nSIZE:%{size_download}\n",
-        params.url,
-    ]
-
-    result = await _run_async(cmd, timeout=int(params.timeout) + 5)
-
-    # Parse curl output
+    # Follow redirects manually (no curl -L) and pin each hop's host to a
+    # pre-validated IP so curl never re-resolves DNS (closes the TOCTOU gap).
+    MAX_REDIRECTS = 5
+    current_url = params.url
     status = 0
     content_type = ""
     size_download = 0
-    for line in result["stdout"].split("\n"):
-        if line.startswith("HTTP_STATUS:"):
-            try:
-                status = int(line.split(":", 1)[1].strip())
-            except ValueError:
-                pass
-        elif line.startswith("CONTENT_TYPE:"):
-            content_type = line.split(":", 1)[1].strip() if ":" in line else ""
-        elif line.startswith("SIZE:"):
-            try:
-                size_download = int(line.split(":", 1)[1].strip())
-            except ValueError:
-                pass
+    last_result: dict = {"returncode": 0, "stderr": ""}
+    blocked_error: str | None = None
 
-    # Read and scan body
+    for hop in range(MAX_REDIRECTS + 1):
+        body_file = f"/tmp/webshell_check_{uuid.uuid4().hex}.body"
+        resolve_args, pin_err = _pinned_curl_args(current_url)
+        if pin_err:
+            blocked_error = pin_err
+            break
+        # _run_async expects a LIST of args, not a shell string.
+        cmd = ["curl", "-s", "--insecure", "--max-time", str(params.timeout)]
+        cmd += resolve_args
+        cmd += ["-o", body_file,
+                "-w", "HTTP_STATUS:%{http_code}\nCONTENT_TYPE:%{content_type}\nSIZE:%{size_download}\nREDIRECT:%{redirect_url}\n",
+                current_url]
+        result = await _run_async(cmd, timeout=int(params.timeout) + 5)
+        last_result = result
+
+        redirect_url = ""
+        for line in result["stdout"].split("\n"):
+            if line.startswith("HTTP_STATUS:"):
+                try:
+                    status = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif line.startswith("CONTENT_TYPE:"):
+                content_type = line.split(":", 1)[1].strip() if ":" in line else ""
+            elif line.startswith("SIZE:"):
+                try:
+                    size_download = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif line.startswith("REDIRECT:"):
+                redirect_url = line.split(":", 1)[1].strip()
+
+        should_follow = (
+            params.follow_redirects
+            and status in (301, 302, 303, 307, 308)
+            and redirect_url
+            and hop < MAX_REDIRECTS
+        )
+        if not should_follow:
+            break
+
+        next_url = urljoin(current_url, redirect_url)
+        host = urlparse(next_url).hostname
+        if host:
+            _, err = _host_pins(host, _allowed_internal_domains())
+            if err:
+                blocked_error = f"Redirect target blocked: {err}"
+                break
+        try:
+            os.unlink(body_file)
+        except OSError:
+            pass
+        current_url = next_url
+
+    # Read and scan the final body
     matches: list[dict] = []
     body_sample = ""
     body_read_error: str | None = None
@@ -234,7 +287,7 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
             body_sample = f.read(params.max_body_scan_bytes)
         matches = _scan_body(body_sample)
     except FileNotFoundError:
-        body_read_error = "Body file not found - curl may have failed before writing."
+        body_read_error = "Body file not found, curl may have failed before writing."
     except Exception as e:
         body_read_error = f"Body read error: {e}"
 
@@ -256,8 +309,9 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
             "http_status": status,
             "content_type": content_type,
             "download_size_bytes": size_download,
-            "curl_exit_code": result["returncode"],
-            "curl_stderr": result["stderr"][:200] if result["stderr"] else None,
+            "curl_exit_code": last_result["returncode"],
+            "curl_stderr": last_result["stderr"][:200] if last_result["stderr"] else None,
+            "blocked_error": blocked_error,
             "matched_signatures": matches,
             "verdict": v,
             "body_read_error": body_read_error,
@@ -268,12 +322,16 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
         f"# 🕵️ Webshell Check - `{params.url}`",
         "",
         f"**HTTP Status**: `{status}` | **Content-Type**: `{content_type}` | "
-        f"**Size**: {size_download:,} bytes | **curl exit**: {result['returncode']}",
+        f"**Size**: {size_download:,} bytes | **curl exit**: {last_result['returncode']}",
         "",
     ]
 
     if body_read_error:
         lines.append(f"⚠️ {body_read_error}")
+        lines.append("")
+
+    if blocked_error:
+        lines.append(f"⚠️ {blocked_error}")
         lines.append("")
 
     if v == "CONFIRMED":
@@ -290,7 +348,7 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
         if login_ctx:
             lines.append(f"### 🔍 Login Page HTML Context\n```html\n{login_ctx}\n```")
     elif v == "LOW_RISK":
-        lines.append(f"## 🟢 Verdict: LOW_RISK — Minor Indicators Only")
+        lines.append(f"## 🟢 Verdict: LOW_RISK; Minor Indicators Only")
     else:
         lines.append(f"## ✅ Verdict: CLEAN - No Webshell Signatures Found")
 
@@ -301,9 +359,9 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
         for m in sorted(matches, key=lambda x: (-{"high": 3, "medium": 2, "low": 1}[x["weight"]], -x["hit_count"])):
             lines.append(f"| `{m['signature']}` | {m['family']} | {m['weight']} | {m['hit_count']} |")
 
-    if result["stderr"]:
+    if last_result["stderr"]:
         lines.append("")
         lines.append("### curl stderr")
-        lines.append(f"```\n{result['stderr'][:500]}\n```")
+        lines.append(f"```\n{last_result['stderr'][:500]}\n```")
 
     return _truncate_if_needed("\n".join(lines))

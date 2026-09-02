@@ -4,7 +4,7 @@
 HTTP client pool, unified API call helper, error handling, IP validation.
 """
 from __future__ import annotations
-import asyncio, ipaddress, json, logging, random, time
+import asyncio, ipaddress, json, logging, random, socket, time
 from typing import Any, Dict, Optional, Annotated
 import httpx
 from pydantic import AfterValidator
@@ -22,7 +22,7 @@ try:
 except ImportError:
     _HTTP2 = False
 
-# Private / reserved IP ranges threat-intel tools are for public IPs only
+# Private / reserved IP ranges threat intel tools are for public IP only
 _PRIVATE_NETWORKS: list = []
 
 # Shared HTTP clients by name, pooled per SSL trust domain.
@@ -64,7 +64,6 @@ class CircuitBreaker:
     All state transitions are synchronous (no ``await``), so they are atomic
     within a single-threaded event loop, no lock required.
     """
-
     def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 60.0, name: str = "http") -> None:
         self.name = name
         self.failure_threshold = failure_threshold
@@ -138,7 +137,7 @@ def _get_breaker(name: str) -> CircuitBreaker:
 # Unified API call
 async def _api_call(method: str, url: str, *, client_name: str = "http", verify: bool = True,
                     max_retries: int = 1, backoff: float = 0.2, **kw) -> httpx.Response:
-    """Unified async HTTP helper. Returns raw response - caller calls .json() or .text.
+    """Unified async HTTP helper. Returns raw response caller calls .json() or .text.
     Retries (default once, configurable via max_retries) on 5xx server errors, network
     failures (jittered backoff), and 429 rate limits (honors Retry-After when present).
     A per-pool circuit breaker fails fast (CircuitOpenError) when an upstream is
@@ -221,15 +220,23 @@ def _handle_api_error(e: Exception, context: str = "") -> str:
 
 # IP validation
 def _is_private_or_reserved(ip: str) -> bool:
-    """Check whether an IP belongs to a private or reserved range (not routable)."""
+    """True if the IP is not globally routable: private, loopback, link-local,
+    reserved, CGNAT (100.64.0.0/10), multicast, unspecified, or otherwise non-public.
+    Gated on ``is_global`` because neither ``is_private`` nor ``is_reserved`` covers
+    CGNAT 100.64/10 (RFC 6598). IPv4-mapped IPv6 (::ffff:a.b.c.d) is unmasked to its
+    IPv4 form first, because ``::ffff:100.64.0.1`` is misreported as global otherwise."""
     try:
-        return ipaddress.ip_address(ip).is_private
+        ip = ipaddress.ip_address(ip)
     except ValueError:
         return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    return not ip.is_global
 
 
 def _validate_public_ip(v: str) -> str:
-    """Reject private/reserved IP for public threat-intel tools (SSRF guard/prevention)."""
+    """Reject private/reserved IP for public threat intel tools (SSRF guard/prevention)."""
     if _is_private_or_reserved(v):
         raise ValueError(
             f"'{v}' is a private/reserved IP address."
@@ -239,3 +246,75 @@ def _validate_public_ip(v: str) -> str:
 
 
 ValidPublicIp = Annotated[str, AfterValidator(_validate_public_ip)]
+
+
+def _resolve_host_ips(host: str) -> tuple[list[str], str | None]:
+    """Resolve host to all A/AAAA records (both families). Returns (ips, error).
+    Literal IPs are returned as-is (no DNS). IPv4-mapped IPv6 is normalized to IPv4."""
+    try:
+        ipaddress.ip_address(host)
+        return [host], None
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        return [], f"DNS resolution failed for {host}: {e}"
+    ips: list[str] = []
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+            mapped = getattr(ip, "ipv4_mapped", None)
+            if mapped is not None:
+                addr = str(mapped)
+        except ValueError:
+            continue
+        if addr not in ips:
+            ips.append(addr)
+    return ips, None
+
+
+def _domain_allowed(host: str, allowed_domains: list[str]) -> bool:
+    """True if host equals or is a subdomain of any allowlisted domain."""
+    host = host.lower().rstrip(".")
+    for d in allowed_domains:
+        d = d.strip().lower().rstrip(".")
+        if not d:
+            continue
+        if host == d or host.endswith("." + d):
+            return True
+    return False
+
+
+def _allowed_internal_domains() -> list[str]:
+    """Read the ALLOWED_INTERNAL_DOMAINS allowlist from the Config singleton."""
+    from mcp_server.core.config import config
+    if config and getattr(config, "ssrf", None):
+        return config.ssrf.allowed_internal_domains
+    return []
+
+
+def _host_pins(host: str, allowed_domains: list[str]) -> tuple[list[str], str | None]:
+    """Resolve host once and return validated IPs for curl --resolve pinning.
+    Allowlisted domains may resolve to internal IPs; any other host must resolve
+    only to public IPs. Returns (pinned_ips, error)."""
+    ips, err = _resolve_host_ips(host)
+    if err:
+        return [], err
+    if not ips:
+        return [], f"Host {host} did not resolve to any address."
+    if _domain_allowed(host, allowed_domains):
+        return ips, None
+    bad = [ip for ip in ips if _is_private_or_reserved(ip)]
+    if bad:
+        return [], f"Host {host} resolves to non-public address {bad[0]} - rejected (not in allowlist)."
+    return ips, None
+
+
+def _host_resolves_public(host: str) -> bool:
+    """True if the host is a public IP or resolves ONLY to public IPs (both families)."""
+    ips, err = _resolve_host_ips(host)
+    if err or not ips:
+        return False
+    return all(not _is_private_or_reserved(ip) for ip in ips)

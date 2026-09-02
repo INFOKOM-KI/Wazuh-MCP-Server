@@ -277,6 +277,13 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # Beacon detection exclusions (comma-separated IPs — known health-check/monitoring infra)
 # export BLUETEAM_BEACON_EXCLUDE_IPS="10.0.0.1,10.0.0.2"
 
+# SSRF / outbound URL guard (blueteam_check_webshell) — comma-separated internal-domain allowlist.
+# By default the webshell checker rejects any host that resolves to a non-public IP
+# (private / loopback / link-local / CGNAT 100.64/10). Add your owned domains here to
+# permit scanning internal webshells on your own infrastructure (e.g. tangerangkota.go.id).
+# Each hop is resolved once and IP-pinned via curl --resolve (DNS-rebinding / TOCTOU safe).
+# export ALLOWED_INTERNAL_DOMAINS="tangerangkota.go.id,abc123.go.id"   # add your domains? use comma separated.
+
 # Path restrictions (defaults shown)
 # export BLUETEAM_ALLOWED_PATHS="/var:/etc:/home:/opt:/usr"
 # export BLUETEAM_CAPTURE_DIR="/tmp"
@@ -371,6 +378,7 @@ export BLUETEAM_REDACTION_POLICY="${BLUETEAM_REDACTION_POLICY:-protect_victim}"
 export BLUETEAM_OWNED_DOMAINS="${BLUETEAM_OWNED_DOMAINS:-tangerangkota.go.id}"
 export BLUETEAM_ALLOW_FORENSIC_BYPASS="${BLUETEAM_ALLOW_FORENSIC_BYPASS:-false}"
 export BLUETEAM_ALLOW_RUNTIME_DOMAINS="${BLUETEAM_ALLOW_RUNTIME_DOMAINS:-false}"
+export ALLOWED_INTERNAL_DOMAINS="${ALLOWED_INTERNAL_DOMAINS:-}"
 export BLUETEAM_ATTACKER_REGISTRY="${BLUETEAM_ATTACKER_REGISTRY:-/var/log/blue-team-mcp/attacker_registry.jsonl}"
 export BLUETEAM_ATTACKER_REGISTRY_TTL="${BLUETEAM_ATTACKER_REGISTRY_TTL:-604800}"
 export BLUETEAM_ATTACKER_REGISTRY_MAX="${BLUETEAM_ATTACKER_REGISTRY_MAX:-10000}"

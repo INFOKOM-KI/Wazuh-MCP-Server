@@ -438,11 +438,34 @@ class RerankConfig:
             )
 
 
+@dataclass
+class SSRFConfig:
+    """Outbound URL / SSRF guard configuration.
+    ``allowed_internal_domains`` is a comma separated allowlist of internal
+    domains the webshell checker (and future URL fetchers) may reach even when
+    they resolve to non-public IPs (e.g. ``tangerangkota.go.id``). Any host not
+    in this list must resolve only to public (``is_global``) IPs.
+    """
+    allowed_internal_domains: list[str] = field(default_factory=list)
+    @classmethod
+    def from_env(cls) -> "SSRFConfig":
+        raw = os.environ.get("ALLOWED_INTERNAL_DOMAINS", "")
+        return cls(
+            allowed_internal_domains=[d.strip().lower() for d in raw.split(",") if d.strip()]
+        )
+
+    def validate(self) -> None:
+        for d in self.allowed_internal_domains:
+            if not re.fullmatch(r"[a-z0-9.-]+", d):
+                raise ConfigurationError(
+                    f"ALLOWED_INTERNAL_DOMAINS entry {d!r} is not a valid domain name."
+                )
+
+
 # Top level Config aggregating all groups
 @dataclass
 class Config:
     """Master configuration aggregating all sub-config groups.
-
     Usage:
         config = Config.from_env()
         config.validate()          # raises ConfigurationError on invalid values
@@ -462,6 +485,7 @@ class Config:
     limits: LimitsConfig = field(default_factory=LimitsConfig)
     tool_gating: ToolGatingConfig = field(default_factory=ToolGatingConfig)
     rerank: RerankConfig = field(default_factory=RerankConfig)
+    ssrf: SSRFConfig = field(default_factory=SSRFConfig)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -480,6 +504,7 @@ class Config:
             limits=LimitsConfig.from_env(),
             tool_gating=ToolGatingConfig.from_env(),
             rerank=RerankConfig.from_env(),
+            ssrf=SSRFConfig.from_env(),
         )
 
     def validate(self) -> None:
@@ -497,10 +522,10 @@ class Config:
         self.limits.validate()
         self.tool_gating.validate()
         self.rerank.validate()
+        self.ssrf.validate()
 
     def emit_warnings(self) -> None:
         """Log warnings for non-fatal configuration issues.
-
         Call AFTER validate() succeeds - these are advisory, not blocking.
         """
         if not self.wazuh_manager.url:
@@ -533,7 +558,7 @@ class Config:
                 )
 
 
-# Module-level singleton - initialized by mcp_server/__init__.py at startup
+# Module-level singleton, initialized by mcp_server/__init__.py at startup.
 config: Optional[Config] = None
 def init_config() -> Config:
     """Build, validate, and store the global Config singleton.

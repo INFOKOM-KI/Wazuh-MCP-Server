@@ -168,6 +168,14 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | System state | `blueteam_system_health`, `blueteam_check_open_firewall` |
 | Packet capture | `blueteam_capture_traffic` |
 
+`blueteam_check_webshell(url)` only accepts **public** hosts by default — any URL whose
+host resolves to a private / loopback / link-local / CGNAT address is rejected. To scan a
+webshell on **your own infrastructure** (e.g. `subdomain.tangerangkota.go.id` resolving to
+RFC1918), the operator must add that domain to `ALLOWED_INTERNAL_DOMAINS` on the server.
+Every hop is resolved once and IP-pinned (`curl --resolve`), so DNS-rebinding and
+redirect-to-internal are both blocked. If a URL is rejected, report "host is non-public /
+not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't retry the URL.
+
 ### Extended toolbox (long tail — don't invent names)
 
 | Tool | What it does |

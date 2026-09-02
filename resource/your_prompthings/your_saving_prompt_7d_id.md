@@ -34,6 +34,8 @@ Setelah langkah-langkah di atas, tarik dari toolbox apa pun yang ditunjukkan ole
 | Pelaporan & intelijen | `blueteam_curated_threat_report`, `blueteam_threat_hunt`, `blueteam_semantic_search(rerank=true)`, `blueteam_prompt_route`, `blueteam_mitre_lookup`, `blueteam_asset_context`, `blueteam_extract_iocs`, `blueteam_ioc_lifecycle`, `blueteam_ioc_search`, `blueteam_owned_domains` / `blueteam_set_owned_domains`, `sangfor_blocklist_check` / `sangfor_blocklist_list(ip=…, date_start, date_end, limit, offset)`, `blueteam_export_report`, `blueteam_metrics`, `blueteam_playbook_run` |
 | Sumber daya | `metrics://prometheus` (telemetri server), `metrics://prometheus/json`, `wazuh://rules/taxonomy` (taksonomi aturan), `wazuh://mitre/attack` (MITRE ATT&CK) |
 
+> `blueteam_check_webshell(url)` hanya menerima host publik; URL yang resolve ke alamat privat, loopback, link-local, atau CGNAT akan ditolak. Untuk memindai webshell di infrastruktur sendiri (mis. `*.go.id` yang resolve ke RFC1918), operator harus menambahkan domain tersebut ke `ALLOWED_INTERNAL_DOMAINS`. Jika URL ditolak sebagai non-publik, laporkan dan lanjutkan. Jangan diulangi.
+
 ## Step 2 — Write the report
 
 Structure it like this:

@@ -34,6 +34,8 @@ After the steps above, pull from the toolbox whatever the findings point to: CVE
 | Reporting & intelligence | `blueteam_curated_threat_report`, `blueteam_threat_hunt`, `blueteam_semantic_search(rerank=true)`, `blueteam_prompt_route`, `blueteam_mitre_lookup`, `blueteam_asset_context`, `blueteam_extract_iocs`, `blueteam_ioc_lifecycle`, `blueteam_ioc_search`, `blueteam_owned_domains` / `blueteam_set_owned_domains`, `sangfor_blocklist_check` / `sangfor_blocklist_list(ip=…, date_start, date_end, limit, offset)`, `blueteam_export_report`, `blueteam_metrics`, `blueteam_playbook_run` |
 | Resources | `metrics://prometheus` (server telemetry), `metrics://prometheus/json`, `wazuh://rules/taxonomy` (rule taxonomy), `wazuh://mitre/attack` (MITRE ATT&CK) |
 
+> `blueteam_check_webshell(url)` accepts public hosts only; a URL resolving to a private, loopback, link-local, or CGNAT address is rejected. To scan a webshell on your own infrastructure (e.g. `*.go.id` resolving to RFC1918), the operator must add that domain to `ALLOWED_INTERNAL_DOMAINS`. If a URL is rejected as non-public, report it and move on. Do not retry.
+
 ## Step 2 — Write the report
 
 Structure it like this:

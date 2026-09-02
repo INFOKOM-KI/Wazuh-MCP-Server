@@ -13,6 +13,10 @@ from mcp_server.core.http_client import (
     _handle_api_error,
     _is_private_or_reserved,
     _validate_public_ip,
+    _host_resolves_public,
+    _domain_allowed,
+    _host_pins,
+    _resolve_host_ips,
     ValidPublicIp,
 )
 
@@ -224,6 +228,64 @@ class TestIPValidation:
     def test_public_ipv4_passes(self):
         assert _is_private_or_reserved("8.8.8.8") is False
         assert _is_private_or_reserved("1.1.1.1") is False
+
+    def test_cgnat_detected(self):
+        # 100.64.0.0/10 (RFC 6598) is neither is_private nor is_reserved in
+        # ipaddress, only caught by is_global=False.
+        assert _is_private_or_reserved("100.64.0.1") is True
+
+    def test_link_local_metadata_detected(self):
+        assert _is_private_or_reserved("169.254.169.254") is True
+        assert _is_private_or_reserved("::1") is True
+
+    def test_host_resolves_public_literal(self):
+        assert _host_resolves_public("127.0.0.1") is False
+        assert _host_resolves_public("8.8.8.8") is True
+
+    def test_host_resolves_public_hostname_private(self, monkeypatch):
+        # A hostname that resolves to loopback must be rejected (DNS-rebinding gap).
+        import socket
+
+        def fake_getaddrinfo(host, *args, **kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        assert _host_resolves_public("evil.example.com") is False
+
+    def test_ipv4_mapped_cgnat_detected(self):
+        # ::ffff:100.64.0.1 is misreported as global unless unmasked to IPv4 first.
+        assert _is_private_or_reserved("::ffff:100.64.0.1") is True
+        assert _is_private_or_reserved("::ffff:127.0.0.1") is True
+        assert _is_private_or_reserved("::ffff:8.8.8.8") is False
+
+    def test_domain_allowed(self):
+        allowed = ["tangerangkota.go.id", "example.gov.id"]
+        assert _domain_allowed("tangerangkota.go.id", allowed) is True
+        assert _domain_allowed("sub.tangerangkota.go.id", allowed) is True
+        assert _domain_allowed("evil.com", allowed) is False
+        assert _domain_allowed("tangerangkota.go.id.evil.com", allowed) is False
+
+    def test_host_pins_allowlist_permits_internal(self, monkeypatch):
+        import socket
+
+        def fake_getaddrinfo(host, *args, **kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.7", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        ips, err = _host_pins("sub.tangerangkota.go.id", ["tangerangkota.go.id"])
+        assert err is None
+        assert ips == ["10.0.0.7"]
+
+    def test_host_pins_rejects_internal_not_allowlisted(self, monkeypatch):
+        import socket
+
+        def fake_getaddrinfo(host, *args, **kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.7", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        ips, err = _host_pins("evil.example.com", [])
+        assert err is not None
+        assert ips == []
 
     def test_invalid_ip_returns_false(self):
         """Invalid IP strings are not private - they fail format validation elsewhere."""

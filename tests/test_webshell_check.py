@@ -91,6 +91,54 @@ def test_url_validation_rejects_private_ip():
         pass
 
 
+def test_url_validation_rejects_hostname_resolving_private(monkeypatch):
+    from mcp_server.tools import webshell_check
+    from mcp_server.tools.webshell_check import WebshellCheckInput
+    from pydantic import ValidationError
+    monkeypatch.setattr(webshell_check, "_host_pins", lambda h, allowed: ([], "non-public"))
+    try:
+        WebshellCheckInput(url="http://evil.example.com/shell.php")
+        assert False, "Should have raised"
+    except ValidationError:
+        pass
+
+
+def test_pinned_curl_args_uses_resolve(monkeypatch):
+    from mcp_server.tools import webshell_check
+    from mcp_server.tools.webshell_check import _pinned_curl_args
+    monkeypatch.setattr(webshell_check, "_host_pins", lambda h, allowed: (["1.2.3.4"], None))
+    args, err = _pinned_curl_args("https://example.com/shell.php")
+    assert err is None
+    assert args == ["--resolve", "example.com:443:1.2.3.4"]
+
+
+def test_redirect_target_revalidated(monkeypatch):
+    """A redirect to a private host must be rejected, not curled (curl -L gap)."""
+    import asyncio
+    from mcp_server.tools import webshell_check
+    from mcp_server.tools.webshell_check import WebshellCheckInput, blueteam_check_webshell
+
+    calls = []
+
+    async def fake_run(cmd, timeout=0):
+        calls.append(cmd)
+        return {"stdout": "HTTP_STATUS:302\nCONTENT_TYPE:text/html\nSIZE:0\nREDIRECT:http://127.0.0.1/x\n",
+                "stderr": "", "returncode": 0}
+
+    def fake_host_pins(host, allowed):
+        return ([], "non-public") if host == "127.0.0.1" else (["1.2.3.4"], None)
+
+    monkeypatch.setattr(webshell_check, "_run_async", fake_run)
+    monkeypatch.setattr(webshell_check, "_host_pins", fake_host_pins)
+
+    params = WebshellCheckInput(url="http://public.example/shell.php")
+    out = asyncio.run(blueteam_check_webshell(params))
+    assert len(calls) == 1, "redirect to private host must not be followed"
+    assert "blocked" in out.lower()
+    # The single allowed request must have been IP-pinned, not left to curl DNS.
+    assert "--resolve" in calls[0]
+
+
 def test_url_validation_accepts_public_domain():
     from mcp_server.tools.webshell_check import WebshellCheckInput
     ws = WebshellCheckInput(url="https://csirt.tangerangkota.go.id/asu.php")

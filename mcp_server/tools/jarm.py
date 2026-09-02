@@ -17,7 +17,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.core.http_client import _is_private_or_reserved
+from mcp_server.core.http_client import _is_private_or_reserved, _host_resolves_public
 
 
 class JarmFingerprintInput(BaseModel):
@@ -44,10 +44,10 @@ class JarmFingerprintInput(BaseModel):
         v = v.strip().lower()
         if not v or any(c in v for c in " \t\n/\\"):
             raise ValueError(f"Invalid hostname: '{v}'")
-        # SSRF guard: this is a defensive tool targeting *public* C2 infrastructure.
-        # Reject literal private/reserved IPs so a prompt can't scan internal infra.
+        # SSRF guard: this is a defensive/preventive tool targeting *public* C2 infrastructure.
+        # Reject literal private/reserved IP so a prompt can't scan internal infra.
         if _is_private_or_reserved(v):
-            raise ValueError(f"'{v}' is a private/reserved IP - this tool targets public C2 infrastructure.")
+            raise ValueError(f"'{v}' is a private/reserved IP, this tool targets public C2 infrastructure.")
         return v
         return v
 
@@ -78,7 +78,7 @@ def _probe_tls(host: str, port: int, timeout: int, tls_min: int, tls_max: int) -
 
 
 def _probe_all(host: str, port: int, timeout: int) -> list[dict]:
-    """Run the 3 TLS probes and return only successful (version-known) results."""
+    """Run the 3 TLS probes and return only successful (version known) results."""
     probes = [
         _probe_tls(host, port, timeout, ssl.TLSVersion.TLSv1_2, ssl.TLSVersion.TLSv1_2),
         _probe_tls(host, port, timeout, ssl.TLSVersion.TLSv1_3, ssl.TLSVersion.TLSv1_3),
@@ -97,27 +97,6 @@ def _jarm_hash(probes: list[dict]) -> str:
             parts.append(f"{p['version']}:{p['cipher']}")
     joined = "|".join(parts)
     return hashlib.sha256(joined.encode()).hexdigest()[:62]
-
-
-def _host_resolves_public(host: str) -> bool:
-    """DNS-rebinding guard: True if the host is a public IP or resolves ONLY to
-    public IPs (no private/reserved RFC1918 / loopback / link-local addresses).
-    A literal private IP is already rejected by the input validator; this closes
-    the gap where a hostname resolves to an internal address (e.g. cloud metadata
-    service 169.254.169.254 or RFC1918 infrastructure).
-    """
-    import ipaddress
-    try:
-        ipaddress.ip_address(host)  # literal IP, check it directly.
-        return not _is_private_or_reserved(host)
-    except ValueError:
-        pass
-    try:
-        infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
-    except socket.gaierror:
-        return False  # unresolvable - treat as unsafe
-    ips = {info[4][0] for info in infos}
-    return bool(ips) and all(not _is_private_or_reserved(ip) for ip in ips)
 
 
 @mcp.tool(
@@ -148,7 +127,7 @@ async def jarm_fingerprint(params: JarmFingerprintInput) -> str:
     """
     _audit_log("jarm_fingerprint", {"host": params.host, "port": params.port})
 
-    # DNS-rebinding guard: reject hosts that resolve to private/reserved IPs.
+    # DNS rebinding guard: reject hosts that resolve to private/reserved IP.
     public = await asyncio.to_thread(_host_resolves_public, params.host)
     if not public:
         result = {"host": params.host, "port": params.port, "fingerprint": None,
