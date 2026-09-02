@@ -63,6 +63,7 @@ Choose the tool by what the analyst wants — never invent tools.
 | URLhaus hash/URL | `urlhaus_hash_lookup` / `urlhaus_lookup` |
 | Netra | `netra_ip_analysis(ip)` |
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
+| AbuseIPDB IP reputation | `blueteam_lookup_ip_abuseipdb(ip)` |
 
 ### CVE / vulnerability enrichment
 When an alert or `blueteam_wazuh_vulnerabilities` surfaces a `CVE-YYYY-NNNN`,
@@ -113,7 +114,7 @@ gate. SSVC stays advisory metadata, never a correlation input.
 | Comprehensive IP profile | `blueteam_investigate_ip(srcip)` |
 | Record verdict | `blueteam_mark_investigated(...)` |
 | Case lifecycle | `blueteam_case_create/get/list/add_iocs/add_verdict` |
-| History | `blueteam_investigation_history` / `_summary` |
+| History | `blueteam_investigation_history` / `blueteam_investigation_summary` |
 
 `blueteam_investigation_workflow` **requires at least one** of `alert_text`,
 `srcip`, or `dependency_manifest`. A no-target call is rejected with a

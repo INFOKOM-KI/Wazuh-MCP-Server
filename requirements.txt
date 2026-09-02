@@ -9,7 +9,7 @@ langgraph>=0.2,<0.6
 langgraph-checkpoint-sqlite>=2.0,<3.0
 aiosqlite>=0.20,<1.0
 
-# Two stage retrieval reranker (BM25 -> bge-reranker-v2-m3 cross-encoder).
+# Two stage retrieval reranker (BM25 -> bge-reranker-base cross-encoder).
 # Opt-in at runtime via BLUETEAM_RERANK_ENABLED; tools degrade to BM25-only if missing.
 fastembed>=0.5.0,<1.0.0
 
