@@ -405,8 +405,8 @@ class ToolGatingConfig:
 class RerankConfig:
     """Optional two stage retrieval reranker (BM25 -> cross-encoder).
     Off by default: BM25-only is the safe baseline. When enabled, tools expose a
-    ``rerank`` flag that re-scores BM25 candidates with a local INT8-quantized
-    cross-encoder (BAAI/bge-reranker-base) over ONNX. Never a hosted API.
+    ``rerank`` flag that re-scores BM25 candidates with a local ONNX
+    cross-encoder (BAAI/bge-reranker-base). Never a hosted API.
     """
     enabled: bool = False
     model: str = "BAAI/bge-reranker-base"

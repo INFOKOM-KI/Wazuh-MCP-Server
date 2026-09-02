@@ -54,11 +54,11 @@ python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --quiet pip-audit 2>/dev/null && \
   "$INSTALL_DIR/venv/bin/pip-audit" 2>/dev/null || true
 
-# Optional reranker model bootstrap (BAAI/bge-reranker-v2-m3, INT8 ONNX).
+# Optional reranker model bootstrap (BAAI/bge-reranker-base, ONNX).
 # Pre-caches cross-encoder weights so the first rerank=true call needs no network.
 # Skips cleanly when disabled, offline, or fastembed is unavailable (never fails install).
 RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-false}"
-RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}"
+RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 RERANK_CACHE="${BLUETEAM_RERANK_CACHE_PATH:-$INSTALL_DIR/rerank-cache}"
 RERANK_SHA="${BLUETEAM_RERANK_MODEL_SHA256:-}"
 if [[ "$RERANK_ENABLED" == "true" || "$RERANK_ENABLED" == "1" || "$RERANK_ENABLED" == "yes" ]]; then
@@ -181,9 +181,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_CHARACTER_LIMIT="100000"       # max chars per tool response before truncation
 # export WAZUH_INDEXER_MAX_SIZE="10000"          # max documents per page in Wazuh Indexer search
 
-# Reranker (two-stage retrieval: BM25 -> bge-reranker-v2-m3 cross-encoder, opt-in)
+# Reranker (two-stage retrieval: BM25 -> bge-reranker-base cross-encoder, opt-in)
 # export BLUETEAM_RERANK_ENABLED="false"          # true = enable cross-encoder rerank on prompt_route/semantic_search
-# export BLUETEAM_RERANK_MODEL="BAAI/bge-reranker-v2-m3"
+# export BLUETEAM_RERANK_MODEL="BAAI/bge-reranker-base"
 # export BLUETEAM_RERANK_CACHE_PATH="/opt/blue-team-mcp/rerank-cache"   # model weights dir (offline after bootstrap)
 # export BLUETEAM_RERANK_MAX_CANDIDATES="50"      # hard cap for rerank_candidates param
 # export BLUETEAM_RERANK_MODEL_SHA256=""          # optional: pin ONNX model SHA-256 (supply-chain integrity)
@@ -351,7 +351,7 @@ export BLUETEAM_CAPTURE_DIR="${BLUETEAM_CAPTURE_DIR:-/tmp}"
 export BLUETEAM_CHARACTER_LIMIT="${BLUETEAM_CHARACTER_LIMIT:-100000}"
 # Reranker (two-stage retrieval, opt-in via BLUETEAM_RERANK_ENABLED)
 export BLUETEAM_RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-false}"
-export BLUETEAM_RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-v2-m3}"
+export BLUETEAM_RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 export BLUETEAM_RERANK_CACHE_PATH="${BLUETEAM_RERANK_CACHE_PATH:-/opt/blue-team-mcp/rerank-cache}"
 export BLUETEAM_RERANK_MAX_CANDIDATES="${BLUETEAM_RERANK_MAX_CANDIDATES:-50}"
 export BLUETEAM_RERANK_MODEL_SHA256="${BLUETEAM_RERANK_MODEL_SHA256:-}"

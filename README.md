@@ -115,7 +115,7 @@ lookups, and Manager API tools (rules, decoders, groups, agents, security events
 ### Semantic Search & Prompt Routing
 `blueteam_semantic_search` (BM25 over Wazuh rule/alert corpora) and `blueteam_prompt_route`
 (BM25 prompt→tool router). Both accept an opt-in `rerank=true` second stage — a local
-cross-encoder (`BAAI/bge-reranker-v2-m3`, INT8 ONNX) re-scores the BM25 candidates for
+cross-encoder (`BAAI/bge-reranker-base`, ONNX) re-scores the BM25 candidates for
 synonym / cross-lingual matching. Gated by `BLUETEAM_RERANK_ENABLED` (default false);
 disabled / unavailable falls back to BM25-only. Weights are pre-downloaded by `setup.sh`
 into `BLUETEAM_RERANK_CACHE_PATH` — local-only, never a hosted API.

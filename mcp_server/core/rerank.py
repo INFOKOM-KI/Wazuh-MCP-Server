@@ -2,7 +2,7 @@
 """
 © NAuliajati - TangerangKota-CSIRT
 Optional two stage retrieval reranker: BM25 recall + cross-encoder rerank.
-Local-only INT8-quantized ONNX cross-encoder (BAAI/bge-reranker-v2-m3)
+Local-only ONNX cross-encoder (BAAI/bge-reranker-base)
 via fastembed's TextCrossEncoder. Off by default (BLUETEAM_RERANK_ENABLED=false).
 Never a hosted API, query and document text never leave the process.
 Lazy load on first use, thread-offloaded load + inference, graceful fallback to

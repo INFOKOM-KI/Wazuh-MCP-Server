@@ -251,7 +251,7 @@ class PromptRouteInput(BaseModel):
     rerank: bool = Field(
         default=False,
         description="Re-rank BM25 candidates with the local cross-encoder "
-                    "(BAAI/bge-reranker-v2-m3). Falls back to BM25-only when "
+                    "(BAAI/bge-reranker-base). Falls back to BM25-only when "
                     "BLUETEAM_RERANK_ENABLED=false or the model is unavailable.",
     )
 
