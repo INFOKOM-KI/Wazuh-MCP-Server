@@ -25,13 +25,31 @@ logger = logging.getLogger("blue_team_mcp.investigation_graph")
 # the entire workflow indefinitely.
 _NODE_TIMEOUT = float(os.environ.get("BLUETEAM_LANGGRAPH_NODE_TIMEOUT", "120"))
 
-# State persistence: InMemorySaver is the reliable default.
-# NOTE: AsyncSqliteSaver is intentionally NOT used here - aiosqlite connections
-# created via asyncio.run() die when the temporary loop closes, causing
-# "'Connection' object has no attribute 'is_alive'" at ainvoke() runtime.
-# Re-enable SqliteSaver only when the FastMCP server exposes its own event loop
-# for lazy checkpointer init (future langgraph upgrade).
-_checkpointer = InMemorySaver()
+# State persistence: BLUETEAM_LANGGRAPH_DB (SQLite file) enables durable
+# checkpointing; empty/unset falls back to InMemorySaver (state lost on restart).
+# AsyncSqliteSaver must be created lazily INSIDE the running event loop (see
+# run_investigation) - aiosqlite connections are bound to the loop that created
+# them, so a module-level checkpointer would die on the first asyncio.run().
+_DB_PATH = os.environ.get("BLUETEAM_LANGGRAPH_DB", "").strip()
+
+
+def _ensure_aiosqlite_is_alive() -> None:
+    """Backport langgraph-checkpoint-sqlite 3.x's aiosqlite compat shim.
+    langgraph-checkpoint-sqlite 2.x (the version the ``<3.0`` pin allows) calls
+    ``aiosqlite.Connection.is_alive()`` in AsyncSqliteSaver.setup(), but aiosqlite
+    never shipped that method. 3.x fixed it by falling back to the worker thread's
+    ``is_alive()``; replicate that here so the async saver works without a full
+    langgraph major-version bump.
+    """
+    import aiosqlite
+    if hasattr(aiosqlite.Connection, "is_alive"):
+        return
+
+    def _is_alive(self: aiosqlite.Connection) -> bool:
+        thread = getattr(self, "_thread", None)
+        return thread is not None and thread.is_alive()
+
+    aiosqlite.Connection.is_alive = _is_alive
 
 
 class InvestigationState(TypedDict, total=False):
@@ -60,7 +78,7 @@ class InvestigationState(TypedDict, total=False):
     errors: Annotated[list[str], add]
 
 
-# Per-node timeout wrapper - catches TimeoutError and degrades gracefully.
+# Per-node timeout wrapper, catches TimeoutError and degrades gracefully.
 async def _with_timeout(coro, label: str) -> dict:
     try:
         return await asyncio.wait_for(coro, timeout=_NODE_TIMEOUT)
@@ -129,7 +147,7 @@ async def vuln_step(state: InvestigationState) -> dict:
                         if cid and cid not in cves:
                             cves.append(cid)
         except Exception:
-            pass  # depscan is best-effort; alert-text CVEs still process
+            pass  # depscan is best-effort; alert-text CVE still process
         cves = cves[:10]
 
     if not cves:
@@ -173,7 +191,7 @@ async def vuln_step(state: InvestigationState) -> dict:
         vulns.append(entry)
 
     return {"vulnerabilities": vulns,
-            "steps": [f"vuln: {len(vulns)} CVEs enriched (score+SSVC+MITRE)"]}
+            "steps": [f"vuln: {len(vulns)} CVE enriched (score+SSVC+MITRE)"]}
 
 
 async def correlate_step(state: InvestigationState) -> dict:
@@ -209,7 +227,7 @@ async def correlate_step(state: InvestigationState) -> dict:
 
 async def analytics_step(state: InvestigationState) -> dict:
     """Run attack graph analysis + STIX killchain in parallel.
-    graph_step and killchain_step are independent - the attack graph
+    graph_step and killchain_step are independent, the attack graph
     operates on the IOC store while the killchain queries the Indexer
     per-srcip. Running them concurrently cuts ~30% from the serial path.
     """
@@ -382,8 +400,10 @@ def _after_report(state: InvestigationState) -> str:
     return "verdict" if state.get("record_verdict") else END
 
 
-def build_investigation_graph():
-    """Build and compile the StateGraph. Uses module-level checkpointer.
+def build_investigation_graph(checkpointer=None):
+    """Build and compile the StateGraph. checkpointer defaults to InMemorySaver;
+    pass an AsyncSqliteSaver (created inside the running loop) for durable
+    persistence.
     Graph: START -> extract -> enrich -> vuln -> correlate -> analytics -> baseline -> report -> verdict -> END
     analytics runs graph (networkx) and killchain (STIX) concurrently.
     """
@@ -407,10 +427,10 @@ def build_investigation_graph():
         "report": "report", "verdict": "verdict", END: END})
     g.add_conditional_edges("report", _after_report, {"verdict": "verdict", END: END})
     g.add_edge("verdict", END)
-    return g.compile(checkpointer=_checkpointer)
+    return g.compile(checkpointer=checkpointer or InMemorySaver())
 
 
-# Pre-compiled graph singleton - reused across all ainvoke calls.
+# In-memory singleton (not event-loop-bound; safe to reuse across ainvoke calls).
 _investigation_graph = build_investigation_graph()
 
 
@@ -421,7 +441,6 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
                             report_dir: str = "/tmp",
                             dependency_manifest: str | None = None) -> dict:
     """Run the investigation workflow end-to-end and return the final state summary."""
-    graph = _investigation_graph  # reuse pre-compiled singleton
     initial: InvestigationState = {
         "alert_text": alert_text or "",
         "srcip": srcip,
@@ -436,7 +455,20 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
         "errors": [],
     }
     config = {"configurable": {"thread_id": uuid.uuid4().hex}}
-    final = await graph.ainvoke(initial, config=config)
+    if _DB_PATH:
+        # context-managed AsyncSqliteSaver: the aiosqlite connection is
+        # opened and closed on THIS running loop, avoiding the stale-loop deadlock
+        # that killed the module-level checkpointer.
+        _ensure_aiosqlite_is_alive()
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        parent = os.path.dirname(_DB_PATH)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        async with AsyncSqliteSaver.from_conn_string(_DB_PATH) as cp:
+            graph = build_investigation_graph(cp)
+            final = await graph.ainvoke(initial, config=config)
+    else:
+        final = await _investigation_graph.ainvoke(initial, config=config)
     return {
         "status": "complete",
         "srcip": srcip,

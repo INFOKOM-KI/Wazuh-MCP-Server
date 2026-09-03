@@ -15,17 +15,17 @@ from operator import add
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 from mcp_server.tools.threat_hunt import _THREAT_HUNT_TEMPLATES
-from mcp_server.agents.investigation_graph import run_investigation
+from mcp_server.agents.investigation_graph import run_investigation, _ensure_aiosqlite_is_alive
 
 logger = logging.getLogger("blue_team_mcp.playbook_graph")
 
 # Per-node timeout (seconds)
 _NODE_TIMEOUT = float(os.environ.get("BLUETEAM_LANGGRAPH_NODE_TIMEOUT", "120"))
 
-# State persistence: InMemorySaver is the reliable default.
-# NOTE: AsyncSqliteSaver is intentionally NOT used - see investigation_graph.py
-# for the aiosqlite + asyncio.run() event-loop deadlock explanation.
-_checkpointer = InMemorySaver()
+# State persistence: BLUETEAM_LANGGRAPH_DB (SQLite file) enables durable
+# checkpointing; empty/unset falls back to InMemorySaver. AsyncSqliteSaver is
+# created lazily inside the running loop in run_playbook (see investigation_graph).
+_DB_PATH = os.environ.get("BLUETEAM_LANGGRAPH_DB", "").strip()
 
 _FALLBACK_TEMPLATE = "c2_beacon"
 # Retry ladder: if the targeted template finds 0 srcips, try these in order.
@@ -61,7 +61,7 @@ _PLAYBOOK_META: dict[str, dict] = {
 _RULE_GROUP_INDEX: dict[str, str] = {
     kw: tpl for tpl, meta in _PLAYBOOK_META.items() for kw in meta["rule_groups"]
 }
-# Lazy-loaded dynamic index from Wazuh Manager API (live rule groups).
+# Loaded dynamic index from Wazuh Manager API (live rule groups).
 # Populated on first playbook run; falls back to static index on failure.
 _RULE_GROUP_INDEX_LIVE: dict[str, str] | None = None
 _RULE_GROUP_INDEX_LOADED = False
@@ -69,7 +69,6 @@ _RULE_GROUP_INDEX_LOADED = False
 
 async def _try_load_live_rule_index():
     """Fetch rule groups from Wazuh Manager API and rebuild the index.
-
     Falls back to the static _RULE_GROUP_INDEX on any failure.
     """
     global _RULE_GROUP_INDEX_LIVE, _RULE_GROUP_INDEX_LOADED
@@ -125,9 +124,7 @@ class PlaybookState(TypedDict, total=False):
 # Nodes
 def select_playbook(state: PlaybookState) -> dict:
     """Resolve the threat-hunt template from the alert context.
-
-    Uses the live Wazuh rule-group index when available; loads it lazily
-    on first call.
+    Uses the live Wazuh rule-group index when available; loads it on first call.
     """
     tpl = (state.get("template_name") or "").strip().lower()
     if tpl in _THREAT_HUNT_TEMPLATES:
@@ -140,7 +137,7 @@ def select_playbook(state: PlaybookState) -> dict:
                 return {"template_name": name,
                         "steps": [f"playbook: selected '{name}' (MITRE {technique})"]}
     groups = (state.get("rule_groups") or "").lower()
-    # Try live index first (populated lazily on first call), fall back to static
+    # Try live index first (populated on first call), fall back to static
     idx = _RULE_GROUP_INDEX_LIVE or _RULE_GROUP_INDEX
     for kw, name in idx.items():
         if kw in groups:
@@ -179,7 +176,6 @@ async def run_hunt(state: PlaybookState) -> dict:
 
 def supervise(state: PlaybookState) -> dict:
     """Node: pick the top srcip and decide retry/investigate/end.
-
     Retry ladder: if the targeted template finds no srcips, retries with up to
     3 fallback templates (_RETRY_TEMPLATES) before giving up.
     """
@@ -237,7 +233,7 @@ async def investigate(state: PlaybookState) -> dict:
         return {"errors": [f"investigate: {e}"], "steps": ["investigate: degraded"]}
 
 
-def build_playbook_graph():
+def build_playbook_graph(checkpointer=None):
     g = StateGraph(PlaybookState)
     g.add_node("select", select_playbook)
     g.add_node("hunt", run_hunt)
@@ -250,10 +246,10 @@ def build_playbook_graph():
     g.add_conditional_edges("supervise", route_after_supervise, {
         "retry": "hunt", "investigate": "investigate", END: END})
     g.add_edge("investigate", END)
-    return g.compile(checkpointer=_checkpointer)
+    return g.compile(checkpointer=checkpointer or InMemorySaver())
 
 
-# Pre-compiled graph singleton, reused across all ainvoke calls.
+# In-memory singleton, reused across all ainvoke calls.
 _playbook_graph = build_playbook_graph()
 
 
@@ -265,8 +261,7 @@ async def run_playbook(alert_text: str | None = None, rule_id: str | None = None
                        record_verdict: bool = False, verdict_label: str = "suspicious",
                        report_dir: str = "/tmp") -> dict:
     """Run the playbook end-to-end and return the final summary."""
-    await _try_load_live_rule_index()  # lazy-load live rule index on first run
-    graph = _playbook_graph  # reuse pre-compiled singleton
+    await _try_load_live_rule_index()  # load live rule index on first run
     initial: PlaybookState = {
         "alert_text": alert_text or "",
         "rule_id": rule_id,
@@ -286,7 +281,18 @@ async def run_playbook(alert_text: str | None = None, rule_id: str | None = None
         "errors": [],
     }
     config = {"configurable": {"thread_id": uuid.uuid4().hex}}
-    final = await graph.ainvoke(initial, config=config)
+    if _DB_PATH:
+        # context-managed AsyncSqliteSaver (see investigation_graph.py).
+        _ensure_aiosqlite_is_alive()
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        parent = os.path.dirname(_DB_PATH)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        async with AsyncSqliteSaver.from_conn_string(_DB_PATH) as cp:
+            graph = build_playbook_graph(cp)
+            final = await graph.ainvoke(initial, config=config)
+    else:
+        final = await _playbook_graph.ainvoke(initial, config=config)
     return {
         "status": "complete",
         "template": final.get("template_name"),
