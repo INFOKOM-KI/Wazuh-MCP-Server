@@ -34,6 +34,8 @@ Setelah langkah-langkah di atas, tarik dari toolbox apa pun yang ditunjukkan ole
 
 > `blueteam_check_webshell(url)` hanya menerima host publik; URL yang resolve ke alamat privat, loopback, link-local, atau CGNAT akan ditolak. Untuk memindai webshell di infrastruktur sendiri (mis. `*.go.id` yang resolve ke RFC1918), operator harus menambahkan domain tersebut ke `ALLOWED_INTERNAL_DOMAINS`. Jika URL ditolak sebagai non-publik, laporkan dan lanjutkan. Jangan diulangi.
 
+> Batas laju: lookup Netra dan Argus diberi jeda 30 detik, Sangfor 5 detik. Enrich N IP memakan N×interval — batch hanya yang dibutuhkan laporan.
+
 ## Step 2 — Write the report
 
 Structure it like this:

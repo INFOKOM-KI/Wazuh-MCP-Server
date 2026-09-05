@@ -96,6 +96,7 @@ optional — tools degrade gracefully without them.
 | Wazuh Manager | `WAZUH_API_URL` / `_USER` / `_PASSWORD` | Manager API (55000) — rules/agents/config |
 | TLS | `WAZUH_INDEXER_VERIFY_SSL`, `WAZUH_API_VERIFY_SSL` | default `true` |
 | Threat intel | `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `RAPIDAPI_KEY`, `HUDSONROCK_API_KEY` | 9 providers + RapidAPI + HudsonRock; all optional |
+| Outbound lookup spacing | `NETRA_MIN_INTERVAL`, `ARGUS_MIN_INTERVAL`, `SANGFOR_MIN_INTERVAL` | seconds between upstream lookups — default `30`/`30`/`5` |
 | Redaction | `BLUETEAM_REDACTION_POLICY`, `BLUETEAM_OWNED_DOMAINS`, `BLUETEAM_REDACT_*` | see Security & Privacy |
 | Forensic gate | `BLUETEAM_ALLOW_FORENSIC_BYPASS`, `BLUETEAM_FORENSIC_TOKEN` | default `false` / empty |
 | SSRF allowlist | `ALLOWED_INTERNAL_DOMAINS` | comma-separated internal domains `blueteam_check_webshell` may reach on non-public IPs (default: reject all non-public hosts) |

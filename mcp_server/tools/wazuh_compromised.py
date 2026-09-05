@@ -4,14 +4,14 @@
 Wazuh compromised emails analysis tool
 """
 from __future__ import annotations
-import json, re, os, asyncio, logging
+import json, re, os, logging
 from typing import Optional, Literal
 from collections import Counter
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REVEAL_OWNED_DESC,
-                        NETRA_API_KEY_ENV, NETRA_VERIFY_SSL, NETRA_BASE_URL, _AGENT_NAME_DESC,
+                        NETRA_API_KEY_ENV, NETRA_VERIFY_SSL, NETRA_BASE_URL, NETRA_MIN_INTERVAL, _AGENT_NAME_DESC,
                         _SINCE_DESC, _RESPONSE_FORMAT_DESC, _UNTIL_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.redact import _redact_alert_data
@@ -20,6 +20,10 @@ from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS,
 from mcp_server.wazuh.time_utils import _parse_time_window, _auto_bucket_interval, _duration_minutes
 from mcp_server.tools.wazuh_email import _extract_emails_from_doc
 from mcp_server.core.validators import ValidAgentName, ValidKeyword
+from mcp_server.threat_intel._cache import get_limiter
+
+# Shared with netra_ip_analysis via the global limiter registry (same namespace).
+_netra_limiter = get_limiter("netra", max_concurrent=1, min_interval=NETRA_MIN_INTERVAL)
 
 class WazuhCompromisedEmailsAnalysisInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -107,7 +111,7 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
     enriched regardless of ``params.top_ips``).
 
     Args:
-        params.emails: List of email addresses to analyze (max 50; empty = auto-discover compromised emails from the indexer)
+        params.emails: List of email addresses to analyze (max 50; empty = auto-discover compromised email from the indexer)
         params.agent_name: Optional agent filter
         params.since: ISO 8601 start (default: 365 days ago)
         params.until: ISO 8601 end (default: now)
@@ -128,7 +132,7 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
     _audit_log("wazuh_compromised_emails_analysis", {"top_ips": params.top_ips, "since": params.since})
     since_str, until_str = _parse_time_window(params.since, params.until)
 
-    # Auto-discover compromised emails when none provided (LLM convenience)
+    # Auto-discover compromised emails when none provided
     if not params.emails:
         from mcp_server.tools.wazuh_email import wazuh_email_lookup, WazuhEmailLookupInput
         try:
@@ -237,9 +241,10 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
         netra_key = os.environ.get(NETRA_API_KEY_ENV, "")
         for ip, _ in top_ips[:enrich_count]:
             try:
-                netra_resp = await _api_call("get", f"{NETRA_BASE_URL}/analysis/{ip}",
-                    headers={"X-API-Key": netra_key, "Accept": "application/json"},
-                    verify=NETRA_VERIFY_SSL)
+                async with _netra_limiter:
+                    netra_resp = await _api_call("get", f"{NETRA_BASE_URL}/analysis/{ip}",
+                        headers={"X-API-Key": netra_key, "Accept": "application/json"},
+                        verify=NETRA_VERIFY_SSL)
                 raw = netra_resp.json()
                 data = raw.get("data", {})
                 results = data.get("results", {})
@@ -262,8 +267,6 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
                     "country_name": geo.get("country_name"),
                     "isp": geo.get("isp"),
                 }
-                # Rate limit : 1s delay between Netra calls
-                await asyncio.sleep(1)
             except (httpx.HTTPStatusError, httpx.TimeoutException, Exception) as e:
                 netra_results[ip] = {"error": str(e)}
 
@@ -362,7 +365,7 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
         lines.append("")
         for ip, nr in netra_results.items():
             if "error" in nr:
-                lines.append(f"### {ip} — Error: {nr['error']}")
+                lines.append(f"### {ip} Error: {nr['error']}")
                 continue
             score = nr.get("threat_score", "-")
             level = nr.get("threat_level", "-")
@@ -374,7 +377,7 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
             )
             country = nr.get("country_name") or nr.get("country") or "-"
             isp = nr.get("isp") or "-"
-            lines.append(f"### {ip} — Threat Level: {level} (Score: {score}/100)")
+            lines.append(f"### {ip} Threat Level: {level} (Score: {score}/100)")
             lines.append(f"- **AI Assessment**: {ai}")
             lines.append(f"- **VirusTotal**: {vt} malicious")
             lines.append(f"- **AbuseIPDB**: {ab}")

@@ -34,6 +34,8 @@ After the steps above, pull from the toolbox whatever the findings point to: CVE
 
 > `blueteam_check_webshell(url)` accepts public hosts only; a URL resolving to a private, loopback, link-local, or CGNAT address is rejected. To scan a webshell on your own infrastructure (e.g. `*.go.id` resolving to RFC1918), the operator must add that domain to `ALLOWED_INTERNAL_DOMAINS`. If a URL is rejected as non-public, report it and move on. Do not retry.
 
+> Rate limits: Netra and Argus lookups are spaced 30s apart, Sangfor 5s. Enriching N IPs costs N×interval — batch only what the report needs.
+
 ## Step 2 — Write the report
 
 Structure it like this:

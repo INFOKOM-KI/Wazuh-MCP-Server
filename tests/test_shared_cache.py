@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for shared threat-intel cache + rate limiter."""
+"""Tests for shared threat intel cache + rate limiter"""
 from __future__ import annotations
 
 
@@ -65,6 +65,21 @@ def test_rate_limiter_enforces_concurrency():
         assert max_active == 1  # never exceeded concurrency limit
 
     asyncio.run(_run())
+
+
+def test_netra_argus_sangfor_lookup_spacing():
+    """Netra/Argus lookups spaced 30s, Sangfor 5s, all serialized (max_concurrent=1)."""
+    import mcp_server.tools.alert_enrichment  # noqa: F401
+    import mcp_server.tools.wazuh_compromised  # noqa: F401
+    import mcp_server.tools.alert_curated_report  # noqa: F401
+    from mcp_server.threat_intel._cache import _limiters
+
+    assert _limiters["netra"].min_interval == 30.0
+    assert _limiters["argus"].min_interval == 30.0
+    assert _limiters["sangfor"].min_interval == 5.0
+    assert _limiters["netra"]._semaphore._value == 1
+    assert _limiters["argus"]._semaphore._value == 1
+    assert _limiters["sangfor"]._semaphore._value == 1
 
 
 if __name__ == "__main__":

@@ -79,6 +79,11 @@ OTX_BASE_URL       = _c.threat_intel.otx_base_url
 URLHAUS_BASE_URL   = _c.threat_intel.urlhaus_base_url
 HUDSONROCK_BASE_URL = _c.threat_intel.hudsonrock_base_url
 
+# Per-provider outbound lookup spacing (seconds between upstream requests)
+NETRA_MIN_INTERVAL   = _c.threat_intel.netra_min_interval
+ARGUS_MIN_INTERVAL   = _c.threat_intel.argus_min_interval
+SANGFOR_MIN_INTERVAL = _c.sangfor.min_interval
+
 # Wazuh Manager API
 WAZUH_API_URL        = _c.wazuh_manager.url
 WAZUH_API_USER       = _c.wazuh_manager.username

@@ -139,6 +139,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export HUDSONROCK_API_KEY="your_key"      # https://cavalier.hudsonrock.com (stealer-log check)
 # export NETRA_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
 # export NETRA_VERIFY_SSL="false"         # set to "true" for production / trusted CA
+# export NETRA_MIN_INTERVAL="30"          # seconds between Netra lookups (outbound rate limit)
 
 # CVE enrichment (optional - all tools work without keys, at lower rate limits)
 # export NVD_API_KEY="your_key"            # free: https://nvd.nist.gov/developers/request-an-api-key (5->50 req/30s)
@@ -148,6 +149,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export ARGUS_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
 # export ARGUS_BASE_URL="http://<host>:<port>/lookup-jobs"  # full endpoint
 # export ARGUS_VERIFY_SSL="false"         # set to "true" for production / trusted CA
+# export ARGUS_MIN_INTERVAL="30"          # seconds between Argus lookups (outbound rate limit)
 
 # GreyNoise Community — no API key needed; greynoise_ip_context works out of the box.
 
@@ -230,6 +232,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export SANGFOR_BLOCKLIST_TOKEN="your_sangfor_bearer_token"
 # export SANGFOR_BLOCKLIST_TIMEOUT="15"
 # export SANGFOR_BLOCKLIST_VERIFY_SSL="false"   # set to "true" for production / trusted CA
+# export SANGFOR_MIN_INTERVAL="5"                # seconds between Sangfor lookups (outbound rate limit)
 
 # Data masking
 # export BLUETEAM_REDACT_EMAILS="true"
@@ -345,9 +348,11 @@ export HUDSONROCK_API_KEY="${HUDSONROCK_API_KEY:-}"
 export BLUETEAM_CMDB_FILE="${BLUETEAM_CMDB_FILE:-}"
 export NETRA_API_KEY="${NETRA_API_KEY:-}"
 export NETRA_VERIFY_SSL="${NETRA_VERIFY_SSL:-false}"
+export NETRA_MIN_INTERVAL="${NETRA_MIN_INTERVAL:-30}"
 export ARGUS_API_KEY="${ARGUS_API_KEY:-}"
 export ARGUS_BASE_URL="${ARGUS_BASE_URL:-http://<host>:<port>/lookup-jobs}"
 export ARGUS_VERIFY_SSL="${ARGUS_VERIFY_SSL:-false}"
+export ARGUS_MIN_INTERVAL="${ARGUS_MIN_INTERVAL:-30}"
 # External API Base URLs
 export GREYNOISE_BASE_URL="${GREYNOISE_BASE_URL:-https://api.greynoise.io/v3/community}"
 export CROWDSEC_BASE_URL="${CROWDSEC_BASE_URL:-https://cti.api.crowdsec.net}"
@@ -364,6 +369,7 @@ export SANGFOR_BLOCKLIST_URL="${SANGFOR_BLOCKLIST_URL:-}"
 export SANGFOR_BLOCKLIST_TOKEN="${SANGFOR_BLOCKLIST_TOKEN:-}"
 export SANGFOR_BLOCKLIST_TIMEOUT="${SANGFOR_BLOCKLIST_TIMEOUT:-15}"
 export SANGFOR_BLOCKLIST_VERIFY_SSL="${SANGFOR_BLOCKLIST_VERIFY_SSL:-false}"
+export SANGFOR_MIN_INTERVAL="${SANGFOR_MIN_INTERVAL:-5}"
 # Audit and limits
 export BLUETEAM_INVESTIGATION_HISTORY="${BLUETEAM_INVESTIGATION_HISTORY:-}"
 export BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES="${BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES:-10000}"

@@ -25,7 +25,7 @@ def _bool(v: str, default: bool = False) -> bool:
         return default
     return v.strip().lower() in ("1", "true", "yes")
 
-# Nested config groups - one dataclass per trust domain
+# Nested config groups, one dataclass per trust domain.
 @dataclass
 class ServerConfig:
     """MCP transport and binding configuration."""
@@ -128,10 +128,12 @@ class ThreatIntelConfig:
     netra_api_key: str = ""
     netra_verify_ssl: bool = False
     netra_base_url: str = "https://netra.fbi.gov:8013/api/v1"
+    netra_min_interval: float = 30.0     # seconds between Netra lookups
     # Argus
     argus_api_key: str = ""
     argus_verify_ssl: bool = False
     argus_base_url: str = "http://localhost:8088/lookup-jobs"
+    argus_min_interval: float = 30.0     # seconds between Argus lookups
     # RDAP / crt.sh
     rdap_base_url: str = "https://rdap.org"
     crtsh_base_url: str = "https://crt.sh"
@@ -167,9 +169,11 @@ class ThreatIntelConfig:
             netra_api_key=os.environ.get("NETRA_API_KEY", ""),
             netra_verify_ssl=_bool(os.environ.get("NETRA_VERIFY_SSL", "false")),
             netra_base_url=os.environ.get("NETRA_BASE_URL", "https://netra.fbi.gov:8013/api/v1"),
+            netra_min_interval=float(os.environ.get("NETRA_MIN_INTERVAL", "30")),
             argus_api_key=os.environ.get("ARGUS_API_KEY", ""),
             argus_verify_ssl=_bool(os.environ.get("ARGUS_VERIFY_SSL", "false")),
             argus_base_url=os.environ.get("ARGUS_BASE_URL", "http://localhost:8088/lookup-jobs"),
+            argus_min_interval=float(os.environ.get("ARGUS_MIN_INTERVAL", "30")),
             rdap_base_url=os.environ.get("RDAP_BASE_URL", "https://rdap.org"),
             crtsh_base_url=os.environ.get("CRTSH_BASE_URL", "https://crt.sh"),
             otx_api_key=os.environ.get("OTX_API_KEY", ""),
@@ -186,7 +190,10 @@ class ThreatIntelConfig:
 
     def validate(self) -> None:
         """Threat-intel keys are all optional - tools degrade gracefully."""
-        pass
+        if self.netra_min_interval < 0:
+            raise ConfigurationError("NETRA_MIN_INTERVAL must be >= 0")
+        if self.argus_min_interval < 0:
+            raise ConfigurationError("ARGUS_MIN_INTERVAL must be >= 0")
 
 
 @dataclass
@@ -196,6 +203,7 @@ class SangforConfig:
     token: str = ""
     timeout: float = 15.0
     verify_ssl: bool = False
+    min_interval: float = 5.0      # seconds between Sangfor lookups
 
     @classmethod
     def from_env(cls) -> "SangforConfig":
@@ -204,10 +212,12 @@ class SangforConfig:
             token=os.environ.get("SANGFOR_BLOCKLIST_TOKEN", ""),
             timeout=float(os.environ.get("SANGFOR_BLOCKLIST_TIMEOUT", "15")),
             verify_ssl=_bool(os.environ.get("SANGFOR_BLOCKLIST_VERIFY_SSL", "false")),
+            min_interval=float(os.environ.get("SANGFOR_MIN_INTERVAL", "5")),
         )
 
     def validate(self) -> None:
-        pass
+        if self.min_interval < 0:
+            raise ConfigurationError("SANGFOR_MIN_INTERVAL must be >= 0")
 
 
 @dataclass
@@ -264,10 +274,10 @@ class RedactionConfig:
             )
             self.policy = "full"
         if self.allow_forensic_bypass and self.forensic_token:
-            # Token is set - validate it's non-empty and reasonable length
+            # Token is set, validate it's non-empty and reasonable length.
             if len(self.forensic_token) < 8:
                 raise ConfigurationError(
-                    "BLUETEAM_FORENSIC_TOKEN must be at least 8 characters." # use openssl rand fot generate it.
+                    "BLUETEAM_FORENSIC_TOKEN must be at least 8 characters."   # use openssl rand fot generate it.
                 )
 
 

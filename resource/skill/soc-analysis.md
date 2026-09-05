@@ -65,6 +65,10 @@ Choose the tool by what the analyst wants — never invent tools.
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
 | AbuseIPDB IP reputation | `blueteam_lookup_ip_abuseipdb(ip)` |
 
+Netra and Argus lookups are spaced 30s apart, Sangfor 5s (`NETRA_MIN_INTERVAL` /
+`ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`). Enriching N IPs costs N×interval — batch
+only the IPs the analysis actually needs, and don't re-query an IP you already have.
+
 ### CVE / vulnerability enrichment
 When an alert or `blueteam_wazuh_vulnerabilities` surfaces a `CVE-YYYY-NNNN`,
 enrich it with exploitation data the Indexer does not carry:

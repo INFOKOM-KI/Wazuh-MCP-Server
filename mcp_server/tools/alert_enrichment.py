@@ -14,7 +14,8 @@ from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV,
                         ABUSEIPDB_API_KEY, VIRUSTOTAL_API_KEY,
                         GREYNOISE_COMMUNITY_BASE_URL, ABUSEIPDB_BASE_URL,
-                        VIRUSTOTAL_BASE_URL, ARGUS_BASE_URL)
+                        VIRUSTOTAL_BASE_URL, ARGUS_BASE_URL,
+                        NETRA_MIN_INTERVAL, ARGUS_MIN_INTERVAL, SANGFOR_MIN_INTERVAL)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.http_client import ValidPublicIp
 from mcp_server.core.redact import _redact_alert_data
@@ -23,6 +24,13 @@ from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGr
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
+from mcp_server.threat_intel._cache import get_limiter
+
+# Per-provider outbound lookup spacing (Netra/Argus 30s, Sangfor 5s).
+# max_concurrent=1 serializes requests so min_interval is strictly enforced.
+_netra_limiter = get_limiter("netra", max_concurrent=1, min_interval=NETRA_MIN_INTERVAL)
+_argus_limiter = get_limiter("argus", max_concurrent=1, min_interval=ARGUS_MIN_INTERVAL)
+_sangfor_limiter = get_limiter("sangfor", max_concurrent=1, min_interval=SANGFOR_MIN_INTERVAL)
 
 # 1: Alert Summarization
 # Standalone threat-intel + Sangfor + unified scoring tools (remaining after alert-enrichment modular split)
@@ -59,7 +67,6 @@ class VirusTotalHashInput(BaseModel):
 )
 async def blueteam_lookup_hash_virustotal(params: VirusTotalHashInput) -> str:
     """Check file hash reputation via VirusTotal.
-
     Args:
         params.hash: File hash (MD5/SHA1/SHA256)
         params.response_format: 'markdown' or 'json'
@@ -95,7 +102,6 @@ class VirusTotalDomainInput(BaseModel):
 )
 async def blueteam_lookup_domain_virustotal(params: VirusTotalDomainInput) -> str:
     """Check domain reputation via VirusTotal.
-
     Args:
         params.domain: Domain name
         params.response_format: 'markdown' or 'json'
@@ -131,7 +137,6 @@ class ArgusIpLookupInput(BaseModel):
 )
 async def argus_ip_lookup(params: ArgusIpLookupInput) -> str:
     """Query Argus Threat Intelligence (TangerangKota-CSIRT) aggregating 7 sources.
-
     Args:
         params.ip: Public IP to query
         params.response_format: 'markdown' or 'json'
@@ -143,8 +148,9 @@ async def argus_ip_lookup(params: ArgusIpLookupInput) -> str:
         return json.dumps({"error": "ARGUS_API_KEY must be set."})
     try:
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "accept": "application/json"}
-        resp = await _api_call("post", ARGUS_BASE_URL, client_name="argus", verify=ARGUS_VERIFY_SSL,
-                                headers=headers, json={"observable": params.ip})
+        async with _argus_limiter:
+            resp = await _api_call("post", ARGUS_BASE_URL, client_name="argus", verify=ARGUS_VERIFY_SSL,
+                                    headers=headers, json={"observable": params.ip})
         if not resp.content:
             return json.dumps({"error": "Argus API returned empty response"})
         raw = resp.json()
@@ -182,7 +188,6 @@ class NetraIpAnalysisInput(BaseModel):
 )
 async def netra_ip_analysis(params: NetraIpAnalysisInput) -> str:
     """Query Netra Threat Intelligence for IP analysis.
-
     Args:
         params.ip: Public IP to analyze
         params.response_format: 'markdown' or 'json'
@@ -195,7 +200,9 @@ async def netra_ip_analysis(params: NetraIpAnalysisInput) -> str:
         return json.dumps({"error": "NETRA_API_KEY not set."})
     try:
         headers = {"X-API-Key": api_key, "accept": "application/json"}
-        resp = await _api_call("get", f"{NETRA_BASE_URL}/analysis/{params.ip}", headers=headers)
+        async with _netra_limiter:
+            resp = await _api_call("get", f"{NETRA_BASE_URL}/analysis/{params.ip}",
+                                   headers=headers, verify=NETRA_VERIFY_SSL)
         raw = resp.json()
         if params.response_format == "json":
             return _truncate_if_needed(json.dumps(raw, indent=2))
@@ -222,7 +229,34 @@ async def netra_ip_analysis(params: NetraIpAnalysisInput) -> str:
         return _handle_api_error(e, context="netra")
 
 
-# Sangfor Blocklist
+# Sangfor Blocklist Lookup
+def _format_sangfor_blocklist_markdown(raw: Any) -> str:
+    """Render a Sangfor /blocklist response as a markdown table.
+    Accepts a raw list of entry objects or a normalized dict with an
+    ``entries``/``data`` key. Truncates to the first 50 rows. Fields shown:
+    ip_address, isp, location, blockmode, wazuh_score, tip_score, overall_score.
+    """
+    if isinstance(raw, list):
+        items = raw
+    else:
+        items = raw.get("data") or raw.get("entries") or []
+    if not items:
+        return "# Sangfor Blocklist (0 IPs)\n\n_No entries in this window._"
+    lines = ["| IP | ISP | Location | Block Mode | Wazuh | TIP | Overall |",
+             "|----|-----|----------|------------|-------|-----|---------|"]
+    for i in items[:50]:
+        lines.append("| `{}` | {} | {} | {} | {} | {} | {} |".format(
+            _escape_md_table(str(i.get("ip_address", "?"))),
+            _escape_md_table(str(i.get("isp", "?"))),
+            _escape_md_table(str(i.get("location", "?"))),
+            _escape_md_table(str(i.get("blockmode", "?"))),
+            i.get("wazuh_score", "-"),
+            i.get("tip_score", "-"),
+            i.get("overall_score", "-"),
+        ))
+    return f"# Sangfor Blocklist ({len(items)} IPs)\n\n" + "\n".join(lines)
+
+
 class SangforBlocklistCheckInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     ip: ValidPublicIp = Field(..., min_length=3, max_length=45)
@@ -247,7 +281,7 @@ class SangforBlocklistListInput(BaseModel):
 )
 async def sangfor_blocklist_check(params: SangforBlocklistCheckInput) -> str:
     """Check if an IP is currently blocked by Sangfor firewall."""
-    # TODO(sangfor-e2e): the /check/{ip} path is UNVERIFIED against the live Sangfor
+    # Sangfor e2e: the /check/{ip} path is UNVERIFIED against the live Sangfor
     # API (URL/token redacted). Documented contract is POST /blocklist with
     # {date_start, date_end, limit, offset, ip} - validate this path, or fold it
     # into sangfor_blocklist_list(ip=...) with limit=1, once live credentials exist.
@@ -257,7 +291,8 @@ async def sangfor_blocklist_check(params: SangforBlocklistCheckInput) -> str:
         return json.dumps({"error": "SANGFOR_BLOCKLIST_TOKEN and SANGFOR_BLOCKLIST_URL must be set."})
     try:
         headers = {"Authorization": f"Bearer {SANGFOR_BLOCKLIST_TOKEN}", "accept": "application/json"}
-        resp = await _api_call("get", f"{SANGFOR_BLOCKLIST_URL}/check/{params.ip}", headers=headers)
+        async with _sangfor_limiter:
+            resp = await _api_call("get", f"{SANGFOR_BLOCKLIST_URL}/check/{params.ip}", headers=headers)
         raw = resp.json()
         if isinstance(raw, list):
             raw = {"blocked": len(raw) > 0, "entries": raw}
@@ -296,15 +331,15 @@ async def sangfor_blocklist_list(params: SangforBlocklistListInput) -> str:
         if params.ip:
             body["ip"] = params.ip
         # POST to SANGFOR_BLOCKLIST_URL directly the URL already ends in /blocklist
-        resp = await _api_call("post", SANGFOR_BLOCKLIST_URL, json=body,
-                               headers=headers, verify=SANGFOR_BLOCKLIST_VERIFY_SSL)
+        async with _sangfor_limiter:
+            resp = await _api_call("post", SANGFOR_BLOCKLIST_URL, json=body,
+                                   headers=headers, verify=SANGFOR_BLOCKLIST_VERIFY_SSL)
         raw = resp.json()
         if isinstance(raw, list):
             raw = {"blocked": len(raw) > 0, "count": len(raw), "entries": raw}
         if params.response_format == "json":
             return _truncate_if_needed(json.dumps(raw, indent=2))
-        items = raw if isinstance(raw, list) else raw.get("data", [])
-        return _truncate_if_needed(f"# Sangfor Blocklist ({len(items)} IPs)\n\n" + "\n".join(f"- `{i.get('ip_address','?')}`" for i in items[:50]))
+        return _truncate_if_needed(_format_sangfor_blocklist_markdown(raw))
     except Exception as e:
         return _handle_api_error(e, context="sangfor_list")
 
@@ -334,7 +369,6 @@ class UnifiedThreatScoreInput(BaseModel):
 )
 async def blueteam_unified_threat_score(params: UnifiedThreatScoreInput) -> str:
     """Query multiple threat intel sources and return a unified confidence score.
-
     Aggregates CrowdSec + ThreatFox + AbuseIPDB into a single weighted verdict
     (0.0–1.0) eliminating the need for 3+ sequential LLM tool calls per IP.
     """
@@ -393,8 +427,8 @@ async def blueteam_unified_threat_score(params: UnifiedThreatScoreInput) -> str:
                        "abuseipdb":{"score":round(ab_s,2),**ab_d} if ab_d else None},
             "scoring_model":{"weights":w,"used_weight":round(uw,2)}},indent=2))
 
-    lines=[f"# Unified Threat Score - `{params.ip}`","",f"**Score**: {unified:.2f}  |  **Verdict**: {v}","","| Source | Score | Details |","|--------|-------|---------|"]
-    if cs_d: lines.append(f"| CrowdSec | {cs_s:.2f} | `{cs_d.get('reputation','?')}` — {', '.join(cs_d.get('behaviors',[])[:2])} |")
+    lines=[f"# Unified Threat Score - `{params.ip}`","",f"**Score**: {unified:.2f} | **Verdict**: {v}","","| Source | Score | Details |","|--------|-------|---------|"]
+    if cs_d: lines.append(f"| CrowdSec | {cs_s:.2f} | `{cs_d.get('reputation','?')}` - {', '.join(cs_d.get('behaviors',[])[:2])} |")
     else: lines.append("| CrowdSec | - | ⚠️ Not configured |")
     if tf_d: lines.append(f"| ThreatFox | {tf_s:.2f} | `{tf_d.get('malware','?')}` ({tf_d.get('threat_type','?')}, conf={tf_d.get('confidence','?')}) |")
     else: lines.append("| ThreatFox | - | ⚠️ Not configured |")
