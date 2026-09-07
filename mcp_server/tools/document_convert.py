@@ -120,6 +120,13 @@ def _ensure_marker() -> None:
         from marker.converters.table import TableConverter  # noqa: F401
         from marker.models import create_model_dict
     except ImportError as e:
+        import importlib.util
+        if importlib.util.find_spec("marker") is not None:
+            raise BlueTeamMCPError(
+                f"Marker import failed: {type(e).__name__}: {e}. The package is present "
+                "but a dependency import broke (often a numpy/torch version mismatch). "
+                "Run in the server venv: pip check && pip install --force-reinstall numpy"
+            ) from e
         raise BlueTeamMCPError(
             "Marker is not installed. Install marker-pdf into the server venv "
             "(see setup.sh BLUETEAM_INSTALL_MARKER=1): "
@@ -188,15 +195,32 @@ def _convert_sync(path: str, mode: str, fmt: str, pages: Optional[list[int]]) ->
     """Synchronous Marker pipeline, run inside asyncio.to_thread only."""
     with _INIT_LOCK:
         _ensure_marker()
-        converter = _get_converter(mode, fmt, pages)
+        try:
+            converter = _get_converter(mode, fmt, pages)
+        except Exception as e:
+            raise _marker_error(e, stage="converter init") from e
     try:
         rendered = converter(path)
     except Exception as e:
-        raise BlueTeamMCPError(
-            f"Document conversion failed: {type(e).__name__}: {e}. "
-            "Confirm the file is a valid, non-corrupt PDF."
-        ) from e
+        raise _marker_error(e, stage="conversion") from e
     return _extract_output(rendered, fmt)
+
+
+def _marker_error(e: Exception, *, stage: str) -> BlueTeamMCPError:
+    """Wrap Marker failures as typed errors with an actionable hint.
+    Observed on prod: Marker tries to write a 'static' asset dir under the
+    read-only venv site-packages ([Errno 30]). That surfaces as a raw OSError
+    unless converted here.
+    """
+    msg = f"Marker {stage} failed: {type(e).__name__}: {e}"
+    if "Read-only file system" in str(e) and "static" in str(e):
+        msg += (
+            "Marker wants to write its 'static' asset folder inside the venv's"
+            "site-packages, which is read-only here. Fix on the host: make that dir "
+            "writable (bind-mount a writable volume over it) or install marker with "
+            "the venv on a writable filesystem."
+        )
+    return BlueTeamMCPError(msg)
 
 
 def _prepare(params: DocumentConvertInput) -> tuple[Optional[str], Optional[dict]]:
