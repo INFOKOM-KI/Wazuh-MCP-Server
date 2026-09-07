@@ -76,7 +76,9 @@ ENV_FILE="$INSTALL_DIR/.env"
 # surya/transformers). scikit-learn needs >=1.6.1 (marker-pdf==2.0.0 requires it)
 # and <2; scipy <1.14 matches the verified prod stack.
 # Verified stack on prod: marker-pdf 2.0.0, surya-ocr 0.22.1, torch 2.14.0+cpu,
-# torchvision 0.29.0+cpu.
+# torchvision 0.29.0+cpu. surya 0.22 OCR also spawns the external llama-server
+# binary (llama.cpp, NOT pip-installable) - install it on the host and set
+# LLAMA_CPP_BINARY in the service env; see the check below.
 if [[ "${BLUETEAM_INSTALL_MARKER:-0}" == "1" || "${BLUETEAM_INSTALL_MARKER:-0}" == "true" ]]; then
   echo "[+] Installing Marker document conversion (pinned CPU torch/torchvision)..."
   "$INSTALL_DIR/venv/bin/pip" install --quiet \
@@ -91,6 +93,16 @@ if [[ "${BLUETEAM_INSTALL_MARKER:-0}" == "1" || "${BLUETEAM_INSTALL_MARKER:-0}" 
       "import torch, torchvision; torch.ops.torchvision.nms; print('torchvision ABI ok:', torch.__version__, torchvision.__version__)"; then
     echo "[!] torch/torchvision ABI mismatch after install. Fix the pinned pair in setup.sh and re-run." >&2
     exit 1
+  fi
+  # surya 0.22+ runs OCR (scanned pages) through a VLM backend that spawns the
+  # external llama-server (llama.cpp) binary. Warn early instead of failing the
+  # first OCR-needing conversion with 'SpawnError: llama-server binary not found'.
+  if ! command -v llama-server >/dev/null 2>&1 && [[ -z "${LLAMA_CPP_BINARY:-}" ]]; then
+    echo "[!] llama-server (llama.cpp) not found on PATH or LLAMA_CPP_BINARY. OCR conversion" >&2
+    echo "    will fail until it is installed. Get the Linux x64 binary from" >&2
+    echo "    https://github.com/ggml-org/llama.cpp/releases , symlink llama-server to" >&2
+    echo "    /usr/local/bin, and set Environment=\"LLAMA_CPP_BINARY=/usr/local/bin/llama-server\"" >&2
+    echo "    in blue-team-mcp.service." >&2
   fi
   if [[ "${BLUETEAM_PREWARM_MARKER:-0}" == "1" || "${BLUETEAM_PREWARM_MARKER:-0}" == "true" ]]; then
     echo "[+] Pre-warming Marker models (first conversion will be fast)..."

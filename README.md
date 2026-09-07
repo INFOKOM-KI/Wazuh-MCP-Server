@@ -527,6 +527,7 @@ Do not lower below these without production telemetry evidence.
 | `"raw/forensic bypass requires ... token"` | correct gate behavior | pass the token value (see §3) |
 | missing-key provider errors | provider skipped gracefully in `errors[]` | report partial result, note which provider skipped |
 | `"Provide 'alert_text', 'srcip', or 'dependency_manifest'"` | `blueteam_investigation_workflow` called with no target | pass one of the three targets and re-invoke |
+| `"Marker conversion failed: ... llama-server binary not found"` | surya's OCR VLM backend spawns the external llama.cpp binary, which is absent | install llama-server on the host (ggml-org/llama.cpp releases) and set `LLAMA_CPP_BINARY` (e.g. `Environment="LLAMA_CPP_BINARY=/usr/local/bin/llama-server"`) in the service, then restart |
 | `"Marker conversion failed: ... fast_layout server failed to become healthy ... operator torchvision::nms does not exist"` | torchvision's compiled `_C` extension did not load: the venv's torch/torchvision versions do not match, so Marker's surya subprocess crashes at import | on the host, reinstall the pinned CPU pair: `pip install "torch==2.14.0" "torchvision==0.29.0" --index-url https://download.pytorch.org/whl/cpu`, then check `python -c "import torch, torchvision; torch.ops.torchvision.nms"` and restart `blue-team-mcp.service` |
 
 Threat-intel providers fail **independently**: a missing API key never blocks
@@ -698,8 +699,11 @@ DOCX report (optional, officecli): blueteam_export_report(format="docx", title="
   Marker's surya subprocess (`operator torchvision::nms does not exist`, 300s timeout per
   conversion). `numpy<2` is required because numpy 2.x removed `np.long` (AttributeError
   inside surya/transformers); `scikit-learn<2` still resolves to a version that satisfies
-  marker-pdf 2.0.0's `>=1.6.1` requirement. First run downloads the surya models
-  (multi-GB HuggingFace download); set `BLUETEAM_PREWARM_MARKER=1` to fetch them at install time.
+  marker-pdf 2.0.0's `>=1.6.1` requirement. Scanned-page OCR needs the external `llama-server`
+  binary (llama.cpp, not pip-installable): install it on the host and set `LLAMA_CPP_BINARY`
+  in the service env, or OCR fails with `llama-server binary not found`. First run downloads
+  the surya models (multi-GB HuggingFace download); set `BLUETEAM_PREWARM_MARKER=1` to fetch
+  them at install time.
 
 ---
 

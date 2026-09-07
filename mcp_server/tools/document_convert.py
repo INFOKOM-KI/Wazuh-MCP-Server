@@ -213,6 +213,13 @@ def _marker_error(e: Exception, *, stage: str) -> BlueTeamMCPError:
     unless converted here.
     """
     msg = f"Marker {stage} failed: {type(e).__name__}: {e}"
+    if "llama-server binary not found" in str(e):
+        msg += (
+            "surya's OCR VLM backend needs the external llama.cpp binary. Install it on"
+            "the host (https://github.com/ggml-org/llama.cpp/releases, Linux x64), then set"
+            'LLAMA_CPP_BINARY (e.g. Environment="LLAMA_CPP_BINARY=/usr/local/bin/llama-server"'
+            "in blue-team-mcp.service) and restart the service."
+        )
     if "operator torchvision::nms does not exist" in str(e):
         msg += (
             "torch/torchvision ABI mismatch in the server venv: torchvision's compiled"
@@ -315,7 +322,10 @@ async def blueteam_document_convert(params: DocumentConvertInput) -> str:
 
     Resource notes: first call downloads Marker models from HuggingFace (network
     egress + several GB of cache, HF_HOME). Conversion is CPU-bound, roughly
-    5-30 s/page. Install marker-pdf via setup.sh (BLUETEAM_INSTALL_MARKER=1) or
+    5-30 s/page. Scanned-page OCR additionally downloads the surya-2 GGUF and runs it
+    through the external llama-server binary (llama.cpp), install it on the host and
+    set LLAMA_CPP_BINARY in the service env, or OCR fails with 'llama-server binary
+    not found'. Install marker-pdf via setup.sh (BLUETEAM_INSTALL_MARKER=1) or
     requirements.txt before first use.
     """
     err, prep = _prepare(params)
