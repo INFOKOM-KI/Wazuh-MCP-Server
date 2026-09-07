@@ -527,6 +527,7 @@ Do not lower below these without production telemetry evidence.
 | `"raw/forensic bypass requires ... token"` | correct gate behavior | pass the token value (see §3) |
 | missing-key provider errors | provider skipped gracefully in `errors[]` | report partial result, note which provider skipped |
 | `"Provide 'alert_text', 'srcip', or 'dependency_manifest'"` | `blueteam_investigation_workflow` called with no target | pass one of the three targets and re-invoke |
+| `"Marker conversion failed: ... fast_layout server failed to become healthy ... operator torchvision::nms does not exist"` | torchvision's compiled `_C` extension did not load: the venv's torch/torchvision versions do not match, so Marker's surya subprocess crashes at import | on the host, reinstall the pinned CPU pair: `pip install "torch==2.14.0" "torchvision==0.29.0" --index-url https://download.pytorch.org/whl/cpu`, then check `python -c "import torch, torchvision; torch.ops.torchvision.nms"` and restart `blue-team-mcp.service` |
 
 Threat-intel providers fail **independently**: a missing API key never blocks
 the rest of the aggregation — it appears in the `errors[]` list. Read it and
@@ -689,6 +690,14 @@ DOCX report (optional, officecli): blueteam_export_report(format="docx", title="
 - Python 3.11+
 - `mcp`, `httpx[http2]`, `pydantic`, `networkx`, `langgraph`, `officecli-sdk`
 - See `requirements.txt`.
+- Optional, Marker PDF→markdown document conversion (`blueteam_document_convert`): `setup.sh`
+  installs it only when `BLUETEAM_INSTALL_MARKER=1`. Version-pinned stack, see the marker
+  block in `setup.sh` (do not float): `torch==2.14.0` + `torchvision==0.29.0` matching CPU
+  pair from the pytorch CPU index, `marker-pdf==2.0.0`, `numpy<2`, `scipy<1.14`,
+  `scikit-learn<1.5`, `pillow<11`. A floating pair crashes Marker's surya subprocess
+  (`operator torchvision::nms does not exist`, 300s timeout per conversion). First run
+  downloads the surya models (multi-GB HuggingFace download); set `BLUETEAM_PREWARM_MARKER=1`
+  to fetch them at install time.
 
 ---
 

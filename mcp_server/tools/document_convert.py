@@ -213,6 +213,14 @@ def _marker_error(e: Exception, *, stage: str) -> BlueTeamMCPError:
     unless converted here.
     """
     msg = f"Marker {stage} failed: {type(e).__name__}: {e}"
+    if "operator torchvision::nms does not exist" in str(e):
+        msg += (
+            "torch/torchvision ABI mismatch in the server venv: torchvision's compiled"
+            "_C extension did not load, so Marker's surya subprocess crashes at import."
+            "Reinstall the pinned CPU pair from the same index (see setup.sh):"
+            'pip install "torch==2.14.0" "torchvision==0.29.0"'
+            "--index-url https://download.pytorch.org/whl/cpu"
+        )
     if "Read-only file system" in str(e) and "static" in str(e):
         msg += (
             "Marker wants to write its 'static' asset folder inside the venv's"

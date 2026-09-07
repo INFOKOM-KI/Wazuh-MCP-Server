@@ -64,13 +64,33 @@ ENV_FILE="$INSTALL_DIR/.env"
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE" || true
 
 # Marker document conversion (blueteam_document_convert) - OPTIONAL install.
-# Enable with BLUETEAM_INSTALL_MARKER=1 (env or config.env). Pins CPU-only torch
-# so prod never pulls CUDA wheels. BLUETEAM_PREWARM_MARKER=1 additionally downloads
-# the surya models at install time (needs outbound egress + disk for HF cache).
+# Enable with BLUETEAM_INSTALL_MARKER=1 (env or config.env). BLUETEAM_PREWARM_MARKER=1
+# additionally downloads the surya models at install time (needs egress + disk).
+#
+# VERSION PINS ARE LOCKED - do not float. torch+torchvision must be a matching pair
+# from the SAME CPU index (e.g. torch 2.14.x <-> torchvision 0.29.x). A mismatched
+# pair makes torchvision's compiled _C extension fail to load; Marker's surya
+# fast_layout subprocess then dies at import with "RuntimeError: operator
+# torchvision::nms does not exist" and every conversion times out after 300s.
+# numpy/scipy/scikit-learn/pillow are capped because newer releases removed
+# np.long (AttributeError inside surya/transformers).
+# Verified stack on prod: marker-pdf 2.0.0, surya-ocr 0.22.1, torch 2.14.0+cpu,
+# torchvision 0.29.0+cpu.
 if [[ "${BLUETEAM_INSTALL_MARKER:-0}" == "1" || "${BLUETEAM_INSTALL_MARKER:-0}" == "true" ]]; then
-  echo "[+] Installing Marker document conversion (CPU torch)..."
-  "$INSTALL_DIR/venv/bin/pip" install --quiet torch --index-url https://download.pytorch.org/whl/cpu
-  "$INSTALL_DIR/venv/bin/pip" install --quiet "marker-pdf>=1.0.0"
+  echo "[+] Installing Marker document conversion (pinned CPU torch/torchvision)..."
+  "$INSTALL_DIR/venv/bin/pip" install --quiet \
+    "torch==2.14.0" "torchvision==0.29.0" \
+    --index-url https://download.pytorch.org/whl/cpu
+  "$INSTALL_DIR/venv/bin/pip" install --quiet \
+    "marker-pdf==2.0.0" \
+    "numpy<2" "scipy<1.14" "scikit-learn<1.5" "pillow<11"
+  # Fail fast at install time instead of on first conversion: the torchvision
+  # _C ABI check that a mismatched pair breaks (torch.ops.torchvision.nms).
+  if ! "$INSTALL_DIR/venv/bin/python3" -c \
+      "import torch, torchvision; torch.ops.torchvision.nms; print('torchvision ABI ok:', torch.__version__, torchvision.__version__)"; then
+    echo "[!] torch/torchvision ABI mismatch after install. Fix the pinned pair in setup.sh and re-run." >&2
+    exit 1
+  fi
   if [[ "${BLUETEAM_PREWARM_MARKER:-0}" == "1" || "${BLUETEAM_PREWARM_MARKER:-0}" == "true" ]]; then
     echo "[+] Pre-warming Marker models (first conversion will be fast)..."
     "$INSTALL_DIR/venv/bin/python3" -c "from marker.models import create_model_dict; create_model_dict()"
