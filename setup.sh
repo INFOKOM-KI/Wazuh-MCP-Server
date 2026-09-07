@@ -72,8 +72,9 @@ ENV_FILE="$INSTALL_DIR/.env"
 # pair makes torchvision's compiled _C extension fail to load; Marker's surya
 # fast_layout subprocess then dies at import with "RuntimeError: operator
 # torchvision::nms does not exist" and every conversion times out after 300s.
-# numpy/scipy/scikit-learn/pillow are capped because newer releases removed
-# np.long (AttributeError inside surya/transformers).
+# numpy is capped <2 because numpy 2.x removed np.long (AttributeError inside
+# surya/transformers). scikit-learn needs >=1.6.1 (marker-pdf==2.0.0 requires it)
+# and <2; scipy <1.14 matches the verified prod stack.
 # Verified stack on prod: marker-pdf 2.0.0, surya-ocr 0.22.1, torch 2.14.0+cpu,
 # torchvision 0.29.0+cpu.
 if [[ "${BLUETEAM_INSTALL_MARKER:-0}" == "1" || "${BLUETEAM_INSTALL_MARKER:-0}" == "true" ]]; then
@@ -83,7 +84,7 @@ if [[ "${BLUETEAM_INSTALL_MARKER:-0}" == "1" || "${BLUETEAM_INSTALL_MARKER:-0}" 
     --index-url https://download.pytorch.org/whl/cpu
   "$INSTALL_DIR/venv/bin/pip" install --quiet \
     "marker-pdf==2.0.0" \
-    "numpy<2" "scipy<1.14" "scikit-learn<1.5" "pillow<11"
+    "numpy<2" "scipy<1.14" "scikit-learn>=1.6.1,<2" "pillow<11"
   # Fail fast at install time instead of on first conversion: the torchvision
   # _C ABI check that a mismatched pair breaks (torch.ops.torchvision.nms).
   if ! "$INSTALL_DIR/venv/bin/python3" -c \

@@ -694,10 +694,12 @@ DOCX report (optional, officecli): blueteam_export_report(format="docx", title="
   installs it only when `BLUETEAM_INSTALL_MARKER=1`. Version-pinned stack, see the marker
   block in `setup.sh` (do not float): `torch==2.14.0` + `torchvision==0.29.0` matching CPU
   pair from the pytorch CPU index, `marker-pdf==2.0.0`, `numpy<2`, `scipy<1.14`,
-  `scikit-learn<1.5`, `pillow<11`. A floating pair crashes Marker's surya subprocess
-  (`operator torchvision::nms does not exist`, 300s timeout per conversion). First run
-  downloads the surya models (multi-GB HuggingFace download); set `BLUETEAM_PREWARM_MARKER=1`
-  to fetch them at install time.
+  `scikit-learn>=1.6.1,<2`, `pillow<11`. A floating torch/torchvision pair crashes
+  Marker's surya subprocess (`operator torchvision::nms does not exist`, 300s timeout per
+  conversion). `numpy<2` is required because numpy 2.x removed `np.long` (AttributeError
+  inside surya/transformers); `scikit-learn<2` still resolves to a version that satisfies
+  marker-pdf 2.0.0's `>=1.6.1` requirement. First run downloads the surya models
+  (multi-GB HuggingFace download); set `BLUETEAM_PREWARM_MARKER=1` to fetch them at install time.
 
 ---
 
