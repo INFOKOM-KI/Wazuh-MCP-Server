@@ -171,6 +171,7 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | Malware / integrity | `blueteam_rootkit_scan`, `blueteam_lynis_audit`, `blueteam_hash_file`, `blueteam_check_updates` |
 | System state | `blueteam_system_health`, `blueteam_check_open_firewall` |
 | Packet capture | `blueteam_capture_traffic` |
+| Playbook / PDF conversion | `blueteam_document_convert(path)` — Marker: playbook / advisory PDF → markdown/JSON/html/chunks (`page_range` for docs longer than the response cap; `mode="table"` → JSON) |
 
 `blueteam_check_webshell(url)` only accepts **public** hosts by default — any URL whose
 host resolves to a private / loopback / link-local / CGNAT address is rejected. To scan a

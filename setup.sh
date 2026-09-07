@@ -63,6 +63,22 @@ CONFIG_FILE="$INSTALL_DIR/config.env"
 ENV_FILE="$INSTALL_DIR/.env"
 [[ -f "$CONFIG_FILE" ]] && source "$CONFIG_FILE" || true
 
+# Marker document conversion (blueteam_document_convert) - OPTIONAL install.
+# Enable with BLUETEAM_INSTALL_MARKER=1 (env or config.env). Pins CPU-only torch
+# so prod never pulls CUDA wheels. BLUETEAM_PREWARM_MARKER=1 additionally downloads
+# the surya models at install time (needs outbound egress + disk for HF cache).
+if [[ "${BLUETEAM_INSTALL_MARKER:-0}" == "1" || "${BLUETEAM_INSTALL_MARKER:-0}" == "true" ]]; then
+  echo "[+] Installing Marker document conversion (CPU torch)..."
+  "$INSTALL_DIR/venv/bin/pip" install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+  "$INSTALL_DIR/venv/bin/pip" install --quiet "marker-pdf>=1.0.0"
+  if [[ "${BLUETEAM_PREWARM_MARKER:-0}" == "1" || "${BLUETEAM_PREWARM_MARKER:-0}" == "true" ]]; then
+    echo "[+] Pre-warming Marker models (first conversion will be fast)..."
+    "$INSTALL_DIR/venv/bin/python3" -c "from marker.models import create_model_dict; create_model_dict()"
+  fi
+else
+  echo "[.] Marker document conversion SKIPPED (set BLUETEAM_INSTALL_MARKER=1 to enable)."
+fi
+
 RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-false}"
 RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 RERANK_CACHE="${BLUETEAM_RERANK_CACHE_PATH:-$INSTALL_DIR/rerank-cache}"

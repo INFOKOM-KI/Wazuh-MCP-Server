@@ -100,6 +100,7 @@ def register_all_tools() -> None:
         ("case",                   "case",                   False),  # 5 tools (incident case management)
         ("domain_permute",          "domain_permute",          False),  # 1 tool (typosquatting lookalikes)
         ("stealer_log",              "stealer_log",              False),  # 1 tool (HudsonRock stealer-log check)
+        ("document_convert",        "document_convert",        False),  # 1 tool Marker PDF -> markdown/json/html/chunks
     ]
 
     for attr, category, skip_ro in _MODULES:

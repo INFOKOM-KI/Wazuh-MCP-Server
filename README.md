@@ -5,7 +5,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **132 tools + 4 resources** across Wazuh SIEM, multi-provider threat
+offensive tooling. **133 tools + 4 resources** across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, and host forensics. Read-only by default.
 
@@ -379,6 +379,7 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | Log review | `blueteam_journalctl`, `blueteam_read_syslog`, `blueteam_read_auth_log`, `blueteam_read_web_log` |
 | Privilege / persistence | `blueteam_find_suid_files`, `blueteam_find_world_writable`, `blueteam_check_ssh_authorized_keys` |
 | Malware / integrity | `blueteam_rootkit_scan`, `blueteam_lynis_audit`, `blueteam_hash_file`, `blueteam_check_updates` |
+| PDF / document conversion | `blueteam_document_convert(path)` — Marker: SOC playbook / advisory PDF → markdown/JSON/html/chunks |
 | System state | `blueteam_system_health`, `blueteam_check_open_firewall` |
 | Packet capture | `blueteam_capture_traffic` |
 
