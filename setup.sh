@@ -81,6 +81,15 @@ ENV_FILE="$INSTALL_DIR/.env"
 # LLAMA_CPP_BINARY in the service env; see the check below.
 if [[ "${BLUETEAM_INSTALL_MARKER:-0}" == "1" || "${BLUETEAM_INSTALL_MARKER:-0}" == "true" ]]; then
   echo "[+] Installing Marker document conversion (pinned CPU torch/torchvision)..."
+  # pdfplumber (venv orphan / office-tooling transitive) floats Pillow to >=12.2,
+  # disjoint with marker/surya's verified pillow<11 pin. Pin it to a release that
+  # accepts pillow 10.4 first so the marker install resolves cleanly. If a package
+  # hard-requires pdfplumber>=0.11.10, pip aborts here - that package cannot share
+  # a venv with marker; move one of them to a separate venv.
+  if "$INSTALL_DIR/venv/bin/pip" show pdfplumber >/dev/null 2>&1; then
+    echo "[.] Pinning pdfplumber to a Pillow<11-compatible release (0.11.4)..."
+    "$INSTALL_DIR/venv/bin/pip" install --quiet "pdfplumber==0.11.4"
+  fi
   "$INSTALL_DIR/venv/bin/pip" install --quiet \
     "torch==2.14.0" "torchvision==0.29.0" \
     --index-url https://download.pytorch.org/whl/cpu
@@ -119,7 +128,12 @@ fi
 # Scanned / image-only PDFs still need the Marker stack above.
 if [[ "${BLUETEAM_INSTALL_MARKITDOWN:-0}" == "1" || "${BLUETEAM_INSTALL_MARKITDOWN:-0}" == "true" ]]; then
   echo "[+] Installing MarkItDown document conversion..."
-  "$INSTALL_DIR/venv/bin/pip" install --quiet "markitdown[pdf,docx,pptx,xlsx,xls,outlook]"
+  # Carry the same shared pins as the Marker block: pdfplumber or an unpinned
+  # transitive can otherwise float Pillow to >=12 during this install and break
+  # marker/surya at runtime (pillow 12.x is disjoint with their <11 pin).
+  "$INSTALL_DIR/venv/bin/pip" install --quiet \
+    "markitdown[pdf,docx,pptx,xlsx,xls,outlook]" \
+    "pillow<11" "numpy<2" "scipy<1.14" "scikit-learn>=1.6.1,<2"
   # Fail fast at install time instead of on first conversion.
   if ! "$INSTALL_DIR/venv/bin/python3" -c "from markitdown import MarkItDown; MarkItDown(); print('MarkItDown ok')"; then
     echo "[!] MarkItDown failed to initialise after install." >&2
