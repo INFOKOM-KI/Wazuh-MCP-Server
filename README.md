@@ -231,8 +231,8 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 132
-tools. This skill is the operating manual: which tool to call, in what order,
+Manager (config/agent data) plus 7+ external threat-intel providers into 134
+  tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
 ## 0. First-call protocol (CRITICAL)
@@ -379,7 +379,8 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | Log review | `blueteam_journalctl`, `blueteam_read_syslog`, `blueteam_read_auth_log`, `blueteam_read_web_log` |
 | Privilege / persistence | `blueteam_find_suid_files`, `blueteam_find_world_writable`, `blueteam_check_ssh_authorized_keys` |
 | Malware / integrity | `blueteam_rootkit_scan`, `blueteam_lynis_audit`, `blueteam_hash_file`, `blueteam_check_updates` |
-| PDF / document conversion | `blueteam_document_convert(path)` — Marker: SOC playbook / advisory PDF → markdown/JSON/html/chunks |
+| PDF / document conversion | `blueteam_document_convert(path)` — Marker (scanned-PDF OCR): SOC playbook / advisory PDF → markdown/JSON/html/chunks |
+| Office / data file → markdown | `blueteam_markitdown_convert(path)` — MarkItDown (no OCR, no torch): docx / pptx / xlsx / xls / msg / html / csv / json / xml / digital PDF → markdown. Image-only PDFs return an error — route to `blueteam_document_convert` |
 | System state | `blueteam_system_health`, `blueteam_check_open_firewall` |
 | Packet capture | `blueteam_capture_traffic` |
 
@@ -704,6 +705,10 @@ DOCX report (optional, officecli): blueteam_export_report(format="docx", title="
   in the service env, or OCR fails with `llama-server binary not found`. First run downloads
   the surya models (multi-GB HuggingFace download); set `BLUETEAM_PREWARM_MARKER=1` to fetch
   them at install time.
+- Optional, MarkItDown office/data → markdown (`blueteam_markitdown_convert`): `setup.sh`
+  installs it only when `BLUETEAM_INSTALL_MARKITDOWN=1` (no torch, no model downloads):
+  `pip install "markitdown[pdf,docx,pptx,xlsx,xls,outlook]"`. Local formats only — URLs,
+  `.zip`, `.epub`, audio and YouTube are held out of v1.
 
 ---
 

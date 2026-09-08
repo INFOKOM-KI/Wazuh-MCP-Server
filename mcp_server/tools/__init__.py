@@ -101,6 +101,7 @@ def register_all_tools() -> None:
         ("domain_permute",          "domain_permute",          False),  # 1 tool (typosquatting lookalikes)
         ("stealer_log",              "stealer_log",              False),  # 1 tool (HudsonRock stealer-log check)
         ("document_convert",        "document_convert",        False),  # 1 tool Marker PDF -> markdown/json/html/chunks
+        ("markitdown_convert",      "document_convert",        False),  # 1 tool MarkItDown office/data file -> markdown
     ]
 
     for attr, category, skip_ro in _MODULES:

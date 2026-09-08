@@ -15,8 +15,8 @@ description: >
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 132
-tools. This skill is the operating manual: which tool to call, in what order,
+Manager (config/agent data) plus 7+ external threat-intel providers into 134
+  tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
 ## 0. First-call protocol (CRITICAL)
@@ -171,7 +171,8 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | Malware / integrity | `blueteam_rootkit_scan`, `blueteam_lynis_audit`, `blueteam_hash_file`, `blueteam_check_updates` |
 | System state | `blueteam_system_health`, `blueteam_check_open_firewall` |
 | Packet capture | `blueteam_capture_traffic` |
-| Playbook / PDF conversion | `blueteam_document_convert(path)` — Marker: playbook / advisory PDF → markdown/JSON/html/chunks (`page_range` for docs longer than the response cap; `mode="table"` → JSON) |
+| Playbook / PDF conversion | `blueteam_document_convert(path)` — Marker (scanned-PDF OCR): playbook / advisory PDF → markdown/JSON/html/chunks (`page_range` for docs longer than the response cap; `mode="table"` → JSON) |
+| Office / data file → markdown | `blueteam_markitdown_convert(path)` — MarkItDown (no OCR, no torch): docx / pptx / xlsx / xls / msg / html / csv / json / xml / digital PDF → markdown. Image-only PDFs return an error — route those to `blueteam_document_convert` |
 
 `blueteam_check_webshell(url)` only accepts **public** hosts by default — any URL whose
 host resolves to a private / loopback / link-local / CGNAT address is rejected. To scan a

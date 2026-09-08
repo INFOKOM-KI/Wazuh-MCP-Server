@@ -28,6 +28,12 @@ fastembed>=0.5.0,<1.0.0
 #   pip install "torch==2.14.0" "torchvision==0.29.0" --index-url https://download.pytorch.org/whl/cpu
 #   pip install "marker-pdf==2.0.0" "numpy<2" "scipy<1.14" "scikit-learn>=1.6.1,<2" "pillow<11"
 
+# MarkItDown lightweight conversion (blueteam_markitdown_convert).
+# Opt-in via setup.sh BLUETEAM_INSTALL_MARKITDOWN=1, or manual:
+#   pip install "markitdown[pdf,docx,pptx,xlsx,xls,outlook]"
+# Pure-Python, no torch/model downloads, no OCR. .zip/.epub/audio/youtube are
+# held out of v1 - see mcp_server/tools/markitdown_convert.py header.
+
 # Dev dependencies (install with: pip install -r requirements.txt on venv environtment variable)
 pytest>=7.0
 pytest-asyncio>=0.21

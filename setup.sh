@@ -112,6 +112,23 @@ else
   echo "[.] Marker document conversion SKIPPED (set BLUETEAM_INSTALL_MARKER=1 to enable)."
 fi
 
+# MarkItDown lightweight conversion (blueteam_markitdown_convert) - OPTIONAL.
+# Enable with BLUETEAM_INSTALL_MARKITDOWN=1 (env or config.env). Pure-Python
+# office/data -> markdown; no torch, no model downloads, no OCR. Local formats:
+# pdf (digital text layer), docx, pptx, xlsx, xls, msg, html/htm, csv/json/xml.
+# Scanned / image-only PDFs still need the Marker stack above.
+if [[ "${BLUETEAM_INSTALL_MARKITDOWN:-0}" == "1" || "${BLUETEAM_INSTALL_MARKITDOWN:-0}" == "true" ]]; then
+  echo "[+] Installing MarkItDown document conversion..."
+  "$INSTALL_DIR/venv/bin/pip" install --quiet "markitdown[pdf,docx,pptx,xlsx,xls,outlook]"
+  # Fail fast at install time instead of on first conversion.
+  if ! "$INSTALL_DIR/venv/bin/python3" -c "from markitdown import MarkItDown; MarkItDown(); print('MarkItDown ok')"; then
+    echo "[!] MarkItDown failed to initialise after install." >&2
+    exit 1
+  fi
+else
+  echo "[.] MarkItDown conversion SKIPPED (set BLUETEAM_INSTALL_MARKITDOWN=1 to enable)."
+fi
+
 RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-false}"
 RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 RERANK_CACHE="${BLUETEAM_RERANK_CACHE_PATH:-$INSTALL_DIR/rerank-cache}"
