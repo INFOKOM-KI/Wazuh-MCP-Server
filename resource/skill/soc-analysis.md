@@ -16,7 +16,7 @@ description: >
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
 Manager (config/agent data) plus 7+ external threat-intel providers into 134
-  tools. This skill is the operating manual: which tool to call, in what order,
+tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
 ## 0. First-call protocol (CRITICAL)

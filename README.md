@@ -5,7 +5,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **133 tools + 4 resources** across Wazuh SIEM, multi-provider threat
+offensive tooling. **134 tools + 4 resources** across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, and host forensics. Read-only by default.
 
@@ -22,7 +22,7 @@ main.py -> mcp_server/  (package)
                  ├─ correlation/   3-Sum engine (pure computation, MITRE-driven)
                  ├─ threat_intel/  CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise + shared cache
                  ├─ agents/        LangGraph investigation + playbook workflows
-                 └─ tools/         51 tool modules
+                 └─ tools/         53 tool modules
 ```
 
 Every tool call flows through a single pipeline in the `@blueteam_tool` decorator — the three
@@ -232,7 +232,7 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
 Manager (config/agent data) plus 7+ external threat-intel providers into 134
-  tools. This skill is the operating manual: which tool to call, in what order,
+tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
 ## 0. First-call protocol (CRITICAL)
