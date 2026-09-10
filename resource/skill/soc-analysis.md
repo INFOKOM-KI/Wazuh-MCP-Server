@@ -15,7 +15,7 @@ description: >
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 134
+Manager (config/agent data) plus 7+ external threat-intel providers into 137
 tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
@@ -211,6 +211,9 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_playbook_run` | run a named playbook workflow |
 | `blueteam_export_report` | export a report to DOCX/XLSX/PPTX (officecli) |
 | `blueteam_owned_domains` / `blueteam_set_owned_domains` | view/set the runtime owned (victim) domains for `protect_victim` redaction |
+| `blueteam_yara_rule_validate(rule_source)` | compile a rule with yara-x + yaraQA-style findings (naming, short atoms, `fullword` misuse) |
+| `blueteam_yara_rule_generate(mode, …)` | draft a rule from a Wazuh alert pattern (`mode="alert"`), a sample under `BLUETEAM_ALLOWED_PATHS` (`mode="file"`), or raw text |
+| `blueteam_yara_rule_save(rule_source, …)` | write a VALIDATED rule to the staging dir (`BLUETEAM_YARA_RULES_DIR`); needs `wazuh:write` |
 
 ### Resources (read via MCP resource reads, not tool calls)
 
@@ -260,6 +263,23 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 3. blueteam_cve_attack_mapping(cve_id="<top CVE>") # MITRE techniques → 3-Sum Engine A
 4. blueteam_cve_advisory(cve_id="<top CVE>")       # vendor patch guidance (RHSA / USN)
 ```
+
+### Workflow F — detection engineering (webshell / sample → YARA)
+```
+1. blueteam_check_webshell(url="https://<host>/<file>.php")   # or blueteam_hash_file(path)
+2. blueteam_yara_rule_generate(mode="file", file_path="/opt/samples/<file>", self_scan=true)
+3. # logs only, no sample yet:
+   blueteam_yara_rule_generate(mode="alert", srcip="X", since="7d")
+4. blueteam_yara_rule_validate(rule_source="<edited rule>")   # after your edits
+5. blueteam_yara_rule_save(rule_source="<final rule>")         # staging, needs wazuh:write
+```
+
+Read `coverage` before you trust a rule. `verified` means the rule self-scanned and
+matched the sample. `unverified` means it compiled but did not match its own sample, so
+the strings are wrong. `draft` means it came from alert text or raw text with no
+sample; check `alert_field_coverage` and get an artifact before deploying. A rule in
+the staging directory is not loaded by Wazuh until an operator promotes it by hand to
+`wazuh-rules-dev`.
 
 ## 3. Redaction & the forensic token (read before touching PII)
 

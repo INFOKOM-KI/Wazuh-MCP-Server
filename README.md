@@ -5,7 +5,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **134 tools + 4 resources** across Wazuh SIEM, multi-provider threat
+offensive tooling. **137 tools + 4 resources** across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, and host forensics. Read-only by default.
 
@@ -161,6 +161,17 @@ WHOIS / CRT.sh, IOC extraction, JARM fingerprinting, typosquatting detection
 (`blueteam_domain_permute`), webshell scanning, server-side JSONL export, DOCX/XLSX/PPTX report
 export, and 23 host-forensics tools (log readers, fail2ban, rootkit scan, lynis, process/cron/users).
 
+### Detection Engineering (YARA)
+`blueteam_yara_rule_validate` compiles a rule with yara-x and runs yaraQA-style
+checks. `blueteam_yara_rule_generate` drafts a rule from a Wazuh alert pattern
+(`mode="alert"`, Indexer API), a sample under `BLUETEAM_ALLOWED_PATHS`
+(`mode="file"`), or raw text. `blueteam_yara_rule_save` writes a validated rule to
+the staging directory (`BLUETEAM_YARA_RULES_DIR`). Generation is read-only; saving
+needs the `wazuh:write` scope. A generated rule reports `coverage`: `verified`
+(self-scanned and matched its sample), `unverified` (compiled but did not match),
+or `draft` (no sample, logs only). Wazuh alerts are logs, so an alert-derived rule
+stays `draft` until it is tested against a real artifact.
+
 ---
 
 ## Security & Privacy
@@ -171,10 +182,10 @@ export, and 23 host-forensics tools (log readers, fail2ban, rootkit scan, lynis,
 
 - `MCP_API_KEY` — format `btm_<43-char-urlsafe-base64>` (47 chars). Stored only as a SHA-256
   digest, compared with `hmac.compare_digest` (constant-time).
-- `MCP_API_KEY_SCOPES` — default `wazuh:read` (read-only). Add `wazuh:write` to unlock the 9
+- `MCP_API_KEY_SCOPES` — default `wazuh:read` (read-only). Add `wazuh:write` to unlock the 10
   write tools (`blueteam_fail2ban_unban`, `blueteam_case_*`, `blueteam_set_owned_domains`,
   `blueteam_mark_investigated`, `blueteam_wazuh_export`, `blueteam_export_report`,
-  `blueteam_capture_traffic`). Fail-closed: no scope ⇒ read-only.
+  `blueteam_capture_traffic`, `blueteam_yara_rule_save`). Fail-closed: no scope ⇒ read-only.
 - **Bind guard** (`main.py::_start_http_transport`): a non-loopback bind without `MCP_API_KEY`
   raises `ConfigurationError` and refuses to start. Loopback stays auth-less only when no key is
   configured; when a key is set it is enforced on every request.
@@ -231,7 +242,7 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 134
+Manager (config/agent data) plus 7+ external threat-intel providers into 137
 tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
@@ -410,6 +421,9 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | `blueteam_wazuh_agents` / `_summary` / `get_*` / `list_*` | Manager API: agents, SCA, decoders, groups, rules, security events |
 | `blueteam_metrics` | Prometheus metrics |
 | `blueteam_playbook_run` | run a named playbook workflow |
+| `blueteam_yara_rule_validate(rule_source)` | compile a rule with yara-x + yaraQA-style findings (naming, short atoms, `fullword` misuse) |
+| `blueteam_yara_rule_generate(mode, …)` | draft a rule from a Wazuh alert pattern (`mode="alert"`), a sample under `BLUETEAM_ALLOWED_PATHS` (`mode="file"`), or raw text |
+| `blueteam_yara_rule_save(rule_source, …)` | write a VALIDATED rule to the staging dir (`BLUETEAM_YARA_RULES_DIR`); needs `wazuh:write` |
 
 ## 2. Standard investigation workflows
 
@@ -450,6 +464,23 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 3. blueteam_cve_attack_mapping(cve_id="<top CVE>") # MITRE techniques → 3-Sum Engine A
 4. blueteam_cve_advisory(cve_id="<top CVE>")       # vendor patch guidance (RHSA / USN)
 ```
+
+### Workflow F — detection engineering (webshell / sample → YARA)
+```
+1. blueteam_check_webshell(url="https://<host>/<file>.php")   # or blueteam_hash_file(path)
+2. blueteam_yara_rule_generate(mode="file", file_path="/opt/samples/<file>", self_scan=true)
+3. # logs only, no sample yet:
+   blueteam_yara_rule_generate(mode="alert", srcip="X", since="7d")
+4. blueteam_yara_rule_validate(rule_source="<edited rule>")   # after your edits
+5. blueteam_yara_rule_save(rule_source="<final rule>")         # staging, needs wazuh:write
+```
+
+Read `coverage` before you trust a rule. `verified` means the rule self-scanned and
+matched the sample. `unverified` means it compiled but did not match its own sample, so
+the strings are wrong. `draft` means it came from alert text or raw text with no
+sample; check `alert_field_coverage` and get an artifact before deploying. A rule in
+the staging directory is not loaded by Wazuh until an operator promotes it by hand to
+`wazuh-rules-dev`.
 
 ## 3. Redaction & the forensic token (read before touching PII)
 

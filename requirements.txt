@@ -34,6 +34,13 @@ fastembed>=0.5.0,<1.0.0
 # Pure-Python, no torch/model downloads, no OCR. .zip/.epub/audio/youtube are
 # held out of v1 - see mcp_server/tools/markitdown_convert.py header.
 
+# YARA rule synthesis + validation (blueteam_yara_rule_generate / _validate).
+# yara-x is REQUIRED for compile + scan-with-offsets (Rust, manylinux wheel, no libyara).
+# yara-python is OPTIONAL - only needed for XOR plaintext()/matched_data introspection;
+# yara-x's Scanner already returns (offset, length) per pattern.
+yara-x>=1.20.0,<2.0.0
+# yara-python>=4.5.0,<5.0.0   # uncomment only when XOR plaintext()/matched_data is needed
+
 # Dev dependencies (install with: pip install -r requirements.txt on venv environtment variable)
 pytest>=7.0
 pytest-asyncio>=0.21

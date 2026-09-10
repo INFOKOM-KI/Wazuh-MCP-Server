@@ -472,6 +472,33 @@ class SSRFConfig:
                 )
 
 
+@dataclass
+class YaraConfig:
+    """YARA rule synthesis settings (blueteam_yara_rule_generate / _save).
+    ``rules_dir`` is a STAGING directory. Rules written there are not loaded by
+    Wazuh until an operator promotes them. Pointing this at a live rules.d path
+    defeats the manual review step, so it defaults to a dedicated staging dir.
+    """
+
+    rules_dir: str = "/opt/yara_rules/yara_staging"
+
+    @classmethod
+    def from_env(cls) -> "YaraConfig":
+        return cls(
+            rules_dir=os.environ.get(
+                "BLUETEAM_YARA_RULES_DIR", "/opt/yara_rules/yara_staging"
+            ).strip(),
+        )
+
+    def validate(self) -> None:
+        if not self.rules_dir:
+            raise ConfigurationError("BLUETEAM_YARA_RULES_DIR must not be empty")
+        if not os.path.isabs(self.rules_dir):
+            raise ConfigurationError(
+                f"BLUETEAM_YARA_RULES_DIR must be an absolute path (got {self.rules_dir!r})"
+            )
+
+
 # Top level Config aggregating all groups
 @dataclass
 class Config:
@@ -496,6 +523,7 @@ class Config:
     tool_gating: ToolGatingConfig = field(default_factory=ToolGatingConfig)
     rerank: RerankConfig = field(default_factory=RerankConfig)
     ssrf: SSRFConfig = field(default_factory=SSRFConfig)
+    yara: YaraConfig = field(default_factory=YaraConfig)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -515,6 +543,7 @@ class Config:
             tool_gating=ToolGatingConfig.from_env(),
             rerank=RerankConfig.from_env(),
             ssrf=SSRFConfig.from_env(),
+            yara=YaraConfig.from_env(),
         )
 
     def validate(self) -> None:
@@ -533,6 +562,7 @@ class Config:
         self.tool_gating.validate()
         self.rerank.validate()
         self.ssrf.validate()
+        self.yara.validate()
 
     def emit_warnings(self) -> None:
         """Log warnings for non-fatal configuration issues.
