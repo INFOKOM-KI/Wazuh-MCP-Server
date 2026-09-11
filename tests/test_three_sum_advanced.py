@@ -5,6 +5,14 @@ I'm (Auli) to lazy to write test suites, hope my LLM doesn't disappoint me... ;P
 """
 from __future__ import annotations
 
+import os
+
+# mcp_server/__init__.py calls init_config() at import and hard-fails without
+# WAZUH_INDEXER_* (ConfigurationError). Seed them at module level so this file
+# passes in isolation, not only when a peer module happens to import first.
+os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
+os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
+
 
 def test_median():
     from mcp_server.correlation.three_sum_core import _median

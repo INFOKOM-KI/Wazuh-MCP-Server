@@ -10,7 +10,7 @@ Three tools:
   blueteam_yara_rule_save     - write a VALIDATED rule to the staging directory
                                 (BLUETEAM_YARA_RULES_DIR). Requires wazuh:write.
 
-Engine: ``yara-x`` (required, lazy import) for compile + scan with offsets.
+Engine: ``yara-x`` (required import) for compile + scan with offsets.
 ``yara-python`` is deliberately NOT required, yara-x's Scanner already returns
 (offset, length) per pattern, and dragging in a second native lib buys nothing
 for MVP. Add it only when XOR ``plaintext()``/``matched_data`` is actually needed.
@@ -34,14 +34,14 @@ mitigate; that is what makes redact=False safe here.
 NOTE: No ``from __future__ import annotations`` deferred annotation evaluation
       (PEP 563) breaks @blueteam_tool type resolution.
 
-YARA specific knobs (staging dir, atom caps) are module constants for now.
-Move them to a YaraConfig dataclass in core/config.py when Phase 1 needs env-tunable values.
+The write boundary (filename validation, traversal guard, atomic replace) lives
+in ``core/rule_staging.py`` and is shared with ``tools/sigma_rules.py``. Staging
+dir + atom caps come from ``core/config.py`` (YaraConfig).
 """
 
 import hashlib
 import json
 import logging
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +49,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.exceptions import BlueTeamMCPError
+from mcp_server.core.rule_staging import save_rule_file, short_digest, staging_dir
 from mcp_server.core.subprocess import ALLOWED_PATH_PREFIXES, _validate_path
 from mcp_server.core.tool_decorator import blueteam_tool
 
@@ -63,7 +64,6 @@ _DEFAULT_SCAN_TIMEOUT = 10
 
 _PRINTABLE_RE = re.compile(rb"[\x20-\x7e]{%d,%d}" % (_MIN_ATOM_CHARS, _MAX_ATOM_CHARS))
 _YARA_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,118}\.yar$")
 _STRING_LINE_RE = re.compile(r'^\s*(\$\w+)\s*=\s*(.+?)\s*$', re.MULTILINE)
 
 # Byte magic (platform token, family prefix, condition pre-selector)
@@ -184,7 +184,7 @@ class YaraRuleGenerateInput(BaseModel):
 def _yara_x():
     """Import yara-x on first use. Raises YaraEngineError with an install hint."""
     try:
-        import yara_x  # noqa: PLC0415 intentional lazy import
+        import yara_x  # noqa: PLC0415 intentional import
     except ImportError as e:
         raise YaraEngineError(
             "yara-x is not installed. Install with: pip install 'yara-x>=1.20,<2'"
@@ -404,56 +404,25 @@ def _alert_field_coverage(docs: list[dict]) -> dict:
     do not populate the attacker-side fields this tool reads; the draft rule
     would be built from nothing.
     """
-    fields = ("data.url", "data.domain", "data.command", "data.file.path", "data.file.name")
-    coverage = {f: 0 for f in fields}
-    for doc in docs:
-        for f in fields:
-            node: Any = doc
-            for part in f.split("."):
-                node = node.get(part) if isinstance(node, dict) else None
-                if node is None:
-                    break
-            if isinstance(node, str) and node:
-                coverage[f] += 1
-    return coverage
+    from mcp_server.wazuh.indexer import _ATTACKER_FIELDS, field_coverage
+
+    return field_coverage(docs, list(_ATTACKER_FIELDS))
 
 
 def _rules_dir() -> Path:
     """Staging directory from the config singleton, with a safe fallback."""
-    from mcp_server.core.config import config as _cfg
-
-    yara_cfg = getattr(_cfg, "yara", None)
-    return Path(getattr(yara_cfg, "rules_dir", "") or "/opt/yara_rules/yara_staging")
+    return staging_dir("yara", "/opt/yara_rules/yara_staging")
 
 
 def _save_rule_file(rule_source: str, filename: str, overwrite: bool,
                     rules_dir: Path) -> Path:
     """Write rule_source into rules_dir atomically. Refuses traversal/escape."""
-    if not _FILENAME_RE.match(filename) or ".." in filename:
-        raise BlueTeamMCPError(
-            f"Invalid rule filename {filename!r}: use [A-Za-z0-9_.-] and a .yar suffix"
-        )
-    rules_dir.mkdir(parents=True, exist_ok=True)
-    root = rules_dir.resolve()
-    target = (root / filename).resolve()
-    try:
-        target.relative_to(root)
-    except ValueError as e:
-        raise BlueTeamMCPError(f"Refusing to write outside {root}: {target}") from e
-    if target.exists() and not overwrite:
-        raise BlueTeamMCPError(
-            f"{target.name} already exists in the staging dir; pass overwrite=true to replace"
-        )
-    tmp = target.with_name(target.name + ".tmp")
-    tmp.write_text(rule_source, encoding="utf-8")
-    os.replace(tmp, target)
-    return target
+    return save_rule_file(rule_source, filename, overwrite, rules_dir, ".yar")
 
 
 def _digest(atoms: list[bytes]) -> str:
-    """Stable short digest over the atom set deterministic across runs."""
-    h = hashlib.sha256(b"\x00".join(sorted(set(atoms)))).hexdigest()
-    return h[:12]
+    """Stable short digest over the atom set - deterministic across runs."""
+    return short_digest(*set(atoms))
 
 
 def _read_sample(path: str) -> bytes:
@@ -476,44 +445,17 @@ def _read_sample(path: str) -> bytes:
 
 async def _fetch_alert_docs(srcip: Optional[str], rule_id: Optional[str],
                             since: str, limit: int) -> list[dict]:
-    """Pull attacker-side alert fields from the Wazuh Indexer API (not Manager)."""
-    from mcp_server import WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_URL
-    from mcp_server.wazuh.indexer import _wazuh_indexer_post
-    from mcp_server.wazuh.time_utils import _parse_time_window
+    """Pull attacker side alert fields from the Wazuh Indexer API (not Manager).
+    Thin delegate: the query builder lives in ``wazuh/indexer.py`` so the Sigma
+    synthesizer can reuse it without importing this tool module (a cross-tool
+    import would defeat category gating, since it registers this module's tools).
+    """
+    from mcp_server.wazuh.indexer import (_ATTACKER_CONTEXT_FIELDS, _ATTACKER_FIELDS,
+                                          _fetch_attacker_alert_docs)
 
-    if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
-        raise BlueTeamMCPError(
-            "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set for mode='alert'"
-        )
-    from mcp_server.wazuh.indexer import _SRCIP_FIELD_PATHS
-
-    since_iso, until_iso = _parse_time_window(since, None)
-    must: list[dict] = [{"range": {"@timestamp": {
-        "gte": since_iso, "lt": until_iso, "format": "strict_date_optional_time"}}}]
-    if srcip:
-        # Same multi-field srcip coverage Engine A uses Wazuh decoder field
-        # paths differ per integration (nginx, Zimbra, Suricata, Sysmon).
-        should = [{"match": {path: srcip}} for path in _SRCIP_FIELD_PATHS]
-        should.append({"match_phrase": {"full_log": srcip}})
-        must.append({"bool": {"should": should, "minimum_should_match": 1}})
-    if rule_id:
-        # Plain + .keyword to tolerate Wazuh dual-index mapping phases.
-        must.append({"bool": {"should": [
-            {"match_phrase": {"rule.id": rule_id}},
-            {"match_phrase": {"rule.id.keyword": rule_id}},
-        ], "minimum_should_match": 1}})
-
-    body = {
-        "size": min(limit, 1000),
-        "sort": [{"@timestamp": {"order": "desc"}}],
-        "_source": ["data.url", "data.domain", "data.command", "data.file.path",
-                    "data.file.name", "rule.id", "rule.description", "rule.mitre.id"],
-        "query": {"bool": {"must": must}},
-    }
-    raw = await _wazuh_indexer_post(body)
-    if isinstance(raw, dict) and "error" in raw:
-        raise BlueTeamMCPError(f"Indexer query failed: {raw['error']}")
-    return [h.get("_source", h) for h in raw.get("hits", {}).get("hits", [])]
+    return await _fetch_attacker_alert_docs(
+        srcip, rule_id, since, limit,
+        list(_ATTACKER_FIELDS) + list(_ATTACKER_CONTEXT_FIELDS))
 
 
 # Tools.

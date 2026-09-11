@@ -41,6 +41,17 @@ fastembed>=0.5.0,<1.0.0
 yara-x>=1.20.0,<2.0.0
 # yara-python>=4.5.0,<5.0.0   # uncomment only when XOR plaintext()/matched_data is needed
 
+# Sigma rule conversion (blueteam_sigma_rule_convert) - OPTIONAL.
+# Opt-in via setup.sh BLUETEAM_INSTALL_SIGMA=1, or manually:
+#   pip install "pysigma>=1.5,<2" "pySigma-backend-opensearch>=2,<3"
+# Authoring + validation (blueteam_sigma_rule_generate / _validate / _save) need
+# only pyyaml, which is already a transitive dependency. Without pySigma the
+# conversion tool returns an install hint and the other three keep working.
+# Transitive cost: jq (cffi/libjq), diskcache, jinja2, pyparsing, requests.
+# The backend entry point is opensearch_lucene; setup.sh asserts it after install.
+# pysigma>=1.5.0,<2.0.0
+# pySigma-backend-opensearch>=2.0.0,<3.0.0
+
 # Dev dependencies (install with: pip install -r requirements.txt on venv environtment variable)
 pytest>=7.0
 pytest-asyncio>=0.21

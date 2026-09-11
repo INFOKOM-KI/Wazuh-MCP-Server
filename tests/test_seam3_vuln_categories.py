@@ -4,6 +4,15 @@
 Tests for seam-3 pure helpers: CVE techniques -> 3-Sum category -> scores.
 """
 from __future__ import annotations
+
+import os
+
+# mcp_server/__init__.py calls init_config() at import and hard-fails without
+# WAZUH_INDEXER_* (ConfigurationError). This module imports mcp_server at module
+# level, so without these the file errors during collection when run alone.
+os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
+os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
+
 from mcp_server.correlation.three_sum_core import (
     vuln_techniques_to_categories,
     vuln_category_scores,

@@ -7,15 +7,16 @@ description: >
   check compromised emails/breaches, generate a threat card, or run APT
   detection (3-Sum). Trigger on phrases like "threat card", "attack chain",
   "kill chain", "correlate", "3-sum", "APT", "forensic", "unmask", "who is
-  attacking", "beacon", "webshell", "breach", "stealer log", or any request
-  mentioning a source IP / domain / email against Wazuh alerts.
+  attacking", "beacon", "webshell", "breach", "stealer log", "sigma rule",
+  "detection rule", "open search query from sigma", "convert to a query", or any
+  request mentioning a source IP / domain / email against Wazuh alerts.
 ---
 
 # blue_team_mcp — SOC Analysis Skill
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 137
+Manager (config/agent data) plus 7+ external threat-intel providers into 141
 tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
@@ -214,6 +215,10 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_yara_rule_validate(rule_source)` | compile a rule with yara-x + yaraQA-style findings (naming, short atoms, `fullword` misuse) |
 | `blueteam_yara_rule_generate(mode, …)` | draft a rule from a Wazuh alert pattern (`mode="alert"`), a sample under `BLUETEAM_ALLOWED_PATHS` (`mode="file"`), or raw text |
 | `blueteam_yara_rule_save(rule_source, …)` | write a VALIDATED rule to the staging dir (`BLUETEAM_YARA_RULES_DIR`); needs `wazuh:write` |
+| `blueteam_sigma_rule_generate(mode, …)` | draft a Sigma rule from a Wazuh alert pattern (`mode="alert"`) or raw text (`mode="text"`). Returns `coverage="draft"` or `"no-values"` |
+| `blueteam_sigma_rule_validate(rule_source)` | YAML + schema check, plus a pySigma parse when pySigma is installed. `engine` names the stages that ran |
+| `blueteam_sigma_rule_convert(rule_source, output_format)` | Sigma → OpenSearch: `lucene` (query string), `dsl` (`_search` body), `monitor` (Dashboards alerting monitor), `saved_search` |
+| `blueteam_sigma_rule_save(rule_source, …)` | write the YAML to the staging dir (`BLUETEAM_SIGMA_RULES_DIR`); needs `wazuh:write` |
 
 ### Resources (read via MCP resource reads, not tool calls)
 
@@ -280,6 +285,46 @@ the strings are wrong. `draft` means it came from alert text or raw text with no
 sample; check `alert_field_coverage` and get an artifact before deploying. A rule in
 the staging directory is not loaded by Wazuh until an operator promotes it by hand to
 `wazuh-rules-dev`.
+
+### Workflow G — detection engineering (alert pattern → Sigma → OpenSearch)
+```
+1. blueteam_sigma_rule_generate(mode="alert", srcip="X", since="24h")   # or mode="text"
+2. # read coverage, unmapped_fields, field_coverage, existing_rules before continuing
+3. blueteam_sigma_rule_validate(rule_source="<edited rule>")   # engine: schema+pysigma | schema-only
+4. blueteam_sigma_rule_convert(rule_source="<final rule>", output_format="lucene")   # or dsl/monitor/saved_search
+5. blueteam_sigma_rule_save(rule_source="<final rule>")       # staging, needs wazuh:write
+```
+
+Use Sigma when the pattern is expressible as field/value pairs and you also want a query
+or a Dashboards monitor. Use YARA (Workflow F) when you have an artifact to match.
+
+These are **Wazuh-native** Sigma rules: `logsource.product` is `wazuh` and `detection`
+carries Wazuh alert field names such as `data.url`. They are not sigmaHQ-portable, and
+Sigma → native Wazuh XML is out of scope for this server.
+
+Four things to check, in this order:
+
+1. `coverage` — `draft` came from logs or text, so review the modifiers. `no-values`
+   means nothing usable was harvested: the detection block holds a placeholder and the
+   rule matches nothing. Never deploy it.
+2. `unmapped_fields` (finding `SG9`) — the index does not know those fields, so the
+   query can never match. Fix the field names before converting.
+3. `field_coverage` all zero — the deployment's decoders do not populate the harvested
+   fields, so the draft was built from nothing.
+4. `existing_rules` — Manager rules that already cover this description. Decide whether
+   new detection logic is actually needed.
+
+A converted query is a starting point, not a finished detection. A `cidr` modifier
+becomes a literal Lucene term (`data.srcip:10.0.0.0\/8`), which OpenSearch reads as a
+string rather than a network match; rewrite those clauses as `term` or `range` before
+running them. The tool prints a warning when it sees one.
+
+Read `index_retargeted` on every conversion. `false` means the upstream saved-search payload
+shape changed and the artifact may still target `beats-*`; the tool also prints a WARNING and
+names the configured index. Inspect the `index` field before importing into Dashboards.
+
+Conversion needs the optional pySigma dependency (`BLUETEAM_INSTALL_SIGMA=1`). Without it
+the convert tool returns an install hint, and generate/validate/save keep working.
 
 ## 3. Redaction & the forensic token (read before touching PII)
 

@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 """Tests for webshell_check.py signature scanner"""
 from __future__ import annotations
+import os
+
+# mcp_server/__init__.py calls init_config() at import time and hard-fails without
+# WAZUH_INDEXER_* (ConfigurationError). Every other tool test module seeds these at
+# module level; this file was the only one that did not, so it passed only when a
+# peer module happened to import first and it failed all 14 tests when run alone.
+os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
+os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
+os.environ.setdefault("WAZUH_API_URL", "https://manager:55000")
+os.environ.setdefault("WAZUH_API_PASSWORD", "test-manager-pass")
+os.environ.setdefault("BLUETEAM_REDACTION_POLICY", "full")
 
 
 def test_scan_body_detects_b374k():
@@ -40,7 +51,6 @@ def test_verdict_confirmed():
         {"weight": "high", "family": "b374k"},
         {"weight": "high", "family": "eval+base64"},
     ]) == "CONFIRMED"
-    # Single high-weight match with login page -> suspicious, not login_page.
     assert _verdict([
         {"weight": "high", "family": "b374k"},
     ]) == "SUSPICIOUS"
@@ -135,12 +145,22 @@ def test_redirect_target_revalidated(monkeypatch):
     out = asyncio.run(blueteam_check_webshell(params))
     assert len(calls) == 1, "redirect to private host must not be followed"
     assert "blocked" in out.lower()
-    # The single allowed request must have been IP-pinned, not left to curl DNS.
     assert "--resolve" in calls[0]
 
 
-def test_url_validation_accepts_public_domain():
+def test_url_validation_accepts_public_domain(monkeypatch):
+    """A host resolving only to public IPs is accepted.
+    The resolver is mocked. Without the mock this test performed live DNS, and
+    csirt.tangerangkota.go.id resolves to 172.16.9.27 on the CSIRT network, which
+    the SSRF guard rejects by design. The test asserted acceptance and so failed
+    wherever that host is internal. The allowlist path for scanning an internal
+    host lives in tests/test_http_client.py (test_host_pins_allowlist_permits_internal).
+    """
+    from mcp_server.tools import webshell_check
     from mcp_server.tools.webshell_check import WebshellCheckInput
+
+    monkeypatch.setattr(webshell_check, "_host_pins",
+                        lambda h, allowed: (["93.184.216.34"], None))
     ws = WebshellCheckInput(url="https://csirt.tangerangkota.go.id/asu.php")
     assert ws.url == "https://csirt.tangerangkota.go.id/asu.php"
 

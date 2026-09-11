@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """Tests for core/rerank.py; optional BM25 -> cross-encoder reranker.
 Coverage: the fallback contract (disabled / empty / unavailable / success) and
-the reason() status string. The model itself is never loaded - fastembed is
+the reason() status string. The model itself is never loaded fastembed is
 absent in CI, so the unavailable path is exercised against that absence.
 """
 
 from __future__ import annotations
+import os
+
+# mcp_server/__init__.py calls init_config() at import and hard-fails without
+# WAZUH_INDEXER_* (ConfigurationError). Seed them at module level so this file
+# passes in isolation, not only when a peer module happens to import first.
+# (This module's own later `import os` is left in place; same module object.)
+os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
+os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
 
 
 def _reset():
@@ -187,7 +195,6 @@ if __name__ == "__main__":
     import traceback
     import inspect
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    # Self check runner, only tests that take no fixtures can run standalone.
     tests = [f for f in dir() if f.startswith("test_")
              and not inspect.signature(globals()[f]).parameters]
     passed = 0

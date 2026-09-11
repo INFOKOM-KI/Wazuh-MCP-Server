@@ -499,6 +499,57 @@ class YaraConfig:
             )
 
 
+@dataclass
+class SigmaConfig:
+    """Sigma rule synthesis settings (blueteam_sigma_rule_generate / _save).
+    ``rules_dir`` is a STAGING directory, same contract as YaraConfig: nothing
+    written there is loaded by an engine until an operator promotes the file.
+    ``verify_fields`` and ``check_existing`` are the operator-level defaults for
+    the per-call flags. Turn them off globally only if the Indexer or Manager API
+    is unreachable and the drafts are still wanted.
+    """
+
+    rules_dir: str = "/opt/sigma_rules/sigma_staging"
+    verify_fields: bool = True
+    check_existing: bool = True
+    # OpenSearch artifact target for blueteam_sigma_rule_convert. The pySigma
+    # backend defaults to 'beats-*', which is wrong for Wazuh on every format
+    # that embeds an index name (monitor, saved_search).
+    index_pattern: str = "wazuh-alerts-*"
+    monitor_interval: int = 5
+
+    @classmethod
+    def from_env(cls) -> "SigmaConfig":
+        return cls(
+            rules_dir=os.environ.get(
+                "BLUETEAM_SIGMA_RULES_DIR", "/opt/sigma_rules/sigma_staging"
+            ).strip(),
+            verify_fields=_bool(os.environ.get("BLUETEAM_SIGMA_VERIFY_FIELDS", ""), True),
+            check_existing=_bool(os.environ.get("BLUETEAM_SIGMA_CHECK_EXISTING", ""), True),
+            index_pattern=os.environ.get(
+                "BLUETEAM_SIGMA_INDEX_PATTERN", "wazuh-alerts-*"
+            ).strip(),
+            monitor_interval=int(
+                os.environ.get("BLUETEAM_SIGMA_MONITOR_INTERVAL", "5")
+            ),
+        )
+
+    def validate(self) -> None:
+        if not self.rules_dir:
+            raise ConfigurationError("BLUETEAM_SIGMA_RULES_DIR must not be empty")
+        if not os.path.isabs(self.rules_dir):
+            raise ConfigurationError(
+                f"BLUETEAM_SIGMA_RULES_DIR must be an absolute path (got {self.rules_dir!r})"
+            )
+        if not self.index_pattern:
+            raise ConfigurationError("BLUETEAM_SIGMA_INDEX_PATTERN must not be empty")
+        if not (1 <= self.monitor_interval <= 1440):
+            raise ConfigurationError(
+                f"BLUETEAM_SIGMA_MONITOR_INTERVAL must be 1-1440 minutes "
+                f"(got {self.monitor_interval})"
+            )
+
+
 # Top level Config aggregating all groups
 @dataclass
 class Config:
@@ -524,6 +575,7 @@ class Config:
     rerank: RerankConfig = field(default_factory=RerankConfig)
     ssrf: SSRFConfig = field(default_factory=SSRFConfig)
     yara: YaraConfig = field(default_factory=YaraConfig)
+    sigma: SigmaConfig = field(default_factory=SigmaConfig)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -544,6 +596,7 @@ class Config:
             rerank=RerankConfig.from_env(),
             ssrf=SSRFConfig.from_env(),
             yara=YaraConfig.from_env(),
+            sigma=SigmaConfig.from_env(),
         )
 
     def validate(self) -> None:
@@ -563,6 +616,7 @@ class Config:
         self.rerank.validate()
         self.ssrf.validate()
         self.yara.validate()
+        self.sigma.validate()
 
     def emit_warnings(self) -> None:
         """Log warnings for non-fatal configuration issues.

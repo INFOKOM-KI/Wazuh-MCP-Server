@@ -143,6 +143,29 @@ else
   echo "[.] MarkItDown conversion SKIPPED (set BLUETEAM_INSTALL_MARKITDOWN=1 to enable)."
 fi
 
+# Sigma rule conversion (blueteam_sigma_rule_convert) - OPTIONAL.
+# Enable with BLUETEAM_INSTALL_SIGMA=1 (env or config.env). Pulls pySigma plus the
+# OpenSearch backend, which transitively adds jq (cffi/libjq binding), diskcache,
+# jinja2, pyparsing and requests (a second HTTP stack alongside httpx).
+# Without it, Sigma authoring + validation still work; only conversion errors out.
+# No model downloads and no network access at conversion time.
+if [[ "${BLUETEAM_INSTALL_SIGMA:-0}" == "1" || "${BLUETEAM_INSTALL_SIGMA:-0}" == "true" ]]; then
+  echo "[+] Installing pySigma + OpenSearch backend for Sigma conversion..."
+  "$INSTALL_DIR/venv/bin/pip" install --quiet \
+    "pysigma>=1.5,<2" "pySigma-backend-opensearch>=2,<3"
+  # Fail fast at install time instead of on first conversion. The backend entry
+  # point name is opensearch_lucene; a rename upstream must be caught here.
+  if ! "$INSTALL_DIR/venv/bin/python3" -c "
+from sigma.plugins import InstalledSigmaPlugins
+assert 'opensearch_lucene' in InstalledSigmaPlugins.autodiscover().backends
+print('pySigma ok')"; then
+    echo "[!] pySigma backend opensearch_lucene missing after install." >&2
+    exit 1
+  fi
+else
+  echo "[.] Sigma conversion SKIPPED (set BLUETEAM_INSTALL_SIGMA=1 to enable)."
+fi
+
 RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-false}"
 RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 RERANK_CACHE="${BLUETEAM_RERANK_CACHE_PATH:-$INSTALL_DIR/rerank-cache}"

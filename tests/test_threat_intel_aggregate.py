@@ -2,6 +2,14 @@
 """Tests for unified threat intel aggregator."""
 from __future__ import annotations
 
+import os
+
+# mcp_server/__init__.py calls init_config() at import and hard-fails without
+# WAZUH_INDEXER_* (ConfigurationError). Seed them at module level so this file
+# passes in isolation, not only when a peer module happens to import first.
+os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
+os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
+
 
 def test_ti_provider_result_model():
     from mcp_server.tools.threat_intel_aggregate import TIProviderResult

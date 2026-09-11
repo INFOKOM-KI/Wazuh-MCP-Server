@@ -103,6 +103,7 @@ def register_all_tools() -> None:
         ("document_convert",        "document_convert",        False),  # 1 tool Marker PDF -> markdown/json/html/chunks
         ("markitdown_convert",      "document_convert",        False),  # 1 tool MarkItDown office/data file -> markdown
         ("yara_rules",              "yara_rules",              False),  # 2 tools YARA rule synthesis + validation (yara-x)
+        ("sigma_rules",             "sigma_rules",             False),  # 3 tools Sigma rule synthesis + validation + staging save
     ]
 
     for attr, category, skip_ro in _MODULES:
