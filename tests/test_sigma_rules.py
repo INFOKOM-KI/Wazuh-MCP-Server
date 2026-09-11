@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+import textwrap
 from pathlib import Path
 import pytest
 import yaml
@@ -381,10 +382,30 @@ class TestSigmaFieldExtraction:
     """Pure helper runs without pySigma."""
 
     def test_field_names_strips_modifiers_and_walks_nested(self):
-        src = ("title: t\nlogsource:\n  product: wazuh\ndetection:\n"
-               "selection:\n    data.url|contains: x\n    data.srcip|cidr: 10.0.0.0/8\n"
-               "filter:\n    Image|endswith: cmd.exe\n  condition: selection and not filter\n")
+        # Dedented block, not an escape-laden one-liner: the YAML indentation is
+        # the thing under test, so it must be visible. A previous version of this
+        # fixture lost two spaces and turned a passing test into a silent "no
+        # fields found" assertion.
+        src = textwrap.dedent("""
+            title: t
+            logsource:
+              product: wazuh
+            detection:
+              selection:
+                data.url|contains: x
+                data.srcip|cidr: 10.0.0.0/8
+              filter:
+                Image|endswith: cmd.exe
+              condition: selection and not filter
+        """)
+        assert yaml.safe_load(src) is not None, "fixture must be valid YAML"
         assert sigma_engine.field_names(src) == ["data.url", "data.srcip", "Image"]
+
+    def test_field_names_logs_on_unparseable_source(self, caplog):
+        """[] from a YAML error must not look like "no fields referenced"."""
+        with caplog.at_level("WARNING", logger="blue_team_mcp.sigma.engine"):
+            assert sigma_engine.field_names("not: [valid") == []
+        assert any("not valid YAML" in r.message for r in caplog.records), caplog.text
 
     def test_field_names_tolerates_garbage(self):
         assert sigma_engine.field_names("not: [valid") == []

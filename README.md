@@ -172,6 +172,34 @@ needs the `wazuh:write` scope. A generated rule reports `coverage`: `verified`
 or `draft` (no sample, logs only). Wazuh alerts are logs, so an alert-derived rule
 stays `draft` until it is tested against a real artifact.
 
+### Detection Engineering (Sigma)
+`blueteam_sigma_rule_generate` drafts a Sigma rule from a Wazuh alert pattern
+(`mode="alert"`, Indexer API) or analyst text (`mode="text"`), reporting
+`coverage` as `draft` or `no-values`. `blueteam_sigma_rule_validate` runs a
+YAML+schema check always and a pySigma parse when pySigma is installed, naming the
+stages that ran in `engine`. `blueteam_sigma_rule_convert` maps a rule to an
+OpenSearch artifact through the `opensearch_lucene` backend: `lucene` (query
+string), `dsl` (`_search` body), `monitor` (Dashboards alerting monitor), or
+`saved_search`. `blueteam_sigma_rule_save` writes the YAML to
+`BLUETEAM_SIGMA_RULES_DIR` and needs the `wazuh:write` scope.
+
+Two Wazuh-specific notes. These are **Wazuh-native** Sigma rules,
+`logsource.product: wazuh` with Wazuh alert field names in `detection`, so they are
+not sigmaHQ-portable and upstream `sigma check` warns about the product. And
+`blueteam_sigma_rule_generate` probes the Indexer for fields it emits, reporting
+unmapped ones as finding `SG9`; a field the index does not know can never match.
+
+Conversion needs the optional pySigma install (`BLUETEAM_INSTALL_SIGMA=1`,
+see `requirements.txt`). Without it the convert tool returns an install hint and
+the other three keep working. Artifacts target
+`BLUETEAM_SIGMA_INDEX_PATTERN` (`wazuh-alerts-*`), never the pySigma default
+`beats-*`; the response carries `index_retargeted`, and `false` means the upstream
+payload shape changed and the artifact may point at the wrong index.
+
+Sigma to native Wazuh XML rules is out of scope and needs a
+written scope amendment. Promotion out of either staging directory is a manual,
+reviewed step.
+
 ---
 
 ## Security & Privacy
@@ -182,10 +210,10 @@ stays `draft` until it is tested against a real artifact.
 
 - `MCP_API_KEY` — format `btm_<43-char-urlsafe-base64>` (47 chars). Stored only as a SHA-256
   digest, compared with `hmac.compare_digest` (constant-time).
-- `MCP_API_KEY_SCOPES` — default `wazuh:read` (read-only). Add `wazuh:write` to unlock the 10
+- `MCP_API_KEY_SCOPES` — default `wazuh:read` (read-only). Add `wazuh:write` to unlock the 11
   write tools (`blueteam_fail2ban_unban`, `blueteam_case_*`, `blueteam_set_owned_domains`,
   `blueteam_mark_investigated`, `blueteam_wazuh_export`, `blueteam_export_report`,
-  `blueteam_capture_traffic`, `blueteam_yara_rule_save`). Fail-closed: no scope ⇒ read-only.
+  `blueteam_capture_traffic`, `blueteam_yara_rule_save`, `blueteam_sigma_rule_save`). Fail-closed: no scope ⇒ read-only.
 - **Bind guard** (`main.py::_start_http_transport`): a non-loopback bind without `MCP_API_KEY`
   raises `ConfigurationError` and refuses to start. Loopback stays auth-less only when no key is
   configured; when a key is set it is enforced on every request.

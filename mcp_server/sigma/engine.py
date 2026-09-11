@@ -205,7 +205,13 @@ def field_names(rule_source: str) -> List[str]:
 
     try:
         doc = yaml.safe_load(rule_source)
-    except yaml.YAMLError:
+    except yaml.YAMLError as e:
+        # Returning [] here is indistinguishable from "the rule references no
+        # fields", which would silently skip the caller's unmapped-field check.
+        # Log so the skip is visible rather than looking like a clean result.
+        logger.warning(
+            "field_names: rule source is not valid YAML (%s). Returning no fields; "
+            "the unmapped-field check will not run for this rule.", e)
         return []
     docs = doc if isinstance(doc, list) else [doc]
     out: List[str] = []
@@ -374,6 +380,7 @@ if __name__ == "__main__":
             assert "beats-*" not in json.dumps(got["queries"]), (fmt, got)
         ok, msgs = parse_check(src)
         assert ok and msgs == [], (ok, msgs)
+        assert field_names("garbage: [") == []
         print("sigma engine self-check OK:", engine_versions(),
               "| lucene:", out["queries"][0])
     else:

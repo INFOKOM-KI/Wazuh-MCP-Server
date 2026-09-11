@@ -51,6 +51,13 @@ blue-team-mcp-audit.jsonl
 # Knowledge graph output
 graphify-out/
 
+# Rule-synthesis staging dirs and model caches. These hold attacker IOCs, and in the
+# rerank case multi-GB model weights. Covered because an operator can point
+# BLUETEAM_YARA_RULES_DIR / BLUETEAM_SIGMA_RULES_DIR / BLUETEAM_RERANK_CACHE_PATH
+# inside the repo. Staged drafts must never be committed.
+*_staging/
+rerank-cache/
+
 # OS junk
 Thumbs.db
 .DS_Store

@@ -266,13 +266,19 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export NETRA_BASE_URL="https://netra.fbi.gov:8013/api/v1"
 # export RDAP_BASE_URL="https://rdap.org"
 # export CRTSH_BASE_URL="https://crt.sh"
+# export URLHAUS_BASE_URL="https://urlhaus-api.abuse.ch/v1/"
+# export HUDSONROCK_BASE_URL="https://cavalier.hudsonrock.com/api/json/v2"  # stealer-log check
 
 # Caching TTLs (seconds — defaults shown)
 # export CROWDSEC_CACHE_TTL="900"
 # export THREATFOX_CACHE_TTL="900"
 # export OTX_CACHE_TTL="1800"
 # export URLHAUS_CACHE_TTL="1800"
+# export RAPIDAPI_CACHE_TTL="1800"
+# export BLUETEAM_INDEXER_CACHE_TTL="30"     # dedupe identical Indexer aggregations within N seconds; 0 = off
+# export BLUETEAM_GRAPH_CACHE_TTL="60"       # attack-graph cache TTL in seconds
 # export BLUETEAM_CMDB_FILE="/var/log/blue-team-mcp/cmdb_inventory.json"
+# export BLUETEAM_STIX_CACHE="/var/log/blue-team-mcp/mitre_enterprise_attack.json"  # MITRE ATT&CK STIX bundle cache
 
 # MCP transport (optional — default: stdio for SSH usage)
 # Uncomment one for a remote HTTP service:
@@ -376,6 +382,12 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_FALSE_POSITIVE_TTL="2592000"  # 30 days — FP suppression TTL
 # export BLUETEAM_FALSE_POSITIVE_MAX="5000"
 
+# Case management (blueteam_case_*) and attack-graph campaign snapshots
+# export BLUETEAM_CASE_STORE="/var/log/blue-team-mcp/cases.jsonl"
+# export BLUETEAM_CASE_MAX="500"                       # max cases retained (oldest pruned)
+# export BLUETEAM_CAMPAIGN_SNAPSHOTS="/var/log/blue-team-mcp/campaign_snapshots.jsonl"  # attack_graph diffs between runs
+# export BLUETEAM_AUTO_PROMOTE_IPS="false"            # true = auto-register high-confidence cluster IPs; off by default (human review)
+
 # LangGraph workflow persistence
 # export BLUETEAM_LANGGRAPH_DB="/var/log/blue-team-mcp/langgraph.db"  # SQLite state; unset = InMemorySaver (lost on restart)
 # export BLUETEAM_LANGGRAPH_NODE_TIMEOUT="120"  # seconds — per-node timeout
@@ -389,6 +401,22 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # permit scanning internal webshells on your own infrastructure (e.g. tangerangkota.go.id).
 # Each hop is resolved once and IP-pinned via curl --resolve (DNS-rebinding / TOCTOU safe).
 # export ALLOWED_INTERNAL_DOMAINS="tangerangkota.go.id,abc123.go.id"   # add your domains? use comma separated.
+
+# Detection engineering — rule staging dirs (STAGING ONLY, never a live rules path)
+# blueteam_yara_rule_save / blueteam_sigma_rule_save write here and nothing loads these
+# files: promotion to a live rules path is a manual, reviewed step. The directory is
+# created on first save. Point these at /var/ossec/etc/rules only if you intend to skip
+# the review step, which defeats the purpose of staging.
+# export BLUETEAM_YARA_RULES_DIR="/opt/yara_rules/yara_staging"
+# export BLUETEAM_SIGMA_RULES_DIR="/opt/sigma_rules/sigma_staging"
+
+# Sigma conversion (blueteam_sigma_rule_convert) — needs the optional pySigma install
+# (set BLUETEAM_INSTALL_SIGMA=1 above, or see requirements.txt). Generate/validate/save
+# work without it; only conversion returns an install hint.
+# export BLUETEAM_SIGMA_INDEX_PATTERN="wazuh-alerts-*"    # artifact target; pySigma default is beats-*
+# export BLUETEAM_SIGMA_MONITOR_INTERVAL="5"             # minutes between Dashboards monitor runs (1-1440)
+# export BLUETEAM_SIGMA_VERIFY_FIELDS="true"             # probe the Indexer for unmapped fields (finding SG9)
+# export BLUETEAM_SIGMA_CHECK_EXISTING="true"            # search Manager rules for overlapping detections
 
 # Path restrictions (defaults shown)
 # export BLUETEAM_ALLOWED_PATHS="/var:/etc:/home:/opt:/usr"
@@ -431,7 +459,7 @@ unset -f _sync_env_key 2>/dev/null || true
 # Wrapper scripts
 echo "[5/7] Creating MCP server wrapper scripts..."
 
-# Main wrapper: mcp-server-blueteam (all 123 tools)
+# Main wrapper: mcp-server-blueteam (all 141 tools)
 cat > /usr/local/bin/mcp-server-blueteam << 'EOF'
 #!/usr/bin/env bash
 # Wrapper - Claude Desktop calls this via SSH (MAESTRO-compliant)
@@ -493,6 +521,9 @@ export BLUETEAM_ATTACKER_REGISTRY_TTL="${BLUETEAM_ATTACKER_REGISTRY_TTL:-604800}
 export BLUETEAM_ATTACKER_REGISTRY_MAX="${BLUETEAM_ATTACKER_REGISTRY_MAX:-10000}"
 export BLUETEAM_FALSE_POSITIVE_KB="${BLUETEAM_FALSE_POSITIVE_KB:-/var/log/blue-team-mcp/false_positive_kb.jsonl}"
 export BLUETEAM_CASE_STORE="${BLUETEAM_CASE_STORE:-/var/log/blue-team-mcp/cases.jsonl}"
+export BLUETEAM_CASE_MAX="${BLUETEAM_CASE_MAX:-500}"
+export HUDSONROCK_BASE_URL="${HUDSONROCK_BASE_URL:-https://cavalier.hudsonrock.com/api/json/v2}"
+export RAPIDAPI_CACHE_TTL="${RAPIDAPI_CACHE_TTL:-1800}"
 export BLUETEAM_INDEXER_CACHE_TTL="${BLUETEAM_INDEXER_CACHE_TTL:-30}"
 export BLUETEAM_GRAPH_CACHE_TTL="${BLUETEAM_GRAPH_CACHE_TTL:-60}"
 export BLUETEAM_FALSE_POSITIVE_TTL="${BLUETEAM_FALSE_POSITIVE_TTL:-2592000}"
@@ -521,6 +552,13 @@ export BLUETEAM_ALLOW_UNTRUNCATED="${BLUETEAM_ALLOW_UNTRUNCATED:-false}"
 export BLUETEAM_ALLOWED_PATHS="${BLUETEAM_ALLOWED_PATHS:-/var:/etc:/home:/opt:/usr}"
 export BLUETEAM_CAPTURE_DIR="${BLUETEAM_CAPTURE_DIR:-/tmp}"
 export BLUETEAM_CHARACTER_LIMIT="${BLUETEAM_CHARACTER_LIMIT:-100000}"
+# Detection engineering — rule staging dirs (staging only, never a live rules path)
+export BLUETEAM_YARA_RULES_DIR="${BLUETEAM_YARA_RULES_DIR:-/opt/yara_rules/yara_staging}"
+export BLUETEAM_SIGMA_RULES_DIR="${BLUETEAM_SIGMA_RULES_DIR:-/opt/sigma_rules/sigma_staging}"
+export BLUETEAM_SIGMA_INDEX_PATTERN="${BLUETEAM_SIGMA_INDEX_PATTERN:-wazuh-alerts-*}"
+export BLUETEAM_SIGMA_MONITOR_INTERVAL="${BLUETEAM_SIGMA_MONITOR_INTERVAL:-5}"
+export BLUETEAM_SIGMA_VERIFY_FIELDS="${BLUETEAM_SIGMA_VERIFY_FIELDS:-true}"
+export BLUETEAM_SIGMA_CHECK_EXISTING="${BLUETEAM_SIGMA_CHECK_EXISTING:-true}"
 # Reranker (two-stage retrieval, opt-in via BLUETEAM_RERANK_ENABLED)
 export BLUETEAM_RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-false}"
 export BLUETEAM_RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
@@ -611,7 +649,7 @@ echo "  ThreatFox needs a free key — https://threatfox.abuse.ch/api"
 echo ""
 echo "Wrapper entry points installed:"
 echo ""
-echo "  mcp-server-blueteam    — All 123 tools (Wazuh, threat intel, host forensics,"
+echo "  mcp-server-blueteam    — All 141 tools (Wazuh, threat intel, host forensics,"
 echo "                            Sangfor blocklist, 3-Sum correlation, curated reports,"
 echo "                            CrowdSec, GreyNoise, ThreatFox)"
 echo "  mcp-server-crowdsec    — DEPRECATED — redirects to mcp-server-blueteam"
