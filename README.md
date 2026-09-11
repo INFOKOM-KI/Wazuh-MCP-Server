@@ -5,7 +5,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **141 tools + 4 resources** across Wazuh SIEM, multi-provider threat
+offensive tooling. **141 tools + 4 resources** (115 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, and host forensics. Read-only by default.
 
@@ -103,7 +103,7 @@ optional — tools degrade gracefully without them.
 | Inbound auth | `MCP_API_KEY`, `MCP_API_KEY_SCOPES` | pre-shared API key + scopes for `streamable_http` |
 | Inbound hardening | `BLUETEAM_HTTP_RATE_LIMIT`, `BLUETEAM_ALLOWED_ORIGINS` | per-IP sliding-window rate limit (req/min, `0`=off) + Origin allowlist (loopback always allowed) |
 | Audit & persistence | `BLUETEAM_AUDIT_LOG`, `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CMDB_FILE` | JSONL audit trail + stores (optional) |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **115 tools registered** instead of 141: `141 - 23 - 3 = 115`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
