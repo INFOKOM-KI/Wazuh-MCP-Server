@@ -64,7 +64,8 @@ Choose the tool by what the analyst wants — never invent tools.
 | URLhaus hash/URL | `urlhaus_hash_lookup` / `urlhaus_lookup` |
 | Netra | `netra_ip_analysis(ip)` |
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
-| AbuseIPDB IP reputation | `blueteam_lookup_ip_abuseipdb(ip)` |
+| AbuseIPDB IP reputation | **no standalone tool** — AbuseIPDB runs inside `blueteam_unified_threat_score` (weight 0.30). Do not call a `*_abuseipdb` tool; it is not registered. |
+| RapidAPI IP blacklist / IOC search / breach | `blueteam_ip_blacklist` / `blueteam_ioc_search` / `blueteam_breach_check` |
 
 Netra and Argus lookups are spaced 30s apart, Sangfor 5s (`NETRA_MIN_INTERVAL` /
 `ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`). Enriching N IPs costs N×interval — batch

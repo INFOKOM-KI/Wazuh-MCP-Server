@@ -34,24 +34,6 @@ _sangfor_limiter = get_limiter("sangfor", max_concurrent=1, min_interval=SANGFOR
 
 # 1: Alert Summarization
 # Standalone threat-intel + Sangfor + unified scoring tools (remaining after alert-enrichment modular split)
-async def blueteam_lookup_ip_abuseipdb(ip: ValidPublicIp, max_age_days: int = 90, response_format: str = "markdown") -> str:
-    """Check IP reputation via AbuseIPDB."""
-    _audit_log("blueteam_lookup_ip_abuseipdb", {"ip": ip})
-    from mcp_server import ABUSEIPDB_API_KEY
-    if not ABUSEIPDB_API_KEY:
-        return json.dumps({"error": "ABUSEIPDB_API_KEY not set."})
-    try:
-        client = await _get_client("http")
-        resp = await client.get(f"{ABUSEIPDB_BASE_URL}/check",
-                                 headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
-                                 params={"ipAddress": ip, "maxAgeInDays": str(max_age_days)})
-        resp.raise_for_status()
-        data = resp.json().get("data", {})
-        if response_format == "json":
-            return _truncate_if_needed(json.dumps({"ip": ip, "abuse_score": data.get("abuseConfidenceScore"), "total_reports": data.get("totalReports"), "country": data.get("countryCode")}, indent=2))
-        return _truncate_if_needed(f"# AbuseIPDB - {ip}\n\n- **Abuse Score**: {data.get('abuseConfidenceScore','?')}%\n- **Reports**: {data.get('totalReports','?')}\n- **Country**: {data.get('countryCode','?')}")
-    except Exception as e:
-        return _handle_api_error(e, context="abuseipdb")
 
 
 class VirusTotalHashInput(BaseModel):
