@@ -781,3 +781,10 @@ DOCX report (optional, officecli): blueteam_export_report(format="docx", title="
 ## Development
 
 - Before merge: `python3 check_guardrails.py --strict` must exit 0, and logging stays on stderr.
+
+---
+### 🤝💸💎 Sponsored by
+**[Kiyararouter](https://kiyararouter.web.id)**
+*Every model. One beautiful API.*
+
+Kiyararouter is the modern OpenAI-compatible gateway for teams building with AI. Connect once, ship faster, and stay flexible.
