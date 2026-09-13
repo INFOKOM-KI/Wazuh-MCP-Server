@@ -649,7 +649,7 @@ closes. If it fails, the timer resets.
 - Don't report "all tools broken" — name the specific pool and what tools
   still work.
 
-**Circuit breaker state by pool (from Knowledge Graph Community 31):**
+**Circuit breaker state by pool (see `mcp_server/core/http_client.py`):**
 
 | Pool | Typical tools | Backend |
 |---|---|---|
