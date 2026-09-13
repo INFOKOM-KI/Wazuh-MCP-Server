@@ -208,7 +208,11 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `crowdsec_ip_reputation_bulk` / `otx_lookup_bulk` / `urlhaus_lookup_bulk` | bulk enrich up to N IOCs |
 | `blueteam_index_schema` | discover index field mappings |
 | `blueteam_wazuh_export` | scroll-export alerts to JSONL |
-| `blueteam_wazuh_agents` / `_summary` / `get_*` / `list_*` | Manager API: agents, SCA, decoders, groups, rules, security events |
+| `blueteam_wazuh_agents` / `blueteam_wazuh_agents_summary` | Manager API: agent inventory and last-seen summary |
+| `blueteam_wazuh_get_agent_sca` / `blueteam_wazuh_get_sca_policy_checks` / `blueteam_wazuh_list_sca_policies` | SCA policies and per-agent check results |
+| `blueteam_wazuh_get_rules` / `blueteam_wazuh_get_rule_files` / `blueteam_wazuh_get_rule_file_content` | Ruleset files and their content |
+| `blueteam_wazuh_get_decoders` / `blueteam_wazuh_get_groups` | Decoders and rule groups |
+| `blueteam_wazuh_get_security_events` / `blueteam_wazuh_manager_logs` / `blueteam_wazuh_get_cluster_nodes` | Security events, manager logs, cluster nodes |
 | `blueteam_metrics` | Prometheus metrics |
 | `blueteam_playbook_run` | run a named playbook workflow |
 | `blueteam_export_report` | export a report to DOCX/XLSX/PPTX (officecli) |

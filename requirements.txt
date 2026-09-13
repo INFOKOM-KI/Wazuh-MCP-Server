@@ -9,6 +9,17 @@ langgraph>=0.2,<0.6
 langgraph-checkpoint-sqlite>=2.0,<3.0
 aiosqlite>=0.20,<1.0
 
+# Direct imports that currently arrive transitively. Declared so a bump in the
+# parent package cannot silently break module import at startup.
+#   uvicorn - mcp_server/core/server_auth.py imports it inside serve_authenticated()
+#             (transitive via mcp, which requires uvicorn>=0.31.1)
+#   pyyaml  - mcp_server/tools/sigma_rules.py imports it at module top level, so
+#             its absence breaks register_all_tools() for all 141 tools at once.
+#             Also used lazily in mcp_server/sigma/engine.py. Currently transitive
+#             via langgraph -> langchain-core.
+uvicorn>=0.31.1,<1.0.0
+pyyaml>=6.0.1,<7.0.0
+
 # Two stage retrieval reranker (BM25 -> bge-reranker-base cross-encoder).
 # Opt-in at runtime via BLUETEAM_RERANK_ENABLED; tools degrade to BM25-only if missing.
 fastembed>=0.5.0,<1.0.0
