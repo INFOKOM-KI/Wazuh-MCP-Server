@@ -136,7 +136,9 @@ into `BLUETEAM_RERANK_CACHE_PATH` — local-only, never a hosted API.
 with a unified `blueteam_threat_intel_aggregate` (concurrent fan-out) and a weighted
 `blueteam_unified_threat_score`. Plus `stealer_log_check` (HudsonRock) and `jarm_fingerprint`
 (TLS fingerprint for C2/malware attribution, no API key), and 3 RapidAPI lookups
-(`blueteam_ip_blacklist`, `blueteam_ioc_search`, `blueteam_breach_check`).
+(`blueteam_ip_blacklist`, `blueteam_ioc_search`, `blueteam_breach_check`). `blueteam_ip_blacklist`
+is registered but no longer advertised in the SOC prompts: it is a third paid RapidAPI product,
+and `blueteam_ioc_search` already returns blacklist verdicts from ~89 engines.
 
 ### Alert Enrichment
 `blueteam_wazuh_alert_summarize`, `blueteam_beacon_detect`, `blueteam_attack_chain`,
@@ -319,7 +321,7 @@ Choose the tool by what the analyst wants — never invent tools.
 | Netra | `netra_ip_analysis(ip)` |
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
 | AbuseIPDB IP reputation | **no standalone tool** — AbuseIPDB runs inside `blueteam_unified_threat_score` (weight 0.30). Do not call a `*_abuseipdb` tool; it is not registered. |
-| RapidAPI IP blacklist / IOC search / breach | `blueteam_ip_blacklist` / `blueteam_ioc_search` / `blueteam_breach_check` |
+| RapidAPI IP blacklist / IOC search / breach | `blueteam_ip_blacklist` / `blueteam_ioc_search` / `blueteam_breach_check` - three separate subscriptions with separate quotas; metered, not local. `blueteam_ioc_search` is unrelated to `threatfox_ioc_search`. A 403 means the key is not subscribed to that product. `blueteam_ioc_search` takes `detail_level="summary"` (default, verdict-first) / `"forensic"` / `"raw"`, and strips WHOIS registrant PII at every level. |
 
 ### CVE / vulnerability enrichment
 When an alert or `blueteam_wazuh_vulnerabilities` surfaces a `CVE-YYYY-NNNN`,
@@ -440,8 +442,8 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | `blueteam_false_positive_tracker(rule_id)` | rule_id → FP-summary cross-reference |
 | `sangfor_blocklist_check` / `sangfor_blocklist_list(ip=…, date_start, date_end, limit, offset)` | Sangfor firewall blocklist (list POSTs `{date_start,date_end,limit,offset,ip}` to `/blocklist`) |
 | `blueteam_baseline_profile` / `blueteam_calendar_heatmap` | day×hour scheduled-attack profiling |
-| `blueteam_extract_iocs` / `blueteam_ioc_lifecycle` / `blueteam_ioc_search` | IOC extraction & lifecycle store |
-| `blueteam_ip_blacklist` | RapidAPI IP blacklist lookup |
+| `blueteam_extract_iocs` / `blueteam_ioc_lifecycle` | IOC extraction & lifecycle store (local, free) |
+| `blueteam_ip_blacklist` / `blueteam_ioc_search(detail_level="summary"|"forensic"|"raw")` | RapidAPI blacklist / IOC lookup (metered; separate subscription per product; 403 = not subscribed). WHOIS is stripped to technical registry fields at every level |
 | `wazuh_alert_focused_crawl` | surgical alert deep-dive (`rule_id`/`src_ip`/`sample_size`) |
 | `wazuh_alert_aggregate_analysis` | zero-doc full-index statistical summary |
 | `wazuh_alert_dsl_query` | raw OpenSearch DSL (script-injection guarded) |
@@ -659,7 +661,8 @@ closes. If it fails, the timer resets.
 
 | Pool | Typical tools | Backend |
 |---|---|---|
-| `http` | CrowdSec, OTX, AbuseIPDB, VirusTotal, URLhaus, RapidAPI, WHOIS/RDAP/CRT.sh | External threat-intel + domain APIs |
+| `http` | CrowdSec, OTX, AbuseIPDB, VirusTotal, URLhaus, WHOIS/RDAP/CRT.sh | External threat-intel + domain APIs |
+| `rapidapi` | `blueteam_ioc_search`, `blueteam_breach_check`, `blueteam_ip_blacklist` | Own pool and own breaker. Products have separate subscriptions and separate quotas |
 | `indexer` | alert search, geo, timeline, correlation, email/domain alert lookup | Wazuh Indexer (OpenSearch) |
 | `wazuh` | agent/rule/SCA queries | Wazuh Manager API |
 | `argus` | Argus IP lookup | Argus threat-intel API (standalone pool) |

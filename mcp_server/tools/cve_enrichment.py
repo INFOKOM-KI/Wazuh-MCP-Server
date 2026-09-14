@@ -97,7 +97,7 @@ async def blueteam_cve_lookup(params: CveLookupInput) -> str:
     try:
         nvd = await _fetch_nvd(params.cve_id)
     except (httpx.HTTPStatusError, httpx.TimeoutException, ValueError) as e:
-        return _handle_api_error(e, context="blueteam_cve_lookup")
+        _handle_api_error(e, context="blueteam_cve_lookup")
 
     if nvd is None:
         return json.dumps({"cve_id": params.cve_id, "found": False,
@@ -200,7 +200,7 @@ async def blueteam_cve_epss(params: CveEpssInput) -> str:
     try:
         entries = await _fetch_epss(params.cve_ids)
     except (httpx.HTTPStatusError, httpx.TimeoutException, ValueError) as e:
-        return _handle_api_error(e, context="blueteam_cve_epss")
+        _handle_api_error(e, context="blueteam_cve_epss")
 
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps({
@@ -266,7 +266,7 @@ async def blueteam_cve_kev(params: CveKevInput) -> str:
     try:
         catalog = await _fetch_kev_catalog()
     except (httpx.HTTPStatusError, httpx.TimeoutException, ValueError) as e:
-        return _handle_api_error(e, context="blueteam_cve_kev")
+        _handle_api_error(e, context="blueteam_cve_kev")
 
     entry = _lookup_kev(catalog, params.cve_id)
 
@@ -343,7 +343,7 @@ async def blueteam_cve_poc(params: CvePocInput) -> str:
     try:
         poc = await search_poc(params.cve_id)
     except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
-        return _handle_api_error(e, context="blueteam_cve_poc")
+        _handle_api_error(e, context="blueteam_cve_poc")
 
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(poc, indent=2, default=str))
@@ -418,7 +418,7 @@ async def blueteam_cve_score(params: CveScoreInput) -> str:
     try:
         nvd, epss_entries, kev_catalog, poc = await _gather_cve_data(params.cve_id)
     except (httpx.HTTPStatusError, httpx.TimeoutException, ValueError) as e:
-        return _handle_api_error(e, context="blueteam_cve_score")
+        _handle_api_error(e, context="blueteam_cve_score")
 
     epss_entry = next((e for e in epss_entries if e.get("cve") == params.cve_id), None)
     epss_data = {"probability": float(epss_entry["epss"])} if epss_entry else None
@@ -516,7 +516,7 @@ async def blueteam_cve_ssvc(params: CveSsvcInput) -> str:
     try:
         nvd, epss_entries, kev_catalog, poc = await _gather_cve_data(params.cve_id)
     except (httpx.HTTPStatusError, httpx.TimeoutException, ValueError) as e:
-        return _handle_api_error(e, context="blueteam_cve_ssvc")
+        _handle_api_error(e, context="blueteam_cve_ssvc")
 
     if nvd is None:
         return json.dumps({"cve_id": params.cve_id, "found": False,

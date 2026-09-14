@@ -160,11 +160,10 @@ async def test_convert_surface_blue_team_error_when_marker_missing(tmp_path, mon
     pdf = tmp_path / "r.pdf"
     pdf.write_bytes(b"%PDF-1.4 fake")
 
-    # _convert_sync not patched: marker is not installed in CI, so the real
-    # path must degrade to a typed BlueTeamMCPError response, never a traceback.
+    # _convert_sync not patched: marker is not installed in CI, so the real path
+    # must degrade to a typed BlueTeamMCPError, never a traceback and never a
+    # success payload carrying error text.
     from mcp_server.core.exceptions import BlueTeamMCPError
 
-    out = await dc.blueteam_document_convert(dc.DocumentConvertInput(path=str(pdf)))
-    parsed = json.loads(out)
-    assert "error" in parsed
-    assert parsed.get("type") == BlueTeamMCPError.__name__
+    with pytest.raises(BlueTeamMCPError):
+        await dc.blueteam_document_convert(dc.DocumentConvertInput(path=str(pdf)))

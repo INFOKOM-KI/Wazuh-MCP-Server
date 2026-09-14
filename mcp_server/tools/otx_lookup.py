@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 import httpx
 from mcp_server import mcp, OTX_API_KEY_ENV
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.core.http_client import _handle_api_error, _is_private_or_reserved
+from mcp_server.core.http_client import _handle_api_error, _api_error_text, _is_private_or_reserved
 from mcp_server.threat_intel.otx import (
     _otx_request, _classify_indicator, _extract_pulse_summary,
     _format_otx_markdown, _format_geo_markdown, _normalize_adversary,
@@ -89,7 +89,7 @@ async def otx_lookup(params: OtxLookupInput) -> str:
     try:
         raw = await _otx_request(params.indicator, params.section)
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
-        return _handle_api_error(e, context="otx_lookup")
+        _handle_api_error(e, context="otx_lookup")
 
     if isinstance(raw, dict) and "error" in raw:
         return json.dumps(raw, indent=2)
@@ -180,7 +180,7 @@ async def otx_lookup_bulk(params: OtxBulkInput) -> str:
                 "adversaries": list({_normalize_adversary(p.get("adversary")) for p in pulses if _normalize_adversary(p.get("adversary"))})[:5],
             }
         except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
-            return {"indicator": ind, "error": _handle_api_error(e, context=ind)}
+            return {"indicator": ind, "error": _api_error_text(e, context=ind)}
 
     import asyncio
     results = await asyncio.gather(*[_one(i) for i in params.indicators])

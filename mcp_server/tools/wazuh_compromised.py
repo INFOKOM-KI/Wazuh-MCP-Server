@@ -227,7 +227,7 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
 
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
         if total_scanned == 0:
-            return _handle_api_error(e, context="wazuh_compromised_emails_analysis")
+            _handle_api_error(e, context="wazuh_compromised_emails_analysis")
         logging.getLogger(__name__).warning(
             "wazuh_compromised_emails_analysis: error after %d docs: %s", total_scanned, e
         )

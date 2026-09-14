@@ -68,7 +68,7 @@ async def blueteam_lookup_hash_virustotal(params: VirusTotalHashInput) -> str:
             return _truncate_if_needed(json.dumps({"hash": params.hash, "malicious": stats.get("malicious", 0), "suspicious": stats.get("suspicious", 0), "harmless": stats.get("harmless", 0)}, indent=2))
         return _truncate_if_needed(f"# VirusTotal Hash - {params.hash}\n\n- **Malicious**: {stats.get('malicious',0)}\n- **Suspicious**: {stats.get('suspicious',0)}\n- **Harmless**: {stats.get('harmless',0)}")
     except Exception as e:
-        return _handle_api_error(e, context="virustotal")
+        _handle_api_error(e, context="virustotal")
 
 
 class VirusTotalDomainInput(BaseModel):
@@ -103,7 +103,7 @@ async def blueteam_lookup_domain_virustotal(params: VirusTotalDomainInput) -> st
             return _truncate_if_needed(json.dumps({"domain": params.domain, "malicious": stats.get("malicious", 0), "suspicious": stats.get("suspicious", 0), "harmless": stats.get("harmless", 0)}, indent=2))
         return _truncate_if_needed(f"# VirusTotal Domain - {params.domain}\n\n- **Malicious**: {stats.get('malicious',0)}\n- **Suspicious**: {stats.get('suspicious',0)}\n- **Harmless**: {stats.get('harmless',0)}")
     except Exception as e:
-        return _handle_api_error(e, context="virustotal")
+        _handle_api_error(e, context="virustotal")
 
 
 class ArgusIpLookupInput(BaseModel):
@@ -153,7 +153,7 @@ async def argus_ip_lookup(params: ArgusIpLookupInput) -> str:
             lines.append(f"- **Country**: {abuse.get('countryName', '?')}")
         return _truncate_if_needed("\n".join(lines))
     except Exception as e:
-        return _handle_api_error(e, context="argus")
+        _handle_api_error(e, context="argus")
 
 
 class NetraIpAnalysisInput(BaseModel):
@@ -208,7 +208,7 @@ async def netra_ip_analysis(params: NetraIpAnalysisInput) -> str:
             lines.append(f"- **AI Insight**: {ai.get('insight', '?')[:200]}")
         return _truncate_if_needed("\n".join(lines))
     except Exception as e:
-        return _handle_api_error(e, context="netra")
+        _handle_api_error(e, context="netra")
 
 
 # Sangfor Blocklist Lookup
@@ -283,7 +283,7 @@ async def sangfor_blocklist_check(params: SangforBlocklistCheckInput) -> str:
         blocked = raw.get("blocked", False)
         return _truncate_if_needed(f"# Sangfor Blocklist - {params.ip}\n\n- **Blocked**: {blocked}")
     except Exception as e:
-        return _handle_api_error(e, context="sangfor")
+        _handle_api_error(e, context="sangfor")
 
 @mcp.tool(
     name="sangfor_blocklist_list",
@@ -323,7 +323,7 @@ async def sangfor_blocklist_list(params: SangforBlocklistListInput) -> str:
             return _truncate_if_needed(json.dumps(raw, indent=2))
         return _truncate_if_needed(_format_sangfor_blocklist_markdown(raw))
     except Exception as e:
-        return _handle_api_error(e, context="sangfor_list")
+        _handle_api_error(e, context="sangfor_list")
 
 
 # Unified Threat Confidence Scoring

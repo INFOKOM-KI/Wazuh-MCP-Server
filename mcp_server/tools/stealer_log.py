@@ -103,9 +103,9 @@ async def stealer_log_check(params: StealerLogInput) -> str:
         if e.response.status_code == 404:
             return json.dumps({"email": params.email, "found": False,
                                "stealer_logs": [], "note": "No stealer-log hits."}, indent=2)
-        return _handle_api_error(e, context="stealer_log_check")
+        _handle_api_error(e, context="stealer_log_check")
     except httpx.TimeoutException as e:
-        return _handle_api_error(e, context="stealer_log_check")
+        _handle_api_error(e, context="stealer_log_check")
 
     logs = _parse_stealer_logs(raw)
     found = len(logs) > 0

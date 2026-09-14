@@ -218,7 +218,7 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
                 {"query_string": {"query": " OR ".join(parts), "default_operator": "AND", "lenient": True}})
         data = await _wazuh_indexer_post(body, index_pattern=_WAZUH_INDEX_PATTERNS["alerts"])
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
-        return _handle_api_error(e, context="wazuh_alert_focused_crawl")
+        _handle_api_error(e, context="wazuh_alert_focused_crawl")
 
     if isinstance(data.get("error"), str):
         return json.dumps(data, indent=2)

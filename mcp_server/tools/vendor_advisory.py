@@ -70,7 +70,7 @@ async def blueteam_cve_advisory(params: CveAdvisoryInput) -> str:
         result = await get_vendor_advisory(params.cve_id)
     except (httpx.HTTPStatusError, httpx.TimeoutException, ValueError,
             CircuitOpenError) as e:
-        return _handle_api_error(e, context="blueteam_cve_advisory")
+        _handle_api_error(e, context="blueteam_cve_advisory")
 
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(result, indent=2, default=str))

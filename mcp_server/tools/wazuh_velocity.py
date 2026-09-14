@@ -178,7 +178,7 @@ async def wazuh_attack_velocity(params: WazuhAttackVelocityInput = WazuhAttackVe
             _wazuh_indexer_post(_build_query(previous_since, previous_until)),
         )
     except Exception as e:
-        return _handle_api_error(e, context="wazuh_attack_velocity")
+        _handle_api_error(e, context="wazuh_attack_velocity")
 
     if "error" in current_raw:
         return json.dumps(current_raw, indent=2)

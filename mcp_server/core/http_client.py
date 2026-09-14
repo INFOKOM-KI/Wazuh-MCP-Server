@@ -10,8 +10,12 @@ import httpx
 from pydantic import AfterValidator
 from mcp_server import WAZUH_INDEXER_VERIFY_SSL
 from mcp_server import HTTP_TIMEOUT, WAZUH_API_VERIFY_SSL, WAZUH_INDEXER_VERIFY_SSL, ARGUS_VERIFY_SSL
+from mcp_server.core.exceptions import ThreatIntelError
 
 logger = logging.getLogger("blue_team_mcp.http")
+
+# How much of an upstream error body is preserved in a diagnostic message.
+_MAX_ERROR_BODY = 500
 
 # http2 requires the optional 'h2' package (httpx[http2] extra). Degrade to
 # http/1.1 gracefully when it's absent (e.g. minimal test/CI environments), so
@@ -134,12 +138,36 @@ def _get_breaker(name: str) -> CircuitBreaker:
     return _breakers[name]
 
 
+# Longest Retry-After we will sit through. Anything longer is reported back to the
+# caller instead of silently blocking the tool for minutes.
+_RETRY_AFTER_MAX = 30.0
+
+
+def _retry_after_seconds(header: str | None) -> float | None:
+    """Parse a numeric ``Retry-After`` header into a delay worth waiting for.
+    Returns None when the header is absent, non-numeric (the HTTP-date form is not
+    parsed), negative, or longer than ``_RETRY_AFTER_MAX``. In all of those cases the
+    caller fails fast rather than waiting and being throttled again. The raw header
+    value still reaches the operator through the error message.
+    """
+    if not header:
+        return None
+    try:
+        delay = float(header)
+    except (TypeError, ValueError):
+        return None
+    if delay < 0 or delay > _RETRY_AFTER_MAX:
+        return None
+    return delay
+
+
 # Unified API call
 async def _api_call(method: str, url: str, *, client_name: str = "http", verify: bool = True,
                     max_retries: int = 1, backoff: float = 0.2, **kw) -> httpx.Response:
     """Unified async HTTP helper. Returns raw response caller calls .json() or .text.
-    Retries (default once, configurable via max_retries) on 5xx server errors, network
-    failures (jittered backoff), and 429 rate limits (honors Retry-After when present).
+    Retries (default once, configurable via max_retries) on 5xx server errors and
+    network failures (jittered backoff). A 429 is retried only when the response
+    carries a usable numeric Retry-After blind retries just burn more quota.
     A per-pool circuit breaker fails fast (CircuitOpenError) when an upstream is
     repeatedly down, so outages don't pile up retries/timeouts across all tools.
     """
@@ -149,7 +177,7 @@ async def _api_call(method: str, url: str, *, client_name: str = "http", verify:
     for attempt in range(1 + max_retries):
         if not breaker.before_call():
             raise CircuitOpenError(
-                f"circuit breaker open for '{client_name}' "
+                f"circuit breaker open for '{client_name}'"
                 f"({breaker.failures} consecutive failures) try again shortly"
             )
         try:
@@ -161,12 +189,11 @@ async def _api_call(method: str, url: str, *, client_name: str = "http", verify:
             status = e.response.status_code
             if status == 429:
                 breaker.on_throttled()
-                if attempt < max_retries:
-                    retry_after = e.response.headers.get("Retry-After")
-                    try:
-                        delay = min(float(retry_after), 30.0) if retry_after else backoff
-                    except ValueError:
-                        delay = backoff
+                # Only retry when the server told us when to come back. A blind
+                # fixed backoff retry of a 429 spends more of the same exhausted
+                # quota and turns one throttle into two.
+                delay = _retry_after_seconds(e.response.headers.get("Retry-After"))
+                if delay is not None and attempt < max_retries:
                     await asyncio.sleep(delay)
                     last_exc = e
                     continue
@@ -174,7 +201,6 @@ async def _api_call(method: str, url: str, *, client_name: str = "http", verify:
             if 400 <= status < 500:
                 breaker.on_liveness()
                 raise
-            # 5xx genuine upstream failure
             breaker.on_failure()
             if attempt < max_retries:
                 await asyncio.sleep(backoff + random.uniform(0, 0.2))
@@ -192,30 +218,110 @@ async def _api_call(method: str, url: str, *, client_name: str = "http", verify:
 
 
 # Error handling
-def _handle_api_error(e: Exception, context: str = "") -> str:
-    """Consistent, actionable error formatting for all API-based tools."""
+# Statuses worth explaining in the error text itself rather than as a bare code.
+_STATUS_HINTS: dict[int, str] = {
+    400: "Bad request (400) - the API rejected the parameters. Try a smaller limit.",
+    401: "Invalid or missing API key (401). Check your environment variables.",
+    403: "Access forbidden (403). The API refused this credential. On RapidAPI this "
+         "means the key is not subscribed to this API.",
+    404: "No data found for this target (404).",
+}
+
+
+def _upstream_diagnostics(e: httpx.HTTPStatusError) -> dict[str, str]:
+    """Preserve the identifying details of a failed upstream call.
+    Provider gateways explain a rejection in the response body ("You are not
+    subscribed to this API.") and in ``x-ratelimit-*`` / ``Retry-After`` headers.
+    Discarding them, as this module used to, makes a 403 (wrong RapidAPI product)
+    and a quota-exhausted 429 indistinguishable in the MCP output.
+    """
+    resp = e.response
+    diag: dict[str, str] = {}
+    try:
+        diag["url"] = str(resp.url)
+    except Exception:  # synthesised response without an attached request
+        pass
+    try:
+        for name, value in resp.headers.items():
+            low = name.lower()
+            if low.startswith("x-ratelimit") or low in (
+                "retry-after", "x-rapidapi-request-id", "x-request-id",
+            ):
+                diag[name] = value
+    except Exception:  # headers unavailable - not fatal for error reporting
+        pass
+    try:
+        body = (resp.text or "").strip()
+    except Exception:  # streamed or already-consumed body
+        body = ""
+    if body:
+        diag["body"] = body[:_MAX_ERROR_BODY]
+    return diag
+
+
+def _with_diagnostics(msg: str, e: httpx.HTTPStatusError) -> str:
+    """Append upstream diagnostics to an error message, through the redaction boundary.
+    The body can echo a queried victim email, so it passes through
+    ``_redact_alert_data`` before it reaches the LLM. Attacker IPs stay visible.
+    """
+    diag = _upstream_diagnostics(e)
+    if not diag:
+        return msg
+    from mcp_server.core.redact import _redact_alert_data  # lazy: keeps boot import order flat
+    detail = " | ".join(f"{k}: {v}" for k, v in diag.items())
+    try:
+        return _redact_alert_data(f"{msg} | {detail}")
+    except Exception:  # never let redaction turn a diagnosable failure into a crash
+        logger.exception("redaction of upstream diagnostics failed")
+        safe = " | ".join(f"{k}: {v}" for k, v in diag.items() if k != "body")
+        return f"{msg} | {safe}" if safe else msg
+
+
+def _api_error_text(e: Exception, context: str = "") -> str:
+    """Human-readable, actionable text for a failed upstream API call.
+    Bulk tools call this to capture a per-item error string and keep going.
+    Single-item tools call ``_handle_api_error``, which raises.
+    """
     prefix = f"[{context}] " if context else ""
     if isinstance(e, CircuitOpenError):
         return f"{prefix}Error: {e}"
     if isinstance(e, httpx.HTTPStatusError):
         status = e.response.status_code
-        if status == 400:
-            return f"{prefix}Error: Bad request (400) - the API rejected the parameters. Try a smaller limit."
-        if status == 401:
-            return f"{prefix}Error: Invalid or missing API key (401). Check your environment variables."
-        if status == 404:
-            return f"{prefix}Error: No data found for this target (404)."
         if status == 429:
             retry_after = e.response.headers.get("Retry-After")
             hint = f"Retry after {retry_after} seconds." if retry_after else ""
-            return f"{prefix}Error: Rate limit reached (429).{hint}"
-        return f"{prefix}Error: API request failed with status {status}."
+            msg = f"{prefix}Error: Rate limit reached (429).{hint}"
+        elif status in _STATUS_HINTS:
+            msg = f"{prefix}Error: {_STATUS_HINTS[status]}"
+        else:
+            msg = f"{prefix}Error: API request failed with status {status}."
+        return _with_diagnostics(msg, e)
     if isinstance(e, httpx.TimeoutException):
         return f"{prefix}Error: Request timed out after {HTTP_TIMEOUT}s. Try again."
     if isinstance(e, RuntimeError):
         return f"{prefix}Error: {e}"
-    logger.exception("Unexpected error in %s", context)
     return f"{prefix}Error: Unexpected error ({type(e).__name__})."
+
+
+def _handle_api_error(e: Exception, context: str = "") -> None:
+    """Format a failed upstream API call, log it, and raise ``ThreatIntelError``.
+    Raising is the point. A tool that *returns* "Error: ..." as text is reported to
+    the MCP client as ``isError: false``, so an LLM can read a hard failure as a
+    finding. Letting the exception escape makes FastMCP return ``isError: true``
+    carrying the same message. Bulk tools that need a per-item string must call
+    ``_api_error_text`` instead.
+    Raises:
+        ThreatIntelError: always, chained to the original exception.
+    """
+    text = _api_error_text(e, context)
+    if isinstance(e, httpx.HTTPStatusError):
+        logger.warning("%s upstream %s %s - %s", context or "http",
+                       e.response.status_code, e.response.url, text)
+    elif isinstance(e, (httpx.TimeoutException, RuntimeError, CircuitOpenError)):
+        logger.warning("%s upstream failure - %s", context or "http", text)
+    else:
+        logger.exception("Unexpected error in %s", context)
+    raise ThreatIntelError(text) from e
 
 
 # IP validation
@@ -250,7 +356,7 @@ ValidPublicIp = Annotated[str, AfterValidator(_validate_public_ip)]
 
 def _resolve_host_ips(host: str) -> tuple[list[str], str | None]:
     """Resolve host to all A/AAAA records (both families). Returns (ips, error).
-    Literal IPs are returned as-is (no DNS). IPv4-mapped IPv6 is normalized to IPv4."""
+    Literal IPs are returned as-is (no DNS). IPv4 mapped IPv6 is normalized to IPv4."""
     try:
         ipaddress.ip_address(host)
         return [host], None
@@ -308,7 +414,7 @@ def _host_pins(host: str, allowed_domains: list[str]) -> tuple[list[str], str | 
         return ips, None
     bad = [ip for ip in ips if _is_private_or_reserved(ip)]
     if bad:
-        return [], f"Host {host} resolves to non-public address {bad[0]} - rejected (not in allowlist)."
+        return [], f"Host {host} resolves to non-public address {bad[0]} rejected (not in allowlist)."
     return ips, None
 
 

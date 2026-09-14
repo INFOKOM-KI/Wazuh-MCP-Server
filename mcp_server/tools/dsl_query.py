@@ -247,7 +247,7 @@ async def wazuh_alert_dsl_query(params: DslQueryInput) -> str:
             index_pattern=params.index_pattern,
         )
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
-        return _handle_api_error(e, context="wazuh_alert_dsl_query")
+        _handle_api_error(e, context="wazuh_alert_dsl_query")
 
     if params.response_format == "markdown":
         if isinstance(data.get("error"), str):

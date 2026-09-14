@@ -12,7 +12,6 @@ Usage:
         redact=True,     # apply 6-layer PII masking by default (opt out with redact=False)
     )
     async def blueteam_my_tool(params: MyInput) -> str:
-        ...
 The decorator applies: audit -> call -> catch BlueTeamMCPError -> redact -> truncate.
 The original function signature is preserved so FastMCP generates the correct tool schema.
 """
@@ -28,7 +27,7 @@ from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.exceptions import BlueTeamMCPError
 from mcp_server.core import metrics
 
-# Sensible defaults - every blue-team tool is read-only unless overridden
+# Sensible defaults every blue-team tool is read-only unless overridden
 _READ_ONLY_ANNOTATIONS = {
     "readOnlyHint": True,
     "destructiveHint": False,
@@ -70,7 +69,6 @@ def blueteam_tool(
             (str/dict/list). This is the uniform security boundary - opt out with
             redact=False only for tools returning attacker-only data that
             _redact_alert_data already keeps visible under protect_victim.
-
     Returns:
         A decorator that wraps the async function and registers it with FastMCP.
     """
@@ -96,14 +94,15 @@ def blueteam_tool(
                 _audit_log(name, {k: v for k, v in pd.items()
                                   if k not in ("api_key", "key")})
 
-            # call
+            # call. BlueTeamMCPError propagates on purpose: returning it as text
+            # made the MCP client report isError=false, so an upstream failure
+            # looked like a successful call to the LLM. FastMCP converts any
+            # exception that escapes a tool into an isError=true result.
             try:
                 result = await func(*args, **kwargs)
-            except BlueTeamMCPError as e:
-                return json.dumps(
-                    {"error": str(e), "type": type(e).__name__},
-                    indent=2, ensure_ascii=False,
-                )
+            except BlueTeamMCPError:
+                metrics.record_timing(name, (time.monotonic() - _t0) * 1000)
+                raise
 
             # timing
             metrics.record_timing(name, (time.monotonic() - _t0) * 1000)

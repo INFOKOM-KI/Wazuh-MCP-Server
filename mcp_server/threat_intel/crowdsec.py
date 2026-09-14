@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
 from mcp_server import mcp, CROWDSEC_API_KEY_ENV, CROWDSEC_CACHE_TTL, CROWDSEC_BASE_URL
-from mcp_server.core.http_client import _api_call, _handle_api_error, _is_private_or_reserved, ValidPublicIp
+from mcp_server.core.http_client import _api_call, _handle_api_error, _api_error_text, _is_private_or_reserved, ValidPublicIp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.threat_intel._cache import cache_get, cache_set, get_limiter
 
@@ -61,7 +61,7 @@ async def crowdsec_ip_reputation(params: CrowdsecIpReputationInput) -> str:
     try:
         raw = await _crowdsec_request(f"/v2/smoke/{params.ip}")
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
-        return _handle_api_error(e, context="crowdsec_ip_reputation")
+        _handle_api_error(e, context="crowdsec_ip_reputation")
     if params.response_format == "json":
         return json.dumps({"ip": params.ip, "reputation": raw.get("reputation","unknown"),
                            "behaviors": raw.get("behaviors",[]), "cves": raw.get("cves",[])}, indent=2)
@@ -98,7 +98,7 @@ async def crowdsec_ip_reputation_bulk(params: CrowdsecIpReputationBulkInput) -> 
             return {"ip": ip, "reputation": raw.get("reputation","unknown"),
                     "behaviors": raw.get("behaviors",[]), "cves": raw.get("cves",[])}
         except Exception as e:
-            return {"ip": ip, "error": _handle_api_error(e, context=ip)}
+            return {"ip": ip, "error": _api_error_text(e, context=ip)}
 
     results = await asyncio.gather(*[_lookup_one(ip) for ip in params.ips])
     if params.response_format == "json":

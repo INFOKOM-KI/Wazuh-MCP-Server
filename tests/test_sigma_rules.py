@@ -26,6 +26,7 @@ os.environ.setdefault("BLUETEAM_REDACTION_POLICY", "full")
 
 # httpx is imported for type parity with tests/test_yara_rules.py
 import httpx  # noqa: F401
+from mcp_server.core.exceptions import BlueTeamMCPError
 
 
 def _run(coro):
@@ -283,18 +284,17 @@ async def _empty():
 
 
 def test_generate_raises_when_no_alerts_match(monkeypatch):
-    """@blueteam_tool renders the typed exception as an error payload."""
+    """@blueteam_tool lets the typed exception escape so MCP reports isError=true."""
     sr = _module()
 
     async def fake_post(body, index_pattern=None):
         return {"hits": {"hits": []}}
 
     monkeypatch.setattr("mcp_server.wazuh.indexer._wazuh_indexer_post", fake_post)
-    out = json.loads(_run(sr.blueteam_sigma_rule_generate(
-        sr.SigmaRuleGenerateInput(mode="alert", srcip="10.0.0.1",
-                                  response_format="json"))))
-    assert "error" in out and out["type"] == "BlueTeamMCPError"
-    assert "No alerts matched" in out["error"]
+    with pytest.raises(BlueTeamMCPError, match="No alerts matched"):
+        _run(sr.blueteam_sigma_rule_generate(
+            sr.SigmaRuleGenerateInput(mode="alert", srcip="10.0.0.1",
+                                      response_format="json")))
 
 
 def test_generate_text_mode_needs_no_network(monkeypatch):
@@ -330,10 +330,10 @@ def test_save_writes_and_refuses_overwrite(tmp_path, monkeypatch):
     assert Path(payload["path"]).exists()
     assert Path(payload["path"]).suffix == ".yml"
 
-    dup = json.loads(_run(sr.blueteam_sigma_rule_save(
-        sr.SigmaRuleSaveInput(rule_source=_VALID_RULE, filename="my_rule.yml",
-                              response_format="json"))))
-    assert "error" in dup and dup["type"] == "BlueTeamMCPError"
+    dup_input = sr.SigmaRuleSaveInput(rule_source=_VALID_RULE, filename="my_rule.yml",
+                                      response_format="json")
+    with pytest.raises(BlueTeamMCPError, match="already exists"):
+        _run(sr.blueteam_sigma_rule_save(dup_input))
 
     again = json.loads(_run(sr.blueteam_sigma_rule_save(
         sr.SigmaRuleSaveInput(rule_source=_VALID_RULE, filename="my_rule.yml",
@@ -345,20 +345,20 @@ def test_save_rejects_traversal_and_wrong_extension(tmp_path, monkeypatch):
     sr = _module()
     monkeypatch.setattr(sr, "_rules_dir", lambda: tmp_path)
     for bad in ("../../etc/cron.d/x.yml", "x.yar"):
-        out = json.loads(_run(sr.blueteam_sigma_rule_save(
-            sr.SigmaRuleSaveInput(rule_source=_VALID_RULE, filename=bad,
-                                  response_format="json"))))
-        assert "error" in out, bad
+        with pytest.raises(BlueTeamMCPError):
+            _run(sr.blueteam_sigma_rule_save(
+                sr.SigmaRuleSaveInput(rule_source=_VALID_RULE, filename=bad,
+                                      response_format="json")))
     assert list(tmp_path.iterdir()) == []
 
 
 def test_save_rejects_missing_required_keys(tmp_path, monkeypatch):
     sr = _module()
     monkeypatch.setattr(sr, "_rules_dir", lambda: tmp_path)
-    out = json.loads(_run(sr.blueteam_sigma_rule_save(
-        sr.SigmaRuleSaveInput(rule_source="title: Wazuh only a title here\n",
-                              response_format="json"))))
-    assert "error" in out
+    with pytest.raises(BlueTeamMCPError, match="missing required key"):
+        _run(sr.blueteam_sigma_rule_save(
+            sr.SigmaRuleSaveInput(rule_source="title: Wazuh only a title here\n",
+                                  response_format="json")))
     assert list(tmp_path.iterdir()) == [], "nothing may be written on refusal"
 
 
@@ -416,21 +416,19 @@ class TestSigmaFieldExtraction:
         assert sigma_engine.DEFAULT_FIELD_MAP["CommandLine"] == "data.command"
 
 
-def test_convert_without_pysigma_returns_install_hint(monkeypatch):
+def test_convert_without_pysigma_raises_install_hint(monkeypatch):
     sr = _module()
     monkeypatch.setattr(sr.sigma_engine, "_load", lambda: None)
-    out = json.loads(_run(sr.blueteam_sigma_rule_convert(
-        sr.SigmaRuleConvertInput(rule_source=_VALID_RULE, response_format="json"))))
-    assert "error" in out
-    assert out["type"] == "SigmaEngineUnavailable", "the concrete subclass is reported"
-    assert "pySigma is not installed" in out["error"]
+    with pytest.raises(sr.sigma_engine.SigmaEngineUnavailable, match="pySigma is not installed"):
+        _run(sr.blueteam_sigma_rule_convert(
+            sr.SigmaRuleConvertInput(rule_source=_VALID_RULE, response_format="json")))
 
 
 def test_convert_rejects_unparseable_rule():
     sr = _module()
-    out = json.loads(_run(sr.blueteam_sigma_rule_convert(
-        sr.SigmaRuleConvertInput(rule_source="title: [unclosed", response_format="json"))))
-    assert "error" in out
+    with pytest.raises(BlueTeamMCPError):
+        _run(sr.blueteam_sigma_rule_convert(
+            sr.SigmaRuleConvertInput(rule_source="title: [unclosed", response_format="json")))
 
 
 @_needs_pysigma

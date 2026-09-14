@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Tests for mcp_server/core/http_client.py - retry logic, client pool, error handling.
+Tests for mcp_server/core/http_client.py; retry logic, client pool, error handling.
 """
 from __future__ import annotations
-
 import os
 
 # mcp_server/__init__.py calls init_config() at import and hard-fails without
@@ -20,6 +19,8 @@ from mcp_server.core.http_client import (
     _get_client,
     _api_call,
     _handle_api_error,
+    _api_error_text,
+    _retry_after_seconds,
     _is_private_or_reserved,
     _validate_public_ip,
     _host_resolves_public,
@@ -28,11 +29,11 @@ from mcp_server.core.http_client import (
     _resolve_host_ips,
     ValidPublicIp,
 )
+from mcp_server.core.exceptions import ThreatIntelError
 
 
 class TestClientPool:
-    """Tests for _get_client - pooled httpx.AsyncClient management."""
-
+    """Tests for _get_client pooled httpx.AsyncClient management."""
     @pytest.mark.asyncio
     async def test_creates_client_lazily(self):
         """_get_client creates a new client on first call."""
@@ -64,7 +65,7 @@ class TestClientPool:
 
 
 class TestRetryLogic:
-    """Tests for _api_call - retry on 5xx, 429, and network errors."""
+    """Tests for _api_call retry on 5xx, 429, and network errors."""
     @pytest.mark.asyncio
     async def test_success_first_attempt(self, mock_response):
         """Returns response on first successful attempt."""
@@ -126,8 +127,11 @@ class TestRetryLogic:
                 assert result.json() == {"throttled": False}
 
     @pytest.mark.asyncio
-    async def test_429_caps_retry_after_at_30s(self, mock_response):
-        """Retry-After values > 30s are capped at 30s."""
+    async def test_429_with_long_retry_after_raises_without_retry(self, mock_response):
+        """A Retry-After longer than 30s is reported, not slept through then re-throttled.
+        Regression: this used to clamp 999s to 30s and retry anyway, spending more
+        of an already-exhausted quota.
+        """
         fail = mock_response(
             status_code=429,
             headers=httpx.Headers({"Retry-After": "999"}),
@@ -135,13 +139,28 @@ class TestRetryLogic:
         fail.raise_for_status.side_effect = httpx.HTTPStatusError(
             "429", request=MagicMock(), response=fail
         )
-        ok = mock_response(status_code=200, json_data={"ok": True})
-        mock_get = AsyncMock(side_effect=[fail, ok])
+        mock_get = AsyncMock(side_effect=[fail])
         sleep_mock = AsyncMock()
         with patch.object(httpx.AsyncClient, "get", mock_get):
             with patch("asyncio.sleep", sleep_mock):
-                await _api_call("get", "http://test/api", client_name="retry-429-cap")
-                sleep_mock.assert_called_once_with(30.0)
+                with pytest.raises(httpx.HTTPStatusError):
+                    await _api_call("get", "http://test/api", client_name="retry-429-long")
+                assert mock_get.call_count == 1  # no retry
+                sleep_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_429_without_retry_after_raises_without_retry(self, mock_response):
+        """No Retry-After -> fail fast. A blind 0.2s retry doubles the throttle."""
+        fail = mock_response(status_code=429)
+        fail.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "429", request=MagicMock(), response=fail
+        )
+        mock_get = AsyncMock(side_effect=[fail])
+        with patch.object(httpx.AsyncClient, "get", mock_get):
+            with patch("asyncio.sleep", AsyncMock()):
+                with pytest.raises(httpx.HTTPStatusError):
+                    await _api_call("get", "http://test/api", client_name="retry-429-bare")
+                assert mock_get.call_count == 1  # no retry
 
     @pytest.mark.asyncio
     async def test_retries_on_timeout(self):
@@ -186,44 +205,98 @@ class TestRetryLogic:
 
 
 class TestErrorHandling:
-    """Tests for _handle_api_error - human-readable error formatting."""
+    """_api_error_text formats; _handle_api_error raises.
+    A tool that returns error *text* is reported to the MCP client as
+    ``isError: false``, so an LLM can read a hard upstream failure as a finding.
+    """
+    @staticmethod
+    def _status_error(status_code: int, *, headers=None, body: bytes = b"") -> httpx.HTTPStatusError:
+        """A real httpx error carrying a real response (headers/body/url readable)."""
+        req = httpx.Request(
+            "GET",
+            "https://ip-blacklist-lookup-api-apiverve.p.rapidapi.com/v1/ipblacklistlookup?ip=1.2.3.4",
+        )
+        resp = httpx.Response(status_code, headers=headers or {}, content=body, request=req)
+        return httpx.HTTPStatusError("boom", request=req, response=resp)
+
     def test_400_bad_request(self):
-        resp = MagicMock(spec=httpx.Response)
-        resp.status_code = 400
-        exc = httpx.HTTPStatusError("bad", request=MagicMock(), response=resp)
-        msg = _handle_api_error(exc)
+        msg = _api_error_text(self._status_error(400))
         assert "400" in msg
         assert "parameters" in msg.lower()
 
     def test_401_unauthorized(self):
-        resp = MagicMock(spec=httpx.Response)
-        resp.status_code = 401
-        exc = httpx.HTTPStatusError("unauth", request=MagicMock(), response=resp)
-        msg = _handle_api_error(exc)
+        msg = _api_error_text(self._status_error(401))
         assert "401" in msg
         assert "api key" in msg.lower()
 
+    def test_403_names_the_unsubscribed_cause_and_keeps_the_body(self):
+        # The verbatim 403 an unsubscribed RapidAPI product returns.
+        exc = self._status_error(403, body=b'{"message":"You are not subscribed to this API."}')
+        msg = _api_error_text(exc, context="blueteam_ip_blacklist")
+        assert "403" in msg
+        assert "not subscribed" in msg
+        assert 'You are not subscribed to this API.' in msg  # upstream body preserved
+        # Host label is masked by the redaction boundary, but the path survives and
+        # identifies which RapidAPI product was called.
+        assert "/v1/ipblacklistlookup" in msg
+        assert ".p.rapidapi.com" in msg
+
     def test_404_not_found(self):
-        resp = MagicMock(spec=httpx.Response)
-        resp.status_code = 404
-        exc = httpx.HTTPStatusError("nf", request=MagicMock(), response=resp)
-        msg = _handle_api_error(exc)
-        assert "404" in msg
+        assert "404" in _api_error_text(self._status_error(404))
+
+    def test_429_preserves_ratelimit_headers(self):
+        exc = self._status_error(429, headers=httpx.Headers({
+            "Retry-After": "2",
+            "x-ratelimit-requests-remaining": "0",
+        }))
+        msg = _api_error_text(exc)
+        assert "429" in msg
+        assert "Retry after 2 seconds." in msg
+        assert "x-ratelimit-requests-remaining: 0" in msg
+
+    def test_diagnostics_redact_a_victim_email_in_the_body(self):
+        # The uniform redaction boundary must cover error text on its way to the LLM.
+        exc = self._status_error(500, body=b"quota exceeded for csirt@tangerangkota.go.id")
+        msg = _api_error_text(exc, context="blueteam_breach_check")
+        assert "csirt@tangerangkota.go.id" not in msg
+        assert "quota exceeded for" in msg  # non-PII still present
 
     def test_timeout(self):
-        exc = httpx.TimeoutException("timed out")
-        msg = _handle_api_error(exc)
+        msg = _api_error_text(httpx.TimeoutException("timed out"))
         assert "timed out" in msg.lower()
 
     def test_runtime_error(self):
-        exc = RuntimeError("custom error")
-        msg = _handle_api_error(exc)
-        assert "custom error" in msg
+        assert "custom error" in _api_error_text(RuntimeError("custom error"))
 
     def test_context_prefix(self):
-        exc = RuntimeError("something")
-        msg = _handle_api_error(exc, context="crowdsec")
-        assert msg.startswith("[crowdsec]")
+        assert _api_error_text(RuntimeError("something"), context="crowdsec").startswith("[crowdsec]")
+
+    def test_handle_api_error_raises_with_body_and_cause(self):
+        exc = self._status_error(500, body=b"upstream exploded")
+        with pytest.raises(ThreatIntelError) as ei:
+            _handle_api_error(exc, context="blueteam_ip_blacklist")
+        assert "500" in str(ei.value)
+        assert "upstream exploded" in str(ei.value)
+        assert ei.value.__cause__ is exc
+
+    def test_handle_api_error_raises_on_missing_key(self):
+        # A missing credential is a hard failure, not a successful call with text.
+        with pytest.raises(ThreatIntelError):
+            _handle_api_error(RuntimeError("RAPIDAPI_KEY not set"))
+
+    @pytest.mark.parametrize("header,expected", [
+        (None, None),
+        ("", None),
+        ("abc", None),
+        ("Mon, 14 Sep 2026 04:06:02 GMT", None),  # HTTP-date form is not parsed
+        ("-1", None),
+        ("999", None),  # too long to sit through fail fast instead
+        ("0", 0.0),
+        ("2", 2.0),
+        ("30", 30.0),
+    ])
+    def test_retry_after_seconds(self, header, expected):
+        assert _retry_after_seconds(header) == expected
 
 
 class TestIPValidation:

@@ -172,7 +172,7 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
             body["query"]["bool"]["filter"].append({"match": {"GeoLocation.country_name": params.geo_country}})
         data = await _wazuh_indexer_post(body)
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
-        return _handle_api_error(e, context="wazuh_alert_timeline")
+        _handle_api_error(e, context="wazuh_alert_timeline")
 
     if isinstance(data.get("error"), str):
         return json.dumps(data, indent=2)

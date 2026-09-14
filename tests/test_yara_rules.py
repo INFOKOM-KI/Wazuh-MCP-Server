@@ -249,11 +249,11 @@ def test_save_writes_rule_and_refuses_overwrite(tmp_path, monkeypatch):
     # str_strip_whitespace on the input model trims the trailing newline.
     assert saved.read_text() == _VALID_RULE.strip()
 
-    # A second save without overwrite is refused, and @blueteam_tool renders the
-    # typed exception as an error payload rather than re-raising it.
-    dup = json.loads(_run(yr.blueteam_yara_rule_save(
-        yr.YaraRuleSaveInput(rule_source=_VALID_RULE, response_format="json"))))
-    assert "error" in dup and dup["type"] == "BlueTeamMCPError"
+    # A second save without overwrite is refused, and @blueteam_tool lets the typed
+    # exception escape so MCP reports isError=true instead of a success payload.
+    with pytest.raises(yr.BlueTeamMCPError, match="already exists"):
+        _run(yr.blueteam_yara_rule_save(
+            yr.YaraRuleSaveInput(rule_source=_VALID_RULE, response_format="json")))
 
     out2 = _run(yr.blueteam_yara_rule_save(yr.YaraRuleSaveInput(
         rule_source=_VALID_RULE, overwrite=True, response_format="json")))
@@ -263,16 +263,16 @@ def test_save_writes_rule_and_refuses_overwrite(tmp_path, monkeypatch):
 def test_save_rejects_traversal_filename(tmp_path, monkeypatch):
     yr = _module()
     monkeypatch.setattr(yr, "_rules_dir", lambda: tmp_path)
-    out = json.loads(_run(yr.blueteam_yara_rule_save(yr.YaraRuleSaveInput(
-        rule_source=_VALID_RULE, filename="../../etc/cron.d/x.yar",
-        response_format="json"))))
-    assert "error" in out
+    with pytest.raises(yr.BlueTeamMCPError):
+        _run(yr.blueteam_yara_rule_save(yr.YaraRuleSaveInput(
+            rule_source=_VALID_RULE, filename="../../etc/cron.d/x.yar",
+            response_format="json")))
 
 
 def test_save_rejects_invalid_rule(tmp_path, monkeypatch):
     yr = _module()
     monkeypatch.setattr(yr, "_rules_dir", lambda: tmp_path)
-    out = json.loads(_run(yr.blueteam_yara_rule_save(yr.YaraRuleSaveInput(
-        rule_source="rule broken { condition: ", response_format="json"))))
-    assert "error" in out
+    with pytest.raises(yr.BlueTeamMCPError):
+        _run(yr.blueteam_yara_rule_save(yr.YaraRuleSaveInput(
+            rule_source="rule broken { condition: ", response_format="json")))
     assert list(tmp_path.iterdir()) == []

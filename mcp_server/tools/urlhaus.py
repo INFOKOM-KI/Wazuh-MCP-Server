@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 import httpx
 from mcp_server import mcp, URLHAUS_API_KEY_ENV
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.core.http_client import _handle_api_error
+from mcp_server.core.http_client import _handle_api_error, _api_error_text
 from mcp_server.threat_intel.urlhaus import (_urlhaus_request, _urlhaus_payload_request,
                                              _format_urlhaus_markdown)
 
@@ -56,7 +56,7 @@ async def urlhaus_lookup(params: UrlhausLookupInput) -> str:
     try:
         raw = await _urlhaus_request({"url": params.url})
     except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
-        return _handle_api_error(e, context="urlhaus_lookup")
+        _handle_api_error(e, context="urlhaus_lookup")
 
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(raw, indent=2, default=str))
@@ -113,7 +113,7 @@ async def urlhaus_hash_lookup(params: UrlhausHashInput) -> str:
     try:
         raw = await _urlhaus_payload_request(params.file_hash)
     except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
-        return _handle_api_error(e, context="urlhaus_hash_lookup")
+        _handle_api_error(e, context="urlhaus_hash_lookup")
 
     if raw.get("query_status") == "illegal_hash":
         return json.dumps({"error": "Invalid file hash format."}, indent=2)
@@ -179,7 +179,7 @@ async def urlhaus_lookup_bulk(params: UrlhausBulkInput) -> str:
                 "malware_payloads": len(raw.get("payloads", [])),
             }
         except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
-            return {"url": url, "error": _handle_api_error(e, context=url)}
+            return {"url": url, "error": _api_error_text(e, context=url)}
 
     import asyncio
     results = await asyncio.gather(*[_one(u) for u in params.urls])

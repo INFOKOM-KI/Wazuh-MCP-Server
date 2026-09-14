@@ -3,22 +3,30 @@
 © NAuliajati - TangerangKota-CSIRT
 RapidAPI capability lookups - three providers over a shared RapidAPI transport:
 1. blueteam_ip_blacklist  - Apiverve IP Blacklist Lookup (is this srcip on a blacklist?)
-2. blueteam_ioc_search    - RapidAPI IOC Search (malware/IOC matches for a srcip)
+2. blueteam_ioc_search    - RapidAPI IOC Search (vendor verdicts, file + hostname telemetry)
 3. blueteam_breach_check  - RapidAPI Breach Check (was this email in a known breach?)
 All three accept the indicator (srcip / attacker IP / email) directly so the LLM can feed
-values pulled from Wazuh alerts without any extra plumbing. Responses are handled
-dynamically - the raw JSON is returned verbatim plus a normalized envelope, so unknown or
-changing third-party schemas never break the tool.
+values pulled from Wazuh alerts without any extra plumbing.
+Two response strategies, matched to the payload:
+- ip_blacklist / breach_check use the generic `_dynamic_markdown` + `_envelope` pair, so an
+  unknown or changing third-party schema degrades to a pretty-printed body instead of an
+  empty report.
+- ioc_search has a known, stable, ~70 KB schema, so it gets a provider-aware normalizer
+  (`_normalize_ioc_search`) with three `detail_level`s. Its WHOIS block carries a natural
+  person's name and postal address, which the shape-based redaction layers do not catch -
+  `_strip_whois_pii` reduces it to technical registry fields at every detail level.
 """
 from __future__ import annotations
 import json, os, re
+from datetime import datetime, timezone
 from typing import Any, Literal
 from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from mcp_server import mcp, RAPIDAPI_KEY_ENV
+from mcp_server import mcp, RAPIDAPI_KEY_ENV, RAPIDAPI_CACHE_TTL
 from mcp_server.core.http_client import _api_call, _handle_api_error, ValidPublicIp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.exceptions import ThreatIntelError
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.threat_intel._cache import cache_get, cache_set, get_limiter
 
@@ -27,7 +35,12 @@ _IP_BLACKLIST_HOST = "ip-blacklist-lookup-api-apiverve.p.rapidapi.com"
 _IOC_SEARCH_HOST = "ioc-search.p.rapidapi.com"
 _BREACH_CHECK_HOST = "breachcheck-api.p.rapidapi.com"
 
-_limiter = get_limiter("rapidapi", max_concurrent=3, min_interval=0.15)  # RapidAPI free tier ~5 req/s
+# One request in flight at a time: RapidAPI quota is per subscribed product, and a
+# free plan is small enough that a burst is the difference between a successful
+# lookup and a self-inflicted 429. max_concurrent=1 also makes min_interval mean
+# "time between request starts", which it does not under concurrency (the shared
+# AsyncRateLimiter reserves nothing, so N waiters wake together).
+_limiter = get_limiter("rapidapi", max_concurrent=1, min_interval=0.25)  # 4 req/s, under the ~5 req/s free tier
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -48,14 +61,24 @@ def _rapidapi_headers(host: str) -> dict[str, str]:
     }
 
 
-async def _rapidapi_get(host: str, path: str, ttl: int = 1800) -> dict[str, Any]:
-    """GET a RapidAPI endpoint with TTL caching + rate limiting. Returns parsed JSON."""
+async def _rapidapi_get(host: str, path: str, ttl: int | None = None) -> dict[str, Any]:
+    """GET a RapidAPI endpoint with TTL caching + rate limiting. Returns parsed JSON.
+    ``ttl`` defaults to ``RAPIDAPI_CACHE_TTL`` (default 1800s). The three RapidAPI
+    products share one cache namespace but have separate quotas, so the TTL is the
+    only lever an operator has to trade freshness for quota headroom.
+    Uses its own ``rapidapi`` HTTP client pool so the pool and circuit breaker are
+    not shared with the other external threat-intel providers: a CrowdSec outage
+    must not fail RapidAPI lookups fast with a circuit-open error.
+    """
+    if ttl is None:
+        ttl = RAPIDAPI_CACHE_TTL
     cache_key = f"{host}{path}"
     cached = cache_get("rapidapi", cache_key)
     if cached is not None:
         return cached
     async with _limiter:
-        resp = await _api_call("get", f"https://{host}{path}", headers=_rapidapi_headers(host))
+        resp = await _api_call("get", f"https://{host}{path}", client_name="rapidapi",
+                               headers=_rapidapi_headers(host))
         data = resp.json()
     cache_set("rapidapi", cache_key, data, ttl)
     return data
@@ -123,11 +146,310 @@ def _sanitize_breach(raw: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# WHOIS allowlist
+# Technical registry fields only. Allowlist, not denylist: a future registry field
+# (e-mail, role, phone) is dropped by default instead of leaking until someone
+# notices. Verified against a real RapidAPI IOC Search body, this drops
+# person/address/phone/fax-no/nic-hdl/remarks and keeps netname TOR-EXIT, org-name ForPrivacyNET, route and origin.
+# NOTE: `address` is dropped by field NAME, not by block. RIPE repeats the same
+# street address in both the ORG block and the person block, so a block-level rule
+# would have kept one copy.
+_WHOIS_KEEP = frozenset({
+    "inetnum", "netname", "descr", "country", "status", "source",
+    "org", "organisation", "org-name", "org-type",
+    "route", "origin", "created", "last-modified", "mnt-by",
+    "admin-c", "tech-c", "abuse-c",  # registry role handles, needed for abuse escalation.
+})
+_WHOIS_MAX_KEYS = 40
+_WHOIS_MAX_VALUE = 200
+_WHOIS_MAX_VALUES_PER_KEY = 20
+
+
+def _strip_whois_pii(whois: str) -> dict[str, list[str]]:
+    """Reduce a WHOIS record to allowlisted technical fields.
+    WHOIS is line-oriented ``key: value``; continuation lines repeat the key.
+    Values are capped so a registrant cannot smuggle a payload through one field.
+    """
+    out: dict[str, list[str]] = {}
+    for line in (whois or "").splitlines():
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        key = key.strip().lower()
+        if key not in _WHOIS_KEEP:
+            continue
+        if key not in out and len(out) >= _WHOIS_MAX_KEYS:
+            continue
+        vals = out.setdefault(key, [])
+        if len(vals) < _WHOIS_MAX_VALUES_PER_KEY:
+            vals.append(value.strip()[:_WHOIS_MAX_VALUE])
+    return out
+
+
+# How much of each section each detail_level carries. raw also embeds the verbatim
+# body, so its curated block matches forensic and there are two code paths, not three.
+_IOC_LIMITS: dict[str, dict[str, int]] = {
+    "summary":  {"files": 5,  "resolutions": 5,   "referrers": 0,  "vendors": 0},
+    "forensic": {"files": 50, "resolutions": 100, "referrers": 10, "vendors": 30},
+    "raw":      {"files": 50, "resolutions": 100, "referrers": 10, "vendors": 30},
+}
+
+# Refuse to re-indent a body past this. json.dumps(indent=2) roughly doubles the
+# size, so a pathological response would otherwise build a multi-MB string first.
+_RAW_BODY_MAX_CHARS = 2_000_000
+
+_EPOCH_FIELDS = ("analysis_date", "modification_date")
+
+
+def _epoch_iso(ts: Any) -> str | None:
+    """Epoch seconds -> UTC ISO 8601, or None. An LLM cannot read 1789309660."""
+    if not isinstance(ts, (int, float)) or ts <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _ioc_band(ratio: float) -> str:
+    """Presentation label for the vendor ratio.
+    Never a scoring input, and never fed to blueteam_unified_threat_score - that
+    tool has no RapidAPI provider, so the two can disagree and the prompt rule
+    requires both to be reported rather than averaged.
+    """
+    if ratio >= 0.5:
+        return "majority-malicious"
+    if ratio >= 0.05:
+        return "minority-malicious"
+    if ratio > 0:
+        return "single-vendor-flag"
+    return "no-vendors-flag"
+
+
+def _ioc_verdict(data: dict[str, Any], unknown: list[str]) -> dict[str, Any]:
+    """Vendor counts from the provider's own rollup.
+    A MISSING stats block yields {}, never zeros. Reporting
+    ``malicious_engines: 0`` for a field we failed to map is a false negative in a
+    SOC tool, and that failure mode is worse than an empty verdict.
+    """
+    stats = data.get("security_vendor_analysis_stats")
+    if not isinstance(stats, dict):
+        unknown.append("security_vendor_analysis_stats")
+        return {}
+    counts = {k: int(stats.get(k) or 0) for k in
+              ("malicious", "suspicious", "harmless", "undetected")}
+    total = sum(counts.values())
+    out: dict[str, Any] = {f"{k}_engines": v for k, v in counts.items()}
+    out["total_engines"] = total
+    if isinstance(data.get("votes_result"), dict):
+        out["votes"] = data["votes_result"]
+    if "reputation" in data:
+        out["provided_reputation"] = data["reputation"]
+    if isinstance(data.get("tags"), list):
+        out["tags"] = data["tags"]
+    if total:  # division guard no ratio from an empty denominator
+        out["malicious_ratio"] = round(counts["malicious"] / total, 3)
+        out["band"] = _ioc_band(counts["malicious"] / total)
+    return out
+
+
+def _named_file_malicious(f: dict[str, Any]) -> int:
+    stats = f.get("security_vendor_analysis_stats")
+    return stats.get("malicious", 0) if isinstance(stats, dict) else 0
+
+
+def _ioc_files(data: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    """Communicating files, most-detected first. Zero-detection files are kept when
+    fewer than ``limit`` qualify: a short list beats silently dropping evidence."""
+    files = [f for f in (data.get("communicating_files") or []) if isinstance(f, dict)]
+    if not limit or not files:
+        return []
+    out = []
+    for f in sorted(files, key=_named_file_malicious, reverse=True)[:limit]:
+        names = f.get("names") or []
+        packers = f.get("packers")
+        out.append({
+            "sha256": f.get("sha256"),
+            "name": names[0] if names else None,
+            "type": f.get("type_description"),
+            "size": f.get("size"),
+            "malicious": _named_file_malicious(f),
+            "packers": sorted(packers) if isinstance(packers, dict) else [],
+        })
+    return out
+
+
+def _ioc_resolutions(data: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    """Hostnames this IP resolved to, newest first. The DDNS cluster is usually the
+    most actionable part of the payload."""
+    rows = [r for r in (data.get("resolutions") or []) if isinstance(r, dict)]
+    if not limit or not rows:
+        return []
+    rows.sort(key=lambda r: r.get("resolved_date") or 0, reverse=True)
+
+    def _mal(r: dict[str, Any]) -> int:
+        s = r.get("security_vendor_ip_address_analysis_stats")
+        return s.get("malicious", 0) if isinstance(s, dict) else 0
+
+    return [{"host_name": r.get("host_name"),
+             "resolved_date": _epoch_iso(r.get("resolved_date")),
+             "malicious_vendors": _mal(r)} for r in rows[:limit]]
+
+
+def _ioc_flagged_vendors(data: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    """Per-vendor tuples, flagged engines only. 89 clean 'harmless' rows carry no
+    signal; the ones that fired are the evidence."""
+    vendor_map = data.get("security_vendor_analysis")
+    if not limit or not isinstance(vendor_map, dict):
+        return []
+    flagged = [v for v in vendor_map.values()
+               if isinstance(v, dict) and v.get("category") in ("malicious", "suspicious")]
+    flagged.sort(key=lambda v: (v.get("category") != "malicious", v.get("enginename") or ""))
+    return [{"engine": v.get("enginename"), "result": v.get("result"),
+             "category": v.get("category")} for v in flagged[:limit]]
+
+
+def _ioc_raw_body(raw: dict[str, Any], whois_filtered: dict[str, list[str]]) -> dict[str, Any]:
+    """Verbatim provider body with the whois field replaced by the allowlisted form.
+    raw is a schema-debugging view, not a PII bypass the filter has no bypass.
+    Copy-on-write at the two levels we touch instead of deepcopy: the body is
+    ~70 KB and _rapidapi_get hands back a cached object, so mutating in place
+    would poison the cache for every later caller. (That shared-mutable cache is
+    pre-existing; this function avoids making it worse.)
+    """
+    body = dict(raw)
+    data = raw.get("data")
+    if isinstance(data, dict):
+        data_copy = dict(data)
+        if "whois" in data_copy:
+            data_copy["whois"] = whois_filtered
+        body["data"] = data_copy
+    return body
+
+
+def _normalize_ioc_search(ip: str, raw: dict[str, Any], level: str) -> dict[str, Any]:
+    """Flatten a RapidAPI IOC Search body into one dict both renderers share."""
+    limits = _IOC_LIMITS[level]
+    data = raw.get("data") if isinstance(raw, dict) else None
+    if not isinstance(data, dict) or raw.get("is_success") is False:
+        return {"ip": ip, "detail_level": level, "unknown_fields": ["data"],
+                "error": (raw or {}).get("message") or "unrecognized provider response"}
+
+    unknown: list[str] = []
+    whois_raw = data.get("whois")
+    whois = _strip_whois_pii(whois_raw if isinstance(whois_raw, str) else "")
+
+    out: dict[str, Any] = {"ip": ip, "detail_level": level}
+    verdict = _ioc_verdict(data, unknown)
+    if verdict:
+        out["verdict"] = verdict
+    out["network"] = {k: data[k] for k in
+                      ("asn", "as_owner", "network", "country", "continent",
+                       "internet_registry") if k in data}
+    out["timestamps"] = {k: _epoch_iso(data.get(k)) for k in _EPOCH_FIELDS}
+    out["communicating_files"] = _ioc_files(data, limits["files"])
+    out["resolutions"] = _ioc_resolutions(data, limits["resolutions"])
+
+    referrals = data.get("referrerFiles")
+    out["referrer_files_count"] = len(referrals) if isinstance(referrals, list) else 0
+    if limits["referrers"] and isinstance(referrals, list):
+        out["referrer_files"] = [
+            r.get("meaningful_name") or (r.get("names") or [None])[0]
+            for r in referrals[:limits["referrers"]] if isinstance(r, dict)
+        ]
+    if limits["vendors"]:
+        out["flagged_vendors"] = _ioc_flagged_vendors(data, limits["vendors"])
+
+    out["whois"] = whois or {"note": "no allowlisted WHOIS fields present"}
+    if level == "raw":
+        out["raw"] = _ioc_raw_body(raw, whois)
+    if unknown:
+        out["unknown_fields"] = unknown
+    return out
+
+
+def _render_ioc_search(summary: dict[str, Any]) -> str:
+    """Markdown view of the normalizer output. Line 3 answers 'is this IP bad'
+    without reading further; before this the answer sat ~70 KB down the page."""
+    ip = summary["ip"]
+    if "error" in summary:
+        return f"# IOC Search - {ip}\n\n**Could not read provider response**: {summary['error']}"
+
+    v = summary.get("verdict") or {}
+    lines = [f"# IOC Search - {ip}", ""]
+    if v:
+        head = (f"**Verdict**: {v.get('malicious_engines', '?')}/"
+                f"{v.get('total_engines', '?')} engines malicious")
+        if "malicious_ratio" in v:
+            head += f" ({v['malicious_ratio'] * 100:.1f}%) | band: {v.get('band')}"
+        if v.get("tags"):
+            head += f" | tags: {', '.join(v['tags'])}"
+        if "provided_reputation" in v:
+            head += f" | provider reputation: {v['provided_reputation']}"
+        lines.append(head)
+    else:
+        lines.append("**Verdict**: unknown - provider returned no vendor statistics")
+
+    n = summary.get("network") or {}
+    if n:
+        lines.append(f"**Network**: AS{n.get('asn', '?')} {n.get('as_owner', '')} "
+                     f"({n.get('country', '?')}, {n.get('continent', '?')}) | "
+                     f"{n.get('network', '?')} | {n.get('internet_registry', '?')}")
+
+    w = summary.get("whois") or {}
+    if w and "note" not in w:
+        lines.append("**WHOIS**: " + " | ".join(
+            f"{k} {' / '.join(vals)}" for k, vals in w.items() if isinstance(vals, list)))
+
+    files = summary.get("communicating_files") or []
+    if files:
+        lines += ["", f"## Communicating files ({len(files)})", "",
+                  "| sha256 | name | type | malicious | packers |",
+                  "|---|---|---|---|---|"]
+        for f in files:
+            lines.append(f"| `{(f['sha256'] or '')[:16]}` | {f['name'] or '-'} | "
+                         f"{f['type'] or '-'} | {f['malicious']} | "
+                         f"{', '.join(f['packers']) or '-'} |")
+
+    res = summary.get("resolutions") or []
+    if res:
+        lines += ["", f"## Resolutions ({len(res)})", "",
+                  "| host | resolved | malicious vendors |", "|---|---|---|"]
+        lines += [f"| `{r['host_name'] or '-'}` | {r['resolved_date'] or '-'} | "
+                  f"{r['malicious_vendors']} |" for r in res]
+
+    vendors = summary.get("flagged_vendors") or []
+    if vendors:
+        lines += ["", f"## Flagged vendors ({len(vendors)})", ""]
+        lines += [f"- **{x['engine']}**: {x['result']} ({x['category']})" for x in vendors]
+
+    unknown = summary.get("unknown_fields") or []
+    if unknown:
+        lines += ["", f"> Missing provider fields: {', '.join(unknown)}"]
+    return "\n".join(lines)
+
+
 class _IpInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     ip: ValidPublicIp = Field(..., min_length=3, max_length=45,
                               description="Source IP (attacker srcip) from a Wazuh alert.")
     response_format: Literal["markdown", "json"] = Field(default="markdown")
+
+
+class IocSearchInput(_IpInput):
+    """Input for blueteam_ioc_search shared IP input plus response framing.
+    Subclasses ``_IpInput`` rather than widening it: ``blueteam_ip_blacklist``
+    shares that model and must not grow a richer interface it will never use.
+    """
+
+    detail_level: Literal["summary", "forensic", "raw"] = Field(
+        default="summary",
+        description=(
+            "summary: verdict-first triage view (vendor ratio, tags, ASN, top 5 files). "
+            "forensic: all resolutions and files, plus per-vendor verdicts. "
+            "raw: verbatim provider body WHOIS is still filtered, always JSON."
+        ),
+    )
 
 
 class BreachCheckInput(BaseModel):
@@ -150,10 +472,8 @@ class BreachCheckInput(BaseModel):
                        "idempotentHint": True, "openWorldHint": True})
 async def blueteam_ip_blacklist(params: _IpInput) -> str:
     """Check whether a source IP is present on blacklists (IP Blacklist Lookup).
-
     Feed the `srcip` from a Wazuh alert directly. Returns the blacklist verdict for the IP.
     Requires `RAPIDAPI_KEY` (subscribe to "IP Blacklist Lookup" by Apiverve on RapidAPI).
-
     **Worked Examples**
     1. ``blueteam_ip_blacklist(ip="103.107.116.202")``
     2. ``blueteam_ip_blacklist(ip="185.220.101.1", response_format="json")``
@@ -162,7 +482,7 @@ async def blueteam_ip_blacklist(params: _IpInput) -> str:
     try:
         raw = await _rapidapi_get(_IP_BLACKLIST_HOST, f"/v1/ipblacklistlookup?ip={quote(params.ip)}")
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError, ValueError) as e:
-        return _handle_api_error(e, context="blueteam_ip_blacklist")
+        _handle_api_error(e, context="blueteam_ip_blacklist")
     if params.response_format == "json":
         return _envelope(params.ip, "apiverve_ip_blacklist", raw, params=params)
     return _redact_alert_data(_dynamic_markdown(f"IP Blacklist - {params.ip}", raw), params=params)
@@ -171,24 +491,58 @@ async def blueteam_ip_blacklist(params: _IpInput) -> str:
 @mcp.tool(name="blueteam_ioc_search",
           annotations={"readOnlyHint": True, "destructiveHint": False,
                        "idempotentHint": True, "openWorldHint": True})
-async def blueteam_ioc_search(params: _IpInput) -> str:
+async def blueteam_ioc_search(params: IocSearchInput) -> str:
     """Search IOC databases for a source IP (RapidAPI IOC Search).
+    One RapidAPI product that aggregates per-vendor verdicts, file telemetry,
+    hostname resolutions and WHOIS for a single IP. Feed the `srcip` from a
+    Wazuh alert directly.
 
-    Feed the `srcip` from a Wazuh alert. Returns matched malware/IOC records for the IP.
-    Requires `RAPIDAPI_KEY` (subscribe to "IOC Search" on RapidAPI).
+    Args:
+        params.ip: public source IP.
+        params.detail_level: `summary` (verdict-first triage), `forensic` (all
+            resolutions and files, per-vendor verdicts), `raw` (verbatim
+            provider body; WHOIS still filtered; always JSON).
+        params.response_format: `markdown` (default) or `json`. Ignored when
+            `detail_level="raw"`.
+
+    **Required Permissions**: `RAPIDAPI_KEY` subscribed to "IOC Search" on
+    RapidAPI. A 403 means the key is valid but that product is not subscribed,
+    it is a separate subscription from the other RapidAPI tools.
+
+    **Rate limits**: its own RapidAPI product quota. Requests are serialized at
+    4/s and successful results are cached for `RAPIDAPI_CACHE_TTL` (default
+    1800s), so re-querying the same IP inside 30 minutes is free.
 
     **Worked Examples**
-    1. ``blueteam_ioc_search(ip="103.107.116.202")``
-    2. ``blueteam_ioc_search(ip="185.220.101.1", response_format="json")``
+    1. ``blueteam_ioc_search(ip="185.220.101.49")`` triage a Tor exit.
+    2. ``blueteam_ioc_search(ip="185.220.101.49", detail_level="forensic")`` every resolution and file
+    3. ``blueteam_ioc_search(ip="185.220.101.49", detail_level="raw")`` verbatim body, WHOIS filtered
+    4. ``blueteam_ioc_search(ip="103.94.133.20", detail_level="summary", response_format="json")``
     """
-    _audit_log("blueteam_ioc_search", {"ip": params.ip})
+    _audit_log("blueteam_ioc_search", {"ip": params.ip, "detail_level": params.detail_level})
     try:
         raw = await _rapidapi_get(_IOC_SEARCH_HOST, f"/rapid/v1/ioc/search/ip?query={quote(params.ip)}")
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError, ValueError) as e:
-        return _handle_api_error(e, context="blueteam_ioc_search")
+        _handle_api_error(e, context="blueteam_ioc_search")
+
+    summary = _normalize_ioc_search(params.ip, raw, params.detail_level)
+
+    if params.detail_level == "raw":
+        compact = json.dumps(summary, ensure_ascii=False, separators=(",", ":"))
+        if len(compact) > _RAW_BODY_MAX_CHARS:
+            # Raise, do not return the text: an error string reaches the MCP client
+            # as isError=false, which reads as a successful call.
+            raise ThreatIntelError(
+                f"[blueteam_ioc_search] provider body is {len(compact)} chars, over the "
+                f"{_RAW_BODY_MAX_CHARS} raw cap. Use detail_level='forensic'."
+            )
+        return _truncate_if_needed(
+            json.dumps(_redact_alert_data(summary), indent=2, ensure_ascii=False))
+
     if params.response_format == "json":
-        return _envelope(params.ip, "rapidapi_ioc_search", raw, params=params)
-    return _redact_alert_data(_dynamic_markdown(f"IOC Search - {params.ip}", raw), params=params)
+        return _truncate_if_needed(
+            json.dumps(_redact_alert_data(summary), indent=2, ensure_ascii=False))
+    return _truncate_if_needed(_redact_alert_data(_render_ioc_search(summary)))
 
 
 @mcp.tool(name="blueteam_breach_check",
@@ -196,7 +550,6 @@ async def blueteam_ioc_search(params: _IpInput) -> str:
                        "idempotentHint": True, "openWorldHint": True})
 async def blueteam_breach_check(params: BreachCheckInput) -> str:
     """Check whether an email address appeared in a known data breach (RapidAPI Breach Check).
-
     Feed an official email (`email dinas`, e.g. ``user_x@tangerangkota.go.id``) from a Wazuh
     compromised-email alert. Returns the breach status for the address.
     Requires `RAPIDAPI_KEY` (subscribe to "Breach Check" on RapidAPI).
@@ -209,7 +562,7 @@ async def blueteam_breach_check(params: BreachCheckInput) -> str:
     try:
         raw = await _rapidapi_get(_BREACH_CHECK_HOST, f"/email-check?email={quote(params.email)}")
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError, ValueError) as e:
-        return _handle_api_error(e, context="blueteam_breach_check")
+        _handle_api_error(e, context="blueteam_breach_check")
     if params.response_format == "json":
         return _envelope(params.email, "rapidapi_breach_check", _sanitize_breach(raw), params=params)
-    return _redact_alert_data(_dynamic_markdown(f"Breach Check — {params.email}", _sanitize_breach(raw)), params=params)
+    return _redact_alert_data(_dynamic_markdown(f"Breach Check - {params.email}", _sanitize_breach(raw)), params=params)

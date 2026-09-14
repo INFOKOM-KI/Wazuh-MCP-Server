@@ -388,7 +388,7 @@ async def wazuh_domain_lookup(params: WazuhDomainLookupInput) -> str:
             body["search_after"] = search_after
         data = await _wazuh_indexer_post(body)
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
-        return _handle_api_error(e, context="wazuh_domain_lookup")
+        _handle_api_error(e, context="wazuh_domain_lookup")
 
     if isinstance(data.get("error"), str):
         return json.dumps(data, indent=2)

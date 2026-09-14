@@ -228,7 +228,7 @@ async def wazuh_email_lookup(params: WazuhEmailLookupInput) -> str:
 
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
         if total_scanned == 0:
-            return _handle_api_error(e, context="wazuh_email_lookup")
+            _handle_api_error(e, context="wazuh_email_lookup")
         # Partial results on transient error during pagination
         logging.getLogger(__name__).warning(
             "wazuh_email_lookup: error after %d docs scanned: %s", total_scanned, e

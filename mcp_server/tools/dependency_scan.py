@@ -83,7 +83,7 @@ async def blueteam_dependency_scan(params: DependencyScanInput) -> str:
         results = await scan_dependencies_bulk(packages)
     except (httpx.HTTPStatusError, httpx.TimeoutException, ValueError,
             CircuitOpenError) as e:
-        return _handle_api_error(e, context="blueteam_dependency_scan")
+        _handle_api_error(e, context="blueteam_dependency_scan")
 
     if params.response_format == "json":
         payload = {

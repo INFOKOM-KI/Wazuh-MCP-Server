@@ -65,7 +65,14 @@ Choose the tool by what the analyst wants — never invent tools.
 | Netra | `netra_ip_analysis(ip)` |
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
 | AbuseIPDB IP reputation | **no standalone tool** — AbuseIPDB runs inside `blueteam_unified_threat_score` (weight 0.30). Do not call a `*_abuseipdb` tool; it is not registered. |
-| RapidAPI IP blacklist / IOC search / breach | `blueteam_ip_blacklist` / `blueteam_ioc_search` / `blueteam_breach_check` |
+| RapidAPI IOC search / breach | `blueteam_ioc_search` / `blueteam_breach_check` |
+
+`blueteam_ioc_search` takes `detail_level`:
+- `"summary"` (default) - verdict line first (malicious/total engines, band, tags, ASN), top 5 communicating files, sanitized WHOIS. Answers "is this IP bad" without reading further.
+- `"forensic"` - every resolution and file, plus the flagged per-vendor verdicts. Use it only once the IP is a finding and you need to pivot on hashes or hostnames.
+- `"raw"` - verbatim provider body for fields not yet mapped. WHOIS is still filtered. Always JSON.
+
+It is unrelated to `threatfox_ioc_search` (different API, different quota). Both are metered; the `blueteam_threat_intel_aggregate` (six providers) does **not** include RapidAPI, so the two can disagree. Report both and name the source; never merge them into one verdict. `blueteam_ip_blacklist` is a third paid RapidAPI product that no longer appears in the report prompts - do not call it.
 
 Netra and Argus lookups are spaced 30s apart, Sangfor 5s (`NETRA_MIN_INTERVAL` /
 `ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`). Enriching N IPs costs N×interval — batch
@@ -199,8 +206,9 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_false_positive_tracker(rule_id)` | rule_id → FP-summary cross-reference |
 | `sangfor_blocklist_check` / `sangfor_blocklist_list(ip=…, date_start, date_end, limit, offset)` | Sangfor firewall blocklist (list POSTs `{date_start,date_end,limit,offset,ip}` to `/blocklist`) |
 | `blueteam_baseline_profile` / `blueteam_calendar_heatmap` | day×hour scheduled-attack profiling |
-| `blueteam_extract_iocs` / `blueteam_ioc_lifecycle` / `blueteam_ioc_search` | IOC extraction & lifecycle store |
-| `blueteam_ip_blacklist` | RapidAPI IP blacklist lookup |
+| `blueteam_extract_iocs` / `blueteam_ioc_lifecycle` | IOC extraction & lifecycle store (local, free) |
+| `blueteam_ioc_search(detail_level="summary"|"forensic"|"raw")` | RapidAPI IOC lookup - verdict-first summary by default; WHOIS stripped to technical registry fields at every level (no `person`/`address`/`phone`/`fax-no`). Metered; 403 = not subscribed |
+| `blueteam_ip_blacklist` | Registered but deprioritized - a separate paid RapidAPI product, redundant with `blueteam_ioc_search` for blacklist verdicts |
 | `wazuh_alert_focused_crawl` | surgical alert deep-dive (`rule_id`/`src_ip`/`sample_size`) |
 | `wazuh_alert_aggregate_analysis` | zero-doc full-index statistical summary |
 | `wazuh_alert_dsl_query` | raw OpenSearch DSL (script-injection guarded) |
@@ -406,16 +414,20 @@ Do not lower below these without production telemetry evidence.
 
 | Error | Meaning | Correct action |
 |---|---|---|
+| **any tool result with `isError: true`** | the tool failed; the text is a diagnostic, **not a finding** | report the failure and the named cause. Never read an error string as a verdict |
 | `"hasn't been inspected yet"` | MCP handshake, not an error | re-invoke with matching params |
 | `"circuit breaker open for 'http' (N failures)"` | backend (Indexer/API) down N consecutive times | wait, verify backend reachability, don't hammer |
+| `"Access forbidden (403) ... not subscribed to this API"` | RapidAPI key is valid but that specific product was never subscribed | use a different RapidAPI tool, or tell the operator to subscribe. Check the `url:` in the error to see which product was called |
+| `"Rate limit reached (429)"` | quota exhausted for that provider (per-product on RapidAPI) | read the `x-ratelimit-*` fields in the error; do not retry immediately |
 | `"tool not available in this request"` | client didn't expose that tool this session | use an equivalent tool or note it |
 | `"raw/forensic bypass requires ... token"` | correct gate behavior | pass the token value (see §3) |
 | missing-key provider errors | provider skipped gracefully in `errors[]` | report partial result, note which provider skipped |
 | `"Provide 'alert_text', 'srcip', or 'dependency_manifest'"` | `blueteam_investigation_workflow` called with no target | pass one of the three targets and re-invoke |
 
-Threat-intel providers fail **independently**: a missing API key never blocks
-the rest of the aggregation — it appears in the `errors[]` list. Read it and
-say so in the report.
+A failing tool raises, so the MCP client marks the result `isError: true`. Provider
+error text is a diagnostic — never a result. Threat-intel providers fail
+**independently**: a missing API key never blocks the rest of the aggregation — it
+appears in the `errors[]` list. Read it and say so in the report.
 
 ### 5a. Circuit breaker recovery workflow
 
@@ -475,7 +487,8 @@ closes. If it fails, the timer resets.
 
 | Pool | Typical tools | Backend |
 |---|---|---|
-| `http` | CrowdSec, OTX, AbuseIPDB, VirusTotal, URLhaus, RapidAPI, WHOIS/RDAP/CRT.sh | External threat-intel + domain APIs |
+| `http` | CrowdSec, OTX, AbuseIPDB, VirusTotal, URLhaus, WHOIS/RDAP/CRT.sh | External threat-intel + domain APIs |
+| `rapidapi` | `blueteam_ioc_search`, `blueteam_breach_check`, `blueteam_ip_blacklist` | Own pool and own breaker. Products have separate subscriptions and separate quotas |
 | `indexer` | alert search, geo, timeline, correlation, email/domain alert lookup | Wazuh Indexer (OpenSearch) |
 | `wazuh` | agent/rule/SCA queries | Wazuh Manager API |
 | `argus` | Argus IP lookup | Argus threat-intel API (standalone pool) |
