@@ -41,15 +41,20 @@ async def _get_client(
     max_keepalive: int = 20,
     max_connections: int = 100,
 ) -> httpx.AsyncClient:
-    """Return a pooled httpx.AsyncClient by name"""
-    if name not in _clients or _clients[name].is_closed:
-        _clients[name] = httpx.AsyncClient(
+    """Return a pooled httpx.AsyncClient by name and TLS trust setting.
+    ``verify`` is part of the cache key: an unverified pool must never be handed to
+    a caller that asked for certificate verification (or vice versa), no matter which
+    caller created the pool first.
+    """
+    key = f"{name}|verify={verify}"
+    if key not in _clients or _clients[key].is_closed:
+        _clients[key] = httpx.AsyncClient(
             timeout=httpx.Timeout(HTTP_TIMEOUT),
             limits=httpx.Limits(max_keepalive_connections=max_keepalive, max_connections=max_connections),
             verify=verify,
             http2=_HTTP2,
         )
-    return _clients[name]
+    return _clients[key]
 
 # Circuit breaker (per pool fail fast)
 class CircuitOpenError(httpx.ConnectError):
@@ -128,7 +133,8 @@ class CircuitBreaker:
             logger.info("circuit breaker '%s' CLOSED (liveness proven by 4xx)", self.name)
 
 
-# Per-pool breakers, keyed by the same client_name as _clients.
+# Per-upstream breakers, keyed by the resolved client_name (the URL host by default).
+# The TLS trust setting is deliberately not part of this key: same upstream, same health.
 _breakers: dict[str, CircuitBreaker] = {}
 
 
@@ -161,16 +167,21 @@ def _retry_after_seconds(header: str | None) -> float | None:
     return delay
 
 
-# Unified API call
-async def _api_call(method: str, url: str, *, client_name: str = "http", verify: bool = True,
+# API call
+async def _api_call(method: str, url: str, *, client_name: str | None = None, verify: bool = True,
                     max_retries: int = 1, backoff: float = 0.2, **kw) -> httpx.Response:
     """Unified async HTTP helper. Returns raw response caller calls .json() or .text.
     Retries (default once, configurable via max_retries) on 5xx server errors and
     network failures (jittered backoff). A 429 is retried only when the response
     carries a usable numeric Retry-After blind retries just burn more quota.
-    A per-pool circuit breaker fails fast (CircuitOpenError) when an upstream is
+    A per-upstream circuit breaker fails fast (CircuitOpenError) when that upstream is
     repeatedly down, so outages don't pile up retries/timeouts across all tools.
+    ``client_name`` selects the connection pool and the breaker. When omitted it is
+    derived from the URL host, so unrelated upstreams never share one breaker: a
+    flaky NVD must not fail-fast every Netra or GreyNoise call, and the error has to
+    name the upstream that actually failed rather than a catch-all pool.
     """
+    client_name = client_name or (httpx.URL(url).host or "http")
     client = await _get_client(client_name, verify=verify)
     breaker = _get_breaker(client_name)
     last_exc: Exception | None = None

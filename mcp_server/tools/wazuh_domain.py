@@ -552,7 +552,7 @@ async def blueteam_whois_lookup(params: WhoisLookupInput) -> str:
 
     try:
         resp = await _api_call("get", f"{RDAP_BASE_URL}/domain/{domain}",
-                               client_name="http", verify=True,
+                               verify=True,
                                headers={"Accept": "application/json",
                                         "User-Agent": "blue-team-mcp/1.0.0"})
         data = resp.json()
@@ -696,7 +696,7 @@ async def blueteam_crtsh_lookup(params: CrtshLookupInput) -> str:
 
     try:
         resp = await _api_call("get", f"{CRTSH_BASE_URL}/?q=%25.{domain}&output=json",
-                               client_name="http", verify=True,
+                               verify=True,
                                headers={"User-Agent": "blue-team-mcp/1.0.0"})
         entries = resp.json()
     except Exception as e:

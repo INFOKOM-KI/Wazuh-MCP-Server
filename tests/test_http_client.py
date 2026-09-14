@@ -17,7 +17,9 @@ import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 from mcp_server.core.http_client import (
     _get_client,
+    _get_breaker,
     _api_call,
+    CircuitOpenError,
     _handle_api_error,
     _api_error_text,
     _retry_after_seconds,
@@ -59,9 +61,31 @@ class TestClientPool:
     async def test_recreates_closed_client(self):
         """If client.is_closed, a new one is created."""
         c1 = await _get_client("recreate-test", verify=True)
-        await c1.aclose()  # is_closed is a read-only property - close for real
+        await c1.aclose()  # is_closed is a read only property close for real
         c2 = await _get_client("recreate-test", verify=True)
         assert c1 is not c2
+
+    @pytest.mark.asyncio
+    async def test_verify_is_part_of_pool_key(self):
+        """A verify=False client must never be handed to a verify=True caller."""
+        verified = await _get_client("verify-key-test", verify=True)
+        unverified = await _get_client("verify-key-test", verify=False)
+        assert verified is not unverified
+
+
+class TestPoolNaming:
+    """_api_call names the pool after the upstream, never a catch-all default."""
+    @pytest.mark.asyncio
+    async def test_client_name_derived_from_url_host(self):
+        """No client_name -> breaker keyed by URL host, and the error says so."""
+        breaker = _get_breaker("pool-key-probe.invalid")
+        for _ in range(breaker.failure_threshold):
+            breaker.on_failure()
+        with pytest.raises(CircuitOpenError) as exc:
+            await _api_call("get", "https://pool-key-probe.invalid/analysis/1.2.3.4")
+        assert "pool-key-probe.invalid" in str(exc.value)
+        assert "'http'" not in str(exc.value)
+        breaker.on_success()
 
 
 class TestRetryLogic:
@@ -81,7 +105,6 @@ class TestRetryLogic:
         ok = mock_response(status_code=200, json_data={"recovered": True})
         mock_get = AsyncMock(side_effect=[fail, ok])
         with patch.object(httpx.AsyncClient, "get", mock_get):
-            # Override raise_for_status on the fail response to actually raise
             fail.raise_for_status.side_effect = httpx.HTTPStatusError(
                 "503", request=MagicMock(), response=fail
             )
