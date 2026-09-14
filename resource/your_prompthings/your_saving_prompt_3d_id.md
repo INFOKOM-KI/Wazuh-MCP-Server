@@ -41,7 +41,9 @@ Setelah langkah-langkah di atas, tarik dari toolbox apa pun yang ditunjukkan ole
 
 > Kuota RapidAPI: `blueteam_ioc_search` dan `blueteam_breach_check` adalah dua langganan RapidAPI terpisah dengan kuota masing-masing. Keduanya panggilan jaringan berbayar, bukan pencarian lokal. Satu putaran laporan atas 20 IP berarti 20 permintaan. Hasil sukses di-cache 30 menit, jadi jangan panggil IP yang sama dua kali dalam satu sesi. Pakai hanya untuk IP atau email yang sudah menjadi temuan; untuk reputasi massal pakai `blueteam_threat_intel_aggregate` (tanpa kuota RapidAPI) atau `crowdsec_ip_reputation`. `blueteam_ioc_search` tidak berhubungan dengan `threatfox_ioc_search`: API dan kuota berbeda. HTTP 403 "not subscribed" berarti produk itu belum pernah dilanggan: laporkan ke operator, jangan diulang. HTTP 429 berarti kuota habis: berhenti, jangan diulang. Jangan panggil `blueteam_ip_blacklist`: itu produk RapidAPI berbayar terpisah yang tidak dipakai di alur ini.
 
-> Batas laju: lookup Netra dan Argus diberi jeda 30 detik, Sangfor 5 detik. Enrich N IP memakan N×interval — batch hanya yang dibutuhkan laporan.
+> Batas laju: lookup Netra dan Argus diberi jeda 30 detik, Sangfor 5 detik. Enrich N IP memakan N×interval — batch hanya yang dibutuhkan laporan. Netra memakai anggaran 90 detik per permintaan (sisa server 30 detik) karena fan-out multi-sumbernya memakan ~34 detik. Kalau lookup tetap timeout, atau respons menyebut circuit breaker pada host tertentu, laporkan upstream itu sebagai degradasi dan lanjut, jangan diulang.
+>
+> Argus menampilkan semua provider yang ada di respons, tanpa bentuk tetap, jadi baca seluruh bagian — jangan mengharapkan pasangan skor/sumber. Komentar laporan diringkas menjadi `N text value(s), not expanded`; minta payload mentah ke operator bila teks komentar diperlukan, dan jangan anggap ringkasan itu sebagai field kosong.
 
 ## Step 2 — Write the report
 

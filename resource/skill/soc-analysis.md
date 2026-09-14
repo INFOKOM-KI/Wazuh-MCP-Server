@@ -58,11 +58,11 @@ Choose the tool by what the analyst wants — never invent tools.
 |---|---|
 | 6 providers concurrently | `blueteam_threat_intel_aggregate(indicator)` |
 | CrowdSec reputation | `crowdsec_ip_reputation(ip)` |
-| Argus (7 sources) | `argus_ip_lookup(ip)` |
+| Argus (aggregated sources) | `argus_ip_lookup(ip)` — renders **every** provider in the response with no hardcoded provider or field names, so a changed response shape still renders. Report comments are counted (`N text value(s), not expanded`), never printed; `response_format="json"` returns the verbatim payload when you need the comment text |
 | GreyNoise scanner check | `greynoise_ip_context(ip)` |
 | OTX pulse | `otx_lookup(indicator)` |
 | URLhaus hash/URL | `urlhaus_hash_lookup` / `urlhaus_lookup` |
-| Netra | `netra_ip_analysis(ip)` |
+| Netra | `netra_ip_analysis(ip)` — 30s spaced, **90s** per-request budget because its multi-source fan-out legitimately takes ~34s |
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
 | AbuseIPDB IP reputation | **no standalone tool** — AbuseIPDB runs inside `blueteam_unified_threat_score` (weight 0.30). Do not call a `*_abuseipdb` tool; it is not registered. |
 | RapidAPI IOC search / breach | `blueteam_ioc_search` / `blueteam_breach_check` |
@@ -77,6 +77,12 @@ It is unrelated to `threatfox_ioc_search` (different API, different quota). Both
 Netra and Argus lookups are spaced 30s apart, Sangfor 5s (`NETRA_MIN_INTERVAL` /
 `ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`). Enriching N IPs costs N×interval — batch
 only the IPs the analysis actually needs, and don't re-query an IP you already have.
+
+Netra also gets a 90s per-request budget (the rest of the server runs on
+`HTTP_TIMEOUT`, default 30s) because its fan-out across sources measured ~34s in
+production. A 30s budget used to make every Netra lookup fail and trip its circuit
+breaker. If a Netra call still times out at 90s, that is a real backend problem; the
+error text tells you which budget applied and names the upstream host.
 
 ### CVE / vulnerability enrichment
 When an alert or `blueteam_wazuh_vulnerabilities` surfaces a `CVE-YYYY-NNNN`,
@@ -416,13 +422,16 @@ Do not lower below these without production telemetry evidence.
 |---|---|---|
 | **any tool result with `isError: true`** | the tool failed; the text is a diagnostic, **not a finding** | report the failure and the named cause. Never read an error string as a verdict |
 | `"hasn't been inspected yet"` | MCP handshake, not an error | re-invoke with matching params |
-| `"circuit breaker open for 'http' (N failures)"` | backend (Indexer/API) down N consecutive times | wait, verify backend reachability, don't hammer |
+| `"circuit breaker open for '<upstream>' (N consecutive failures)"` | that one upstream failed N times in a row. The name is the pool: a URL host (`otx.alienvault.com`, `urlhaus.abuse.ch`, the Netra host) or an explicit pool (`argus`, `rapidapi`, `indexer`, `wazuh`). Breakers are per upstream, so everything else still works | skip that provider, name it in the report, retry the same call after 60s |
+| `"Request timed out after <N>s for <host>"` | the call exceeded its budget. `<N>` is the budget actually applied (global `HTTP_TIMEOUT`, default 30s; 90s for Netra), `<host>` is the upstream | a timeout is a slow or unreachable upstream, never a finding. Retry once; if it repeats, report the upstream as degraded |
 | `"Access forbidden (403) ... not subscribed to this API"` | RapidAPI key is valid but that specific product was never subscribed | use a different RapidAPI tool, or tell the operator to subscribe. Check the `url:` in the error to see which product was called |
 | `"Rate limit reached (429)"` | quota exhausted for that provider (per-product on RapidAPI) | read the `x-ratelimit-*` fields in the error; do not retry immediately |
 | `"tool not available in this request"` | client didn't expose that tool this session | use an equivalent tool or note it |
 | `"raw/forensic bypass requires ... token"` | correct gate behavior | pass the token value (see §3) |
 | missing-key provider errors | provider skipped gracefully in `errors[]` | report partial result, note which provider skipped |
 | `"Provide 'alert_text', 'srcip', or 'dependency_manifest'"` | `blueteam_investigation_workflow` called with no target | pass one of the three targets and re-invoke |
+| `"Marker conversion failed: ... llama-server binary not found"` | surya's OCR VLM backend spawns the external llama.cpp binary, which is absent | install llama-server on the host (ggml-org/llama.cpp releases) and set `LLAMA_CPP_BINARY` (e.g. `Environment="LLAMA_CPP_BINARY=/usr/local/bin/llama-server"`) in the service, then restart |
+| `"Marker conversion failed: ... fast_layout server failed to become healthy ... operator torchvision::nms does not exist"` | torchvision's compiled `_C` extension did not load: the venv's torch/torchvision versions do not match, so Marker's surya subprocess crashes at import | on the host, reinstall the pinned CPU pair: `pip install "torch==2.14.0" "torchvision==0.29.0" --index-url https://download.pytorch.org/whl/cpu`, then check `python -c "import torch, torchvision; torch.ops.torchvision.nms"` and restart `blue-team-mcp.service` |
 
 A failing tool raises, so the MCP client marks the result `isError: true`. Provider
 error text is a diagnostic — never a result. Threat-intel providers fail
@@ -450,9 +459,12 @@ closes. If it fails, the timer resets.
 
 **When you hit a circuit-breaker error in a session:**
 
-1. **Identify which pool is down.** The error names it:
-   `"circuit breaker open for 'http'"` = threat-intel HTTP pool.
-   Wazuh Indexer and Manager have their own named pools.
+1. **Identify which upstream is down.** The error names it:
+   `"circuit breaker open for '<host>' (N consecutive failures)"`. Threat-intel
+   tools are keyed by URL host, so you get `otx.alienvault.com`,
+   `urlhaus.abuse.ch`, `packages.ecosyste.ms`, or the Netra host rather than one
+   shared pool. Explicitly named pools: `argus`, `rapidapi`, `indexer`, `wazuh`.
+   An open breaker on one host says nothing about the others.
 
 2. **Check the failure count.** `"(10 consecutive failures)"` = breaker tripped
    at 5, stayed open through a half-open trial, tripped again. This means the
@@ -464,11 +476,10 @@ closes. If it fails, the timer resets.
    and wastes tokens. Wait at least 60 seconds from the last error before
    retrying.
 
-4. **Use tools that don't hit the dead backend.** If the Indexer breaker is
-   open, switch to threat-intel-only tools (CrowdSec, OTX, etc.) — they use
-   the `"http"` client pool, not the Indexer pool. (Argus is equally safe —
-   it runs on its own standalone `argus` pool.) If the `"http"` pool is
-   open, stick to Indexer-only tools (alert search, geo, timeline).
+4. **Use tools that don't hit the dead backend.** Breakers are per upstream, so
+   this is usually free: if the Indexer breaker is open, switch to threat-intel
+   tools, and vice versa. Only same-host callers are affected — if Netra's host
+   breaker is open, the other providers on it are too.
 
 5. **The breaker is self-healing.** Once the backend recovers, the next
    half-open trial succeeds and the breaker closes automatically. There is no
@@ -485,9 +496,9 @@ closes. If it fails, the timer resets.
 
 **Circuit breaker state by pool (see `mcp_server/core/http_client.py`):**
 
-| Pool | Typical tools | Backend |
+| Pool key | Typical tools | Backend |
 |---|---|---|
-| `http` | CrowdSec, OTX, AbuseIPDB, VirusTotal, URLhaus, WHOIS/RDAP/CRT.sh | External threat-intel + domain APIs |
+| URL host (default) | CrowdSec, OTX, AbuseIPDB, VirusTotal, URLhaus, GreyNoise, WHOIS/RDAP/CRT.sh, Netra | Derived from the request URL host when the caller passes no `client_name`, so unrelated upstreams never share one breaker |
 | `rapidapi` | `blueteam_ioc_search`, `blueteam_breach_check`, `blueteam_ip_blacklist` | Own pool and own breaker. Products have separate subscriptions and separate quotas |
 | `indexer` | alert search, geo, timeline, correlation, email/domain alert lookup | Wazuh Indexer (OpenSearch) |
 | `wazuh` | agent/rule/SCA queries | Wazuh Manager API |

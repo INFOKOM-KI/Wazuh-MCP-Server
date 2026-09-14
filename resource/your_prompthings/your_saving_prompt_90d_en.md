@@ -45,7 +45,9 @@ After the steps above, pull from the toolbox whatever the findings point to: CVE
 
 > RapidAPI quota: `blueteam_ioc_search` and `blueteam_breach_check` are two separate RapidAPI subscriptions with separate quotas. Both are metered network calls, not local lookups. A report pass over 20 IPs spends 20 requests. Successful results are cached for 30 minutes, so never call the same IP twice in one session. Use them only for an IP or email that is already a finding; for bulk reputation use `blueteam_threat_intel_aggregate` (no RapidAPI quota) or `crowdsec_ip_reputation`. `blueteam_ioc_search` is unrelated to `threatfox_ioc_search`: different API, different quota. HTTP 403 "not subscribed" means that product was never subscribed: report it to the operator, do not retry. HTTP 429 means the quota is gone: stop, do not retry. Do not call `blueteam_ip_blacklist`: it is a separate paid RapidAPI product that this workflow does not use.
 
-> Rate limits: Netra and Argus lookups are spaced 30s apart, Sangfor 5s. Enriching N IPs costs N×interval — batch only what the report needs.
+> Rate limits: Netra and Argus lookups are spaced 30s apart, Sangfor 5s. Enriching N IPs costs N×interval — batch only what the report needs. Netra also runs on a 90s per-request budget (the rest of the server uses 30s) because its multi-source fan-out takes ~34s. If a lookup still times out, or a response names a circuit breaker on a specific host, report that upstream as degraded and move on instead of retrying.
+>
+> Argus renders every provider the response contains, with no fixed shape, so read the whole section rather than expecting a score/sources pair. Its report comments are summarised as `N text value(s), not expanded`; ask the operator for the raw payload if you need the comment text, and never read the summary as an empty field.
 
 ## Step 2 — Write the report
 

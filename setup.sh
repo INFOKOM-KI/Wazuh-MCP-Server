@@ -317,6 +317,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 
 # Performance & Response Limits
 # export BLUETEAM_CHARACTER_LIMIT="100000"       # max chars per tool response before truncation
+# export HTTP_TIMEOUT="30"                       # seconds per upstream request (Netra is pinned at 90s)
 # export WAZUH_INDEXER_MAX_SIZE="10000"          # max documents per page in Wazuh Indexer search
 
 # Reranker (two-stage retrieval: BM25 -> bge-reranker-base cross-encoder, opt-in)
@@ -552,6 +553,10 @@ export BLUETEAM_ALLOW_UNTRUNCATED="${BLUETEAM_ALLOW_UNTRUNCATED:-false}"
 export BLUETEAM_ALLOWED_PATHS="${BLUETEAM_ALLOWED_PATHS:-/var:/etc:/home:/opt:/usr}"
 export BLUETEAM_CAPTURE_DIR="${BLUETEAM_CAPTURE_DIR:-/tmp}"
 export BLUETEAM_CHARACTER_LIMIT="${BLUETEAM_CHARACTER_LIMIT:-100000}"
+# Per-request timeout for every outbound upstream call. Netra overrides this per request
+# (90s) because its multi-source fan-out takes ~34s; a budget under real latency makes
+# healthy lookups count as failures and trips that upstream's circuit breaker.
+export HTTP_TIMEOUT="${HTTP_TIMEOUT:-30}"
 # Detection engineering — rule staging dirs (staging only, never a live rules path)
 export BLUETEAM_YARA_RULES_DIR="${BLUETEAM_YARA_RULES_DIR:-/opt/yara_rules/yara_staging}"
 export BLUETEAM_SIGMA_RULES_DIR="${BLUETEAM_SIGMA_RULES_DIR:-/opt/sigma_rules/sigma_staging}"
@@ -641,6 +646,7 @@ echo "    python3 -c \"import secrets; print('btm_' + secrets.token_urlsafe(32))
 echo ""
 echo "  Performance tuning (all optional, defaults shown):"
 echo "    BLUETEAM_CHARACTER_LIMIT=100000"
+echo "    HTTP_TIMEOUT=30                   (seconds per upstream request; Netra is pinned at 90)"
 echo "    WAZUH_INDEXER_MAX_SIZE=10000      (docs per page in indexer search)"
 echo "    BLUETEAM_ALLOW_UNTRUNCATED=false  (set true for forensic mode)"
 echo ""

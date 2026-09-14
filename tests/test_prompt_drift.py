@@ -13,6 +13,8 @@ import re
 import pytest
 
 PROMPT_DIR = pathlib.Path(__file__).resolve().parent.parent / "resource" / "your_prompthings"
+SKILL_PATH = pathlib.Path(__file__).resolve().parent.parent / "resource" / "skill" / "soc-analysis.md"
+README_PATH = pathlib.Path(__file__).resolve().parent.parent / "README.md"
 
 # Every prompt window both languages. Hardcoded so a deleted or renamed file
 # fails loudly instead of shrinking the parametrize list to nothing.
@@ -75,6 +77,27 @@ def _rules(text: str) -> list[tuple[int, str]]:
 
 
 # The file set itself
+def test_readme_prompt_block_matches_the_canonical_skill():
+    """README embeds a copy of the skill body and declares the skill canonical.
+    Left unchecked the two drift apart silently: they were 153 lines apart on 2026-09-14,
+    with README still advertising the shared 'http' circuit-breaker pool.
+    Fix by regenerating the block, never by editing the copy.
+    """
+    skill = SKILL_PATH.read_text(encoding="utf-8")
+    end = skill.index("\n---\n", 3) + len("\n---\n") if skill.startswith("---\n") else 0
+    body = skill[end:].strip("\n")
+
+    lines = README_PATH.read_text(encoding="utf-8").splitlines()
+    header = next(i for i, l in enumerate(lines) if l.startswith("## SOC Analysis Prompt"))
+    open_i = next(i for i in range(header, len(lines)) if lines[i].strip() == "````markdown")
+    close_i = next(i for i in range(open_i + 1, len(lines)) if lines[i].strip() == "````")
+    block = "\n".join(lines[open_i + 1:close_i]).strip("\n")
+    assert block == body, (
+        "README's SOC Analysis Prompt block is stale. Regenerate it from "
+        "resource/skill/soc-analysis.md (that file is the source of truth)."
+    )
+
+
 def test_all_twelve_prompt_files_exist():
     missing = [f for f in EXPECTED_FILES if not (PROMPT_DIR / f).is_file()]
     assert not missing, f"prompt files missing from {PROMPT_DIR}: {missing}"

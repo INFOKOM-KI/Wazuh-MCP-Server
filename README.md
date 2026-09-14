@@ -97,6 +97,7 @@ optional — tools degrade gracefully without them.
 | TLS | `WAZUH_INDEXER_VERIFY_SSL`, `WAZUH_API_VERIFY_SSL` | default `true` |
 | Threat intel | `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `RAPIDAPI_KEY`, `HUDSONROCK_API_KEY` | 9 providers + RapidAPI + HudsonRock; all optional |
 | Outbound lookup spacing | `NETRA_MIN_INTERVAL`, `ARGUS_MIN_INTERVAL`, `SANGFOR_MIN_INTERVAL` | seconds between upstream lookups — default `30`/`30`/`5` |
+| Outbound HTTP timeout | `HTTP_TIMEOUT` | seconds per upstream request — default `30`. Netra overrides it per request at 90s because its fan-out measured ~34s. A timeout counts as a breaker failure, so a budget below real latency trips the breaker for that upstream |
 | Redaction | `BLUETEAM_REDACTION_POLICY`, `BLUETEAM_OWNED_DOMAINS`, `BLUETEAM_REDACT_*` | see Security & Privacy |
 | Forensic gate | `BLUETEAM_ALLOW_FORENSIC_BYPASS`, `BLUETEAM_FORENSIC_TOKEN` | default `false` / empty |
 | SSRF allowlist | `ALLOWED_INTERNAL_DOMAINS` | comma-separated internal domains `blueteam_check_webshell` may reach on non-public IPs (default: reject all non-public hosts) |
@@ -314,14 +315,31 @@ Choose the tool by what the analyst wants — never invent tools.
 |---|---|
 | 6 providers concurrently | `blueteam_threat_intel_aggregate(indicator)` |
 | CrowdSec reputation | `crowdsec_ip_reputation(ip)` |
-| Argus (7 sources) | `argus_ip_lookup(ip)` |
+| Argus (aggregated sources) | `argus_ip_lookup(ip)` — renders **every** provider in the response with no hardcoded provider or field names, so a changed response shape still renders. Report comments are counted (`N text value(s), not expanded`), never printed; `response_format="json"` returns the verbatim payload when you need the comment text |
 | GreyNoise scanner check | `greynoise_ip_context(ip)` |
 | OTX pulse | `otx_lookup(indicator)` |
 | URLhaus hash/URL | `urlhaus_hash_lookup` / `urlhaus_lookup` |
-| Netra | `netra_ip_analysis(ip)` |
+| Netra | `netra_ip_analysis(ip)` — 30s spaced, **90s** per-request budget because its multi-source fan-out legitimately takes ~34s |
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
 | AbuseIPDB IP reputation | **no standalone tool** — AbuseIPDB runs inside `blueteam_unified_threat_score` (weight 0.30). Do not call a `*_abuseipdb` tool; it is not registered. |
-| RapidAPI IP blacklist / IOC search / breach | `blueteam_ip_blacklist` / `blueteam_ioc_search` / `blueteam_breach_check` - three separate subscriptions with separate quotas; metered, not local. `blueteam_ioc_search` is unrelated to `threatfox_ioc_search`. A 403 means the key is not subscribed to that product. `blueteam_ioc_search` takes `detail_level="summary"` (default, verdict-first) / `"forensic"` / `"raw"`, and strips WHOIS registrant PII at every level. |
+| RapidAPI IOC search / breach | `blueteam_ioc_search` / `blueteam_breach_check` |
+
+`blueteam_ioc_search` takes `detail_level`:
+- `"summary"` (default) - verdict line first (malicious/total engines, band, tags, ASN), top 5 communicating files, sanitized WHOIS. Answers "is this IP bad" without reading further.
+- `"forensic"` - every resolution and file, plus the flagged per-vendor verdicts. Use it only once the IP is a finding and you need to pivot on hashes or hostnames.
+- `"raw"` - verbatim provider body for fields not yet mapped. WHOIS is still filtered. Always JSON.
+
+It is unrelated to `threatfox_ioc_search` (different API, different quota). Both are metered; the `blueteam_threat_intel_aggregate` (six providers) does **not** include RapidAPI, so the two can disagree. Report both and name the source; never merge them into one verdict. `blueteam_ip_blacklist` is a third paid RapidAPI product that no longer appears in the report prompts - do not call it.
+
+Netra and Argus lookups are spaced 30s apart, Sangfor 5s (`NETRA_MIN_INTERVAL` /
+`ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`). Enriching N IPs costs N×interval — batch
+only the IPs the analysis actually needs, and don't re-query an IP you already have.
+
+Netra also gets a 90s per-request budget (the rest of the server runs on
+`HTTP_TIMEOUT`, default 30s) because its fan-out across sources measured ~34s in
+production. A 30s budget used to make every Netra lookup fail and trip its circuit
+breaker. If a Netra call still times out at 90s, that is a real backend problem; the
+error text tells you which budget applied and names the upstream host.
 
 ### CVE / vulnerability enrichment
 When an alert or `blueteam_wazuh_vulnerabilities` surfaces a `CVE-YYYY-NNNN`,
@@ -423,10 +441,18 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | Log review | `blueteam_journalctl`, `blueteam_read_syslog`, `blueteam_read_auth_log`, `blueteam_read_web_log` |
 | Privilege / persistence | `blueteam_find_suid_files`, `blueteam_find_world_writable`, `blueteam_check_ssh_authorized_keys` |
 | Malware / integrity | `blueteam_rootkit_scan`, `blueteam_lynis_audit`, `blueteam_hash_file`, `blueteam_check_updates` |
-| PDF / document conversion | `blueteam_document_convert(path)` — Marker (scanned-PDF OCR): SOC playbook / advisory PDF → markdown/JSON/html/chunks |
-| Office / data file → markdown | `blueteam_markitdown_convert(path)` — MarkItDown (no OCR, no torch): docx / pptx / xlsx / xls / msg / html / csv / json / xml / digital PDF → markdown. Image-only PDFs return an error — route to `blueteam_document_convert` |
 | System state | `blueteam_system_health`, `blueteam_check_open_firewall` |
 | Packet capture | `blueteam_capture_traffic` |
+| Playbook / PDF conversion | `blueteam_document_convert(path)` — Marker (scanned-PDF OCR): playbook / advisory PDF → markdown/JSON/html/chunks (`page_range` for docs longer than the response cap; `mode="table"` → JSON) |
+| Office / data file → markdown | `blueteam_markitdown_convert(path)` — MarkItDown (no OCR, no torch): docx / pptx / xlsx / xls / msg / html / csv / json / xml / digital PDF → markdown. Image-only PDFs return an error — route those to `blueteam_document_convert` |
+
+`blueteam_check_webshell(url)` only accepts **public** hosts by default — any URL whose
+host resolves to a private / loopback / link-local / CGNAT address is rejected. To scan a
+webshell on **your own infrastructure** (e.g. `subdomain.tangerangkota.go.id` resolving to
+RFC1918), the operator must add that domain to `ALLOWED_INTERNAL_DOMAINS` on the server.
+Every hop is resolved once and IP-pinned (`curl --resolve`), so DNS-rebinding and
+redirect-to-internal are both blocked. If a URL is rejected, report "host is non-public /
+not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't retry the URL.
 
 ### Extended toolbox (long tail — don't invent names)
 
@@ -436,14 +462,16 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | `jarm_fingerprint` | active TLS server fingerprinting (no API key) |
 | `blueteam_unified_threat_score(indicator)` | CrowdSec+ThreatFox+AbuseIPDB → single 0.0–1.0 score |
 | `blueteam_threat_hunt` | named DSL query templates per adversary technique |
-| `blueteam_semantic_search` | BM25 ranking over Wazuh rule descriptions |
+| `blueteam_semantic_search` | BM25 ranking over Wazuh rules/alerts; `rerank=true` adds a local cross-encoder (bge-reranker-base) for cross-lingual matching |
+| `blueteam_prompt_route` | BM25 prompt→tool router; `rerank=true` re-scores candidates with the same cross-encoder |
 | `blueteam_mitre_lookup` | ATT&CK technique/group lookup |
 | `blueteam_asset_context` | CMDB asset criticality / owner |
 | `blueteam_false_positive_tracker(rule_id)` | rule_id → FP-summary cross-reference |
 | `sangfor_blocklist_check` / `sangfor_blocklist_list(ip=…, date_start, date_end, limit, offset)` | Sangfor firewall blocklist (list POSTs `{date_start,date_end,limit,offset,ip}` to `/blocklist`) |
 | `blueteam_baseline_profile` / `blueteam_calendar_heatmap` | day×hour scheduled-attack profiling |
 | `blueteam_extract_iocs` / `blueteam_ioc_lifecycle` | IOC extraction & lifecycle store (local, free) |
-| `blueteam_ip_blacklist` / `blueteam_ioc_search(detail_level="summary"|"forensic"|"raw")` | RapidAPI blacklist / IOC lookup (metered; separate subscription per product; 403 = not subscribed). WHOIS is stripped to technical registry fields at every level |
+| `blueteam_ioc_search(detail_level="summary"|"forensic"|"raw")` | RapidAPI IOC lookup - verdict-first summary by default; WHOIS stripped to technical registry fields at every level (no `person`/`address`/`phone`/`fax-no`). Metered; 403 = not subscribed |
+| `blueteam_ip_blacklist` | Registered but deprioritized - a separate paid RapidAPI product, redundant with `blueteam_ioc_search` for blacklist verdicts |
 | `wazuh_alert_focused_crawl` | surgical alert deep-dive (`rule_id`/`src_ip`/`sample_size`) |
 | `wazuh_alert_aggregate_analysis` | zero-doc full-index statistical summary |
 | `wazuh_alert_dsl_query` | raw OpenSearch DSL (script-injection guarded) |
@@ -458,9 +486,24 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | `blueteam_wazuh_get_security_events` / `blueteam_wazuh_manager_logs` / `blueteam_wazuh_get_cluster_nodes` | Security events, manager logs, cluster nodes |
 | `blueteam_metrics` | Prometheus metrics |
 | `blueteam_playbook_run` | run a named playbook workflow |
+| `blueteam_export_report` | export a report to DOCX/XLSX/PPTX (officecli) |
+| `blueteam_owned_domains` / `blueteam_set_owned_domains` | view/set the runtime owned (victim) domains for `protect_victim` redaction |
 | `blueteam_yara_rule_validate(rule_source)` | compile a rule with yara-x + yaraQA-style findings (naming, short atoms, `fullword` misuse) |
 | `blueteam_yara_rule_generate(mode, …)` | draft a rule from a Wazuh alert pattern (`mode="alert"`), a sample under `BLUETEAM_ALLOWED_PATHS` (`mode="file"`), or raw text |
 | `blueteam_yara_rule_save(rule_source, …)` | write a VALIDATED rule to the staging dir (`BLUETEAM_YARA_RULES_DIR`); needs `wazuh:write` |
+| `blueteam_sigma_rule_generate(mode, …)` | draft a Sigma rule from a Wazuh alert pattern (`mode="alert"`) or raw text (`mode="text"`). Returns `coverage="draft"` or `"no-values"` |
+| `blueteam_sigma_rule_validate(rule_source)` | YAML + schema check, plus a pySigma parse when pySigma is installed. `engine` names the stages that ran |
+| `blueteam_sigma_rule_convert(rule_source, output_format)` | Sigma → OpenSearch: `lucene` (query string), `dsl` (`_search` body), `monitor` (Dashboards alerting monitor), `saved_search` |
+| `blueteam_sigma_rule_save(rule_source, …)` | write the YAML to the staging dir (`BLUETEAM_SIGMA_RULES_DIR`); needs `wazuh:write` |
+
+### Resources (read via MCP resource reads, not tool calls)
+
+| URI | What it provides |
+|---|---|
+| `wazuh://rules/taxonomy` | Wazuh rule taxonomy — rule IDs grouped by category/groups |
+| `wazuh://mitre/attack` | MITRE ATT&CK tactic/technique mapping (feeds 3-Sum Engine A) |
+| `metrics://prometheus` | Server telemetry (tool-call counters, timings) in Prometheus text format |
+| `metrics://prometheus/json` | Same telemetry as a JSON snapshot |
 
 ## 2. Standard investigation workflows
 
@@ -519,6 +562,46 @@ sample; check `alert_field_coverage` and get an artifact before deploying. A rul
 the staging directory is not loaded by Wazuh until an operator promotes it by hand to
 `wazuh-rules-dev`.
 
+### Workflow G — detection engineering (alert pattern → Sigma → OpenSearch)
+```
+1. blueteam_sigma_rule_generate(mode="alert", srcip="X", since="24h")   # or mode="text"
+2. # read coverage, unmapped_fields, field_coverage, existing_rules before continuing
+3. blueteam_sigma_rule_validate(rule_source="<edited rule>")   # engine: schema+pysigma | schema-only
+4. blueteam_sigma_rule_convert(rule_source="<final rule>", output_format="lucene")   # or dsl/monitor/saved_search
+5. blueteam_sigma_rule_save(rule_source="<final rule>")       # staging, needs wazuh:write
+```
+
+Use Sigma when the pattern is expressible as field/value pairs and you also want a query
+or a Dashboards monitor. Use YARA (Workflow F) when you have an artifact to match.
+
+These are **Wazuh-native** Sigma rules: `logsource.product` is `wazuh` and `detection`
+carries Wazuh alert field names such as `data.url`. They are not sigmaHQ-portable, and
+Sigma → native Wazuh XML is out of scope for this server.
+
+Four things to check, in this order:
+
+1. `coverage` — `draft` came from logs or text, so review the modifiers. `no-values`
+   means nothing usable was harvested: the detection block holds a placeholder and the
+   rule matches nothing. Never deploy it.
+2. `unmapped_fields` (finding `SG9`) — the index does not know those fields, so the
+   query can never match. Fix the field names before converting.
+3. `field_coverage` all zero — the deployment's decoders do not populate the harvested
+   fields, so the draft was built from nothing.
+4. `existing_rules` — Manager rules that already cover this description. Decide whether
+   new detection logic is actually needed.
+
+A converted query is a starting point, not a finished detection. A `cidr` modifier
+becomes a literal Lucene term (`data.srcip:10.0.0.0\/8`), which OpenSearch reads as a
+string rather than a network match; rewrite those clauses as `term` or `range` before
+running them. The tool prints a warning when it sees one.
+
+Read `index_retargeted` on every conversion. `false` means the upstream saved-search payload
+shape changed and the artifact may still target `beats-*`; the tool also prints a WARNING and
+names the configured index. Inspect the `index` field before importing into Dashboards.
+
+Conversion needs the optional pySigma dependency (`BLUETEAM_INSTALL_SIGMA=1`). Without it
+the convert tool returns an install hint, and generate/validate/save keep working.
+
 ## 3. Redaction & the forensic token (read before touching PII)
 
 The server masks PII/credentials in 6 layers plus a `protect_victim` extension
@@ -531,6 +614,10 @@ bypassable**. Policies:
   otherwise the server silently falls back to `full`.
 - `raw`: Layer-1 strip only. **Hard-gated** behind `BLUETEAM_ALLOW_FORENSIC_BYPASS`
   AND `BLUETEAM_FORENSIC_TOKEN`.
+
+The runtime owned-domains set (used by `protect_victim`) is viewable/settable
+at runtime via `blueteam_owned_domains` / `blueteam_set_owned_domains` — the
+env var `BLUETEAM_OWNED_DOMAINS` only sets the initial value.
 
 **Forensic token rule**: the token lives in the *server's* env
 (`BLUETEAM_FORENSIC_TOKEN`) — you cannot read it. To use `raw` or full unmask,
@@ -590,8 +677,12 @@ Do not lower below these without production telemetry evidence.
 
 | Error | Meaning | Correct action |
 |---|---|---|
+| **any tool result with `isError: true`** | the tool failed; the text is a diagnostic, **not a finding** | report the failure and the named cause. Never read an error string as a verdict |
 | `"hasn't been inspected yet"` | MCP handshake, not an error | re-invoke with matching params |
-| `"circuit breaker open for 'http' (N failures)"` | backend (Indexer/API) down N consecutive times | wait, verify backend reachability, don't hammer |
+| `"circuit breaker open for '<upstream>' (N consecutive failures)"` | that one upstream failed N times in a row. The name is the pool: a URL host (`otx.alienvault.com`, `urlhaus.abuse.ch`, the Netra host) or an explicit pool (`argus`, `rapidapi`, `indexer`, `wazuh`). Breakers are per upstream, so everything else still works | skip that provider, name it in the report, retry the same call after 60s |
+| `"Request timed out after <N>s for <host>"` | the call exceeded its budget. `<N>` is the budget actually applied (global `HTTP_TIMEOUT`, default 30s; 90s for Netra), `<host>` is the upstream | a timeout is a slow or unreachable upstream, never a finding. Retry once; if it repeats, report the upstream as degraded |
+| `"Access forbidden (403) ... not subscribed to this API"` | RapidAPI key is valid but that specific product was never subscribed | use a different RapidAPI tool, or tell the operator to subscribe. Check the `url:` in the error to see which product was called |
+| `"Rate limit reached (429)"` | quota exhausted for that provider (per-product on RapidAPI) | read the `x-ratelimit-*` fields in the error; do not retry immediately |
 | `"tool not available in this request"` | client didn't expose that tool this session | use an equivalent tool or note it |
 | `"raw/forensic bypass requires ... token"` | correct gate behavior | pass the token value (see §3) |
 | missing-key provider errors | provider skipped gracefully in `errors[]` | report partial result, note which provider skipped |
@@ -599,9 +690,10 @@ Do not lower below these without production telemetry evidence.
 | `"Marker conversion failed: ... llama-server binary not found"` | surya's OCR VLM backend spawns the external llama.cpp binary, which is absent | install llama-server on the host (ggml-org/llama.cpp releases) and set `LLAMA_CPP_BINARY` (e.g. `Environment="LLAMA_CPP_BINARY=/usr/local/bin/llama-server"`) in the service, then restart |
 | `"Marker conversion failed: ... fast_layout server failed to become healthy ... operator torchvision::nms does not exist"` | torchvision's compiled `_C` extension did not load: the venv's torch/torchvision versions do not match, so Marker's surya subprocess crashes at import | on the host, reinstall the pinned CPU pair: `pip install "torch==2.14.0" "torchvision==0.29.0" --index-url https://download.pytorch.org/whl/cpu`, then check `python -c "import torch, torchvision; torch.ops.torchvision.nms"` and restart `blue-team-mcp.service` |
 
-Threat-intel providers fail **independently**: a missing API key never blocks
-the rest of the aggregation — it appears in the `errors[]` list. Read it and
-say so in the report.
+A failing tool raises, so the MCP client marks the result `isError: true`. Provider
+error text is a diagnostic — never a result. Threat-intel providers fail
+**independently**: a missing API key never blocks the rest of the aggregation — it
+appears in the `errors[]` list. Read it and say so in the report.
 
 ### 5a. Circuit breaker recovery workflow
 
@@ -624,9 +716,12 @@ closes. If it fails, the timer resets.
 
 **When you hit a circuit-breaker error in a session:**
 
-1. **Identify which pool is down.** The error names it:
-   `"circuit breaker open for 'http'"` = threat-intel HTTP pool.
-   Wazuh Indexer and Manager have their own named pools.
+1. **Identify which upstream is down.** The error names it:
+   `"circuit breaker open for '<host>' (N consecutive failures)"`. Threat-intel
+   tools are keyed by URL host, so you get `otx.alienvault.com`,
+   `urlhaus.abuse.ch`, `packages.ecosyste.ms`, or the Netra host rather than one
+   shared pool. Explicitly named pools: `argus`, `rapidapi`, `indexer`, `wazuh`.
+   An open breaker on one host says nothing about the others.
 
 2. **Check the failure count.** `"(10 consecutive failures)"` = breaker tripped
    at 5, stayed open through a half-open trial, tripped again. This means the
@@ -638,11 +733,10 @@ closes. If it fails, the timer resets.
    and wastes tokens. Wait at least 60 seconds from the last error before
    retrying.
 
-4. **Use tools that don't hit the dead backend.** If the Indexer breaker is
-   open, switch to threat-intel-only tools (CrowdSec, OTX, etc.) — they use
-   the `"http"` client pool, not the Indexer pool. (Argus is equally safe —
-   it runs on its own standalone `argus` pool.) If the `"http"` pool is
-   open, stick to Indexer-only tools (alert search, geo, timeline).
+4. **Use tools that don't hit the dead backend.** Breakers are per upstream, so
+   this is usually free: if the Indexer breaker is open, switch to threat-intel
+   tools, and vice versa. Only same-host callers are affected — if Netra's host
+   breaker is open, the other providers on it are too.
 
 5. **The breaker is self-healing.** Once the backend recovers, the next
    half-open trial succeeds and the breaker closes automatically. There is no
@@ -659,9 +753,9 @@ closes. If it fails, the timer resets.
 
 **Circuit breaker state by pool (see `mcp_server/core/http_client.py`):**
 
-| Pool | Typical tools | Backend |
+| Pool key | Typical tools | Backend |
 |---|---|---|
-| `http` | CrowdSec, OTX, AbuseIPDB, VirusTotal, URLhaus, WHOIS/RDAP/CRT.sh | External threat-intel + domain APIs |
+| URL host (default) | CrowdSec, OTX, AbuseIPDB, VirusTotal, URLhaus, GreyNoise, WHOIS/RDAP/CRT.sh, Netra | Derived from the request URL host when the caller passes no `client_name`, so unrelated upstreams never share one breaker |
 | `rapidapi` | `blueteam_ioc_search`, `blueteam_breach_check`, `blueteam_ip_blacklist` | Own pool and own breaker. Products have separate subscriptions and separate quotas |
 | `indexer` | alert search, geo, timeline, correlation, email/domain alert lookup | Wazuh Indexer (OpenSearch) |
 | `wazuh` | agent/rule/SCA queries | Wazuh Manager API |
@@ -732,6 +826,9 @@ provide it once at session start and you reuse it across calls.
 
 - Default `response_format="markdown"` for analyst-facing reports; **always
   `"json"`** when piping into follow-up tools.
+- Export a finished report to DOCX/XLSX/PPTX with `blueteam_export_report`
+  (officecli) — markdown/JSON are the in-session formats; officecli is for
+  deliverables.
 - Never claim a tool "succeeded" without evidence of execution. If a tool needs
   a live credential and fails, state "not verified — requires valid key/cluster".
 - **Redacted-but-real protocol**: for PII-adjacent data (citizen IP, email),
@@ -749,9 +846,6 @@ provide it once at session start and you reuse it across calls.
 6. Don't invent tools — §1 lists the common surface and the Extended toolbox
    covers the long tail. For anything else, verify the exact name via the
    tool's signature before calling.
-DOCX report (optional, officecli): blueteam_export_report(format="docx", title="<...>",
-   path="/var/log/blue-team-mcp/exports/laporan_<date>.docx", docx_sections=[...])
-
 ````
 
 ---

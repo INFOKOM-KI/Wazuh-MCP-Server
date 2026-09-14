@@ -57,8 +57,8 @@ SAMPLE = {
 def test_renders_every_provider_without_hardcoded_names():
     out = _format_argus_markdown(SAMPLE, "107.150.96.242")
     assert out.startswith("# Argus - 107.150.96.242")
-    assert "## abuseipdb — success" in out
-    assert "## argus_reports — success" in out
+    assert "## abuseipdb - success" in out
+    assert "## argus_reports - success" in out
     assert "- **abuseConfidenceScore**: 100" in out
     assert "- **scores**: 0" in out
     assert "- **hostnames**: (empty)" in out
@@ -90,10 +90,10 @@ def test_adapts_to_a_changed_shape():
         }
     }
     out = _format_argus_markdown(mutated, "8.8.8.8")
-    assert "## ip_reputation — success" in out
+    assert "## ip_reputation - success" in out
     assert "- **confidence**: 87" in out
     assert "- **extra.asn**: AS123" in out          # unknown nesting, no code change
-    assert "## shodan — failed" in out
+    assert "## shodan - failed" in out
     assert "- (no data)" in out
 
 
@@ -192,7 +192,7 @@ def test_tool_output_masks_pii_hidden_in_any_field():
             os.environ.pop("ARGUS_API_KEY", None)
 
     out = asyncio.run(_run())
-    assert "## vendor_x — success" in out and "- **score**: 7" in out
+    assert "## vendor_x - success" in out and "- **score**: 7" in out
     assert "csirt@tangerangkota.go.id" not in out
     assert "172.16.9.28" not in out
     assert "user@example.org" not in out
