@@ -106,6 +106,113 @@ async def blueteam_lookup_domain_virustotal(params: VirusTotalDomainInput) -> st
         _handle_api_error(e, context="virustotal")
 
 
+# Argus response rendering is provider-agnostic: no provider name and no field path is
+# hardcoded, so a renamed key, a new provider under "results", or an extra nesting level
+# still renders. Long free text values (honeypot comments, ~4 KB each) are reported as
+# counts instead of content, which keeps the response small and keeps the victim emails
+# and internal IPs inside them out of the LLM context. Use response_format="json" for
+# the verbatim payload.
+_ARGUS_MAX_DEPTH = 4          # nested objects summarised past this depth
+_ARGUS_MAX_DIGEST = 3         # top values printed per low-cardinality field
+_ARGUS_VALUE_CHARS = 240      # longest scalar printed verbatim
+_ARGUS_FREE_TEXT_CHARS = 120  # longer strings are counted, not printed
+
+
+def _argus_scalar(value: Any) -> str:
+    """One JSON scalar as display text, bounded so a log blob cannot take over."""
+    if value is None or isinstance(value, (bool, int, float)):
+        return str(value)
+    text = str(value)
+    return text if len(text) <= _ARGUS_VALUE_CHARS else text[:_ARGUS_VALUE_CHARS] + "..."
+
+
+def _argus_is_timestamp(value: str) -> bool:
+    try:
+        datetime.fromisoformat(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _argus_list_digest(items: list) -> str:
+    """Summarise a list of objects: size, time span, and top values per field.
+    Field names come from the data, so a renamed or added field flows through.
+    Free-text values (whitespace, an @, or over-long) are counted, never printed: report
+    comments are where victim emails and internal IPs hide.
+    """
+    fields: dict[str, str] = {}
+    keys = {k for item in items if isinstance(item, dict) for k in item}
+    for key in sorted(keys):  # deterministic order across runs
+        present = [item.get(key) for item in items if isinstance(item, dict)]
+        present = [v for v in present if v not in (None, "", [], {})]
+        if not present:
+            continue
+        if all(isinstance(v, str) and _argus_is_timestamp(v) for v in present):
+            fields[key] = f"newest {max(present)}, oldest {min(present)}"
+            continue
+        counts: Counter = Counter()
+        prose = 0
+        for value in present:
+            for entry in (value if isinstance(value, list) else [value]):
+                if isinstance(entry, str) and (" " in entry or "@" in entry
+                                               or len(entry) > _ARGUS_FREE_TEXT_CHARS):
+                    prose += 1
+                elif isinstance(entry, (str, int, bool)):
+                    counts[str(entry)] += 1
+        bits = [f"{v} ({n})" for v, n in counts.most_common(_ARGUS_MAX_DIGEST)]
+        if prose:
+            bits.append(f"{prose} text value(s), not expanded")
+        if bits:
+            fields[key] = ", ".join(bits)
+    return " | ".join([f"{len(items)} items", *[f"{k}: {v}" for k, v in fields.items()]])
+
+
+def _argus_lines(node: Any, path: str = "", depth: int = 0):
+    """Yield ``- **path**: value`` bullets for any JSON shape, whatever it holds."""
+    if depth > _ARGUS_MAX_DEPTH:
+        yield f"- **{path}**: (nested, not expanded)"
+    elif isinstance(node, dict):
+        if not node:
+            yield f"- **{path}**: (empty)"
+        for key, value in node.items():
+            child = f"{path}.{key}" if path else str(key)
+            if isinstance(value, (dict, list)):
+                yield from _argus_lines(value, child, depth + 1)
+            else:
+                yield f"- **{child}**: {_argus_scalar(value)}"
+    elif isinstance(node, list):
+        if not node:
+            yield f"- **{path}**: (empty)"
+        elif all(isinstance(i, dict) for i in node):
+            yield f"- **{path}**: {_argus_list_digest(node)}"
+        else:
+            shown = ", ".join(_argus_scalar(i) for i in node[:12])
+            more = f" (+{len(node) - 12} more)" if len(node) > 12 else ""
+            yield f"- **{path}**: {shown}{more}"
+    else:
+        yield f"- **{path}**: {_argus_scalar(node)}"
+
+
+def _format_argus_markdown(raw: Any, ip: str) -> str:
+    """Render the Argus envelope, adapting to whatever it currently returns."""
+    if not isinstance(raw, dict) or not raw:
+        return f"# Argus - {ip}\n\n- (no results in response)"
+    envelope = raw.get("results")
+    lines = [f"# Argus - {ip}", ""]
+    if not isinstance(envelope, dict) or not envelope:
+        # No per-provider envelope: render the payload itself, whatever it is.
+        body = list(_argus_lines(raw)) or ["- (no data)"]
+        return "\n".join([*lines, *body]).strip()
+    for name, block in envelope.items():
+        success = block.get("success") if isinstance(block, dict) else None
+        status = "" if success is None else (" - success" if success else " - failed")
+        lines.append(f"## {name}{status}")
+        payload = block.get("results", block) if isinstance(block, dict) else block
+        lines.extend(list(_argus_lines(payload)) if payload else ["- (no data)"])
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 class ArgusIpLookupInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     ip: ValidPublicIp = Field(..., description="Public IP to query")
@@ -119,9 +226,11 @@ class ArgusIpLookupInput(BaseModel):
 )
 async def argus_ip_lookup(params: ArgusIpLookupInput) -> str:
     """Query Argus Threat Intelligence (TangerangKota-CSIRT) aggregating 7 sources.
+    Renders every provider the response contains, with no hardcoded provider or field
+    names, so a changed response structure still renders instead of showing blanks.
     Args:
         params.ip: Public IP to query
-        params.response_format: 'markdown' or 'json'
+        params.response_format: 'markdown' (summarised, dynamic) or 'json' (verbatim)
     """
     _audit_log("argus_ip_lookup", {"ip": params.ip})
     from mcp_server import ARGUS_API_KEY_ENV, ARGUS_VERIFY_SSL, ARGUS_BASE_URL
@@ -138,20 +247,10 @@ async def argus_ip_lookup(params: ArgusIpLookupInput) -> str:
         raw = resp.json()
         if params.response_format == "json":
             return _truncate_if_needed(json.dumps(raw, indent=2))
-        results = raw.get("results", {})
-        argus_reports = results.get("argus_reports", {}).get("results", {})
-        abuse = results.get("abuseipdb", {}).get("results", {})
-        score = argus_reports.get("scores", 0)
-        sources = [k for k in results.keys() if results[k].get("success")]
-        lines = [f"# Argus - {params.ip}", "",
-                 f"- **Score**: {score}",
-                 f"- **Sources**: {', '.join(sources)}",
-                 ""]
-        if abuse:
-            lines.append(f"- **AbuseIPDB Confidence**: {abuse.get('abuseConfidenceScore', 0)}%")
-            lines.append(f"- **ISP**: {abuse.get('isp', '?')}")
-            lines.append(f"- **Country**: {abuse.get('countryName', '?')}")
-        return _truncate_if_needed("\n".join(lines))
+        # Safety net: the renderer already drops prose, but a top level field can still
+        # carry a victim email or an internal IP. Benign fields (isp, domain, country,
+        # categories) pass through the redaction boundary untouched.
+        return _truncate_if_needed(_redact_alert_data(_format_argus_markdown(raw, params.ip)))
     except Exception as e:
         _handle_api_error(e, context="argus")
 

@@ -294,13 +294,13 @@ class TestErrorHandling:
         # A per-call 90s override (Netra fan out) must not be reported as the 30s
         # client default: the message has to name the upstream and the real budget.
         req = httpx.Client(timeout=90.0).build_request(
-            "GET", "https://<redacted>:<redacted>/api/v1/analysis/180.93.3.100"
+            "GET", "https://netra.example.com:8013/api/v1/analysis/180.93.3.100"
         )
         msg = _api_error_text(httpx.ReadTimeout("read timed out", request=req), context="netra")
         assert msg.startswith("[netra]")
         assert "timed out" in msg.lower()
         assert "90.0s" in msg
-        assert "redacted" in msg
+        assert "netra.example.com" in msg
         assert "30.0s" not in msg
 
     def test_runtime_error(self):
