@@ -183,8 +183,11 @@ async def netra_ip_analysis(params: NetraIpAnalysisInput) -> str:
     try:
         headers = {"X-API-Key": api_key, "accept": "application/json"}
         async with _netra_limiter:
+            # Netra fans out to ~6 sources; 34s measured in production. Give it 90s
+            # instead of the global HTTP_TIMEOUT so a 'slow but healthy' lookup does not
+            # count as a failure and trip the circuit breaker.
             resp = await _api_call("get", f"{NETRA_BASE_URL}/analysis/{params.ip}",
-                                   headers=headers, verify=NETRA_VERIFY_SSL)
+                                   headers=headers, verify=NETRA_VERIFY_SSL, timeout=90.0)
         raw = resp.json()
         if params.response_format == "json":
             return _truncate_if_needed(json.dumps(raw, indent=2))

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Tests for shared threat intel cache + rate limiter"""
 from __future__ import annotations
-
 import os
 
 # mcp_server/__init__.py calls init_config() at import and hard-fails without
@@ -88,6 +87,38 @@ def test_netra_argus_sangfor_lookup_spacing():
     assert _limiters["netra"]._semaphore._value == 1
     assert _limiters["argus"]._semaphore._value == 1
     assert _limiters["sangfor"]._semaphore._value == 1
+
+
+def test_netra_fanout_gets_a_90s_per_request_timeout():
+    """Netra analysis fans out to ~6 sources and took 34s in production. It must
+    override the global HTTP_TIMEOUT, or a slow-but-healthy lookup counts as a failure
+    and trips the circuit breaker for the whole upstream."""
+    import asyncio
+    import mcp_server.tools.alert_enrichment as ae
+
+    captured = {}
+
+    class _Resp:
+        def json(self):
+            return {"data": {"results": {}}}
+
+    async def _run():
+        async def fake_api_call(method, url, **kw):
+            captured.update(kw, url=url)
+            return _Resp()
+
+        real_call, real_limiter = ae._api_call, ae._netra_limiter
+        ae._api_call, ae._netra_limiter = fake_api_call, asyncio.Semaphore(1)
+        os.environ["NETRA_API_KEY"] = "test-key"
+        try:
+            await ae.netra_ip_analysis(ae.NetraIpAnalysisInput(ip="180.93.3.100"))
+        finally:
+            ae._api_call, ae._netra_limiter = real_call, real_limiter
+            os.environ.pop("NETRA_API_KEY", None)
+
+    asyncio.run(_run())
+    assert captured["timeout"] == 90.0
+    assert captured["url"].endswith("/analysis/180.93.3.100")
 
 
 if __name__ == "__main__":

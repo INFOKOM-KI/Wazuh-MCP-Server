@@ -287,6 +287,21 @@ class TestErrorHandling:
     def test_timeout(self):
         msg = _api_error_text(httpx.TimeoutException("timed out"))
         assert "timed out" in msg.lower()
+        # No request recorded -> the global budget is the honest fallback.
+        assert "30.0s" in msg
+
+    def test_timeout_names_the_host_and_the_applied_budget(self):
+        # A per-call 90s override (Netra fan out) must not be reported as the 30s
+        # client default: the message has to name the upstream and the real budget.
+        req = httpx.Client(timeout=90.0).build_request(
+            "GET", "https://<redacted>:<redacted>/api/v1/analysis/180.93.3.100"
+        )
+        msg = _api_error_text(httpx.ReadTimeout("read timed out", request=req), context="netra")
+        assert msg.startswith("[netra]")
+        assert "timed out" in msg.lower()
+        assert "90.0s" in msg
+        assert "redacted" in msg
+        assert "30.0s" not in msg
 
     def test_runtime_error(self):
         assert "custom error" in _api_error_text(RuntimeError("custom error"))
@@ -320,6 +335,16 @@ class TestErrorHandling:
     ])
     def test_retry_after_seconds(self, header, expected):
         assert _retry_after_seconds(header) == expected
+
+
+def test_http_timeout_env_override(monkeypatch):
+    """HTTP_TIMEOUT is env-configurable; the global default stays 30s when unset."""
+    from mcp_server.core.config import LimitsConfig
+
+    monkeypatch.delenv("HTTP_TIMEOUT", raising=False)
+    assert LimitsConfig.from_env().http_timeout == 30.0
+    monkeypatch.setenv("HTTP_TIMEOUT", "90")
+    assert LimitsConfig.from_env().http_timeout == 90.0
 
 
 class TestIPValidation:

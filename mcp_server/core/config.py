@@ -378,7 +378,7 @@ class LimitsConfig:
     def from_env(cls) -> "LimitsConfig":
         return cls(
             character_limit=int(os.environ.get("BLUETEAM_CHARACTER_LIMIT", "100000")),
-            http_timeout=30.0,
+            http_timeout=float(os.environ.get("HTTP_TIMEOUT", "30.0")),
             allow_untruncated=_bool(os.environ.get("BLUETEAM_ALLOW_UNTRUNCATED", "false")),
             max_log_lines=2000,
         )

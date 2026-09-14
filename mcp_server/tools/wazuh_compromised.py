@@ -242,9 +242,10 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
         for ip, _ in top_ips[:enrich_count]:
             try:
                 async with _netra_limiter:
+                    # 90s: Netra fan-out takes ~34s legitimately (see alert_enrichment).
                     netra_resp = await _api_call("get", f"{NETRA_BASE_URL}/analysis/{ip}",
                         headers={"X-API-Key": netra_key, "Accept": "application/json"},
-                        verify=NETRA_VERIFY_SSL)
+                        verify=NETRA_VERIFY_SSL, timeout=90.0)
                 raw = netra_resp.json()
                 data = raw.get("data", {})
                 results = data.get("results", {})

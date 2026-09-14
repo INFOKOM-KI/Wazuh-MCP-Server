@@ -188,7 +188,7 @@ async def _api_call(method: str, url: str, *, client_name: str | None = None, ve
     for attempt in range(1 + max_retries):
         if not breaker.before_call():
             raise CircuitOpenError(
-                f"circuit breaker open for '{client_name}'"
+                f"circuit breaker open for '{client_name}' "
                 f"({breaker.failures} consecutive failures) try again shortly"
             )
         try:
@@ -288,6 +288,33 @@ def _with_diagnostics(msg: str, e: httpx.HTTPStatusError) -> str:
         return f"{msg} | {safe}" if safe else msg
 
 
+def _failed_request(e: Exception) -> httpx.Request | None:
+    """The request behind a failed call, when httpx recorded one on the exception.
+    A hand-built ``httpx.TimeoutException`` (synthetic errors, tests) has none, and
+    ``.request`` raises RuntimeError instead of returning None.
+    """
+    try:
+        return e.request
+    except (AttributeError, RuntimeError):
+        return None
+
+
+def _applied_timeout(request: httpx.Request | None) -> float | None:
+    """The timeout httpx actually applied to this request, or None when unknown.
+    httpx resolves the budget (per-call override, else the client default) onto
+    ``request.extensions["timeout"]``. Reading it back keeps the message honest when a
+    caller overrides the global default, as Netra slow fan-out query does.
+    """
+    budget = (getattr(request, "extensions", None) or {}).get("timeout")
+    if isinstance(budget, dict):
+        for key in ("read", "connect", "write", "pool"):
+            value = budget.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+        return None
+    return float(budget) if isinstance(budget, (int, float)) else None
+
+
 def _api_error_text(e: Exception, context: str = "") -> str:
     """Human-readable, actionable text for a failed upstream API call.
     Bulk tools call this to capture a per-item error string and keep going.
@@ -308,7 +335,12 @@ def _api_error_text(e: Exception, context: str = "") -> str:
             msg = f"{prefix}Error: API request failed with status {status}."
         return _with_diagnostics(msg, e)
     if isinstance(e, httpx.TimeoutException):
-        return f"{prefix}Error: Request timed out after {HTTP_TIMEOUT}s. Try again."
+        request = _failed_request(e)
+        host = getattr(getattr(request, "url", None), "host", None)
+        budget = _applied_timeout(request)
+        where = f" for {host}" if host else ""
+        return (f"{prefix}Error: Request timed out after "
+                f"{budget if budget is not None else HTTP_TIMEOUT}s{where}. Try again.")
     if isinstance(e, RuntimeError):
         return f"{prefix}Error: {e}"
     return f"{prefix}Error: Unexpected error ({type(e).__name__})."
