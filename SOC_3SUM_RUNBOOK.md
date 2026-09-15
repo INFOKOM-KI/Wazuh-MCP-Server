@@ -29,14 +29,16 @@ When `use_mitre=True`, alerts classify in priority order:
 **Prerequisites for reliable results**
 
 - Wazuh rules must populate `rule.mitre.tactic` / `rule.mitre.id` on production alerts. If these fields are empty, detection silently degrades to `rule.groups` string matching (the legacy path).
-- The `STIX` bundle is loaded from `MITRE_ATTACK_STIX` (default: the public `enterprise-attack.json`) and cached to `BLUETEAM_STIX_CACHE` (default `/var/log/blue-team-mcp/mitre_enterprise_attack.json`). New `ATT&CK` techniques classify automatically with no code change once the cache refreshes.
+- The `STIX` bundle is loaded from `MITRE_ATTACK_STIX` (default: the public `enterprise-attack.json`; an `https://` URL or a local path) and cached to `BLUETEAM_STIX_CACHE` (default `/var/log/blue-team-mcp/mitre_enterprise_attack.json`). The cache refreshes on a TTL (`BLUETEAM_STIX_MAX_AGE_DAYS`, default 7), so new `ATT&CK` *techniques* classify automatically once it refreshes — no code change.
+- Tactic *names* are a different story: they are hardcoded in `MITRE_TACTIC_TO_CATEGORY`, `MITRE_TACTIC_WEIGHTS` (`core/constants.py`) and `_TACTIC_ORDER` (`tools/stix_correlation.py`). ATT&CK v18 split Defense Evasion into **Stealth** and **Defense Impairment**; 135 non-revoked techniques went uncategorised until all three maps caught up on 2026-09-15. Run the coverage check in `SKILLS.md` §14.10 after every bundle refresh — it must print `[]` and `0`.
+- A STIX fetch failure is not an outage: the loader keeps serving the last good bundle. A failed *first* load retries after `BLUETEAM_STIX_RETRY_S` (60s) instead of latching until restart.
 
 Category → tactic mapping:
 
 | Category | Tactics | Signal |
 |----------|---------|--------|
 | A (**recon**) | Reconnaissance, Resource Development, Discovery | weakest (*scanner noise*) |
-| B (**access**) | Initial Access, Execution, Privilege Escalation, Defense Evasion, Credential Access, Lateral Movement | mid |
+| B (**access**) | Initial Access, Execution, Privilege Escalation, Defense Evasion, Stealth, Defense Impairment, Credential Access, Lateral Movement | mid |
 | C (**C2/exfil**) | Persistence, Collection, Command and Control, Exfiltration, Impact | strongest |
 
 ---

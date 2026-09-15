@@ -41,7 +41,7 @@ class AttackGraphInput(BaseModel):
 @mcp.tool(
     name="blueteam_attack_graph",
     annotations={"readOnlyHint": True, "destructiveHint": False,
-                 "idempotentHint": True, "openWorldHint": False},
+                 "idempotentHint": True, "openWorldHint": True},  # include_stix may fetch the ATT&CK bundle
 )
 async def blueteam_attack_graph(params: AttackGraphInput) -> str:
     """Analyze the attacker relationship graph - campaign clusters, hubs, bridges.
@@ -174,7 +174,7 @@ class PivotSuggestInput(BaseModel):
 @mcp.tool(
     name="blueteam_pivot_suggest",
     annotations={"readOnlyHint": True, "destructiveHint": False,
-                 "idempotentHint": True, "openWorldHint": False},
+                 "idempotentHint": True, "openWorldHint": True},  # include_stix=True may fetch the ATT&CK bundle
 )
 async def blueteam_pivot_suggest(params: PivotSuggestInput) -> str:
     """Suggest the next investigation step for an IOC, driven by the attack graph.

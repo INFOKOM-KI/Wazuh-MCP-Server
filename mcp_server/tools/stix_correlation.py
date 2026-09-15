@@ -462,7 +462,7 @@ async def _fetch_techniques_for_srcip(srcip: str, since: str | None,
 @mcp.tool(
     name="blueteam_stix_killchain",
     annotations={"readOnlyHint": True, "destructiveHint": False,
-                 "idempotentHint": True, "openWorldHint": False},
+                 "idempotentHint": True, "openWorldHint": True},  # may fetch the ATT&CK bundle
 )
 async def blueteam_stix_killchain(params: StixKillchainInput) -> str:
     """Build an ATT&CK kill chain for a source IP from observed alerts + the STIX graph.
