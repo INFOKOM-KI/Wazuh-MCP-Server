@@ -122,9 +122,16 @@ gate. SSVC stays advisory metadata, never a correlation input.
 | Campaign clusters/hubs | `blueteam_attack_graph(window_days)` |
 | Campaign evolution | `blueteam_campaign_watch()` |
 | Next pivot suggestion | `blueteam_pivot_suggest(ioc)` |
-| STIX relationship analysis | `blueteam_stix_analyze(...)` |
+| STIX relationship analysis | `blueteam_stix_analyze(technique_id="T1059.001")` → which actors use the technique + its mitigations; `actor_name="Lazarus"` → that actor's TTPs and campaigns |
 | Baseline drift | `blueteam_baseline_drift(...)` |
 | FP knowledge base | `blueteam_false_positive_kb()` |
+
+> ATT&CK tactic names follow the installed bundle release — `Stealth` and `Defense Impairment`
+> replaced `Defense Evasion` in ATT&CK v18. Map a tactic to its 3-Sum category by meaning, not by
+> exact string match, and report the tactic as the alert spells it. If a `blueteam_stix_*` call
+> returns a STIX load error, report ATT&CK enrichment as unavailable for that pass, note it in the
+> report, and continue with the remaining tools — do not retry in a loop. A missing `rule.mitre.id`
+> on the alerts is the more common cause and it is worth reporting on its own.
 
 ### Investigation / case management
 | Want | Tool |
@@ -261,7 +268,8 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 1. blueteam_wazuh_alert_summarize(srcip="X", since="7d")
 2. blueteam_attack_chain(srcip="X", since="7d")
 3. blueteam_stix_killchain(srcip="X", since="7d")
-4. blueteam_investigation_workflow(srcip="X", window="7d", use_attack_graph=true)
+4. blueteam_stix_analyze(technique_id="<top T-id from step 3>")   # who uses it + mitigations
+5. blueteam_investigation_workflow(srcip="X", window="7d", use_attack_graph=true)
 ```
 
 ### Workflow C — campaign hunt (APT)

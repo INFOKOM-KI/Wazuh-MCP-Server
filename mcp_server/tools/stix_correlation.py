@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-STIX/ATT&CK correlation - maps Wazuh findings to threat actors, TTPs, and campaigns
+STIX/ATT&CK correlation maps Wazuh findings to threat actors, TTPs, and campaigns
 via the MITRE ATT&CK STIX 2.1 knowledge graph (pure JSON parse, no stix2 dependency).
 """
 from __future__ import annotations
-import json, os, asyncio, ipaddress
+import json, os, asyncio, ipaddress, logging, threading, time
+import urllib.parse, urllib.request
 from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD
@@ -14,67 +15,153 @@ from mcp_server.core.redact import _redact_alert_data
 from mcp_server.wazuh.indexer import _wazuh_indexer_post
 from mcp_server.wazuh.time_utils import _parse_time_window
 
+_logger = logging.getLogger("blue_team_mcp.stix")
+
 _STIX_PATH = os.environ.get("MITRE_ATTACK_STIX", "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/refs/heads/master/enterprise-attack/enterprise-attack.json")
 _STIX_CACHE = os.environ.get("BLUETEAM_STIX_CACHE",
                             "/var/log/blue-team-mcp/mitre_enterprise_attack.json")
 
+# ATT&CK ships twice a year, but technique-level edits land between releases, so
+# the stale check is a bare stat() and re-runs on every tool call for free.
+_STIX_MAX_AGE_SECONDS = float(os.environ.get("BLUETEAM_STIX_MAX_AGE_DAYS", "7")) * 86400
+_STIX_MAX_BYTES = int(os.environ.get("BLUETEAM_STIX_MAX_MB", "100")) * 1024 * 1024
+_STIX_RETRY_SECONDS = float(os.environ.get("BLUETEAM_STIX_RETRY_S", "60"))
+
 # ATT&CK STIX 2.1 loader (lazy mode aul, cached)
 _stix_data: dict | None = None
 _stix_error: str | None = None
+_stix_retry_at: float = 0.0
+
+# Callers reach _load_stix via asyncio.to_thread from several modules; without
+# this lock a cold start downloads and parses the bundle once per caller and
+# interleaves the cache write.
+_stix_lock = threading.Lock()
+
+
+def _validate_stix_source(path: str) -> str | None:
+    """Reject source schemes other than https and a plain local path.
+    urlopen() also speaks ftp:// and file://, so an unchecked config value is an
+    arbitrary local file read. Returns an error string, or None when allowed.
+    """
+    scheme = urllib.parse.urlparse(path).scheme.lower()
+    if scheme in ("", "https"):
+        return None
+    return (f"MITRE_ATTACK_STIX scheme '{scheme}' is not allowed - "
+            f"use an https:// URL or a local file path")
+
+
+def _write_cache(data: dict) -> None:
+    """Atomically replace the disk cache; a write failure is logged, never fatal."""
+    tmp = f"{_STIX_CACHE}.{os.getpid()}.tmp"
+    try:
+        cache_dir = os.path.dirname(_STIX_CACHE)
+        if cache_dir:
+            os.makedirs(cache_dir, exist_ok=True)
+        with open(tmp, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, _STIX_CACHE)
+    except OSError as e:
+        _logger.warning("STIX cache write failed (%s): %s", _STIX_CACHE, e)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _cache_is_fresh() -> bool:
+    """True when the disk cache exists and is younger than BLUETEAM_STIX_MAX_AGE_DAYS."""
+    try:
+        return (time.time() - os.path.getmtime(_STIX_CACHE)) <= _STIX_MAX_AGE_SECONDS
+    except OSError:
+        return False
+
+
+def _needs_refresh() -> bool:
+    """True when no bundle is loaded, or the loaded one came from a stale cache.
+    A local MITRE_ATTACK_STIX path is operator managed and never auto refreshed.
+    """
+    if _stix_data is None:
+        return True
+    if not _STIX_PATH.startswith("http"):
+        return False
+    return not _cache_is_fresh()
 
 
 def _fetch_stix_bundle() -> dict:
-    """Fetch the ATT&CK STIX bundle from URL or local path; cache to disk."""
-    if os.path.exists(_STIX_PATH) and not _STIX_PATH.startswith("http"):
+    """Fetch the ATT&CK STIX bundle from a local path or https URL; cache to disk."""
+    if not _STIX_PATH.startswith(("http://", "https://", "ftp://", "file://")):
         with open(_STIX_PATH) as f:
             return json.load(f)
-    if os.path.exists(_STIX_CACHE):
+    err = _validate_stix_source(_STIX_PATH)
+    if err:
+        raise ValueError(err)
+    if os.path.exists(_STIX_CACHE) and _cache_is_fresh():
         with open(_STIX_CACHE) as f:
             return json.load(f)
     # URL fetch via stdlib urllib (no httpx dependency in loader)
-    import urllib.request
     req = urllib.request.Request(_STIX_PATH, headers={"User-Agent": "blue-team-mcp/1.0"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
     try:
-        os.makedirs(os.path.dirname(_STIX_CACHE), exist_ok=True)
-        with open(_STIX_CACHE, "w") as f:
-            json.dump(data, f)
-    except Exception:
-        pass
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read(_STIX_MAX_BYTES + 1)
+        if len(raw) > _STIX_MAX_BYTES:
+            raise ValueError(f"STIX bundle exceeds {_STIX_MAX_BYTES} bytes - "
+                             f"raise BLUETEAM_STIX_MAX_MB if this bundle is legitimate")
+        data = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        # A stale bundle beats no bundle: MITRE is a hard dependency of every
+        # STIX tool and of Engine A's tactic classification.
+        if os.path.exists(_STIX_CACHE):
+            _logger.warning("STIX fetch failed (%s); using the stale disk cache", e)
+            with open(_STIX_CACHE) as f:
+                return json.load(f)
+        raise
+    _write_cache(data)
     return data
 
 
-def _load_stix():
-    """Load and index the ATT&CK STIX bundle once. Returns (objects_by_id, ...)."""
-    global _stix_data, _stix_error
-    if _stix_data is not None or _stix_error:
-        return
-    try:
-        bundle = _fetch_stix_bundle()
-        objects = bundle.get("objects", [])
+def _load_stix() -> None:
+    """Load and index the ATT&CK STIX bundle, refreshing a stale cache.
+    Thread-safe. A failed load is retried after BLUETEAM_STIX_RETRY_S instead of
+    latching permanently, and a failed refresh keeps serving the in-memory
+    bundle rather than taking STIX tooling offline.
+    """
+    global _stix_data, _stix_error, _stix_retry_at
+    with _stix_lock:
+        now = time.time()
+        if now < _stix_retry_at:
+            return
+        if not _needs_refresh():
+            return
+        try:
+            bundle = _fetch_stix_bundle()
+            objects = bundle.get("objects", [])
 
-        by_id: dict[str, dict] = {}
-        by_type: dict[str, list[dict]] = {}
-        relationships: list[dict] = []
-        for o in objects:
-            by_id[o.get("id", "")] = o
-            by_type.setdefault(o.get("type", ""), []).append(o)
-            if o.get("type") == "relationship":
-                relationships.append(o)
+            by_id: dict[str, dict] = {}
+            by_type: dict[str, list[dict]] = {}
+            relationships: list[dict] = []
+            for o in objects:
+                by_id[o.get("id", "")] = o
+                by_type.setdefault(o.get("type", ""), []).append(o)
+                if o.get("type") == "relationship":
+                    relationships.append(o)
 
-        # index relationships: object_id -> list of related objects
-        rel_index: dict[str, list[dict]] = {}
-        for r in relationships:
-            for key in ("source_ref", "target_ref"):
-                ref = r.get(key)
-                if ref:
-                    rel_index.setdefault(ref, []).append(r)
+            # index relationships: object_id -> list of related objects
+            rel_index: dict[str, list[dict]] = {}
+            for r in relationships:
+                for key in ("source_ref", "target_ref"):
+                    ref = r.get(key)
+                    if ref:
+                        rel_index.setdefault(ref, []).append(r)
 
-        _stix_data = {"by_id": by_id, "by_type": by_type,
-                      "relationships": relationships, "rel_index": rel_index}
-    except Exception as e:
-        _stix_error = f"Failed to load STIX: {e}"
+            _stix_data = {"by_id": by_id, "by_type": by_type,
+                          "relationships": relationships, "rel_index": rel_index}
+            _stix_error = None
+        except Exception as e:
+            _stix_retry_at = now + _STIX_RETRY_SECONDS
+            if _stix_data is None:
+                _stix_error = f"Failed to load STIX: {e}"
+            else:
+                _logger.warning("STIX refresh failed; serving the in-memory bundle: %s", e)
 
 
 def _mitre_id(obj: dict) -> str:
@@ -176,7 +263,12 @@ async def blueteam_stix_analyze(params: StixAnalyzeInput) -> str:
         next_frontier = []
         for oid in frontier:
             for rel in rel_index.get(oid, []):
-                target = rel.get("target_ref")
+                # Follow whichever endpoint is not the current node. Techniques are
+                # the TARGET of 'uses' (actor->technique) and 'mitigates'
+                # (mitigation->technique), so a target-only walk returns nothing for
+                # a technique query.
+                target = (rel.get("target_ref") if rel.get("source_ref") == oid
+                          else rel.get("source_ref"))
                 if not target or target in seen:
                     continue
                 seen.add(target)
@@ -237,7 +329,8 @@ async def blueteam_stix_analyze(params: StixAnalyzeInput) -> str:
 # STIX kill-chain correlation per srcip (item 5)
 _TACTIC_ORDER = {t: i for i, t in enumerate([
     "reconnaissance", "resource development", "initial access", "execution",
-    "persistence", "privilege escalation", "defense evasion", "credential access",
+    "persistence", "privilege escalation", "defense evasion", "stealth",
+    "defense impairment", "credential access",
     "discovery", "lateral movement", "collection", "command and control",
     "exfiltration", "impact"])}
 

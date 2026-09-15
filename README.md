@@ -98,6 +98,7 @@ optional — tools degrade gracefully without them.
 | Threat intel | `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `RAPIDAPI_KEY`, `HUDSONROCK_API_KEY` | 9 providers + RapidAPI + HudsonRock; all optional |
 | Outbound lookup spacing | `NETRA_MIN_INTERVAL`, `ARGUS_MIN_INTERVAL`, `SANGFOR_MIN_INTERVAL` | seconds between upstream lookups — default `30`/`30`/`5` |
 | Outbound HTTP timeout | `HTTP_TIMEOUT` | seconds per upstream request — default `30`. Netra overrides it per request at 90s because its fan-out measured ~34s. A timeout counts as a breaker failure, so a budget below real latency trips the breaker for that upstream |
+| ATT&CK STIX bundle | `MITRE_ATTACK_STIX`, `BLUETEAM_STIX_CACHE`, `BLUETEAM_STIX_MAX_AGE_DAYS`, `BLUETEAM_STIX_MAX_MB`, `BLUETEAM_STIX_RETRY_S` | `https://` URL or a local path (no `file://`/`ftp://`), cache path (default `/var/log/blue-team-mcp/mitre_enterprise_attack.json`), refresh TTL (7 days), fetch cap (100 MB — the corpus is 40 MB), retry after a failed first load (60s). A failed refresh keeps the last good bundle |
 | Redaction | `BLUETEAM_REDACTION_POLICY`, `BLUETEAM_OWNED_DOMAINS`, `BLUETEAM_REDACT_*` | see Security & Privacy |
 | Forensic gate | `BLUETEAM_ALLOW_FORENSIC_BYPASS`, `BLUETEAM_FORENSIC_TOKEN` | default `false` / empty |
 | SSRF allowlist | `ALLOWED_INTERNAL_DOMAINS` | comma-separated internal domains `blueteam_check_webshell` may reach on non-public IPs (default: reject all non-public hosts) |
@@ -379,9 +380,16 @@ gate. SSVC stays advisory metadata, never a correlation input.
 | Campaign clusters/hubs | `blueteam_attack_graph(window_days)` |
 | Campaign evolution | `blueteam_campaign_watch()` |
 | Next pivot suggestion | `blueteam_pivot_suggest(ioc)` |
-| STIX relationship analysis | `blueteam_stix_analyze(...)` |
+| STIX relationship analysis | `blueteam_stix_analyze(technique_id="T1059.001")` → which actors use the technique + its mitigations; `actor_name="Lazarus"` → that actor's TTPs and campaigns |
 | Baseline drift | `blueteam_baseline_drift(...)` |
 | FP knowledge base | `blueteam_false_positive_kb()` |
+
+> ATT&CK tactic names follow the installed bundle release — `Stealth` and `Defense Impairment`
+> replaced `Defense Evasion` in ATT&CK v18. Map a tactic to its 3-Sum category by meaning, not by
+> exact string match, and report the tactic as the alert spells it. If a `blueteam_stix_*` call
+> returns a STIX load error, report ATT&CK enrichment as unavailable for that pass, note it in the
+> report, and continue with the remaining tools — do not retry in a loop. A missing `rule.mitre.id`
+> on the alerts is the more common cause and it is worth reporting on its own.
 
 ### Investigation / case management
 | Want | Tool |
@@ -518,7 +526,8 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 1. blueteam_wazuh_alert_summarize(srcip="X", since="7d")
 2. blueteam_attack_chain(srcip="X", since="7d")
 3. blueteam_stix_killchain(srcip="X", since="7d")
-4. blueteam_investigation_workflow(srcip="X", window="7d", use_attack_graph=true)
+4. blueteam_stix_analyze(technique_id="<top T-id from step 3>")   # who uses it + mitigations
+5. blueteam_investigation_workflow(srcip="X", window="7d", use_attack_graph=true)
 ```
 
 ### Workflow C — campaign hunt (APT)

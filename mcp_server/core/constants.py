@@ -19,7 +19,9 @@ MITRE_TACTIC_TO_CATEGORY: Dict[str, str] = {
     "Initial Access":          "B",
     "Credential Access":       "B",
     "Privilege Escalation":    "B",
-    "Defense Evasion":         "B",
+    "Defense Evasion":         "B",   # pre-ATT&CK-v18 name, kept for older Wazuh rulesets.
+    "Stealth":                 "B",   # ATT&CK v18+ split of Defense Evasion.
+    "Defense Impairment":      "B",   # ATT&CK v18+ split of Defense Evasion.
     "Execution":               "B",
     "Persistence":             "C",
     "Command and Control":     "C",
@@ -38,7 +40,9 @@ MITRE_TACTIC_WEIGHTS: Dict[str, float] = {
     "Execution":             1.2,
     "Persistence":           1.5,
     "Privilege Escalation":  1.3,
-    "Defense Evasion":       1.4,
+    "Defense Evasion":       1.4,   # pre-ATT&CK-v18 name, kept for older Wazuh rulesets
+    "Stealth":               1.4,   # ATT&CK v18+ split of Defense Evasion
+    "Defense Impairment":    1.4,   # ATT&CK v18+ split of Defense Evasion
     "Credential Access":     1.2,
     "Lateral Movement":      1.3,
     "Collection":            1.2,
