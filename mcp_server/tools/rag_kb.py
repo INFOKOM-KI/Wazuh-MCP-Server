@@ -33,13 +33,13 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server.core import rag_store
 from mcp_server.core.audit import _audit_log
-from mcp_server.core.attacker_registry import is_attacker_ioc
 from mcp_server.core.case_store import list_cases
 from mcp_server.core.config import config
 from mcp_server.core.exceptions import BlueTeamMCPError
-from mcp_server.core.false_positive_kb import false_positive_entries, is_false_positive
-from mcp_server.core.rerank import rerank as _cross_rerank
+from mcp_server.core.false_positive_kb import false_positive_entries
+from mcp_server.core.rerank import rerank_hits
 from mcp_server.core.tool_decorator import blueteam_tool
+from mcp_server.agents.fp_validator_graph import run_fp_validation
 
 _NOT_CONFIGURED = (
     "RAG store is not configured. Set BLUETEAM_RAG_ENABLED=true and "
@@ -120,26 +120,6 @@ def _docs_from_false_positives(size: int, overlap: int) -> list[dict]:
                          "meta": meta})
             seq += 1
     return docs
-
-
-async def _rerank_hits(query: str, hits: list[dict], top_k: int) -> tuple[list[dict], bool, Optional[str]]:
-    """Second stage: re-score ``hits`` with the local cross-encoder.
-    Returns ``(hits, reranked, status)``. Rank-based truncation only, no score
-    threshold: raw logits are not comparable across query distributions, and a
-    fixed floor silently deletes good matches. ``status`` non-None means the
-    caller keeps the vector ordering unchanged. Candidates are clamped by
-    ``config.rerank.max_candidates`` so the rerank fan-out is bounded the same
-    way for every caller, not just blueteam_semantic_search.
-    """
-    candidates = hits[:config.rerank.max_candidates]
-    scores, status = await _cross_rerank(query, [hit["text"] for hit in candidates])
-    if status is not None:
-        return hits[:top_k], False, status
-    order = sorted(range(len(candidates)),
-                   key=lambda i: (-scores[i], -candidates[i]["vector_score"]))
-    ranked = [{**candidates[i], "rerank_score": round(float(scores[i]), 6)}
-              for i in order[:top_k]]
-    return ranked, True, None
 
 
 # Ingest
@@ -331,7 +311,7 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
     reranked = False
     rerank_status: Optional[str] = None
     if params.rerank and hits:
-        hits, reranked, rerank_status = await _rerank_hits(params.query, hits, params.top_k)
+        hits, reranked, rerank_status = await rerank_hits(params.query, hits, params.top_k)
     else:
         hits = hits[:params.top_k]
 
@@ -434,80 +414,36 @@ async def blueteam_rag_fp_validate(params: RagFpValidateInput) -> str:
     none. Findings are advisory; the analyst verdict is authoritative.
     """
     _require_store()
-    exact_suppressed = is_false_positive(params.srcip)
-    known_attacker = is_attacker_ioc(params.srcip)
-
-    evidence_text = params.description or params.srcip
-    hits, status = await rag_store.query(evidence_text, top_k=params.top_k)
-    reranked = False
-    rerank_status: Optional[str] = None
-    if params.rerank and hits:
-        hits, reranked, rerank_status = await _rerank_hits(evidence_text, hits, params.top_k)
-
-    top_vector = hits[0]["vector_score"] if hits else None
-    top_rerank = hits[0].get("rerank_score") if hits else None
-
-    score_floor_ok = True
-    if params.min_rerank_score is not None:
-        score_floor_ok = top_rerank is not None and top_rerank >= params.min_rerank_score
-    enough_matches = len(hits) >= params.min_matches
-
-    if exact_suppressed and known_attacker:
-        verdict = "conflicting_state"
-        rationale = ("This indicator is in the false-positive suppression set AND the attacker "
-                     "registry. Both were written from analyst verdicts, and neither store "
-                     "clears the other, so precedence is unresolved here. Resolve it before "
-                     "trusting either: re-mark the indicator with blueteam_mark_investigated, "
-                     "and note that 3-Sum currently excludes it as a suppression hit.")
-    elif exact_suppressed:
-        verdict = "suppressed_exact"
-        rationale = ("In the exact false-positive suppression set; the 3-Sum engine already "
-                     "excludes it. Fix the upstream detection if it keeps alerting.")
-    elif known_attacker:
-        verdict = "likely_true_positive"
-        rationale = ("Registered in the attacker registry from a prior analyst confirmation. "
-                     "That outranks corpus similarity. Escalate.")
-    elif enough_matches and score_floor_ok:
-        verdict = "likely_false_positive"
-        rationale = (f"{len(hits)} corpus match(es) at or above min_matches="
-                     f"{params.min_matches}. Advisory: confirm the matched cases are the same "
-                     "activity before closing.")
-    else:
-        verdict = "insufficient_evidence"
-        rationale = (f"{len(hits)} corpus match(es), below min_matches={params.min_matches}. "
-                     "Not evidence of a true positive either - investigate, do not auto-close.")
-
-    evidence = {
-        "exact_suppression_match": exact_suppressed,
-        "attacker_registry_match": known_attacker,
-        "kb_matches": len(hits),
-        "min_matches_required": params.min_matches,
-        "top_vector_score": round(top_vector, 6) if top_vector is not None else None,
-        "top_rerank_score": round(top_rerank, 6) if top_rerank is not None else None,
-        "rerank_score_floor": params.min_rerank_score,
-        "score_floor_met": score_floor_ok,
-        "corpus_status": status,
-        "rerank_status": rerank_status,
-        "confidence": "not_computed",
-    }
+    result = await run_fp_validation(
+        params.srcip, params.description, params.min_matches,
+        params.min_rerank_score, params.top_k, params.rerank)
+    verdict = result["verdict"]
+    rationale = result["rationale"]
+    evidence = result["evidence"]
+    hits = result["matches"]
 
     if params.response_format == "json":
-        return json.dumps({
-            "indicator": params.srcip, "verdict": verdict, "rationale": rationale,
-            "evidence": evidence, "matches": hits, "reranked": reranked,
-        }, indent=2, ensure_ascii=False)
+        return json.dumps(result, indent=2, ensure_ascii=False)
 
     lines = [f"# ⚖️ FP Validation - `{params.srcip}`", "",
              f"**Verdict**: `{verdict}`", "",
              rationale, "",
              "## Evidence", "",
-             f"- Exact suppression match: `{exact_suppressed}`",
-             f"- Attacker registry match: `{known_attacker}`",
-             f"- Corpus matches: `{len(hits)}` (min required: `{params.min_matches}`)",
+             f"- Exact suppression match: `{evidence['exact_suppression_match']}`",
+             f"- Attacker registry match: `{evidence['attacker_registry_match']}`",
+             f"- Corpus matches: `{evidence['kb_matches']}` "
+             f"(min required: `{evidence['min_matches_required']}`)",
+             f"- Corpus searched: `{evidence['corpus_searched']}` "
+             f"(status: `{evidence['corpus_status']}`)",
              f"- Top vector score: `{evidence['top_vector_score']}`",
              f"- Top rerank score: `{evidence['top_rerank_score']}` "
-             f"(floor: `{params.min_rerank_score}`)",
+             f"(floor: `{evidence['rerank_score_floor']}`, met: `{evidence['score_floor_met']}`)",
              f"- Confidence: `not_computed` (no calibrated probability is produced)", ""]
+    if result.get("errors"):
+        lines.append("## Degraded Steps")
+        lines.append("")
+        lines.extend(f"- {err}" for err in result["errors"])
+        lines.append("")
     if hits:
         lines.append("## Matched Corpus Entries")
         lines.append("")

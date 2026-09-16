@@ -120,10 +120,11 @@ async def rerank(query: str, docs: list[str]) -> tuple[list[float], Optional[str
     Returns ``(scores, status)``:
     - ``scores``: raw logits in the SAME order as ``docs`` (empty on fallback).
     - ``status``: ``None`` on success; otherwise a short reason (``"disabled"``,
-    ``"unavailable: …"``, ``"empty"``) so callers can surface the fallback.
-    Callers fall back to BM25-only when ``status`` is not ``None``. Both the
-    model load and the inference run via ``asyncio.to_thread`` so the event
-    loop is never blocked by ONNX CPU work.
+      ``"unavailable: …"``, ``"empty"``) so callers can surface the fallback.
+    Callers fall back to lexical-only when ``status`` is not ``None``. Both the
+    model load and the inference run via ``asyncio.to_thread`` so the event loop
+    is never blocked by ONNX CPU work. Use ``rerank_hits`` instead when the input
+    is a list of retrieval hit dicts rather than raw strings.
     """
     if not docs:
         return [], "empty"
@@ -133,3 +134,24 @@ async def rerank(query: str, docs: list[str]) -> tuple[list[float], Optional[str
         return [], f"unavailable: {_reason}"
     scores = await asyncio.to_thread(_encoder.rerank, query, docs)
     return list(scores), None
+
+
+async def rerank_hits(query: str, hits: list[dict], top_k: int,
+                      score_field: str = "vector_score") -> tuple[list[dict], bool, Optional[str]]:
+    """Re-score retrieval ``hits`` (dicts carrying a ``text`` key) against ``query``.
+    This is the second stage for every retrieval caller, so the ordering rule
+    lives in exactly one place. Rank-based truncation only: raw cross-encoder
+    logits are not comparable across query distributions, so no score threshold
+    is applied. Candidates are clamped by ``config.rerank.max_candidates`` so the rerank fan out is bounded identically for every caller.
+    Returns ``(hits, reranked, status)``. When ``status`` is not ``None`` the
+    original ordering is returned truncated and the caller should surface why.
+    """
+    candidates = hits[:config.rerank.max_candidates]
+    scores, status = await rerank(query, [hit["text"] for hit in candidates])
+    if status is not None:
+        return hits[:top_k], False, status
+    order = sorted(range(len(candidates)),
+                   key=lambda i: (-scores[i], -candidates[i].get(score_field, 0.0)))
+    ranked = [{**candidates[i], "rerank_score": round(float(scores[i]), 6)}
+              for i in order[:top_k]]
+    return ranked, True, None
