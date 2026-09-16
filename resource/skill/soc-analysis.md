@@ -125,6 +125,7 @@ gate. SSVC stays advisory metadata, never a correlation input.
 | STIX relationship analysis | `blueteam_stix_analyze(technique_id="T1059.001")` → which actors use the technique + its mitigations; `actor_name="Lazarus"` → that actor's TTPs and campaigns |
 | Baseline drift | `blueteam_baseline_drift(...)` |
 | FP knowledge base | `blueteam_false_positive_kb()` |
+| Known-noise check (local corpus) | `blueteam_rag_fp_validate(srcip, description)` |
 
 > ATT&CK tactic names follow the installed bundle release — `Stealth` and `Defense Impairment`
 > replaced `Defense Evasion` in ATT&CK v18. Map a tactic to its 3-Sum category by meaning, not by
@@ -137,6 +138,8 @@ gate. SSVC stays advisory metadata, never a correlation input.
 | Want | Tool |
 |---|---|
 | Full langgraph workflow | `blueteam_investigation_workflow(srcip or alert_text or dependency_manifest)` |
+| Rebuild the local case corpus | `blueteam_rag_ingest(source="cases"\|"false_positives"\|"text", texts, label)` |
+| Search prior cases / playbooks | `blueteam_rag_query(query, sources, rerank)` |
 | Comprehensive IP profile | `blueteam_investigate_ip(srcip)` |
 | Record verdict | `blueteam_mark_investigated(...)` |
 | Case lifecycle | `blueteam_case_create/get/list/add_iocs/add_verdict` |
@@ -146,6 +149,31 @@ gate. SSVC stays advisory metadata, never a correlation input.
 `srcip`, or `dependency_manifest`. A no-target call is rejected with a
 validation error (`"Provide 'alert_text', 'srcip', or 'dependency_manifest'..."`),
 not an internal crash. Give it a target and re-invoke.
+
+Pass `check_false_positive=true` to consult the local corpus before enrichment. A
+`suppressed_exact` or `conflicting_state` verdict short-circuits the run and **no report is
+generated** — correct for an alert an analyst already closed, surprising if you expected one.
+Any other verdict is recorded in `fp_validation` and the investigation continues.
+
+### Local case RAG (opt-in, needs `BLUETEAM_RAG_ENABLED` + `BLUETEAM_RAG_DB`)
+| Want | Tool |
+|---|---|
+| "Have we seen this before?" | `blueteam_rag_query(query="ssh brute force mail server")` |
+| Search only confirmed noise | `blueteam_rag_query(query=..., sources=["false_positives"])` |
+| Search only IR guidance | `blueteam_rag_query(query="ransomware containment steps", sources=["ir_playbooks"])` |
+| Is this alert noise? | `blueteam_rag_fp_validate(srcip="8.8.8.8", description="ssh auth failure")` |
+| Refresh the index | `blueteam_rag_ingest(source="cases")` |
+
+Read the `verdict` before acting on it. `suppressed_exact`, `conflicting_state` and
+`likely_true_positive` are authoritative (registry lookups, no model). `likely_false_positive` is
+**advisory** — confirm the matched cases describe the same activity. `insufficient_evidence` means
+the corpus was searched and came up short; `validation_incomplete` means it was **never searched**
+(store down, model failed, node timed out) and those two are not interchangeable. `evidence.confidence`
+is always `not_computed`; there is no calibrated probability in this pipeline, so never quote one.
+
+Nothing here auto-closes an alert. Record the decision with `blueteam_mark_investigated`.
+Re-run `blueteam_rag_ingest` after editing cases or marking new false positives — the index is
+derived and does not notice edits on its own.
 
 ### Email / breach / domain forensics
 | Want | Tool |

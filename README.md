@@ -5,9 +5,9 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **141 tools + 4 resources** (115 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
+offensive tooling. **144 tools + 4 resources** (118 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
-workflows, and host forensics. Read-only by default.
+workflows, local case RAG, and host forensics. Read-only by default.
 
 **Programmer**: `NAuliajati` (`csirt[at]tangerangkota[.]go[.]id`)
 
@@ -105,7 +105,8 @@ optional — tools degrade gracefully without them.
 | Inbound auth | `MCP_API_KEY`, `MCP_API_KEY_SCOPES` | pre-shared API key + scopes for `streamable_http` |
 | Inbound hardening | `BLUETEAM_HTTP_RATE_LIMIT`, `BLUETEAM_ALLOWED_ORIGINS` | per-IP sliding-window rate limit (req/min, `0`=off) + Origin allowlist (loopback always allowed) |
 | Audit & persistence | `BLUETEAM_AUDIT_LOG`, `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CMDB_FILE` | JSONL audit trail + stores (optional) |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **115 tools registered** instead of 141: `141 - 23 - 3 = 115`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
+| Local case RAG | `BLUETEAM_RAG_ENABLED`, `BLUETEAM_RAG_DB`, `BLUETEAM_RAG_MODEL`, `BLUETEAM_RAG_CACHE_PATH`, `BLUETEAM_RAG_MAX_CANDIDATES`, `BLUETEAM_RAG_TOP_K`, `BLUETEAM_RAG_MAX_CHUNKS`, `BLUETEAM_RAG_CHUNK_CHARS`, `BLUETEAM_RAG_CHUNK_OVERLAP`, `BLUETEAM_RAG_ALLOW_DOWNLOAD`, `BLUETEAM_RAG_MODEL_SHA256` | SQLite retrieval corpus over cases / confirmed false positives / IR playbooks. `ENABLED=true` requires an absolute `DB` path or startup raises. `ALLOW_DOWNLOAD` defaults `false` (`local_files_only`). |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **118 tools registered** instead of 144: `144 - 23 - 3 = 118`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
@@ -123,6 +124,29 @@ cross-encoder (`BAAI/bge-reranker-base`, ONNX) re-scores the BM25 candidates for
 synonym / cross-lingual matching. Gated by `BLUETEAM_RERANK_ENABLED` (default false);
 disabled / unavailable falls back to BM25-only. Weights are pre-downloaded by `setup.sh`
 into `BLUETEAM_RERANK_CACHE_PATH` — local-only, never a hosted API.
+
+Truncation is rank-based with no score threshold: raw cross-encoder logits are uncalibrated across
+query distributions, so a fixed floor deletes good matches. `BLUETEAM_RERANK_MAX_CANDIDATES`
+(default 100) bounds the fan-out inside the shared `rerank_hits()` helper, so every caller is
+bounded identically.
+
+### Local Case RAG (`blueteam_rag_*`)
+A local retrieval corpus over the SOC's own history — `case_store` records, confirmed
+false-positive reasons and converted IR playbooks — plus a deterministic false-positive check.
+Embeddings are computed in-process by ONNX (`fastembed.TextEmbedding`, no torch, no hosted
+embedding API), stored in SQLite, and never transmitted.
+- `blueteam_rag_ingest` — rebuild a corpus label. Derived labels (`cases`, `false_positives`) are
+  rebuilt from their source of truth, so **re-run it after editing cases or marking new FPs**.
+- `blueteam_rag_query` — vector recall (default 100 candidates) then the optional cross-encoder,
+  returning scores plus corpus stats so a stale index is visible.
+- `blueteam_rag_fp_validate` — verdict ladder over registry lookups and corpus matches:
+  `suppressed_exact`, `conflicting_state`, `likely_true_positive`, `likely_false_positive`,
+  `insufficient_evidence`, `validation_incomplete`. Advisory only, never writes, and
+  `evidence.confidence` is always `not_computed`.
+
+The distinction that matters: `insufficient_evidence` means the corpus **was** searched and came up
+short; `validation_incomplete` means it was **never** searched. Conflating them turns a broken
+store into a false-negative finding on a live alert.
 
 ### 3-Sum APT Correlation
 `three_sum_correlation` runs two engines plus unified scoring:
@@ -158,7 +182,9 @@ vendor advisories into exported reports.
 `blueteam_pivot_suggest`, `blueteam_campaign_watch`, `blueteam_stix_killchain`,
 `blueteam_investigation_workflow` and `blueteam_playbook_run` (LangGraph), plus a
 false-positive knowledge base (`blueteam_false_positive_kb`) that auto-suppresses known-noisy
-IOCs in 3-Sum.
+IOCs in 3-Sum. `blueteam_investigation_workflow(..., check_false_positive=true)` inserts the local
+RAG gate before enrichment; a `suppressed_exact` indicator short-circuits the run, so no report is
+generated for an alert an analyst already closed.
 
 ### Host & Domain Forensics
 WHOIS / CRT.sh, IOC extraction, JARM fingerprinting, typosquatting detection
@@ -383,6 +409,7 @@ gate. SSVC stays advisory metadata, never a correlation input.
 | STIX relationship analysis | `blueteam_stix_analyze(technique_id="T1059.001")` → which actors use the technique + its mitigations; `actor_name="Lazarus"` → that actor's TTPs and campaigns |
 | Baseline drift | `blueteam_baseline_drift(...)` |
 | FP knowledge base | `blueteam_false_positive_kb()` |
+| Known-noise check (local corpus) | `blueteam_rag_fp_validate(srcip, description)` |
 
 > ATT&CK tactic names follow the installed bundle release — `Stealth` and `Defense Impairment`
 > replaced `Defense Evasion` in ATT&CK v18. Map a tactic to its 3-Sum category by meaning, not by
@@ -395,6 +422,8 @@ gate. SSVC stays advisory metadata, never a correlation input.
 | Want | Tool |
 |---|---|
 | Full langgraph workflow | `blueteam_investigation_workflow(srcip or alert_text or dependency_manifest)` |
+| Rebuild the local case corpus | `blueteam_rag_ingest(source="cases"\|"false_positives"\|"text", texts, label)` |
+| Search prior cases / playbooks | `blueteam_rag_query(query, sources, rerank)` |
 | Comprehensive IP profile | `blueteam_investigate_ip(srcip)` |
 | Record verdict | `blueteam_mark_investigated(...)` |
 | Case lifecycle | `blueteam_case_create/get/list/add_iocs/add_verdict` |
@@ -404,6 +433,31 @@ gate. SSVC stays advisory metadata, never a correlation input.
 `srcip`, or `dependency_manifest`. A no-target call is rejected with a
 validation error (`"Provide 'alert_text', 'srcip', or 'dependency_manifest'..."`),
 not an internal crash. Give it a target and re-invoke.
+
+Pass `check_false_positive=true` to consult the local corpus before enrichment. A
+`suppressed_exact` or `conflicting_state` verdict short-circuits the run and **no report is
+generated** — correct for an alert an analyst already closed, surprising if you expected one.
+Any other verdict is recorded in `fp_validation` and the investigation continues.
+
+### Local case RAG (opt-in, needs `BLUETEAM_RAG_ENABLED` + `BLUETEAM_RAG_DB`)
+| Want | Tool |
+|---|---|
+| "Have we seen this before?" | `blueteam_rag_query(query="ssh brute force mail server")` |
+| Search only confirmed noise | `blueteam_rag_query(query=..., sources=["false_positives"])` |
+| Search only IR guidance | `blueteam_rag_query(query="ransomware containment steps", sources=["ir_playbooks"])` |
+| Is this alert noise? | `blueteam_rag_fp_validate(srcip="8.8.8.8", description="ssh auth failure")` |
+| Refresh the index | `blueteam_rag_ingest(source="cases")` |
+
+Read the `verdict` before acting on it. `suppressed_exact`, `conflicting_state` and
+`likely_true_positive` are authoritative (registry lookups, no model). `likely_false_positive` is
+**advisory** — confirm the matched cases describe the same activity. `insufficient_evidence` means
+the corpus was searched and came up short; `validation_incomplete` means it was **never searched**
+(store down, model failed, node timed out) and those two are not interchangeable. `evidence.confidence`
+is always `not_computed`; there is no calibrated probability in this pipeline, so never quote one.
+
+Nothing here auto-closes an alert. Record the decision with `blueteam_mark_investigated`.
+Re-run `blueteam_rag_ingest` after editing cases or marking new false positives — the index is
+derived and does not notice edits on its own.
 
 ### Email / breach / domain forensics
 | Want | Tool |

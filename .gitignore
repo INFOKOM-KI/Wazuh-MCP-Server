@@ -57,6 +57,18 @@ graphify-out/
 # inside the repo. Staged drafts must never be committed.
 *_staging/
 rerank-cache/
+rag-cache/
+
+# Local RAG corpus. Holds UNREDACTED analyst case notes, confirmed false-positive
+# reasons and IR-playbook chunks, so it carries attacker IOCs, internal hostnames
+# and victim context in one file. Written 0600 by rag_store; never commit it.
+# BLUETEAM_RAG_DB is operator-configurable, so match by extension, not by name.
+rag.db
+rag.db-wal
+rag.db-shm
+*.rag.db
+*.rag.db-wal
+*.rag.db-shm
 
 # OS junk
 Thumbs.db

@@ -55,14 +55,20 @@ def _reset():
     rag_store._cache_key = None
     rag_store._cache_rows = None
     rag_store._cache_matrix = None
-    false_positive_kb._ENTRIES.clear()
-    attacker_registry._ENTRIES.clear()
+    _clear_registries()
     yield
     config.rag.enabled = False
     config.rag.db_path = ""
     rag_store._embedder = None
-    false_positive_kb._ENTRIES.clear()
-    attacker_registry._ENTRIES.clear()
+    _clear_registries()
+
+
+def _clear_registries():
+    """Use the modules' own resets. attacker_registry derives _ATTACKER_EXACT and
+    _ATTACKER_DOMAINS from _ENTRIES, so clearing _ENTRIES alone leaves
+    is_attacker_ioc() returning True for a previous test's indicator."""
+    attacker_registry.clear_attacker_registry()
+    false_positive_kb.clear_false_positive_kb()
 
 
 # Topology
@@ -172,3 +178,33 @@ def test_sqlite_checkpointer_path(tmp_path, monkeypatch):
     assert result["verdict"] in {
         "validation_incomplete", "insufficient_evidence", "likely_false_positive"}
     assert os.path.exists(str(tmp_path / "langgraph.db"))
+
+
+# Wiring into the investigation graph
+def test_investigation_graph_routes_extract_into_fp_check():
+    from mcp_server.agents import investigation_graph as inv
+    graph = inv.build_investigation_graph().get_graph()
+    assert "fp_check" in set(graph.nodes)
+    targets = {e.target for e in graph.edges if e.source == "extract"}
+    assert targets == {"fp_check"}
+    fp_targets = {e.target for e in graph.edges if e.source == "fp_check"}
+    assert fp_targets == {"verdict", "enrich", "analytics"}
+
+
+def test_suppressed_indicator_short_circuits_the_investigation():
+    """An already-resolved indicator must skip enrichment/correlation entirely.
+    No RAG store is configured here, which also proves the authority path needs
+    no corpus."""
+    from mcp_server.agents.investigation_graph import run_investigation
+    false_positive_kb.register_false_positive("8.8.8.8", source="verdict", reason="dns noise")
+    result = asyncio.run(run_investigation(srcip="8.8.8.8", check_false_positive=True))
+    assert result["fp_validation"]["verdict"] == "suppressed_exact"
+    assert not any(s.startswith("enrich:") for s in result["steps"])
+    assert any("fp_check: suppressed_exact" in s for s in result["steps"])
+
+
+def test_fp_gate_is_opt_out_by_default():
+    from mcp_server.agents.investigation_graph import run_investigation
+    result = asyncio.run(run_investigation(srcip="8.8.8.8"))
+    assert result["fp_validation"] is None
+    assert any("fp_check: skipped" in s for s in result["steps"])

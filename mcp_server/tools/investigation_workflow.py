@@ -32,6 +32,11 @@ class InvestigationWorkflowInput(BaseModel):
                     "and registry-confirmed IOC.")
     generate_report: bool = Field(default=False,
         description="Generate a .docx SOC report at the end (requires officecli + writable report_dir).")
+    check_false_positive: bool = Field(default=False,
+        description="Run the local false-positive gate right after IOC extraction. A "
+                    "suppressed indicator skips enrichment, correlation and the report. "
+                    "Requires BLUETEAM_RAG_ENABLED + BLUETEAM_RAG_DB; degrades to a "
+                    "recorded error when the store is unavailable.")
     report_dir: str = Field(default="/tmp", max_length=200,
         description="Directory for the generated report (used when generate_report=true).")
     record_verdict: bool = Field(default=False,
@@ -69,9 +74,12 @@ class InvestigationWorkflowInput(BaseModel):
 async def blueteam_investigation_workflow(params: InvestigationWorkflowInput) -> str:
     """Run the full SOC investigation workflow (langgraph) end-to-end.
     Orchestrates the platform's analyzers as a stateful graph:
-    extract IOCs -> threat-intel enrichment -> CVE pipeline (dependency scan +
-    score + SSVC + MITRE) -> 3-Sum correlation -> attack graph -> STIX kill-chain
-    (if srcip) -> baseline drift (if 3-Sum flagged) -> optional report + verdict.
+    extract IOCs -> false-positive gate (opt-in) -> threat-intel enrichment ->
+    CVE pipeline (dependency scan + score + SSVC + MITRE) -> 3-Sum correlation ->
+    attack graph -> STIX kill-chain (if srcip) -> baseline drift (if 3-Sum flagged)
+    -> optional report + verdict.
+    A suppressed indicator short-circuits straight to the verdict step, so no
+    report is generated for an alert an analyst already closed.
     Steps without required credentials degrade gracefully and are reported in
     `errors`.
 
@@ -85,18 +93,24 @@ async def blueteam_investigation_workflow(params: InvestigationWorkflowInput) ->
 
     3. *Investigate + generate a report + record verdict*:
        ``blueteam_investigation_workflow(srcip="103.107.116.202", generate_report=true, record_verdict=true, verdict_label="suspicious")``
+
+    4. *Check the local corpus for a known-noisy indicator first*:
+       ``blueteam_investigation_workflow(srcip="8.8.8.8", check_false_positive=true)``
+       (a suppressed indicator returns immediately with `fp_validation.verdict` set)
     """
-    _audit_log("blueteam_investigation_workflow", {"srcip": params.srcip, "window": params.window})
+    _audit_log("blueteam_investigation_workflow",
+               {"srcip": params.srcip, "window": params.window,
+                "check_false_positive": params.check_false_positive})
     result = await run_investigation(
         alert_text=params.alert_text,
         srcip=params.srcip,
         window=params.window,
-        use_attack_graph=params.use_attack_graph,
-        generate_report=params.generate_report,
+        use_attack_graph=params.use_attack_graph,        generate_report=params.generate_report,
         report_dir=params.report_dir,
         record_verdict=params.record_verdict,
         verdict_label=params.verdict_label,
         dependency_manifest=params.dependency_manifest,
+        check_false_positive=params.check_false_positive,
     )
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(_redact_alert_data(result), indent=2, ensure_ascii=False))
@@ -112,6 +126,14 @@ async def blueteam_investigation_workflow(params: InvestigationWorkflowInput) ->
         for e in result["errors"]:
             lines.append(f"- ⚠️ `{e}`")
     corr = result.get("correlation")
+    fpv = result.get("fp_validation")
+    if fpv:
+        ev = fpv.get("evidence") or {}
+        lines += ["", "## False-Positive Gate",
+                  f"- **Verdict**: `{fpv.get('verdict')}`",
+                  f"- **Corpus matches**: {ev.get('kb_matches', 0)} "
+                  f"(searched: `{ev.get('corpus_searched')}`, confidence: `{ev.get('confidence')}`)",
+                  f"- **Rationale**: {fpv.get('rationale', '')}"]
     if corr:
         lines += ["", "## 3-Sum Correlation",
                   f"- **Engine A triggers**: {corr.get('engine_a_triggers', 0)}",

@@ -17,8 +17,12 @@ aiosqlite>=0.20,<1.0
 #             its absence breaks register_all_tools() for all 141 tools at once.
 #             Also used lazily in mcp_server/sigma/engine.py. Currently transitive
 #             via langgraph -> langchain-core.
+#   numpy   - mcp_server/core/rag_store.py imports it inside functions (never at
+#             module top level) so its absence degrades the RAG tools instead of
+#             breaking startup. Transitive via fastembed.
 uvicorn>=0.31.1,<1.0.0
 pyyaml>=6.0.1,<7.0.0
+numpy>=1.26,<3.0
 
 # Two stage retrieval reranker (BM25 -> bge-reranker-base cross-encoder).
 # Opt-in at runtime via BLUETEAM_RERANK_ENABLED; tools degrade to BM25-only if missing.

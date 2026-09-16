@@ -72,15 +72,21 @@ def _reset(tmp_path):
     rag_store._cache_key = None
     rag_store._cache_rows = None
     rag_store._cache_matrix = None
-    false_positive_kb._ENTRIES.clear()
-    attacker_registry._ENTRIES.clear()
-    case_store._cases.clear()
+    _clear_registries()
     yield
     config.rag.enabled = False
     config.rag.db_path = ""
     rag_store._embedder = None
-    false_positive_kb._ENTRIES.clear()
-    attacker_registry._ENTRIES.clear()
+    _clear_registries()
+
+
+def _clear_registries():
+    """Use the modules' own resets. attacker_registry derives _ATTACKER_EXACT and
+    _ATTACKER_DOMAINS from _ENTRIES, so clearing _ENTRIES alone leaves
+    is_attacker_ioc() returning True for a previous test's indicator (the
+    investigation workflow registers every srcip it enriches)."""
+    attacker_registry.clear_attacker_registry()
+    false_positive_kb.clear_false_positive_kb()
     case_store._cases.clear()
 
 

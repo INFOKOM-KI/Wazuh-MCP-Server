@@ -224,6 +224,85 @@ else
   echo "  Reranker disabled (BLUETEAM_RERANK_ENABLED=false) - skipping model bootstrap."
 fi
 
+# Embedding model bootstrap (local case RAG: blueteam_rag_ingest/_query/_fp_validate).
+# Same contract as the reranker block above: honors BLUETEAM_RAG_* from config.env,
+# downloads the model, auto-generates BLUETEAM_RAG_MODEL_SHA256 when unset.
+# Why this block is load-bearing: the RAG tools build the embedder with
+# local_files_only=True unless BLUETEAM_RAG_ALLOW_DOWNLOAD=true. On a fresh host
+# with no cache, every ingest silently stores nothing and every query returns
+# "unavailable: model load failed" - which reads as "no similar cases exist".
+# Downloading here is what makes the no-runtime-egress default workable.
+RAG_ENABLED="${BLUETEAM_RAG_ENABLED:-false}"
+RAG_MODEL="${BLUETEAM_RAG_MODEL:-BAAI/bge-small-en-v1.5}"
+RAG_CACHE="${BLUETEAM_RAG_CACHE_PATH:-$INSTALL_DIR/rag-cache}"
+RAG_DB="${BLUETEAM_RAG_DB:-$INSTALL_DIR/rag.db}"
+RAG_SHA="${BLUETEAM_RAG_MODEL_SHA256:-}"
+if [[ "$RAG_ENABLED" == "true" || "$RAG_ENABLED" == "1" || "$RAG_ENABLED" == "yes" ]]; then
+  # RAG_DB cannot be empty here: the :- expansion above substitutes the default on
+  # an unset OR empty value, so this script always provisions a concrete path. That
+  # is why the server's "enabled with no DB" ConfigurationError should never fire on
+  # an install done through setup.sh - it guards hand-edited env files.
+  mkdir -p "$RAG_CACHE"
+  RAG_DB_DIR="$(dirname "$RAG_DB")"
+  if ! mkdir -p "$RAG_DB_DIR" 2>/dev/null || [[ ! -w "$RAG_DB_DIR" ]]; then
+    echo "[!] $RAG_DB_DIR is not writable - blueteam_rag_ingest will fail." >&2
+  fi
+  # Resolve the EXACT ONNX file fastembed will load (same path the server's pin
+  # check uses: fastembed _model_dir + registry model_file), so a multi-snapshot
+  # cache can never pin the wrong file. No local_files_only here: this is the one
+  # place a download is allowed, so the operator can generate a pin from it.
+  ERR_LOG=$(mktemp)
+  if RESOLVED_ONNX=$("$INSTALL_DIR/venv/bin/python3" - "$RAG_MODEL" "$RAG_CACHE" 2>"$ERR_LOG" << 'PYEOF'
+import os, sys
+from pathlib import Path
+from fastembed import TextEmbedding
+model, cache = sys.argv[1], sys.argv[2]
+emb = TextEmbedding(model_name=model, cache_dir=cache, lazy_load=True)
+model_file = next(m["model_file"] for m in TextEmbedding.list_supported_models()
+                  if m["model"] == model)
+# _model_dir lives on the INNER onnx encoder (emb.model), not the outer
+# TextEmbedding wrapper - same shape as TextCrossEncoder in the reranker block.
+# Fall back to a glob only if the attribute is absent (future version tolerance).
+inner = getattr(emb, "model", None)
+mdir = getattr(inner, "_model_dir", None) if inner is not None else None
+if mdir is not None:
+    print(os.path.join(str(mdir), model_file))
+else:
+    cands = sorted(Path(cache).glob("**/snapshots/*/" + model_file))
+    if cands:
+        print(str(cands[0]))
+PYEOF
+  ); then
+    if [[ -f "$RESOLVED_ONNX" ]]; then
+      ACTUAL_SHA=$(sha256sum "$RESOLVED_ONNX" | awk '{print $1}')
+      echo "  RAG embedder ready: $RESOLVED_ONNX"
+      if [[ -n "$RAG_SHA" ]]; then
+        if [[ "$ACTUAL_SHA" == "$RAG_SHA" ]]; then
+          echo "  BLUETEAM_RAG_MODEL_SHA256 verified (matches cached ONNX)."
+        else
+          echo "  WARNING: BLUETEAM_RAG_MODEL_SHA256 mismatch - cached file hashes to $ACTUAL_SHA."
+          echo "  The server will refuse to load the model and the RAG tools will report"
+          echo "  'unavailable'; regenerate the pin with sha256sum if the model was updated."
+        fi
+      else
+        RAG_SHA="$ACTUAL_SHA"
+        echo "  Generated BLUETEAM_RAG_MODEL_SHA256=$ACTUAL_SHA"
+      fi
+      echo "  Corpus DB: $RAG_DB (created on first blueteam_rag_ingest; written 0600)"
+    else
+      echo "  WARNING: fastembed resolved $RESOLVED_ONNX but the file is missing."
+    fi
+  else
+    echo "  Embedding model bootstrap skipped:"
+    tail -3 "$ERR_LOG" 2>/dev/null | sed 's/^/    /' || true
+    echo "  blueteam_rag_* will report 'unavailable: model load failed' until the"
+    echo "  model is in $RAG_CACHE, or BLUETEAM_RAG_ALLOW_DOWNLOAD=true is set."
+  fi
+  rm -f "$ERR_LOG"
+else
+  echo "  RAG disabled (BLUETEAM_RAG_ENABLED=false) - skipping embedding model bootstrap."
+fi
+
 # Config file for environment variables
 CONFIG_FILE="$INSTALL_DIR/config.env"
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -324,8 +403,22 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_RERANK_ENABLED="false"          # true = enable cross-encoder rerank on prompt_route/semantic_search
 # export BLUETEAM_RERANK_MODEL="BAAI/bge-reranker-base"
 # export BLUETEAM_RERANK_CACHE_PATH="/opt/blue-team-mcp/rerank-cache"   # model weights dir (offline after bootstrap)
-# export BLUETEAM_RERANK_MAX_CANDIDATES="50"      # hard cap for rerank_candidates param
+# export BLUETEAM_RERANK_MAX_CANDIDATES="100"     # hard cap for rerank candidate fan-out (all retrieval callers)
 # export BLUETEAM_RERANK_MODEL_SHA256=""          # optional: pin ONNX model SHA-256 (supply-chain integrity)
+
+# Local case RAG (opt-in; retrieval over cases / confirmed false positives / IR playbooks)
+# Enabling this REQUIRES an absolute BLUETEAM_RAG_DB - the server refuses to start without one.
+# export BLUETEAM_RAG_ENABLED="false"             # true = enable blueteam_rag_ingest/_query/_fp_validate
+# export BLUETEAM_RAG_DB="/opt/blue-team-mcp/rag.db"   # SQLite corpus; holds UNREDACTED analyst notes (0600)
+# export BLUETEAM_RAG_MODEL="BAAI/bge-small-en-v1.5"
+# export BLUETEAM_RAG_CACHE_PATH="/opt/blue-team-mcp/rag-cache"   # embedding weights (offline after bootstrap)
+# export BLUETEAM_RAG_ALLOW_DOWNLOAD="false"      # false = local_files_only; never reaches HuggingFace at runtime
+# export BLUETEAM_RAG_MAX_CANDIDATES="100"        # stage-1 recall (wide net)
+# export BLUETEAM_RAG_TOP_K="10"                  # stage-3 results after rerank (high precision)
+# export BLUETEAM_RAG_MAX_CHUNKS="50000"          # corpus ceiling; rejections are reported, not swallowed
+# export BLUETEAM_RAG_CHUNK_CHARS="1200"
+# export BLUETEAM_RAG_CHUNK_OVERLAP="200"
+# export BLUETEAM_RAG_MODEL_SHA256=""             # optional: pin ONNX model SHA-256 (supply-chain integrity)
 
 # Forensic Mode (ADMIN GATE — off by default)
 # export BLUETEAM_ALLOW_UNTRUNCATED="false"
@@ -448,13 +541,27 @@ _sync_env_key() {  # file key value
 _sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_ENABLED" "$RERANK_ENABLED"
 _sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_MODEL" "$RERANK_MODEL"
 _sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_CACHE_PATH" "$RERANK_CACHE"
-_sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_MAX_CANDIDATES" "${BLUETEAM_RERANK_MAX_CANDIDATES:-50}"
+_sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_MAX_CANDIDATES" "${BLUETEAM_RERANK_MAX_CANDIDATES:-100}"
 _sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_MODEL_SHA256" "$RERANK_SHA"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_ENABLED" "$RERANK_ENABLED"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MODEL" "$RERANK_MODEL"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_CACHE_PATH" "$RERANK_CACHE"
-_sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MAX_CANDIDATES" "${BLUETEAM_RERANK_MAX_CANDIDATES:-50}"
+_sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MAX_CANDIDATES" "${BLUETEAM_RERANK_MAX_CANDIDATES:-100}"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MODEL_SHA256" "$RERANK_SHA"
+# RAG block - synced with the same effective values the bootstrap resolved.
+for _envf in "$CONFIG_FILE" "$ENV_FILE"; do
+  _sync_env_key "$_envf" "BLUETEAM_RAG_ENABLED" "$RAG_ENABLED"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_DB" "$RAG_DB"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_MODEL" "$RAG_MODEL"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_CACHE_PATH" "$RAG_CACHE"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_ALLOW_DOWNLOAD" "${BLUETEAM_RAG_ALLOW_DOWNLOAD:-false}"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_MAX_CANDIDATES" "${BLUETEAM_RAG_MAX_CANDIDATES:-100}"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_TOP_K" "${BLUETEAM_RAG_TOP_K:-10}"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_MAX_CHUNKS" "${BLUETEAM_RAG_MAX_CHUNKS:-50000}"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_CHUNK_CHARS" "${BLUETEAM_RAG_CHUNK_CHARS:-1200}"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_CHUNK_OVERLAP" "${BLUETEAM_RAG_CHUNK_OVERLAP:-200}"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_MODEL_SHA256" "$RAG_SHA"
+done
 unset -f _sync_env_key 2>/dev/null || true
 
 # Wrapper scripts
@@ -568,8 +675,18 @@ export BLUETEAM_SIGMA_CHECK_EXISTING="${BLUETEAM_SIGMA_CHECK_EXISTING:-true}"
 export BLUETEAM_RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-false}"
 export BLUETEAM_RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 export BLUETEAM_RERANK_CACHE_PATH="${BLUETEAM_RERANK_CACHE_PATH:-/opt/blue-team-mcp/rerank-cache}"
-export BLUETEAM_RERANK_MAX_CANDIDATES="${BLUETEAM_RERANK_MAX_CANDIDATES:-50}"
+export BLUETEAM_RERANK_MAX_CANDIDATES="${BLUETEAM_RERANK_MAX_CANDIDATES:-100}"
 export BLUETEAM_RERANK_MODEL_SHA256="${BLUETEAM_RERANK_MODEL_SHA256:-}"
+# Local case RAG (opt-in; BLUETEAM_RAG_ENABLED=true requires an absolute BLUETEAM_RAG_DB)
+export BLUETEAM_RAG_ENABLED="${BLUETEAM_RAG_ENABLED:-false}"
+export BLUETEAM_RAG_DB="${BLUETEAM_RAG_DB:-/opt/blue-team-mcp/rag.db}"
+export BLUETEAM_RAG_MODEL="${BLUETEAM_RAG_MODEL:-BAAI/bge-small-en-v1.5}"
+export BLUETEAM_RAG_CACHE_PATH="${BLUETEAM_RAG_CACHE_PATH:-/opt/blue-team-mcp/rag-cache}"
+export BLUETEAM_RAG_ALLOW_DOWNLOAD="${BLUETEAM_RAG_ALLOW_DOWNLOAD:-false}"
+export BLUETEAM_RAG_MAX_CANDIDATES="${BLUETEAM_RAG_MAX_CANDIDATES:-100}"
+export BLUETEAM_RAG_TOP_K="${BLUETEAM_RAG_TOP_K:-10}"
+export BLUETEAM_RAG_MAX_CHUNKS="${BLUETEAM_RAG_MAX_CHUNKS:-50000}"
+export BLUETEAM_RAG_MODEL_SHA256="${BLUETEAM_RAG_MODEL_SHA256:-}"
 export CROWDSEC_CACHE_TTL="${CROWDSEC_CACHE_TTL:-900}"
 export BLUETEAM_REDACT_SALT="${BLUETEAM_REDACT_SALT:-}"
 export BLUE_TEAM_MCP_SERVER_NAME="${BLUE_TEAM_MCP_SERVER_NAME:-blue_team_mcp}"

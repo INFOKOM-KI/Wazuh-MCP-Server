@@ -59,12 +59,14 @@ class InvestigationState(TypedDict, total=False):
     window: str
     dependency_manifest: Optional[str]
     use_attack_graph: bool
+    check_false_positive: bool
     generate_report: bool
     record_verdict: bool
     verdict_label: str
     report_dir: str
     # step outputs
     extract_iocs: Optional[dict]
+    fp_validation: Optional[dict]
     enrichment: Optional[dict]
     vulnerabilities: Optional[list]
     correlation: Optional[dict]
@@ -101,6 +103,33 @@ async def extract_step(state: InvestigationState) -> dict:
     cve_count = len(iocs.get("cves", []))
     return {"extract_iocs": iocs,
             "steps": [f"extract: {len(all_iocs)} IOCs + {cve_count} CVEs extracted"]}
+
+
+async def fp_check_step(state: InvestigationState) -> dict:
+    """Early triage gate: consult the local corpus before spending anything on
+    enrichment or correlation.
+
+    Two outcomes matter here. An indicator already in the suppression set is
+    authoritative: the 3-Sum engine excludes it anyway, so enrichment would only
+    burn API quota. A corpus match is advisory and is recorded, not acted on, by
+    this node. Opt-in via ``check_false_positive`` because it needs the local
+    RAG store configured.
+    """
+    if not state.get("check_false_positive"):
+        return {"steps": ["fp_check: skipped (not requested)"]}
+    srcip = state.get("srcip")
+    if not srcip:
+        return {"steps": ["fp_check: skipped (no srcip)"]}
+    from mcp_server.agents.fp_validator_graph import run_fp_validation
+    result = await _with_timeout(
+        run_fp_validation(srcip, (state.get("alert_text") or "")[:2000]), "fp_check")
+    if "verdict" not in result:
+        # _with_timeout returns {errors, steps} on timeout; run_fp_validation always
+        # returns a verdict key, so its absence is the only reliable signal here.
+        return {"errors": list(result.get("errors", [])),
+                "steps": ["fp_check: degraded"]}
+    return {"fp_validation": result,
+            "steps": [f"fp_check: {result['verdict']} ({len(result.get('matches') or [])} matches)"]}
 
 
 async def enrich_step(state: InvestigationState) -> dict:
@@ -225,6 +254,20 @@ async def correlate_step(state: InvestigationState) -> dict:
         return {"errors": [f"correlate: {e}"], "steps": ["correlate: degraded"]}
 
 
+def _as_json(raw, label: str) -> dict:
+    """Parse a step handler's JSON output, degrading instead of raising.
+
+    The attack-graph and killchain handlers return JSON on success but a plain
+    error string when they degrade. An unguarded ``json.loads`` there killed the
+    whole investigation on one bad step, which contradicts this module's
+    contract that every node degrades and is recorded in ``errors``.
+    """
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return {"error": f"{label}: non-JSON response"}
+
+
 async def analytics_step(state: InvestigationState) -> dict:
     """Run attack graph analysis + STIX killchain in parallel.
     graph_step and killchain_step are independent, the attack graph
@@ -236,7 +279,7 @@ async def analytics_step(state: InvestigationState) -> dict:
     async def _run_graph():
         from mcp_server.tools.attack_graph import blueteam_attack_graph, AttackGraphInput
         out = await blueteam_attack_graph(AttackGraphInput(response_format="json"))
-        return ("graph", json.loads(out), None)
+        return ("graph", _as_json(out, "attack_graph"), None)
 
     async def _run_killchain():
         if not srcip:
@@ -244,7 +287,7 @@ async def analytics_step(state: InvestigationState) -> dict:
         from mcp_server.tools.stix_correlation import blueteam_stix_killchain, StixKillchainInput
         out = await blueteam_stix_killchain(StixKillchainInput(
             srcip=srcip, since=state.get("window", "24h"), response_format="json"))
-        return ("killchain", json.loads(out), None)
+        return ("killchain", _as_json(out, "killchain"), None)
 
     tasks = [
         _with_timeout(_run_graph(), "graph"),
@@ -377,6 +420,15 @@ def _has_targets(state: InvestigationState) -> str:
     return "analytics"
 
 
+def _after_fp_check(state: InvestigationState) -> str:
+    """Short-circuit the expensive path for an indicator an analyst already
+    resolved, otherwise fall through to the pre-existing target routing."""
+    verdict = (state.get("fp_validation") or {}).get("verdict")
+    if verdict in ("suppressed_exact", "conflicting_state"):
+        return "suppressed"
+    return _has_targets(state)
+
+
 def _correlate_flagged(state: InvestigationState) -> bool:
     us = (state.get("correlation") or {}).get("unified_scoring", {})
     return bool(us.get("engine_a_triggers") or us.get("engine_b_anomalies"))
@@ -404,11 +456,15 @@ def build_investigation_graph(checkpointer=None):
     """Build and compile the StateGraph. checkpointer defaults to InMemorySaver;
     pass an AsyncSqliteSaver (created inside the running loop) for durable
     persistence.
-    Graph: START -> extract -> enrich -> vuln -> correlate -> analytics -> baseline -> report -> verdict -> END
+    Graph: START -> extract -> fp_check -> enrich -> vuln -> correlate -> analytics -> baseline -> report -> verdict -> END
+    fp_check is opt-in (check_false_positive) and routes straight to verdict when
+    the indicator is already suppressed, skipping enrichment, correlation and the
+    report for an alert an analyst already closed.
     analytics runs graph (networkx) and killchain (STIX) concurrently.
     """
     g = StateGraph(InvestigationState)
     g.add_node("extract", extract_step)
+    g.add_node("fp_check", fp_check_step)
     g.add_node("enrich", enrich_step)
     g.add_node("vuln", vuln_step)
     g.add_node("correlate", correlate_step)
@@ -417,7 +473,9 @@ def build_investigation_graph(checkpointer=None):
     g.add_node("report", report_step)
     g.add_node("verdict", verdict_step)
     g.add_edge(START, "extract")
-    g.add_conditional_edges("extract", _has_targets, {"enrich": "enrich", "analytics": "analytics"})
+    g.add_edge("extract", "fp_check")
+    g.add_conditional_edges("fp_check", _after_fp_check, {
+        "suppressed": "verdict", "enrich": "enrich", "analytics": "analytics"})
     g.add_edge("enrich", "vuln")
     g.add_edge("vuln", "correlate")
     g.add_edge("correlate", "analytics")
@@ -439,7 +497,8 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
                             generate_report: bool = False,
                             record_verdict: bool = False, verdict_label: str = "suspicious",
                             report_dir: str = "/tmp",
-                            dependency_manifest: str | None = None) -> dict:
+                            dependency_manifest: str | None = None,
+                            check_false_positive: bool = False) -> dict:
     """Run the investigation workflow end-to-end and return the final state summary."""
     initial: InvestigationState = {
         "alert_text": alert_text or "",
@@ -447,6 +506,7 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
         "window": window,
         "dependency_manifest": dependency_manifest,
         "use_attack_graph": use_attack_graph,
+        "check_false_positive": check_false_positive,
         "generate_report": generate_report,
         "record_verdict": record_verdict,
         "verdict_label": verdict_label,
@@ -475,6 +535,7 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
         "steps": final.get("steps", []),
         "errors": final.get("errors", []),
         "extract_iocs": (final.get("extract_iocs") or {}).get("ips", [])[:10],
+        "fp_validation": final.get("fp_validation"),
         "enrichment": final.get("enrichment"),
         "vulnerabilities": final.get("vulnerabilities"),
         "correlation": (final.get("correlation") or {}).get("unified_scoring"),
