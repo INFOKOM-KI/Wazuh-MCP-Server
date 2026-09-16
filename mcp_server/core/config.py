@@ -421,7 +421,7 @@ class RerankConfig:
     enabled: bool = False
     model: str = "BAAI/bge-reranker-base"
     cache_path: str = ""            # empty = fastembed default cache dir
-    max_candidates: int = 50        # hard ceiling for the rerank_candidates tool param
+    max_candidates: int = 100       # hard ceiling for the rerank_candidates tool param
     sha256: str = ""                # supply chain pin: sha256 of the cached ONNX fastembed loads
 
     @classmethod
@@ -430,7 +430,7 @@ class RerankConfig:
             enabled=_bool(os.environ.get("BLUETEAM_RERANK_ENABLED", "false")),
             model=os.environ.get("BLUETEAM_RERANK_MODEL", "BAAI/bge-reranker-base").strip(),
             cache_path=os.environ.get("BLUETEAM_RERANK_CACHE_PATH", ""),
-            max_candidates=int(os.environ.get("BLUETEAM_RERANK_MAX_CANDIDATES", "50")),
+            max_candidates=int(os.environ.get("BLUETEAM_RERANK_MAX_CANDIDATES", "100")),
             sha256=os.environ.get("BLUETEAM_RERANK_MODEL_SHA256", "").strip().lower(),
         )
 
@@ -444,6 +444,99 @@ class RerankConfig:
         if self.sha256 and not re.fullmatch(r"[0-9a-f]{64}", self.sha256):
             raise ConfigurationError(
                 "BLUETEAM_RERANK_MODEL_SHA256 must be a 64-char hex sha256 digest "
+                "(got %r); regenerate with: sha256sum <cached .onnx>" % self.sha256
+            )
+
+
+@dataclass
+class RAGConfig:
+    """Local case-knowledge retrieval store (ONNX embeddings + SQLite).
+    Retrieval over analyst-authored cases, confirmed false positives and
+    converted IR playbooks. Two independent off-switches, mirroring the
+    optional-store convention used by BLUETEAM_CASE_STORE:
+
+    - ``enabled=False`` (default) keeps the whole subsystem dormant.
+    - ``db_path=""`` (default) means no store is configured.
+
+    Setting ``enabled=True`` with an empty ``db_path`` is a startup error, not
+    a silent no-op: an operator who flipped the flag expects retrieval to work,
+    so failing at boot beats returning empty results forever.
+
+    **Egress guarantee**: embeddings are computed in-process by fastembed's
+    ONNX runtime. The model is pre-downloaded by setup.sh into ``cache_path``;
+    when ``allow_download`` is False (default) the embedder is constructed with
+    ``local_files_only=True`` so no query or document text can reach HuggingFace.
+    ``allow_download`` is the one knob that permits network access, and it is
+    only needed for the first bootstrap.
+
+    **The SQLite file holds attacker IOCs.** It must not be committed; see
+    .gitignore. Chunks are stored unredacted on purpose, they are embedded
+    locally and never leave the process. Redaction belongs on the output path.
+    """
+    enabled: bool = False
+    # No default path: a store the operator did not configure is a store that
+    # never silently accumulates attacker IOCs under a guessed location.
+    db_path: str = ""
+    model: str = "BAAI/bge-small-en-v1.5"
+    cache_path: str = ""            # empty = fastembed default model cache
+    max_candidates: int = 100       # Stage 1 recall (high recall, wide net)
+    top_k: int = 10                 # Stage 3 default after rerank (high precision)
+    max_chunks: int = 50000         # hard ceiling on corpus size
+    chunk_chars: int = 1200
+    chunk_overlap: int = 200
+    allow_download: bool = False    # False = local_files_only, no network
+    sha256: str = ""                # supply chain pin: sha256 of the cached ONNX
+
+    @classmethod
+    def from_env(cls) -> "RAGConfig":
+        return cls(
+            enabled=_bool(os.environ.get("BLUETEAM_RAG_ENABLED", "false")),
+            db_path=os.environ.get("BLUETEAM_RAG_DB", "").strip(),
+            model=os.environ.get("BLUETEAM_RAG_MODEL", "BAAI/bge-small-en-v1.5").strip(),
+            cache_path=os.environ.get("BLUETEAM_RAG_CACHE_PATH", "").strip(),
+            max_candidates=int(os.environ.get("BLUETEAM_RAG_MAX_CANDIDATES", "100")),
+            top_k=int(os.environ.get("BLUETEAM_RAG_TOP_K", "10")),
+            max_chunks=int(os.environ.get("BLUETEAM_RAG_MAX_CHUNKS", "50000")),
+            chunk_chars=int(os.environ.get("BLUETEAM_RAG_CHUNK_CHARS", "1200")),
+            chunk_overlap=int(os.environ.get("BLUETEAM_RAG_CHUNK_OVERLAP", "200")),
+            allow_download=_bool(os.environ.get("BLUETEAM_RAG_ALLOW_DOWNLOAD", "false")),
+            sha256=os.environ.get("BLUETEAM_RAG_MODEL_SHA256", "").strip().lower(),
+        )
+
+    def validate(self) -> None:
+        if self.enabled and not self.db_path:
+            raise ConfigurationError(
+                "BLUETEAM_RAG_ENABLED=true requires BLUETEAM_RAG_DB to be set "
+                "(an enabled retrieval store with no path can only return empty results)."
+            )
+        if self.db_path and not os.path.isabs(self.db_path):
+            raise ConfigurationError(
+                f"BLUETEAM_RAG_DB must be an absolute path (got {self.db_path!r})"
+            )
+        if self.enabled and not self.model:
+            raise ConfigurationError(
+                "BLUETEAM_RAG_MODEL must not be empty when BLUETEAM_RAG_ENABLED=true"
+            )
+        if self.top_k < 1:
+            raise ConfigurationError("BLUETEAM_RAG_TOP_K must be >= 1")
+        if self.max_candidates < self.top_k:
+            raise ConfigurationError(
+                f"BLUETEAM_RAG_MAX_CANDIDATES ({self.max_candidates}) must be >= "
+                f"BLUETEAM_RAG_TOP_K ({self.top_k}) - recall stage cannot be "
+                "narrower than the precision stage."
+            )
+        if self.max_chunks < 1:
+            raise ConfigurationError("BLUETEAM_RAG_MAX_CHUNKS must be >= 1")
+        if self.chunk_chars < 200:
+            raise ConfigurationError("BLUETEAM_RAG_CHUNK_CHARS must be >= 200")
+        if not (0 <= self.chunk_overlap < self.chunk_chars):
+            raise ConfigurationError(
+                f"BLUETEAM_RAG_CHUNK_OVERLAP must be 0 <= overlap < chunk_chars "
+                f"(got {self.chunk_overlap} vs {self.chunk_chars})"
+            )
+        if self.sha256 and not re.fullmatch(r"[0-9a-f]{64}", self.sha256):
+            raise ConfigurationError(
+                "BLUETEAM_RAG_MODEL_SHA256 must be a 64-char hex sha256 digest "
                 "(got %r); regenerate with: sha256sum <cached .onnx>" % self.sha256
             )
 
@@ -573,6 +666,7 @@ class Config:
     limits: LimitsConfig = field(default_factory=LimitsConfig)
     tool_gating: ToolGatingConfig = field(default_factory=ToolGatingConfig)
     rerank: RerankConfig = field(default_factory=RerankConfig)
+    rag: RAGConfig = field(default_factory=RAGConfig)
     ssrf: SSRFConfig = field(default_factory=SSRFConfig)
     yara: YaraConfig = field(default_factory=YaraConfig)
     sigma: SigmaConfig = field(default_factory=SigmaConfig)
@@ -594,6 +688,7 @@ class Config:
             limits=LimitsConfig.from_env(),
             tool_gating=ToolGatingConfig.from_env(),
             rerank=RerankConfig.from_env(),
+            rag=RAGConfig.from_env(),
             ssrf=SSRFConfig.from_env(),
             yara=YaraConfig.from_env(),
             sigma=SigmaConfig.from_env(),
@@ -614,6 +709,7 @@ class Config:
         self.limits.validate()
         self.tool_gating.validate()
         self.rerank.validate()
+        self.rag.validate()
         self.ssrf.validate()
         self.yara.validate()
         self.sigma.validate()
@@ -649,6 +745,18 @@ class Config:
                 logger.warning(
                     "BLUETEAM_RERANK_ENABLED=true but fastembed is not installed"
                     "reranking will fall back to BM25-only."
+                )
+        if self.rag.enabled:
+            import importlib.util
+            if importlib.util.find_spec("fastembed") is None:
+                logger.warning(
+                    "BLUETEAM_RAG_ENABLED=true but fastembed is not installed - "
+                    "retrieval will report unavailable, not result in empty hits."
+                )
+            elif not os.path.exists(self.rag.db_path):
+                logger.warning(
+                    "BLUETEAM_RAG_DB=%s does not exist yet - ingest a corpus to "
+                    "create it (setup.sh does not seed the store).", self.rag.db_path
                 )
 
 

@@ -137,6 +137,16 @@ def false_positive_iocs() -> set[str]:
     return set(_ENTRIES.keys())
 
 
+def false_positive_entries() -> list[dict]:
+    """All active (unexpired) entries as ``[{ioc, ts, source, reason}]``, sorted.
+    Read accessor for corpus builders (RAG ingest). The module keeps ownership of
+    the TTL sweep so callers never reach into ``_ENTRIES`` and reimplement it.
+    """
+    _sweep()
+    return [{"ioc": ioc, "ts": e["ts"], "source": e["source"], "reason": e["reason"]}
+            for ioc, e in sorted(_ENTRIES.items())]
+
+
 def false_positive_stats() -> dict:
     """Operational stats: size, TTL, cap, sources"""
     _sweep(force=True)

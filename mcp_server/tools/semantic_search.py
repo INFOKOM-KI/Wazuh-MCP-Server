@@ -203,7 +203,7 @@ class SemanticSearchInput(BaseModel):
                     "BLUETEAM_RERANK_ENABLED=false or the model is unavailable.",
     )
     rerank_candidates: int = Field(
-        default=20, ge=1, le=50,
+        default=20, ge=1, le=100,
         description="Number of BM25 candidates to re-score when rerank=true "
                     "(clamped by BLUETEAM_RERANK_MAX_CANDIDATES).",
     )
