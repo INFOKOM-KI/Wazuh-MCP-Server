@@ -4,7 +4,6 @@ Tests for composable redaction layer chain (Phase 3)
 I'm to lazy to write test suites, hope my LLM doesn't disappoint me ;P
 """
 from __future__ import annotations
-
 import os
 
 # mcp_server/__init__.py calls init_config() at import and hard-fails without
@@ -70,6 +69,24 @@ def test_location_layer_hashes_path():
     assert "[h:" in result         # forensic hash
 
 
+def test_location_layer_masks_two_component_local_paths():
+    """The old >=3-component rule let /etc/passwd and /opt/rag.db through, and a
+    path truncated mid-string (the RAG preview cuts at 120 chars) dropped to two
+    components and leaked too."""
+    from mcp_server.core.redact_layers import _apply_location_layer
+    for path in ("/etc/passwd", "/opt/rag.db", "/var/log", "/opt/ir_playb"):
+        result = _apply_location_layer(f"path: {path}", "full", False)
+        assert path not in result, path
+        assert "[h:" in result, path
+
+
+def test_location_layer_leaves_url_fragments_alone():
+    """Two components is the floor, not a free-for-all: /api/v1 style fragments
+    carry no filesystem meaning and must stay readable."""
+    from mcp_server.core.redact_layers import _apply_location_layer
+    assert _apply_location_layer("GET /api/v1", "full", False) == "GET /api/v1"
+
+
 if __name__ == "__main__":
     import sys, traceback
     tests = [f for f in dir() if f.startswith("test_")]
@@ -77,10 +94,10 @@ if __name__ == "__main__":
     for t in tests:
         try:
             globals()[t]()
-            print(f"  PASS {t}")
+            print(f"PASS {t}")
             passed += 1
         except Exception:
-            print(f"  FAIL {t}")
+            print(f"FAIL {t}")
             traceback.print_exc()
     print(f"\n{passed}/{len(tests)} passed")
     sys.exit(0 if passed == len(tests) else 1)

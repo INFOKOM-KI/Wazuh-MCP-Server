@@ -152,7 +152,10 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
     ``source="cases"`` reads ``case_store``, ``source="false_positives"`` reads the
     suppression KB with its analyst notes. Both DELETE their label first and
     rebuild, because the index is derived: an edited case would otherwise leave
-    its stale chunk matching forever. ``source="text"`` only upserts.
+    its stale chunk matching forever. Clearing a rewritten ``source="text"`` label is
+    an operator step, not a parameter: it only upserts, and the DB holds its only
+    copy, so a flag that deletes before the embedder has proven it can write would
+    risk the corpus for a convenience.
     Embeddings are computed in-process by fastembed's ONNX runtime. With
     ``BLUETEAM_RAG_ALLOW_DOWNLOAD=false`` (default) no text can leave the host.
     The audit entry records counts only, never chunk content.
@@ -203,6 +206,9 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
                 seq += 1
 
     # Derived labels rebuild; a content-hash index cannot notice edits on its own.
+    # source="text" is NOT derived, the DB holds the only copy, so it upserts and
+    # a rewritten label is cleared deliberately by the operator rather than by a
+    # flag that would delete before the embedder has proven it can write.
     deleted = 0
     if params.source != "text":
         deleted = await rag_store.delete_source(corpus_label)
@@ -213,7 +219,7 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
     store = rag_store.stats()
 
     # A dead embedder stores nothing, so a success shaped response would read as
-    # "ingested, index refreshed" when the corpus is untouched. Fail loudly.
+    # "ingested, index refreshed" when the corpus is untouched.
     if status and status.startswith("unavailable:"):
         raise BlueTeamMCPError(
             f"RAG embedder unavailable, nothing was stored for {corpus_label!r} "
@@ -289,7 +295,8 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
 
     Returns:
         markdown or json with matches (text, source, scores, metadata) and the
-        store's corpus stats so a stale index is visible.
+        store's corpus stats so a stale index is visible. Raises when the embedder
+        is unavailable: a vector only query cannot answer without it.
 
     Examples:
         1. Prior cases on a host -> ``blueteam_rag_query(query="ssh brute force mail server")``
@@ -307,6 +314,14 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
     recall = min(params.recall_k, config.rag.max_candidates)
 
     hits, status = await rag_store.query(params.query, top_k=recall, sources=params.sources)
+    # A dead embedder cannot answer a vector query at all. Empty results would read
+    # as "no similar cases exist", which is the opposite of the truth.
+    if status and status.startswith("unavailable:"):
+        raise BlueTeamMCPError(
+            f"RAG query unavailable - {status}. Nothing can be retrieved until the "
+            "embedder loads; an empty result set would read as 'no similar cases "
+            "exist'. Check BLUETEAM_RAG_CACHE_PATH and restart the server."
+        )
     if status is not None and not hits:
         if params.response_format == "json":
             return json.dumps({"query": params.query, "matches": [], "status": status},
@@ -342,12 +357,15 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
     for rank, hit in enumerate(hits, 1):
         score = hit.get("rerank_score", hit.get("vector_score", 0.0))
         meta = json.dumps(hit.get("meta") or {}, ensure_ascii=False)[:40]
-        text = " ".join(str(hit.get("text", "")).split())[:120]
+        raw = " ".join(str(hit.get("text", "")).split())
+        text = raw[:120] + ("…" if len(raw) > 120 else "")
         lines.append(f"| {rank} | {score:.3f} | `{hit.get('source', '?')}` | {meta} | {text} |")
     lines.append("")
     if params.rerank and rerank_status:
-        lines.append(f"*Rerank fallback: {rerank_status} - results are vector-order only.*")
+        lines.append(f"*Rerank fallback: {rerank_status} results are vector-order only.*")
         lines.append("")
+    lines.append("*Text column is a 120 char preview (`…` marks the cut) - use "
+                 "`response_format=\"json\"` for the full chunk text.*")
     lines.append("*Evidence only. Verify against live alerts before acting.*")
     return "\n".join(lines)
 

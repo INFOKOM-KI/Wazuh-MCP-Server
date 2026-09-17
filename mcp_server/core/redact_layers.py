@@ -78,6 +78,20 @@ def _apply_domain_layer(data: str, pol: str, reveal: bool) -> str:
     )
 
 
+# Two shapes warrant masking. A path rooted in a server-local tree (/opt, /var,
+# /etc, /home, /usr, /srv, /root the same trees BLUETEAM_ALLOWED_PATHS treats
+# as local) is masked from two components up, so `/etc/passwd` and `/opt/rag.db`
+# no longer survive. Anything else still needs three components, which keeps
+# `/api/v1`-style URL fragments out of the net. The two-component gap mattered
+# because the RAG markdown preview cuts chunk text at 120 chars, truncating
+# `/opt/.../doc.pdf` down to two components and letting it through.
+_LOCAL_ROOTS = r"opt|var|etc|home|usr|srv|root"
+_LOCATION_RE = re.compile(
+    rf"/(?:{_LOCAL_ROOTS})(?:/[a-zA-Z0-9._-]+)+"
+    r"|/(?:[a-zA-Z0-9._-]+/){2,}[a-zA-Z0-9._-]+"
+)
+
+
 def _apply_location_layer(data: str, _pol: str, _reveal: bool) -> str:
     from mcp_server.core.redact import _REDACT_SALT
     def _redact_log_path(m: re.Match) -> str:
@@ -86,7 +100,7 @@ def _apply_location_layer(data: str, _pol: str, _reveal: bool) -> str:
         leaf = parts[-1] if len(parts) > 1 else path
         path_hash = hashlib.sha256(f"{_REDACT_SALT}:{path}".encode()).hexdigest()[:6]
         return f".../{leaf} [h:{path_hash}]"
-    return re.sub(r"/(?:[a-zA-Z0-9._-]+/){2,}[a-zA-Z0-9._-]+", _redact_log_path, data)
+    return _LOCATION_RE.sub(_redact_log_path, data)
 
 
 def _apply_ua_layer(data: str, _pol: str, _reveal: bool) -> str:

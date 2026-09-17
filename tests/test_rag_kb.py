@@ -166,6 +166,18 @@ def test_ingest_raises_when_embedder_is_unavailable(tmp_path, monkeypatch):
     assert _store_chunks() == 0
 
 
+def test_query_raises_when_embedder_is_unavailable(tmp_path, monkeypatch):
+    """A vector-only query cannot answer without the embedder; an empty result set
+    would read as 'no similar cases exist'."""
+    _setup(tmp_path)
+    _run(_ingest(rag_kb.RagIngestInput(source="text", label="cases", texts=["aaa case"])))
+    monkeypatch.setattr(rag_store, "_ensure_loaded", lambda: False)
+    rag_store._reason = "model load failed: [Errno 30] Read-only file system"
+
+    with pytest.raises(BlueTeamMCPError, match="RAG query unavailable"):
+        _run(_query(rag_kb.RagQueryInput(query="aaa brute force")))
+
+
 # Query
 def test_query_returns_scores_and_matches(tmp_path):
     _setup(tmp_path)
@@ -195,6 +207,16 @@ def test_query_empty_corpus_reports_no_corpus(tmp_path):
     _setup(tmp_path)
     out = _run(_query(rag_kb.RagQueryInput(query="aaa brute force")))
     assert "no_corpus" in out
+
+
+def test_query_markdown_marks_the_preview_cut(tmp_path):
+    """A 120-char slice with no marker reads as the full chunk."""
+    _setup(tmp_path)
+    _run(_ingest(rag_kb.RagIngestInput(source="text", label="cases",
+                                       texts=["aaa " + "y" * 400])))
+    out = _run(_query(rag_kb.RagQueryInput(query="aaa case")))
+    assert "…" in out
+    assert "120 char preview" in out
 
 
 # FP verdict ladder
