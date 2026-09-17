@@ -170,7 +170,7 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
         2. Rebuild suppression-KB chunks -> ``blueteam_rag_ingest(source="false_positives")``
         3. Add an IR excerpt -> ``blueteam_rag_ingest(source="text", label="ir_playbooks",
            texts=["Step 1: contain the host..."])``
-        4. Store not configured -> an error, not an empty corpus.
+        4. Store not configured, or the embedder unavailable -> an error, not an empty corpus.
 
     Permissions: write on BLUETEAM_RAG_DB. Rate limits: none, but ingest is
     CPU-bound (one ONNX batch per call) and blocked by BLUETEAM_RAG_MAX_CHUNKS.
@@ -212,13 +212,22 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
                                        "chunks_inserted": inserted, "chunks_deleted": deleted})
     store = rag_store.stats()
 
+    # A dead embedder stores nothing, so a success shaped response would read as
+    # "ingested, index refreshed" when the corpus is untouched. Fail loudly.
+    if status and status.startswith("unavailable:"):
+        raise BlueTeamMCPError(
+            f"RAG embedder unavailable, nothing was stored for {corpus_label!r} "
+            f"({status}). Check that BLUETEAM_RAG_CACHE_PATH points at a writable "
+            "directory holding the model, then restart the server."
+        )
+
     if params.response_format == "json":
         return json.dumps({"source": corpus_label, "documents": len(docs),
                            "chunks_inserted": inserted, "chunks_deleted": deleted,
                            "status": status, "store": store}, indent=2, ensure_ascii=False)
 
     lines = [f"# 📚 RAG Ingest - `{corpus_label}`", "",
-             f"**Documents**: {len(docs)} | **Chunks stored**: {inserted} | "
+             f"**Chunks**: {len(docs)} | **Stored**: {inserted} | "
              f"**Replaced**: {deleted}",
              f"**Model**: `{store['model']}` | **Corpus size**: "
              f"{sum(store['chunks_by_model'].values())} chunks", ""]

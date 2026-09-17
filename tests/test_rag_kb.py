@@ -153,6 +153,19 @@ def test_text_ingest_upserts_under_a_distinct_label(tmp_path):
     assert _store_chunks() == 2
 
 
+def test_ingest_raises_when_embedder_is_unavailable(tmp_path, monkeypatch):
+    """A dead embedder stores nothing, so a success-shaped response would read as
+    'ingested' while the corpus stays empty. Must raise instead."""
+    _setup(tmp_path)
+    monkeypatch.setattr(rag_store, "_ensure_loaded", lambda: False)
+    rag_store._reason = "model load failed: [Errno 30] Read-only file system"
+
+    with pytest.raises(BlueTeamMCPError, match="embedder unavailable"):
+        _run(_ingest(rag_kb.RagIngestInput(source="text", label="ir_playbooks",
+                                          texts=["Contain the host"])))
+    assert _store_chunks() == 0
+
+
 # Query
 def test_query_returns_scores_and_matches(tmp_path):
     _setup(tmp_path)
