@@ -197,13 +197,69 @@ class ThreatIntelConfig:
 
 
 @dataclass
+class MispConfig:
+    """MISP threat-intelligence instance connection parameters.
+    MISP is operator-owned internal infrastructure (same trust class as the
+    Wazuh Manager / Indexer), so the public-IP SSRF guard is intentionally NOT
+    applied to it.
+    ``api_key`` is the MISP automation key. Both ``url`` and ``api_key`` must be
+    present for the tools to run; ``enabled`` encodes that. ``verify_ssl`` maps
+    to the per-pool ``verify`` flag in ``_get_client`` (the flag is part of the
+    pool key), so pointing at a self-signed internal MISP never relaxes TLS
+    verification for any other upstream.
+    """
+    url: str = ""
+    api_key: str = ""
+    verify_ssl: bool = True
+    cache_ttl: int = 900          # reputation data does not change second-to-second
+    min_interval: float = 1.0     # seconds between any two MISP requests
+    max_concurrent: int = 2
+    timeout: float = 20.0
+
+    @classmethod
+    def from_env(cls) -> "MispConfig":
+        return cls(
+            url=os.environ.get("MISP_URL", "").rstrip("/"),
+            api_key=os.environ.get("MISP_API_KEY", ""),
+            verify_ssl=_bool(os.environ.get("MISP_VERIFYCERT", "true"), True),
+            cache_ttl=int(os.environ.get("MISP_CACHE_TTL", "900")),
+            min_interval=float(os.environ.get("MISP_MIN_INTERVAL", "1.0")),
+            max_concurrent=int(os.environ.get("MISP_MAX_CONCURRENT", "2")),
+            timeout=float(os.environ.get("MISP_TIMEOUT", "20.0")),
+        )
+
+    def validate(self) -> None:
+        """MISP is optional, only a half configured instance is fatal.
+        A URL with no key makes every MISP tool fail at call time with a message
+        that looks like an outage, so it is rejected at startup instead.
+        """
+        if self.url and not self.api_key:
+            raise ConfigurationError(
+                "MISP_URL is set but MISP_API_KEY is empty, MISP tools will fail."
+            )
+        if self.cache_ttl < 0:
+            raise ConfigurationError("MISP_CACHE_TTL must be >= 0")
+        if self.min_interval < 0:
+            raise ConfigurationError("MISP_MIN_INTERVAL must be >= 0")
+        if self.max_concurrent < 1:
+            raise ConfigurationError("MISP_MAX_CONCURRENT must be >= 1")
+        if self.timeout <= 0:
+            raise ConfigurationError("MISP_TIMEOUT must be > 0")
+
+    @property
+    def enabled(self) -> bool:
+        """True when both the URL and the API key are configured."""
+        return bool(self.url and self.api_key)
+
+
+@dataclass
 class SangforConfig:
     """Sangfor blocklist integration parameters."""
     url: str = ""
     token: str = ""
     timeout: float = 15.0
     verify_ssl: bool = False
-    min_interval: float = 5.0      # seconds between Sangfor lookups
+    min_interval: float = 5.0   # in seconds
 
     @classmethod
     def from_env(cls) -> "SangforConfig":
@@ -657,6 +713,7 @@ class Config:
     wazuh_manager: WazuhManagerConfig = field(default_factory=WazuhManagerConfig)
     wazuh_indexer: WazuhIndexerConfig = field(default_factory=WazuhIndexerConfig)
     threat_intel: ThreatIntelConfig = field(default_factory=ThreatIntelConfig)
+    misp: MispConfig = field(default_factory=MispConfig)
     sangfor: SangforConfig = field(default_factory=SangforConfig)
     redaction: RedactionConfig = field(default_factory=RedactionConfig)
     attacker_registry: AttackerRegistryConfig = field(default_factory=AttackerRegistryConfig)
@@ -679,6 +736,7 @@ class Config:
             wazuh_manager=WazuhManagerConfig.from_env(),
             wazuh_indexer=WazuhIndexerConfig.from_env(),
             threat_intel=ThreatIntelConfig.from_env(),
+            misp=MispConfig.from_env(),
             sangfor=SangforConfig.from_env(),
             redaction=RedactionConfig.from_env(),
             attacker_registry=AttackerRegistryConfig.from_env(),
@@ -700,6 +758,7 @@ class Config:
         self.wazuh_manager.validate()
         self.wazuh_indexer.validate()
         self.threat_intel.validate()
+        self.misp.validate()
         self.sangfor.validate()
         self.redaction.validate()
         self.attacker_registry.validate()
@@ -732,6 +791,10 @@ class Config:
             logger.warning("VIRUSTOTAL_API_KEY not set - VirusTotal lookups disabled.")
         if not self.threat_intel.rapidapi_key:
             logger.warning("RAPIDAPI_KEY not set - RapidAPI lookups (IP blacklist / IOC search / breach check) disabled.")
+        if not self.misp.enabled:
+            logger.warning("MISP_URL / MISP_API_KEY not set - MISP tools disabled.")
+        elif not self.misp.verify_ssl:
+            logger.warning("MISP_VERIFYCERT disabled - TLS verification OFF for MISP only.")
         if self.limits.allow_untruncated:
             logger.warning("BLUETEAM_ALLOW_UNTRUNCATED=true - character-limit bypass ENABLED.")
         if self.redaction.allow_forensic_bypass:

@@ -56,6 +56,13 @@ fastembed>=0.5.0,<1.0.0
 yara-x>=1.20.0,<2.0.0
 # yara-python>=4.5.0,<5.0.0   # uncomment only when XOR plaintext()/matched_data is needed
 
+# MISP IOC lookup (blueteam_misp_ioc_lookup) - NO dependency on purpose.
+# The tool calls POST /attributes/restSearch through the shared httpx pool
+# (_api_call + TTLCache + AsyncRateLimiter), so it inherits retry, the
+# per-upstream circuit breaker and TCP pooling. pymisp is a synchronous
+# requests-based client: adding it would block the asyncio event loop and pull
+# in a second HTTP stack. Do not add it.
+
 # Sigma rule conversion (blueteam_sigma_rule_convert) - OPTIONAL.
 # Opt-in via setup.sh BLUETEAM_INSTALL_SIGMA=1, or manually:
 #   pip install "pysigma>=1.5,<2" "pySigma-backend-opensearch>=2,<3"

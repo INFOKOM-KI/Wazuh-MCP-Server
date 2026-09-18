@@ -77,6 +77,7 @@ def register_all_tools() -> None:
         ("webshell_check",         "webshell_check",         False),  # 1 tool - curl + signature scan
         ("otx_lookup",             "otx_lookup",             False),  # 2 tools - AlienVault OTX threat intel
         ("threat_intel_aggregate",  "threat_intel_aggregate",  False),  # 1 tool - unified multi-provider aggregation
+        ("misp",                   "misp",                   False),  # 1 tool - MISP IOC lookup (read-only, version agnostic restSearch)
         ("urlhaus",                "urlhaus",                False),  # 2 tools - URLhaus malware URL database
         ("cve_enrichment",         "cve_enrichment",         False),  # 6 tools - CVE enrichment (NVD/EPSS/KEV/PoC/score/SSVC)
         ("dependency_scan",          "dependency_scan",          False),  # 1 tool - manifest -> OSV -> CVE scan

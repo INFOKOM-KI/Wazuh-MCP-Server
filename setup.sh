@@ -335,6 +335,17 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 
 # GreyNoise Community — no API key needed; greynoise_ip_context works out of the box.
 
+# MISP threat intelligence (optional — your own sharing instance, READ-ONLY key)
+# export MISP_URL="https://misp.example.go.id"     # no trailing slash
+# export MISP_API_KEY="your_readonly_key"          # MISP > Administration > List Users, or your profile
+# export MISP_VERIFYCERT="true"                    # "false" only for a self-signed internal cert
+# export MISP_CACHE_TTL="900"                      # seconds; successful restSearch responses only
+# export MISP_MIN_INTERVAL="1"                     # seconds between any two MISP requests
+# export MISP_MAX_CONCURRENT="2"                   # in-flight requests
+# export MISP_TIMEOUT="20"                         # per-request budget in seconds
+# NOTE: setting MISP_URL without MISP_API_KEY stops the server at startup (ConfigurationError).
+# No MISP-specific pip package is needed — the tool uses the shared httpx pool.
+
 # External API Base URLs (defaults shown — override for self-hosted mirrors or proxies)
 # export GREYNOISE_BASE_URL="https://api.greynoise.io/v3/community"
 # export CROWDSEC_BASE_URL="https://cti.api.crowdsec.net"
