@@ -54,6 +54,18 @@ python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install --quiet pip-audit 2>/dev/null && \
   "$INSTALL_DIR/venv/bin/pip-audit" 2>/dev/null || true
 
+# pypdf document extraction (blueteam_pdf_extract) - HARD dependency, installed just
+# above from requirements.txt (pypdf>=4.0,<7.0). Pure-Python, no torch, no model
+# download: it is the only PDF path that works on a default install (MarkItDown is
+# opt-in, Marker needs CPU torch). Text + /Info metadata only.
+# NEVER install pypdf[image]: the extra pulls Pillow, which reopens the marker/surya
+# pillow<11 conflict handled in the Marker block below. Fail fast here instead of on
+# the first conversion.
+if ! "$INSTALL_DIR/venv/bin/python3" -c "import pypdf; print('[.] pypdf', pypdf.__version__)"; then
+  echo "[!] pypdf failed to import after install - check requirements.txt extras." >&2
+  exit 1
+fi
+
 # Reranker model bootstrap.
 # Honors BLUETEAM_RERANK_* from config.env if present, downloads the model,
 # auto generates BLUETEAM_RERANK_MODEL_SHA256 when unset. On re-run it
@@ -578,7 +590,7 @@ unset -f _sync_env_key 2>/dev/null || true
 # Wrapper scripts
 echo "[5/7] Creating MCP server wrapper scripts..."
 
-# Main wrapper: mcp-server-blueteam (all 141 tools)
+# Main wrapper: mcp-server-blueteam (all 146 tools)
 cat > /usr/local/bin/mcp-server-blueteam << 'EOF'
 #!/usr/bin/env bash
 # Wrapper - Claude Desktop calls this via SSH (MAESTRO-compliant)
@@ -783,7 +795,7 @@ echo "  ThreatFox needs a free key — https://threatfox.abuse.ch/api"
 echo ""
 echo "Wrapper entry points installed:"
 echo ""
-echo "  mcp-server-blueteam    — All 141 tools (Wazuh, threat intel, host forensics,"
+echo "  mcp-server-blueteam    — All 146 tools (Wazuh, threat intel, host forensics,"
 echo "                            Sangfor blocklist, 3-Sum correlation, curated reports,"
 echo "                            CrowdSec, GreyNoise, ThreatFox)"
 echo "  mcp-server-crowdsec    — DEPRECATED — redirects to mcp-server-blueteam"

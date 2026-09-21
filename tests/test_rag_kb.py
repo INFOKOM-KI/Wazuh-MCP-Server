@@ -153,6 +153,78 @@ def test_text_ingest_upserts_under_a_distinct_label(tmp_path):
     assert _store_chunks() == 2
 
 
+def test_ingest_pdf_requires_path(tmp_path):
+    _setup(tmp_path)
+    with pytest.raises(BlueTeamMCPError):
+        _run(_ingest(rag_kb.RagIngestInput(source="pdf")))
+
+
+def _stub_pdf(monkeypatch, pages=None, skipped=None):
+    """Patch the extraction boundary so these tests exercise the rag_kb wiring,
+    not pypdf (which has its own suite in tests/test_pdf_extract.py)."""
+    monkeypatch.setattr(rag_kb, "_pdf_prepare", lambda inp: (
+        None, {"path": inp.path, "pages": inp.page_range, "mode": "plain",
+               "include_metadata": True},
+    ))
+    monkeypatch.setattr(rag_kb, "_extract_sync", lambda *a, **k: {
+        "file": "advisory.pdf", "page_count": 2,
+        "pages": pages if pages is not None else [
+            {"page": 1, "chars": 5, "text": "alpha"},
+            {"page": 2, "chars": 5, "text": "bravo"},
+        ],
+        "skipped": skipped or [], "metadata": {}, "encrypted": False, "chars": 10,
+    })
+
+
+def test_ingest_pdf_chunks_pages_and_rebuilds_label(tmp_path, monkeypatch):
+    _setup(tmp_path)
+    _stub_pdf(monkeypatch)
+
+    out = _run(_ingest(rag_kb.RagIngestInput(source="pdf",
+                                             path="/opt/advisories/advisory.pdf",
+                                             response_format="json")))
+    payload = json.loads(out)
+    assert payload["source"] == "pdf:advisory"  # derived from the filename stem
+    assert payload["chunks_inserted"] == 2
+    assert payload["pdf"]["pages_extracted"] == 2
+    assert _store_chunks() == 2
+
+    # The file on disk is the source of truth, so this label rebuilds, never appends.
+    out2 = _run(_ingest(rag_kb.RagIngestInput(source="pdf",
+                                              path="/opt/advisories/advisory.pdf",
+                                              response_format="json")))
+    assert json.loads(out2)["chunks_deleted"] == 2
+    assert _store_chunks() == 2
+
+
+def test_ingest_pdf_honours_an_explicit_label(tmp_path, monkeypatch):
+    _setup(tmp_path)
+    _stub_pdf(monkeypatch)
+    out = _run(_ingest(rag_kb.RagIngestInput(source="pdf", label="cisa_aa24",
+                                             path="/opt/advisories/advisory.pdf",
+                                             response_format="json")))
+    assert json.loads(out)["source"] == "cisa_aa24"
+
+
+def test_ingest_pdf_reports_skipped_pages(tmp_path, monkeypatch):
+    _setup(tmp_path)
+    _stub_pdf(monkeypatch, skipped=[{"page": 2, "reason": "content stream over cap"}])
+    out = _run(_ingest(rag_kb.RagIngestInput(source="pdf",
+                                             path="/opt/advisories/advisory.pdf",
+                                             response_format="json")))
+    assert json.loads(out)["pdf"]["pages_skipped"] == 1
+
+
+def test_ingest_pdf_surfaces_an_extraction_error(tmp_path, monkeypatch):
+    """A scanned PDF must fail loudly rather than report an empty corpus."""
+    _setup(tmp_path)
+    monkeypatch.setattr(rag_kb, "_pdf_prepare", lambda inp: (
+        json.dumps({"error": "Path not allowed: outside BLUETEAM_ALLOWED_PATHS"}), None,
+    ))
+    with pytest.raises(BlueTeamMCPError, match="Path not allowed"):
+        _run(_ingest(rag_kb.RagIngestInput(source="pdf", path="/etc/x.pdf")))
+
+
 def test_ingest_raises_when_embedder_is_unavailable(tmp_path, monkeypatch):
     """A dead embedder stores nothing, so a success-shaped response would read as
     'ingested' while the corpus stays empty. Must raise instead."""

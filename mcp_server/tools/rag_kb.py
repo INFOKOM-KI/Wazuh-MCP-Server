@@ -6,7 +6,7 @@ assemble false-positive evidence.
 
 Pipeline position
 -----------------
-    blueteam_rag_ingest       -> derived index (case_store + false_positive_kb + pasted text)
+    blueteam_rag_ingest       -> derived index (case_store + false_positive_kb + pasted text + server-side PDF)
     blueteam_rag_query        -> stage 1 vector recall + stage 2 cross-encoder rerank
     blueteam_rag_fp_validate  -> deterministic evidence assembly on top of rag_query
 
@@ -28,7 +28,9 @@ NOTE: No ``from __future__ import annotations`` deferred annotation evaluation
       (PEP 563) breaks @blueteam_tool type resolution. Same constraint as
       tools/yara_rules.py and tools/sigma_rules.py.
 """
+import asyncio
 import json
+from pathlib import Path
 from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server.core import rag_store
@@ -40,6 +42,7 @@ from mcp_server.core.false_positive_kb import false_positive_entries
 from mcp_server.core.rerank import rerank_hits
 from mcp_server.core.tool_decorator import blueteam_tool
 from mcp_server.agents.fp_validator_graph import run_fp_validation
+from mcp_server.tools.pdf_extract import PdfExtractInput, _extract_sync, _prepare as _pdf_prepare
 
 _NOT_CONFIGURED = (
     "RAG store is not configured. Set BLUETEAM_RAG_ENABLED=true and "
@@ -122,19 +125,56 @@ def _docs_from_false_positives(size: int, overlap: int) -> list[dict]:
     return docs
 
 
+async def _docs_from_pdf(path: str, corpus_label: str, size: int,
+                         overlap: int) -> tuple[list[dict], dict]:
+    """Extract a server-side PDF with pypdf and chunk it page by page.
+    Chunking happens here rather than in the tool response, so a multi-hundred-page
+    advisory never has to fit inside BLUETEAM_CHARACTER_LIMIT or the model's context
+    window. ``pdf_extract._prepare`` enforces the same path allowlist, extension, and
+    50 MB size cap as the standalone extraction tool; a PDF with no text layer raises
+    the same typed error that points at blueteam_document_convert (Marker OCR).
+    """
+    err, prep = _pdf_prepare(PdfExtractInput(path=path, include_metadata=True))
+    if err is not None:
+        raise BlueTeamMCPError(json.loads(err).get("error", err))
+    payload = await asyncio.to_thread(
+        _extract_sync, prep["path"], prep["pages"], prep["mode"], prep["include_metadata"]
+    )
+    docs: list[dict] = []
+    seq = 0
+    for page in payload["pages"]:
+        meta = {"page": page["page"], "file": payload["file"]}
+        for chunk in _chunk_text(page["text"], size, overlap):
+            docs.append({"source": corpus_label, "seq": seq, "text": chunk, "meta": meta})
+            seq += 1
+    info = {
+        "file": payload["file"],
+        "page_count": payload["page_count"],
+        "pages_extracted": len(payload["pages"]),
+        "pages_skipped": len(payload["skipped"]),
+    }
+    return docs, info
+
+
 # Ingest
 class RagIngestInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-    source: Literal["cases", "false_positives", "text"] = Field(
+    source: Literal["cases", "false_positives", "pdf", "text"] = Field(
         default="cases",
         description="cases = case_store records. false_positives = the suppression KB with "
-                    "its analyst reasons. text = the `texts` argument, stored under `label`.",
+                    "its analyst reasons. pdf = extract a server-side PDF (pypdf) and chunk "
+                    "it server-side, so the text never round-trips through the model context. "
+                    "text = the `texts` argument, stored under `label`.",
     )
     texts: list[str] = Field(default_factory=list, max_length=200,
         description="Documents for source='text'. Ignored otherwise.")
-    label: str = Field(default="manual", max_length=64,
-        description="Source label for source='text' chunks. Use a distinct label per corpus "
-                    "so queries can filter with `sources`.")
+    path: Optional[str] = Field(default=None, max_length=4096,
+        description="Absolute PDF path for source='pdf' (must be under "
+                    "BLUETEAM_ALLOWED_PATHS). Ignored otherwise.")
+    label: str = Field(default="", max_length=64,
+        description="Corpus label for source='text'/'pdf'. Defaults to 'manual' for text and "
+                    "'pdf:<filename stem>' for pdf. Use a distinct label per corpus so queries "
+                    "can filter with `sources`.")
     response_format: Literal["markdown", "json"] = Field(default="markdown")
 
 
@@ -160,10 +200,17 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
     ``BLUETEAM_RAG_ALLOW_DOWNLOAD=false`` (default) no text can leave the host.
     The audit entry records counts only, never chunk content.
 
+    For ``source='pdf'`` the file is read server-side and chunked page by page: the
+    text never passes through the model context, so ``BLUETEAM_CHARACTER_LIMIT`` does
+    not apply and a full advisory can be ingested in one call. The label defaults to
+    ``pdf:<filename stem>``, and the label is rebuilt (deleted then re-added) on every
+    call because the file on disk is the source of truth.
+
     Args:
-        params.source: 'cases', 'false_positives', or 'text'.
+        params.source: 'cases', 'false_positives', 'pdf', or 'text'.
         params.texts: documents for source='text'.
-        params.label: corpus label for source='text' (default 'manual').
+        params.path: PDF path for source='pdf'.
+        params.label: corpus label for source='text'/'pdf' (defaults 'manual'/'pdf:<stem>').
 
     Returns:
         markdown or json with inserted, deleted, status, documents, and store stats.
@@ -182,6 +229,10 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
         if not params.texts:
             raise BlueTeamMCPError("source='text' requires at least one entry in `texts`.")
         corpus_label = params.label or "manual"
+    elif params.source == "pdf":
+        if not params.path:
+            raise BlueTeamMCPError("source='pdf' requires `path`.")
+        corpus_label = params.label or f"pdf:{Path(params.path).stem}"[:64]
     else:
         corpus_label = params.source
 
@@ -189,10 +240,13 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
     size = config.rag.chunk_chars
     overlap = config.rag.chunk_overlap
 
+    pdf_info: Optional[dict] = None
     if params.source == "cases":
         docs = _docs_from_cases(size, overlap)
     elif params.source == "false_positives":
         docs = _docs_from_false_positives(size, overlap)
+    elif params.source == "pdf":
+        docs, pdf_info = await _docs_from_pdf(params.path, corpus_label, size, overlap)
     else:
         # seq is unique across the whole label, not per document: the chunk id is
         # (source, seq, text), so two identical documents sharing seq=0 would
@@ -228,15 +282,23 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
         )
 
     if params.response_format == "json":
-        return json.dumps({"source": corpus_label, "documents": len(docs),
-                           "chunks_inserted": inserted, "chunks_deleted": deleted,
-                           "status": status, "store": store}, indent=2, ensure_ascii=False)
+        result = {"source": corpus_label, "documents": len(docs),
+                  "chunks_inserted": inserted, "chunks_deleted": deleted,
+                  "status": status, "store": store}
+        if pdf_info:
+            result["pdf"] = pdf_info
+        return json.dumps(result, indent=2, ensure_ascii=False)
 
     lines = [f"# 📚 RAG Ingest - `{corpus_label}`", "",
              f"**Chunks**: {len(docs)} | **Stored**: {inserted} | "
              f"**Replaced**: {deleted}",
              f"**Model**: `{store['model']}` | **Corpus size**: "
              f"{sum(store['chunks_by_model'].values())} chunks", ""]
+    if pdf_info:
+        lines.append(f"**PDF**: `{pdf_info['file']}` | "
+                     f"**Pages**: {pdf_info['pages_extracted']}/{pdf_info['page_count']} extracted | "
+                     f"**Skipped**: {pdf_info['pages_skipped']}")
+        lines.append("")
     if status:
         lines.append(f"**Status**: {status}")
         lines.append("")

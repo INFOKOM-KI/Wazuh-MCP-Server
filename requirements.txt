@@ -14,7 +14,7 @@ aiosqlite>=0.20,<1.0
 #   uvicorn - mcp_server/core/server_auth.py imports it inside serve_authenticated()
 #             (transitive via mcp, which requires uvicorn>=0.31.1)
 #   pyyaml  - mcp_server/tools/sigma_rules.py imports it at module top level, so
-#             its absence breaks register_all_tools() for all 141 tools at once.
+#             its absence breaks register_all_tools() for all 146 tools at once.
 #             Also used lazily in mcp_server/sigma/engine.py. Currently transitive
 #             via langgraph -> langchain-core.
 #   numpy   - mcp_server/core/rag_store.py imports it inside functions (never at
@@ -48,6 +48,14 @@ fastembed>=0.5.0,<1.0.0
 #   pip install "markitdown[pdf,docx,pptx,xlsx,xls,outlook]"
 # Pure-Python, no torch/model downloads, no OCR. .zip/.epub/audio/youtube are
 # held out of v1 - see mcp_server/tools/markitdown_convert.py header.
+
+# pypdf PDF text + metadata extraction (blueteam_pdf_extract, and the
+# source="pdf" branch of blueteam_rag_ingest). Pure-Python, no torch, no model
+# download, and the lightweight PDF path on a default install where MarkItDown
+# is absent. Install plain `pypdf`, NEVER `pypdf[image]`: the [image] extra pulls
+# Pillow, which is the package that fights marker's pillow<11 pin above. Text +
+# /Info metadata only by design; image and annotation extraction are out of v1.
+pypdf>=4.0,<7.0
 
 # YARA rule synthesis + validation (blueteam_yara_rule_generate / _validate).
 # yara-x is REQUIRED for compile + scan-with-offsets (Rust, manylinux wheel, no libyara).

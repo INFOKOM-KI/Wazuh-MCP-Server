@@ -70,6 +70,13 @@ rag.db-shm
 *.rag.db-wal
 *.rag.db-shm
 
+# Evidence PDFs (blueteam_pdf_extract / blueteam_markitdown_convert /
+# blueteam_document_convert and blueteam_rag_ingest(source="pdf")). Operators drop
+# vendor advisories, IR reports and case exhibits under BLUETEAM_ALLOWED_PATHS, which
+# can point inside the repo. Those are victim-adjacent evidence, not source: keep
+# them out of history. This repo ships no PDF, so a blanket rule costs nothing.
+*.pdf
+
 # OS junk
 Thumbs.db
 

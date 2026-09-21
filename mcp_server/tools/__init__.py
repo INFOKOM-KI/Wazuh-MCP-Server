@@ -103,6 +103,7 @@ def register_all_tools() -> None:
         ("stealer_log",              "stealer_log",              False),  # 1 tool (HudsonRock stealer-log check)
         ("document_convert",        "document_convert",        False),  # 1 tool Marker PDF -> markdown/json/html/chunks
         ("markitdown_convert",      "document_convert",        False),  # 1 tool MarkItDown office/data file -> markdown
+        ("pdf_extract",             "document_convert",        False),  # 1 tool pypdf PDF -> text + metadata (no torch)
         ("yara_rules",              "yara_rules",              False),  # 2 tools YARA rule synthesis + validation (yara-x)
         ("sigma_rules",             "sigma_rules",             False),  # 3 tools Sigma rule synthesis + validation + staging save
         ("rag_kb",                  "rag_kb",                  False),  # 3 tools local RAG corpus (ingest/query/fp_validate)

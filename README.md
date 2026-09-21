@@ -5,7 +5,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **144 tools + 4 resources** (118 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
+offensive tooling. **146 tools + 4 resources** (120 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, local case RAG, and host forensics. Read-only by default.
 
@@ -107,7 +107,7 @@ optional — tools degrade gracefully without them.
 | Inbound hardening | `BLUETEAM_HTTP_RATE_LIMIT`, `BLUETEAM_ALLOWED_ORIGINS` | per-IP sliding-window rate limit (req/min, `0`=off) + Origin allowlist (loopback always allowed) |
 | Audit & persistence | `BLUETEAM_AUDIT_LOG`, `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CMDB_FILE` | JSONL audit trail + stores (optional) |
 | Local case RAG | `BLUETEAM_RAG_ENABLED`, `BLUETEAM_RAG_DB`, `BLUETEAM_RAG_MODEL`, `BLUETEAM_RAG_CACHE_PATH`, `BLUETEAM_RAG_MAX_CANDIDATES`, `BLUETEAM_RAG_TOP_K`, `BLUETEAM_RAG_MAX_CHUNKS`, `BLUETEAM_RAG_CHUNK_CHARS`, `BLUETEAM_RAG_CHUNK_OVERLAP`, `BLUETEAM_RAG_ALLOW_DOWNLOAD`, `BLUETEAM_RAG_MODEL_SHA256` | SQLite retrieval corpus over cases / confirmed false positives / IR playbooks. `ENABLED=true` requires an absolute `DB` path or startup raises. `ALLOW_DOWNLOAD` defaults `false` (`local_files_only`). |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **118 tools registered** instead of 144: `144 - 23 - 3 = 118`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **120 tools registered** instead of 146: `146 - 23 - 3 = 120`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
@@ -136,8 +136,10 @@ A local retrieval corpus over the SOC's own history — `case_store` records, co
 false-positive reasons and converted IR playbooks — plus a deterministic false-positive check.
 Embeddings are computed in-process by ONNX (`fastembed.TextEmbedding`, no torch, no hosted
 embedding API), stored in SQLite, and never transmitted.
-- `blueteam_rag_ingest` — rebuild a corpus label. Derived labels (`cases`, `false_positives`) are
+- `blueteam_rag_ingest` — rebuild a corpus label. Derived labels (`cases`, `false_positives`, `pdf`) are
   rebuilt from their source of truth, so **re-run it after editing cases or marking new FPs**.
+  `source="pdf"` reads a server-side PDF and chunks it page by page, so the text never passes
+  through the model context and `BLUETEAM_CHARACTER_LIMIT` does not apply.
 - `blueteam_rag_query` — vector recall (default 100 candidates) then the optional cross-encoder,
   returning scores plus corpus stats so a stale index is visible.
 - `blueteam_rag_fp_validate` — verdict ladder over registry lookups and corpus matches:
@@ -307,7 +309,7 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 145
+Manager (config/agent data) plus 7+ external threat-intel providers into 146
 tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
@@ -430,11 +432,11 @@ gate. SSVC stays advisory metadata, never a correlation input.
 | Want | Tool |
 |---|---|
 | Full langgraph workflow | `blueteam_investigation_workflow(srcip or alert_text or dependency_manifest)` |
-| Rebuild the local case corpus | `blueteam_rag_ingest(source="cases"\|"false_positives"\|"text", texts, label)` |
+| Rebuild the local case corpus | `blueteam_rag_ingest(source="cases"\|"false_positives"\|"pdf"\|"text", texts, label, path)` |
 | Search prior cases / playbooks | `blueteam_rag_query(query, sources, rerank)` |
 | Comprehensive IP profile | `blueteam_investigate_ip(srcip)` |
 | Record verdict | `blueteam_mark_investigated(...)` |
-| Case lifecycle | `blueteam_case_create/get/list/add_iocs/add_verdict` |
+| Case lifecycle | `blueteam_case_create`, `blueteam_case_get`, `blueteam_case_list`, `blueteam_case_add_iocs`, `blueteam_case_add_verdict` |
 | History | `blueteam_investigation_history` / `blueteam_investigation_summary` |
 
 `blueteam_investigation_workflow` **requires at least one** of `alert_text`,
@@ -455,6 +457,7 @@ Any other verdict is recorded in `fp_validation` and the investigation continues
 | Search only IR guidance | `blueteam_rag_query(query="ransomware containment steps", sources=["ir_playbooks"])` |
 | Is this alert noise? | `blueteam_rag_fp_validate(srcip="8.8.8.8", description="ssh auth failure")` |
 | Refresh the index | `blueteam_rag_ingest(source="cases")` |
+| Ingest a full advisory PDF | `blueteam_rag_ingest(source="pdf", path="/opt/advisories/cisa-aa24.pdf", label="cisa_aa24")` |
 
 Read the `verdict` before acting on it. `suppressed_exact`, `conflicting_state` and
 `likely_true_positive` are authoritative (registry lookups, no model). `likely_false_positive` is
@@ -464,8 +467,8 @@ the corpus was searched and came up short; `validation_incomplete` means it was 
 is always `not_computed`; there is no calibrated probability in this pipeline, so never quote one.
 
 Nothing here auto-closes an alert. Record the decision with `blueteam_mark_investigated`.
-Re-run `blueteam_rag_ingest` after editing cases or marking new false positives — the index is
-derived and does not notice edits on its own.
+Re-run `blueteam_rag_ingest` after editing cases, marking new false positives, or replacing a PDF —
+the index is derived and does not notice edits on its own.
 
 ### Email / breach / domain forensics
 | Want | Tool |
@@ -514,6 +517,7 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | System state | `blueteam_system_health`, `blueteam_check_open_firewall` |
 | Packet capture | `blueteam_capture_traffic` |
 | Playbook / PDF conversion | `blueteam_document_convert(path)` — Marker (scanned-PDF OCR): playbook / advisory PDF → markdown/JSON/html/chunks (`page_range` for docs longer than the response cap; `mode="table"` → JSON) |
+| Digital PDF → text + metadata | `blueteam_pdf_extract(path)` — pypdf (no torch, no opt-in install): text and `/Info` metadata with per-page headers, `page_range`, and `extraction_mode="layout"` for table-heavy advisories. Digital text layers only; pages over 32 MB decompressed are skipped with a reason |
 | Office / data file → markdown | `blueteam_markitdown_convert(path)` — MarkItDown (no OCR, no torch): docx / pptx / xlsx / xls / msg / html / csv / json / xml / digital PDF → markdown. Image-only PDFs return an error — route those to `blueteam_document_convert` |
 
 `blueteam_check_webshell(url)` only accepts **public** hosts by default — any URL whose
@@ -545,7 +549,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `wazuh_alert_focused_crawl` | surgical alert deep-dive (`rule_id`/`src_ip`/`sample_size`) |
 | `wazuh_alert_aggregate_analysis` | zero-doc full-index statistical summary |
 | `wazuh_alert_dsl_query` | raw OpenSearch DSL (script-injection guarded) |
-| `threatfox_ioc_search` / `_bulk` | direct ThreatFox search (vs the 6-provider aggregate) |
+| `threatfox_ioc_search`, `threatfox_ioc_search_bulk` | direct ThreatFox search (vs the 6-provider aggregate) |
 | `crowdsec_ip_reputation_bulk` / `otx_lookup_bulk` / `urlhaus_lookup_bulk` | bulk enrich up to N IOCs |
 | `blueteam_index_schema` | discover index field mappings |
 | `blueteam_wazuh_export` | scroll-export alerts to JSONL |
@@ -672,6 +676,30 @@ names the configured index. Inspect the `index` field before importing into Dash
 
 Conversion needs the optional pySigma dependency (`BLUETEAM_INSTALL_SIGMA=1`). Without it
 the convert tool returns an install hint, and generate/validate/save keep working.
+
+### Workflow H — advisory PDF → retrievable corpus (opt-in, needs the RAG store)
+```
+1. blueteam_pdf_extract(path="/opt/advisories/cisa-aa24.pdf")   # read it once; check metadata + page count
+2. blueteam_rag_ingest(source="pdf", path="/opt/advisories/cisa-aa24.pdf", label="cisa_aa24")
+3. blueteam_rag_query(query="ransomware containment steps", sources=["cisa_aa24"])
+```
+
+Read a digital advisory directly with `blueteam_pdf_extract` (pypdf, no torch, no opt-in
+install). When the goal is retrieval rather than a one-off read, ingest it with
+`source="pdf"` instead: the file is extracted and chunked **server-side**, so the text never
+has to fit in the response cap. The label defaults to `pdf:<filename stem>` and is rebuilt on
+every call, so re-ingest after replacing the file.
+
+Which converter:
+- `blueteam_pdf_extract` — digital PDF, text + `/Info` metadata. Start here.
+- `blueteam_markitdown_convert` — office/data (docx/pptx/xlsx/xls/msg/html/csv/json/xml).
+- `blueteam_document_convert` — scanned or image-only PDF. Marker OCR, CPU torch, slow.
+
+A PDF with no text layer fails with a typed error naming `blueteam_document_convert`; that is
+the signal to switch converters, not to retry. Pages whose decompressed content stream
+exceeds 32 MB are listed under `Skipped pages` with a reason — report them, don't guess at
+their contents. Drop the file under `BLUETEAM_ALLOWED_PATHS` before any of this; URLs are
+rejected.
 
 ## 3. Redaction & the forensic token (read before touching PII)
 
@@ -944,6 +972,10 @@ provide it once at session start and you reuse it across calls.
   installs it only when `BLUETEAM_INSTALL_MARKITDOWN=1` (no torch, no model downloads):
   `pip install "markitdown[pdf,docx,pptx,xlsx,xls,outlook]"`. Local formats only — URLs,
   `.zip`, `.epub`, audio and YouTube are held out of v1.
+- pypdf PDF text + metadata (`blueteam_pdf_extract`, and `blueteam_rag_ingest(source="pdf")`):
+  a plain dependency, no opt-in flag, no torch, no model download. Install plain `pypdf`,
+  **never** `pypdf[image]` — the `[image]` extra pulls Pillow, which is the package that
+  fights Marker's `pillow<11` pin above. Text and `/Info` metadata only.
 
 ---
 
