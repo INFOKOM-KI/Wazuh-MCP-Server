@@ -189,6 +189,80 @@ def test_rerank_pin_rejects_bad_digest_at_startup():
         raise AssertionError("expected ConfigurationError for malformed sha256")
 
 
+# Fail-closed startup validation (config.RerankConfig.validate). A model that
+# fastembed cannot load used to surface only as a per-call "unavailable:" status,
+# which reads to an analyst as "the cross-encoder ranked this" when BM25 did.
+def test_validate_fails_closed_on_unsupported_model():
+    from mcp_server.core.config import (RerankConfig, ConfigurationError,
+                                        _fastembed_rerank_models)
+
+    class FakeTextCrossEncoder:
+        @classmethod
+        def list_supported_models(cls):
+            return [{"model": "BAAI/bge-reranker-base", "model_file": "onnx/model.onnx"}]
+
+    saved = sys.modules.get("fastembed.rerank.cross_encoder")
+    sys.modules["fastembed.rerank.cross_encoder"] = SimpleNamespace(
+        TextCrossEncoder=FakeTextCrossEncoder)
+    try:
+        assert _fastembed_rerank_models() == {"BAAI/bge-reranker-base"}
+        try:
+            RerankConfig(enabled=True, model="BAAI/bge-reranker-v2-m3").validate()
+        except ConfigurationError as exc:
+            assert "bge-reranker-v2-m3" in str(exc)
+        else:
+            raise AssertionError("expected ConfigurationError for an unloadable model")
+        # The in registry model must still validate.
+        RerankConfig(enabled=True, model="BAAI/bge-reranker-base").validate()
+    finally:
+        if saved is None:
+            sys.modules.pop("fastembed.rerank.cross_encoder", None)
+        else:
+            sys.modules["fastembed.rerank.cross_encoder"] = saved
+
+
+def test_validate_fails_closed_when_fastembed_missing():
+    from mcp_server.core.config import (RerankConfig, ConfigurationError,
+                                        _fastembed_rerank_models)
+
+    saved = sys.modules.get("fastembed")
+    sys.modules["fastembed"] = None  # any import of it raises ImportError
+    try:
+        assert _fastembed_rerank_models() is None
+        try:
+            RerankConfig(enabled=True, model="BAAI/bge-reranker-base").validate()
+        except ConfigurationError as exc:
+            assert "fastembed is not installed" in str(exc)
+        else:
+            raise AssertionError("expected ConfigurationError when fastembed is absent")
+        # An explicitly disabled reranker needs no dependency at all.
+        RerankConfig(enabled=False, model="who/knows").validate()
+    finally:
+        if saved is None:
+            sys.modules.pop("fastembed", None)
+        else:
+            sys.modules["fastembed"] = saved
+
+
+def test_status_dict_names_the_engine_that_actually_ranked():
+    from mcp_server.core.rerank import status_dict
+
+    ranked = status_dict(None)
+    assert ranked["rerank_used"] is True
+    assert ranked["rerank_engine"].startswith("cross-encoder:")
+    assert ranked["rerank_status"] == "ok"
+
+    fallback = status_dict("unavailable: model load failed")
+    assert fallback["rerank_used"] is False
+    assert fallback["rerank_engine"] == "bm25"
+
+    vector = status_dict("disabled", fallback_engine="vector")
+    assert vector["rerank_engine"] == "vector"
+    assert vector["rerank_status"] == "disabled"
+
+    assert status_dict("not_requested")["rerank_status"] == "not_requested"
+
+
 if __name__ == "__main__":
     import sys
     import os

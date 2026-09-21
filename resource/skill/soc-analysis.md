@@ -243,8 +243,8 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `jarm_fingerprint` | active TLS server fingerprinting (no API key) |
 | `blueteam_unified_threat_score(indicator)` | CrowdSec+ThreatFox+AbuseIPDB → single 0.0–1.0 score |
 | `blueteam_threat_hunt` | named DSL query templates per adversary technique |
-| `blueteam_semantic_search` | BM25 ranking over Wazuh rules/alerts; `rerank=true` adds a local cross-encoder (bge-reranker-base) for cross-lingual matching |
-| `blueteam_prompt_route` | BM25 prompt→tool router; `rerank=true` re-scores candidates with the same cross-encoder |
+| `blueteam_semantic_search` | BM25 ranking over Wazuh rules/alerts; cross-encoder rerank (`bge-reranker-base`) is **on by default** for cross-lingual matching. Read `rerank_engine`: `bm25` means the rerank did not run and `rerank_status` says why |
+| `blueteam_prompt_route` | Natural-language prompt→tool router over all registered tools; rerank on by default. Pass the analyst's own wording (Indonesian or English) when unsure which tool fits |
 | `blueteam_mitre_lookup` | ATT&CK technique/group lookup |
 | `blueteam_asset_context` | CMDB asset criticality / owner |
 | `blueteam_false_positive_tracker(rule_id)` | rule_id → FP-summary cross-reference |

@@ -13,7 +13,7 @@ from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.config import config
 from mcp_server.core.redact import _redact_alert_data
-from mcp_server.core.rerank import rerank as _cross_rerank
+from mcp_server.core.rerank import rerank as _cross_rerank, status_dict
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window
 
@@ -197,10 +197,11 @@ class SemanticSearchInput(BaseModel):
                     "ONLY alerts from this IP (exact field filter on data.srcip — the IP itself "
                     "is NOT added to the BM25 corpus).")
     rerank: bool = Field(
-        default=False,
+        default=True,
         description="Re-rank BM25 candidates with the local cross-encoder "
-                    "(BAAI/bge-reranker-base). Falls back to BM25-only when "
-                    "BLUETEAM_RERANK_ENABLED=false or the model is unavailable.",
+                    "(BAAI/bge-reranker-base). ON by default; falls back to "
+                    "BM25-only when BLUETEAM_RERANK_ENABLED=false or the model is "
+                    "unavailable, in which case rerank_status says why.",
     )
     rerank_candidates: int = Field(
         default=20, ge=1, le=100,
@@ -287,8 +288,7 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
             matches.append(m)
         payload = {"query": params.query, "source": "rules", "matches": matches}
         if params.rerank:
-            payload["reranked"] = reranked
-            payload["rerank_status"] = rerank_status
+            payload.update(status_dict(rerank_status))
         return json.dumps(payload, indent=2, ensure_ascii=False)
 
     score_col = "Semantic" if reranked else "BM25"

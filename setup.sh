@@ -67,8 +67,12 @@ if ! "$INSTALL_DIR/venv/bin/python3" -c "import pypdf; print('[.] pypdf', pypdf.
 fi
 
 # Reranker model bootstrap.
-# Honors BLUETEAM_RERANK_* from config.env if present, downloads the model,
-# auto generates BLUETEAM_RERANK_MODEL_SHA256 when unset. On re-run it
+# ON by default: downloads BAAI/bge-reranker-base (~1.0 GB, MIT) into
+# $INSTALL_DIR/rerank-cache and auto-generates the ONNX sha256 pin, so the
+# installed server never needs runtime egress. Set BLUETEAM_RERANK_ENABLED=false
+# in config.env BEFORE the first run to skip it (~1 GB download); the server then
+# ranks lexically only.
+# Honors BLUETEAM_RERANK_* from config.env if present. On re-run it
 # also syncs the RERANK block into .env (the file the systemd unit loads),
 # which fixes the config.env-vs-.env mismatch on existing deployments.
 CONFIG_FILE="$INSTALL_DIR/config.env"
@@ -178,12 +182,13 @@ else
   echo "[.] Sigma conversion SKIPPED (set BLUETEAM_INSTALL_SIGMA=1 to enable)."
 fi
 
-RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-false}"
+RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-true}"
 RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 RERANK_CACHE="${BLUETEAM_RERANK_CACHE_PATH:-$INSTALL_DIR/rerank-cache}"
 RERANK_SHA="${BLUETEAM_RERANK_MODEL_SHA256:-}"
 if [[ "$RERANK_ENABLED" == "true" || "$RERANK_ENABLED" == "1" || "$RERANK_ENABLED" == "yes" ]]; then
   mkdir -p "$RERANK_CACHE"
+  echo "[.] Bootstrap reranker model $RERANK_MODEL (~1 GB, one time)..."
   # Resolve the EXACT ONNX file fastembed will load (same path the server's
   # pin check uses: fastembed _model_dir + registry model_file), so a
   # multi-snapshot cache can never pin the wrong file.
@@ -217,7 +222,8 @@ PYEOF
           echo "  BLUETEAM_RERANK_MODEL_SHA256 verified (matches cached ONNX)."
         else
           echo "  WARNING: BLUETEAM_RERANK_MODEL_SHA256 mismatch - cached file hashes to $ACTUAL_SHA."
-          echo "  The server will refuse to load the model and fall back to BM25-only."
+          echo "  The server refuses to load that file: every rerank call reports"
+          echo "  'unavailable: sha256 pin mismatch' and ranks lexically instead."
         fi
       else
         RERANK_SHA="$ACTUAL_SHA"
@@ -229,7 +235,8 @@ PYEOF
   else
     echo "  Reranker model bootstrap skipped:"
     tail -3 "$ERR_LOG" 2>/dev/null | sed 's/^/    /' || true
-    echo "  First rerank=true call will fall back to BM25-only."
+    echo "  The server needs either a bootstrapped cache or BLUETEAM_RERANK_MODEL_SHA256="
+    echo "  unset, otherwise the first rerank call reports 'unavailable:' and ranks lexically."
   fi
   rm -f "$ERR_LOG"
 else
@@ -423,7 +430,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export WAZUH_INDEXER_MAX_SIZE="10000"          # max documents per page in Wazuh Indexer search
 
 # Reranker (two-stage retrieval: BM25 -> bge-reranker-base cross-encoder, opt-in)
-# export BLUETEAM_RERANK_ENABLED="false"          # true = enable cross-encoder rerank on prompt_route/semantic_search
+# export BLUETEAM_RERANK_ENABLED="true"           # ON by default: cross-encoder rerank on prompt_route/semantic_search/rag_query (false = BM25/vector only)
 # export BLUETEAM_RERANK_MODEL="BAAI/bge-reranker-base"
 # export BLUETEAM_RERANK_CACHE_PATH="/opt/blue-team-mcp/rerank-cache"   # model weights dir (offline after bootstrap)
 # export BLUETEAM_RERANK_MAX_CANDIDATES="100"     # hard cap for rerank candidate fan-out (all retrieval callers)
@@ -694,8 +701,10 @@ export BLUETEAM_SIGMA_INDEX_PATTERN="${BLUETEAM_SIGMA_INDEX_PATTERN:-wazuh-alert
 export BLUETEAM_SIGMA_MONITOR_INTERVAL="${BLUETEAM_SIGMA_MONITOR_INTERVAL:-5}"
 export BLUETEAM_SIGMA_VERIFY_FIELDS="${BLUETEAM_SIGMA_VERIFY_FIELDS:-true}"
 export BLUETEAM_SIGMA_CHECK_EXISTING="${BLUETEAM_SIGMA_CHECK_EXISTING:-true}"
-# Reranker (two-stage retrieval, opt-in via BLUETEAM_RERANK_ENABLED)
-export BLUETEAM_RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-false}"
+# Reranker (two-stage retrieval, ON by default; model bootstrapped above)
+# A model absent from fastembed's registry stops the server at startup instead of
+# silently ranking with BM25 (see RerankConfig.validate).
+export BLUETEAM_RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-true}"
 export BLUETEAM_RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 export BLUETEAM_RERANK_CACHE_PATH="${BLUETEAM_RERANK_CACHE_PATH:-/opt/blue-team-mcp/rerank-cache}"
 export BLUETEAM_RERANK_MAX_CANDIDATES="${BLUETEAM_RERANK_MAX_CANDIDATES:-100}"

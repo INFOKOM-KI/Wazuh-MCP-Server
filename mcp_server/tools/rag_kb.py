@@ -39,7 +39,7 @@ from mcp_server.core.case_store import list_cases
 from mcp_server.core.config import config
 from mcp_server.core.exceptions import BlueTeamMCPError
 from mcp_server.core.false_positive_kb import false_positive_entries
-from mcp_server.core.rerank import rerank_hits
+from mcp_server.core.rerank import rerank_hits, status_dict
 from mcp_server.core.tool_decorator import blueteam_tool
 from mcp_server.agents.fp_validator_graph import run_fp_validation
 from mcp_server.tools.pdf_extract import PdfExtractInput, _extract_sync, _prepare as _pdf_prepare
@@ -324,10 +324,11 @@ class RagQueryInput(BaseModel):
                     "BLUETEAM_RAG_MAX_CANDIDATES.")
     sources: Optional[list[str]] = Field(default=None, max_length=10,
         description="Optional corpus label filter, e.g. ['cases']. None searches everything.")
-    rerank: bool = Field(default=False,
+    rerank: bool = Field(default=True,
         description="Re-score the vector candidates with the local cross-encoder "
-                    "(BAAI/bge-reranker-base). Needs BLUETEAM_RERANK_ENABLED=true; "
-                    "falls back to vector order otherwise.")
+                    "(BAAI/bge-reranker-base). ON by default; falls back to vector "
+                    "order when BLUETEAM_RERANK_ENABLED=false or the model is "
+                    "unavailable, in which case rerank_status says why.")
     response_format: Literal["markdown", "json"] = Field(default="markdown")
 
 
@@ -380,7 +381,7 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
     # as "no similar cases exist", which is the opposite of the truth.
     if status and status.startswith("unavailable:"):
         raise BlueTeamMCPError(
-            f"RAG query unavailable - {status}. Nothing can be retrieved until the "
+            f"RAG query unavailable: {status}. Nothing can be retrieved until the "
             "embedder loads; an empty result set would read as 'no similar cases "
             "exist'. Check BLUETEAM_RAG_CACHE_PATH and restart the server."
         )
@@ -404,8 +405,10 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
     store = rag_store.stats()
     if params.response_format == "json":
         return json.dumps({
-            "query": params.query, "matches": hits, "reranked": reranked,
-            "rerank_status": rerank_status, "recall_k": recall, "returned": len(hits),
+            "query": params.query, "matches": hits,
+            **status_dict(rerank_status if params.rerank else "not_requested",
+                          fallback_engine="vector"),
+            "recall_k": recall, "returned": len(hits),
             "store": store,
         }, indent=2, ensure_ascii=False)
 

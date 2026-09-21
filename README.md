@@ -120,11 +120,14 @@ lookups, and Manager API tools (rules, decoders, groups, agents, security events
 
 ### Semantic Search & Prompt Routing
 `blueteam_semantic_search` (BM25 over Wazuh rule/alert corpora) and `blueteam_prompt_route`
-(BM25 prompt→tool router). Both accept an opt-in `rerank=true` second stage — a local
-cross-encoder (`BAAI/bge-reranker-base`, ONNX) re-scores the BM25 candidates for
-synonym / cross-lingual matching. Gated by `BLUETEAM_RERANK_ENABLED` (default false);
-disabled / unavailable falls back to BM25-only. Weights are pre-downloaded by `setup.sh`
-into `BLUETEAM_RERANK_CACHE_PATH` — local-only, never a hosted API.
+(BM25 prompt→tool router; accepts Indonesian or English phrasing). Both run a local
+cross-encoder (`BAAI/bge-reranker-base`, ONNX, MIT) second stage over the BM25 candidates for
+synonym / cross-lingual matching, **on by default** (`BLUETEAM_RERANK_ENABLED` default `true`).
+The model name is checked against fastembed's cross-encoder registry at startup: a name it cannot
+load (`BAAI/bge-reranker-v2-m3` is not in it) is a startup error, not a quiet BM25 fallback.
+Runtime failures degrade to BM25-only and label themselves in `rerank_engine` / `rerank_status`.
+Weights are pre-downloaded by `setup.sh`
+into `BLUETEAM_RERANK_CACHE_PATH` and pre-warmed at startup — local-only, never a hosted API.
 
 Truncation is rank-based with no score threshold: raw cross-encoder logits are uncalibrated across
 query distributions, so a fixed floor deletes good matches. `BLUETEAM_RERANK_MAX_CANDIDATES`
@@ -536,8 +539,8 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `jarm_fingerprint` | active TLS server fingerprinting (no API key) |
 | `blueteam_unified_threat_score(indicator)` | CrowdSec+ThreatFox+AbuseIPDB → single 0.0–1.0 score |
 | `blueteam_threat_hunt` | named DSL query templates per adversary technique |
-| `blueteam_semantic_search` | BM25 ranking over Wazuh rules/alerts; `rerank=true` adds a local cross-encoder (bge-reranker-base) for cross-lingual matching |
-| `blueteam_prompt_route` | BM25 prompt→tool router; `rerank=true` re-scores candidates with the same cross-encoder |
+| `blueteam_semantic_search` | BM25 ranking over Wazuh rules/alerts; cross-encoder rerank (`bge-reranker-base`) is **on by default** for cross-lingual matching. Read `rerank_engine`: `bm25` means the rerank did not run and `rerank_status` says why |
+| `blueteam_prompt_route` | Natural-language prompt→tool router over all registered tools; rerank on by default. Pass the analyst's own wording (Indonesian or English) when unsure which tool fits |
 | `blueteam_mitre_lookup` | ATT&CK technique/group lookup |
 | `blueteam_asset_context` | CMDB asset criticality / owner |
 | `blueteam_false_positive_tracker(rule_id)` | rule_id → FP-summary cross-reference |

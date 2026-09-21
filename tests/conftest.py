@@ -11,6 +11,12 @@ import pytest
 import httpx
 from unittest.mock import AsyncMock, MagicMock
 
+# fastembed is absent in CI, and the reranker is fail-closed at startup when
+# BLUETEAM_RERANK_ENABLED=true without it. Pin the reranker off before any test
+# module imports mcp_server, so the default suite exercises the BM25 path. Tests
+# that need the reranker flip config.rerank.enabled themselves (tests/test_rerank.py).
+os.environ.setdefault("BLUETEAM_RERANK_ENABLED", "false")
+
 
 @pytest.fixture(autouse=True)
 def _clean_env():

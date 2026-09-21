@@ -24,8 +24,11 @@ uvicorn>=0.31.1,<1.0.0
 pyyaml>=6.0.1,<7.0.0
 numpy>=1.26,<3.0
 
-# Two stage retrieval reranker (BM25 -> bge-reranker-base cross-encoder).
-# Opt-in at runtime via BLUETEAM_RERANK_ENABLED; tools degrade to BM25-only if missing.
+# Two stage retrieval reranker (BM25 -> bge-reranker-base cross-encoder, MIT, ~1.0 GB).
+# ON by default (BLUETEAM_RERANK_ENABLED=true), so the server REFUSES TO START without
+# this package. Only models in fastembed's own cross-encoder registry can load;
+# BAAI/bge-reranker-v2-m3 is NOT one of them. Model name is validated at startup
+# (RerankConfig.validate), never at first use.
 fastembed>=0.5.0,<1.0.0
 
 # Marker PDF -> markdown/json/html/chunks document conversion (blueteam_document_convert).

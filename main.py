@@ -7,7 +7,8 @@ Startup order (must not be reordered):
 2. Import mcp_server - triggers FastMCP creation + init_config().
 3. init_auth_manager() - initialize JWT token manager singleton.
 4. register_all_tools() - import tool modules; gating is enforced here.
-5. mcp.run() - start the selected transport.
+5. prewarm() - start the cross-encoder model load in a daemon thread.
+6. mcp.run() - start the selected transport.
 """
 
 import argparse
@@ -78,7 +79,12 @@ def main() -> None:
     from mcp_server.tools import register_all_tools
     register_all_tools()
 
-    # 5: Start transport
+    # 5: Pre-warm the reranker. Daemon thread, never blocks the MCP handshake;
+    # a cold 1 GB model load would otherwise land on the first tool call.
+    from mcp_server.core.rerank import prewarm
+    prewarm()
+
+    # 6: Start transport
     tool_count = len(getattr(mcp._tool_manager, "_tools", {}))
     logger.info("%d tools registered. Starting %s transport on %s:%s",
                 tool_count, args.transport, args.host, args.port)

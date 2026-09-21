@@ -467,14 +467,34 @@ class ToolGatingConfig:
         pass
 
 
+def _fastembed_rerank_models() -> Optional[set[str]]:
+    """Cross-encoder model ids fastembed can actually load.
+    Returns ``None`` when fastembed is not installed, so callers can tell
+    "dependency absent" apart from "model name not in the registry". Only the
+    installed fastembed's registry counts: a model on Hugging Face but absent
+    here can never load, and the failure would otherwise only appear as a
+    per-call ``unavailable:`` status.
+    """
+    try:
+        from fastembed.rerank.cross_encoder import TextCrossEncoder
+    except ImportError:
+        return None
+    return {entry["model"] for entry in TextCrossEncoder.list_supported_models()}
+
+
 @dataclass
 class RerankConfig:
-    """Optional two stage retrieval reranker (BM25 -> cross-encoder).
-    Off by default: BM25-only is the safe baseline. When enabled, tools expose a
-    ``rerank`` flag that re-scores BM25 candidates with a local ONNX
-    cross-encoder (BAAI/bge-reranker-base). Never a hosted API.
+    """Two stage retrieval reranker (BM25 recall -> cross-encoder rerank), ON by default.
+    Tools expose a ``rerank`` flag (default true) that re-scores BM25 candidates
+    with a local ONNX cross-encoder (``BAAI/bge-reranker-base``, MIT, ~1.0 GB).
+    Never a hosted API: query and document text never leave the process.
+    Startup is fail-closed. With ``enabled=True``, an unsupported model name or a
+    missing fastembed raises ConfigurationError at boot instead of silently
+    ranking with BM25. Set ``BLUETEAM_RERANK_ENABLED=false`` to accept BM25-only.
+    ``sha256`` pins the exact cached ONNX file; when set the model is never
+    downloaded at runtime (air-gapped hosts stay air-gapped).
     """
-    enabled: bool = False
+    enabled: bool = True
     model: str = "BAAI/bge-reranker-base"
     cache_path: str = ""            # empty = fastembed default cache dir
     max_candidates: int = 100       # hard ceiling for the rerank_candidates tool param
@@ -483,7 +503,7 @@ class RerankConfig:
     @classmethod
     def from_env(cls) -> "RerankConfig":
         return cls(
-            enabled=_bool(os.environ.get("BLUETEAM_RERANK_ENABLED", "false")),
+            enabled=_bool(os.environ.get("BLUETEAM_RERANK_ENABLED", "true")),
             model=os.environ.get("BLUETEAM_RERANK_MODEL", "BAAI/bge-reranker-base").strip(),
             cache_path=os.environ.get("BLUETEAM_RERANK_CACHE_PATH", ""),
             max_candidates=int(os.environ.get("BLUETEAM_RERANK_MAX_CANDIDATES", "100")),
@@ -491,10 +511,24 @@ class RerankConfig:
         )
 
     def validate(self) -> None:
-        if self.enabled and not self.model:
-            raise ConfigurationError(
-                "BLUETEAM_RERANK_MODEL must not be empty when BLUETEAM_RERANK_ENABLED=true"
-            )
+        if self.enabled:
+            supported = _fastembed_rerank_models()
+            if supported is None:
+                raise ConfigurationError(
+                    "BLUETEAM_RERANK_ENABLED=true but fastembed is not installed, so "
+                    "no cross-encoder can load. Install it (setup.sh does: "
+                    "pip install 'fastembed>=0.5.0,<1.0.0') or set "
+                    "BLUETEAM_RERANK_ENABLED=false to accept BM25-only ranking."
+                )
+            if self.model not in supported:
+                raise ConfigurationError(
+                    "BLUETEAM_RERANK_MODEL=%r is not in fastembed's cross-encoder "
+                    "registry, so it can never load and the server would silently "
+                    "rank with BM25 only. Supported models: %s. "
+                    "Note BAAI/bge-reranker-v2-m3 is NOT supported by fastembed; "
+                    "BAAI/bge-reranker-base (MIT) is the in-registry equivalent."
+                    % (self.model, ", ".join(sorted(supported)))
+                )
         if self.max_candidates < 1:
             raise ConfigurationError("BLUETEAM_RERANK_MAX_CANDIDATES must be >= 1")
         if self.sha256 and not re.fullmatch(r"[0-9a-f]{64}", self.sha256):
@@ -802,13 +836,8 @@ class Config:
                 "BLUETEAM_ALLOW_FORENSIC_BYPASS=true - forensic raw output enabled "
                 "(bypass_redaction/redaction_policy='raw' will be honored)."
             )
-        if self.rerank.enabled:
-            import importlib.util
-            if importlib.util.find_spec("fastembed") is None:
-                logger.warning(
-                    "BLUETEAM_RERANK_ENABLED=true but fastembed is not installed"
-                    "reranking will fall back to BM25-only."
-                )
+        # Reranker availability is enforced hard in RerankConfig.validate()
+        # (fail closed at startup), so it is deliberately not warned about here.
         if self.rag.enabled:
             import importlib.util
             if importlib.util.find_spec("fastembed") is None:

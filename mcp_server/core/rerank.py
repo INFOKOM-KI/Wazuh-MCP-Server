@@ -3,7 +3,8 @@
 © NAuliajati - TangerangKota-CSIRT
 Optional two stage retrieval reranker: BM25 recall + cross-encoder rerank.
 Local-only ONNX cross-encoder (BAAI/bge-reranker-base)
-via fastembed's TextCrossEncoder. Off by default (BLUETEAM_RERANK_ENABLED=false).
+via fastembed's TextCrossEncoder. On by default (BLUETEAM_RERANK_ENABLED=true);
+unsupported model names fail closed at startup (see config._fastembed_rerank_models).
 Never a hosted API, query and document text never leave the process.
 Lazy load on first use, thread-offloaded load + inference, graceful fallback to
 BM25-only when fastembed is missing or the model cannot be loaded.
@@ -53,6 +54,34 @@ def reason() -> str:
     return _reason
 
 
+def status_dict(status: Optional[str], fallback_engine: str = "bm25") -> dict:
+    """Uniform ``{rerank_used, rerank_engine, rerank_status}`` block for tool output.
+    Retrieval tools spread this into their payload so an analyst can never
+    mistake a lexical/vector result for a cross-encoder-ranked one. ``status``
+    is the value returned by ``rerank()``/``rerank_hits()``: ``None`` means the
+    cross-encoder produced the ranking, anything else is why it did not.
+    ``fallback_engine`` names the ranking that was used instead (``bm25`` for
+    lexical recall, ``vector`` for the RAG embedding store).
+    """
+    used = status is None
+    return {
+        "rerank_used": used,
+        "rerank_engine": f"cross-encoder:{config.rerank.model}" if used else fallback_engine,
+        "rerank_status": "ok" if used else (status or "not_requested"),
+    }
+
+
+def prewarm() -> None:
+    """Load the cross encoder in a daemon thread so the first tool call is warm.
+    Called once at startup from ``main.py``. Deliberately non-blocking: a cold
+    cache load can take tens of seconds, and stdio clients time out if the MCP
+    handshake waits on it. A no-op when the reranker is disabled.
+    """
+    if not config.rerank.enabled:
+        return
+    threading.Thread(target=_ensure_loaded, name="rerank-prewarm", daemon=True).start()
+
+
 def _ensure_loaded() -> bool:
     """Load the cross-encoder on first use. Never called at import time.
     Runs under a lock; safe to call from a worker thread. Any failure
@@ -82,7 +111,7 @@ def _ensure_loaded() -> bool:
                     lazy_load=True,
                     local_files_only=True,
                 )
-                # _model_dir is fastembed-internal and lives on the INNER
+                # _model_dir is fastembed internal and lives on the INNER
                 # encoder (encoder.model), not the outer TextCrossEncoder
                 # verified on 0.5.0 and 0.8.0; the outer raises AttributeError.
                 loaded = os.path.join(str(encoder.model._model_dir), _model_file_name(config.rerank.model))

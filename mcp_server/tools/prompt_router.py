@@ -12,7 +12,7 @@ import json, math, re, logging
 from collections import defaultdict
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import mcp
-from mcp_server.core.rerank import rerank as _cross_rerank
+from mcp_server.core.rerank import rerank as _cross_rerank, status_dict
 
 logger = logging.getLogger("blue_team_mcp.prompt_router")
 
@@ -249,10 +249,11 @@ class PromptRouteInput(BaseModel):
         description="Max tools to return in 'route' mode.",
     )
     rerank: bool = Field(
-        default=False,
+        default=True,
         description="Re-rank BM25 candidates with the local cross-encoder "
-                    "(BAAI/bge-reranker-base). Falls back to BM25-only when "
-                    "BLUETEAM_RERANK_ENABLED=false or the model is unavailable.",
+                    "(BAAI/bge-reranker-base). ON by default; falls back to BM25-only "
+                    "only when BLUETEAM_RERANK_ENABLED=false or the model is "
+                    "unavailable, in which case rerank_status says why.",
     )
 
 
@@ -263,11 +264,12 @@ class PromptRouteInput(BaseModel):
 )
 async def blueteam_prompt_route(params: PromptRouteInput) -> str:
     """Map a natural language security prompt to the most relevant Wazuh MCP tools.
-    Uses BM25 lexical ranking over all registered tool descriptions, with an
-    optional cross-encoder rerank pass (``rerank=True``) for semantic,
+    Uses BM25 lexical ranking over all registered tool descriptions, with a
+    cross-encoder rerank pass on by default (``rerank=False`` to skip) for semantic,
     cross-lingual matching. Breaks the prompt into key terms, scores each against
     the tool corpus, and returns a ranked list of suggested tools. In 'buckets'
-    mode, groups prompt words by their strongest tool association.
+    mode, groups prompt words by their strongest tool association. Every response
+    states which engine ranked it via ``rerank_engine`` / ``rerank_status``.
 
     **Worked Examples**
 
@@ -299,8 +301,7 @@ async def blueteam_prompt_route(params: PromptRouteInput) -> str:
         return json.dumps({
             "prompt": params.prompt,
             "mode": "route",
-            "reranked": status is None,
-            "rerank_status": status,
+            **status_dict(status),
             "tools_indexed": len(router.tool_corpus),
             "results": ranked,
         }, indent=2, ensure_ascii=False)
@@ -310,7 +311,7 @@ async def blueteam_prompt_route(params: PromptRouteInput) -> str:
     return json.dumps({
         "prompt": params.prompt,
         "mode": "route",
-        "reranked": False,
+        **status_dict("not_requested"),
         "tools_indexed": len(router.tool_corpus),
         "results": ranked,
     }, indent=2, ensure_ascii=False)
