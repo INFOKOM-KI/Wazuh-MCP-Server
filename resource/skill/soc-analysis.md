@@ -45,12 +45,15 @@ confirm the choice against this taxonomy: the router ranks tool descriptions, it
 alert context, and it only finds a tool whose description contains the vocabulary you used. When
 nothing in the shortlist fits, fall back to the tables below rather than rephrasing until something
 appears. Read `rerank_engine` in the response (`bm25` is the expected routing path: the
-cross-encoder is off for routing, and the 2026-09-22 re-measurement on the 22 labelled prompts shows
+cross-encoder is off for routing, and the 2026-09-22 measurements on the 22 labelled prompts show
 why. BM25 puts an acceptable tool in the top 3 for 13/22 (10/16 Indonesian) and inside the top 10
-for all 22; the cross-encoder drops that to 7/22 (7/16 Indonesian, 0/6 English) at 4.05 s median per
-call, so it loses ground in both languages rather than only in Indonesian. It stays on for
-`blueteam_rag_query`), and use `mode="buckets"` when you want to see how it split the sentence into
-tokens. When the analyst's question is vague, ask them one clarifying question rather than routing a
+for all 22. The multilingual `bge-reranker-base` drops that to 7/22 and the Indonesian-specific
+`madebyaris/rerank-indonesia` to 9/22, so the cheaper, language-matched model is both faster and
+more accurate (782 ms median against 4.05 s) and still behind enriched BM25. On the 10 natural
+Indonesian questions the two rankers tie at 9/10, which puts the whole gap in the 12 templated
+report prompts, where the router's hand-written synonym map ("report" -> aggregate/timeline) beats
+any cross-encoder. It stays on for `blueteam_rag_query`), and use `mode="buckets"` when you want to
+see how it split the sentence into tokens. When the analyst's question is vague, ask them one clarifying question rather than routing a
 guess.
 
 Choose the tool by what the analyst wants — never invent tools.
@@ -260,7 +263,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_unified_threat_score(indicator)` | CrowdSec+ThreatFox+AbuseIPDB → single 0.0–1.0 score |
 | `blueteam_threat_hunt` | named DSL query templates per adversary technique |
 | `blueteam_semantic_search` | BM25 ranking over Wazuh rules/alerts; cross-encoder rerank (`bge-reranker-base`) is **on by default** for cross-lingual matching. Read `rerank_engine`: `bm25` means the rerank did not run and `rerank_status` says why |
-| `blueteam_prompt_route` | Natural-language prompt→tool router over all registered tools; rerank **off by default** for routing (BM25 only, measured worse with the cross-encoder). Pass the analyst's own wording (Indonesian or English) when unsure which tool fits |
+| `blueteam_prompt_route` | Natural-language prompt→tool router over all registered tools; rerank **off by default** for routing (BM25 13/22 against 9/22 for the best available cross-encoder). Pass the analyst's own wording (Indonesian or English) when unsure which tool fits |
 | `blueteam_mitre_lookup` | ATT&CK technique/group lookup |
 | `blueteam_asset_context` | CMDB asset criticality / owner |
 | `blueteam_false_positive_tracker(rule_id)` | rule_id → FP-summary cross-reference |

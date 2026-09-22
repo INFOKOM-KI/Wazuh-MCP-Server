@@ -96,6 +96,17 @@ async def main() -> int:
         help="Skip the cross-encoder entirely: no model load, no cache, no network. Prints "
              "the BM25 baseline the rerank columns are compared against.",
     )
+    parser.add_argument(
+        "--model", default="BAAI/bge-reranker-base",
+        help="Cross-encoder to score against BM25. Any fastembed registry model, or one "
+             "registered in mcp_server.core.rerank.CUSTOM_RERANK_MODELS.",
+    )
+    parser.add_argument(
+        "--model-path", default="",
+        help="Vendored model dir to read weights from (BLUETEAM_RERANK_MODEL_PATH). Set "
+             "this and no download path is reachable, pinned or not. Use with "
+             "BLUETEAM_RERANK_MODEL_SHA256 to exercise the fail-closed pin check.",
+    )
     args = parser.parse_args()
 
     from mcp_server.core.config import config
@@ -109,13 +120,17 @@ async def main() -> int:
     else:
         config.rerank.enabled = True
         config.rerank.cache_path = CACHE
-        config.rerank.model = "BAAI/bge-reranker-base"
+        config.rerank.model = args.model
+        config.rerank.model_path = args.model_path
         config.rerank.max_candidates = 100
 
     router = _get_router()
     print(f"tools indexed      : {len(router.tool_corpus)}")
     print(f"prompts            : {len(PROMPTS)} (12 report + 10 Indonesian ad-hoc)")
     print(f"rerank candidates  : {'n/a (--bm25-only)' if args.bm25_only else CANDIDATES}")
+    if not args.bm25_only:
+        print(f"rerank model       : {args.model}")
+        print(f"model path         : {args.model_path or '(fastembed cache)'}")
     print(f"mode               : "
           f"{'BM25 only, rerank columns mirror BM25' if args.bm25_only else 'BM25 + rerank'}\n")
 

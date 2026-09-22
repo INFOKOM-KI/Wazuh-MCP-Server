@@ -83,6 +83,18 @@ fi
 # grounds (PRD FR-50), which is why the default is bge-reranker-base despite its
 # weak Indonesian scores. Runtime download is off by policy, so a model that is not
 # cached AND pinned never loads: reranking reports 'unavailable:' and ranks lexically.
+# BLUETEAM_RERANK_MODEL_PATH points at a VENDORED model directory already on disk
+# (the snapshot_download layout: config.json + onnx/model.onnx + tokenizer files).
+# When set, the bootstrap below verifies that layout and pins the ONNX instead of
+# downloading anything: this is the vendor-and-pin deployment, and it is the only
+# mode with no reachable download path at all. Reproduce the vendored dir with:
+#   python3 -c "from huggingface_hub import snapshot_download as d; \
+#     d(repo_id='madebyaris/rerank-indonesia', \
+#       local_dir='rerank-cache/madebyaris-rerank-indonesia', \
+#       allow_patterns=['onnx/*','*.json','*.model'], ignore_patterns=['runpod/*'])"
+# Cross-encoders fastembed does not ship are registered at runtime from
+# CUSTOM_RERANK_MODELS in mcp_server/core/rerank.py; set the model name here and
+# the registration happens before startup validation reads the registry.
 # Honors BLUETEAM_RERANK_* from config.env if present. On re-run it
 # also syncs the RERANK block into .env (the file the systemd unit loads),
 # which fixes the config.env-vs-.env mismatch on existing deployments.
@@ -196,8 +208,38 @@ fi
 RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-true}"
 RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 RERANK_CACHE="${BLUETEAM_RERANK_CACHE_PATH:-$INSTALL_DIR/rerank-cache}"
+RERANK_MODEL_PATH="${BLUETEAM_RERANK_MODEL_PATH:-}"
 RERANK_SHA="${BLUETEAM_RERANK_MODEL_SHA256:-}"
-if [[ "$RERANK_ENABLED" == "true" || "$RERANK_ENABLED" == "1" || "$RERANK_ENABLED" == "yes" ]]; then
+RERANK_VENDORED=""
+
+# Vendored model: verify the layout and pin the ONNX. No download is attempted and
+# the cache path is irrelevant, so this runs before the bootstrap and suppresses it.
+if [[ -n "$RERANK_MODEL_PATH" && ( "$RERANK_ENABLED" == "true" || "$RERANK_ENABLED" == "1" || "$RERANK_ENABLED" == "yes" ) ]]; then
+  VENDORED_ONNX="$RERANK_MODEL_PATH/onnx/model.onnx"
+  if [[ ! -f "$VENDORED_ONNX" ]]; then
+    echo "[!] BLUETEAM_RERANK_MODEL_PATH=$RERANK_MODEL_PATH has no onnx/model.onnx." >&2
+    echo "    Vendor the snapshot layout (config.json + onnx/model.onnx + tokenizer files)." >&2
+    echo "    The server's RerankConfig.validate() refuses to start on this layout too." >&2
+    exit 1
+  fi
+  VENDORED_SHA=$(sha256sum "$VENDORED_ONNX" | awk '{print $1}')
+  echo "[.] Vendored reranker model $RERANK_MODEL at $RERANK_MODEL_PATH (no download)."
+  if [[ -n "$RERANK_SHA" ]]; then
+    if [[ "$VENDORED_SHA" == "$RERANK_SHA" ]]; then
+      echo "  BLUETEAM_RERANK_MODEL_SHA256 verified (matches the vendored ONNX)."
+    else
+      echo "  WARNING: BLUETEAM_RERANK_MODEL_SHA256 mismatch - vendored file hashes to $VENDORED_SHA."
+      echo "  The server refuses to load that file: every rerank call reports"
+      echo "  'unavailable: sha256 pin mismatch' and ranks lexically instead."
+    fi
+  else
+    RERANK_SHA="$VENDORED_SHA"
+    echo "  Generated BLUETEAM_RERANK_MODEL_SHA256=$VENDORED_SHA"
+  fi
+  RERANK_VENDORED="1"
+fi
+
+if [[ ( "$RERANK_ENABLED" == "true" || "$RERANK_ENABLED" == "1" || "$RERANK_ENABLED" == "yes" ) && -z "$RERANK_VENDORED" ]]; then
   mkdir -p "$RERANK_CACHE"
   echo "[.] Bootstrap reranker model $RERANK_MODEL (~1 GB, one time)..."
   # Resolve the EXACT ONNX file fastembed will load (same path the server's
@@ -447,9 +489,14 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export HTTP_TIMEOUT="30"                       # seconds per upstream request (Netra is pinned at 90s)
 # export WAZUH_INDEXER_MAX_SIZE="10000"          # max documents per page in Wazuh Indexer search
 
-# Reranker (two-stage retrieval: BM25 -> bge-reranker-base cross-encoder, ON at the subsystem level)
-# export BLUETEAM_RERANK_ENABLED="true"           # ON by default. Per-tool default differs: semantic_search/rag_query rerank, prompt_route does NOT (measured worse for Indonesian routing)
-# export BLUETEAM_RERANK_MODEL="BAAI/bge-reranker-base"   # must be in fastembed's registry (6 models); bge-reranker-v2-m3 is NOT
+# Reranker (two-stage retrieval: BM25 -> cross-encoder rerank, ON at the subsystem level)
+# export BLUETEAM_RERANK_ENABLED="true"           # ON by default. Per-tool default differs: semantic_search/rag_query rerank, prompt_route does NOT (BM25 beat both cross-encoders on the 22-prompt harness, 13/22 vs 9/22)
+# export BLUETEAM_RERANK_MODEL="BAAI/bge-reranker-base"   # any fastembed registry model, or one from CUSTOM_RERANK_MODELS; bge-reranker-v2-m3 is NOT loadable
+#   WARNING: this setting is PROCESS-WIDE, so swapping it also swaps the model behind blueteam_semantic_search
+#   and blueteam_rag_query, which rerank by default over English corpora. madebyaris/rerank-indonesia is an
+#   Indonesian cross-encoder measured at 0/6 on English routing; treat it as a bench-only experiment
+#   (tests/bench_rerank_routing.py --model ... --model-path ...) unless those two tools are measured too.
+# export BLUETEAM_RERANK_MODEL_PATH=""            # vendored model dir (config.json + onnx/model.onnx + tokenizer). Set = no download path, ever
 # export BLUETEAM_RERANK_CACHE_PATH="/opt/blue-team-mcp/rerank-cache"   # model weights dir (offline after bootstrap)
 # export BLUETEAM_RERANK_MAX_CANDIDATES="100"     # hard cap for rerank candidate fan-out (all retrieval callers)
 # export BLUETEAM_RERANK_MODEL_SHA256=""          # optional: pin ONNX model SHA-256 (supply-chain integrity)

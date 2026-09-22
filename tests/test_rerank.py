@@ -22,6 +22,7 @@ def _reset():
     config.rerank.enabled = False
     config.rerank.sha256 = ""
     config.rerank.cache_path = ""
+    config.rerank.model_path = ""
     rerank._encoder = None
     rerank._reason = "not loaded"
 
@@ -127,11 +128,12 @@ def _install_fake_fastembed(monkeypatch, model_dir):
             return [{"model": "BAAI/bge-reranker-base", "model_file": "onnx/model.onnx"}]
 
         def __init__(self, model_name, cache_dir=None, lazy_load=False,
-                     local_files_only=False, **kwargs):
+                     local_files_only=False, specific_model_path=None, **kwargs):
             # mirror fastembed: _model_dir sits on the inner encoder - bug has been found during test process;P
             self.model = SimpleNamespace(_model_dir=model_dir)
             captured.update(model_name=model_name, cache_dir=cache_dir,
-                            lazy_load=lazy_load, local_files_only=local_files_only)
+                            lazy_load=lazy_load, local_files_only=local_files_only,
+                            specific_model_path=specific_model_path)
 
         def rerank(self, query, docs):
             return [0.5] * len(docs)
@@ -300,3 +302,95 @@ if __name__ == "__main__":
             traceback.print_exc()
     print(f"\n{passed}/{len(tests)} passed")
     sys.exit(0 if passed == len(tests) else 1)
+
+
+# Custom (non-registry) cross-encoders + vendored model dir
+# (BLUETEAM_RERANK_MODEL_PATH). Verified 2026-09-22 against a vendored
+# madebyaris/rerank-indonesia snapshot with HF_HUB_OFFLINE=1.
+import pytest
+
+
+def test_register_custom_models_is_non_fatal_without_fastembed():
+    """Called from RerankConfig.validate() during init_config(), so a missing
+    fastembed must degrade to the existing fail-closed registry error, never crash."""
+    from mcp_server.core.rerank import register_custom_models
+    with _fastembed_absent():
+        assert register_custom_models() == 0
+
+
+def test_register_custom_models_is_idempotent_and_reaches_the_registry():
+    """The whole point of registering: config.validation reads this same registry,
+    so a custom model must appear in list_supported_models() to be accepted at boot."""
+    pytest.importorskip("fastembed")
+    from fastembed.rerank.cross_encoder import TextCrossEncoder
+    from mcp_server.core.rerank import CUSTOM_RERANK_MODELS, register_custom_models
+
+    register_custom_models()
+    settled = len(TextCrossEncoder.list_supported_models())
+    assert register_custom_models() == 0, "second call must register nothing"
+    assert len(TextCrossEncoder.list_supported_models()) == settled, "duplicate entry"
+    names = {m["model"] for m in TextCrossEncoder.list_supported_models()}
+    assert set(CUSTOM_RERANK_MODELS) <= names
+
+
+def test_validate_rejects_a_model_path_that_does_not_exist():
+    from mcp_server.core.config import RerankConfig
+    from mcp_server.core.exceptions import ConfigurationError
+    with pytest.raises(ConfigurationError, match="not an existing directory"):
+        RerankConfig(enabled=False, model_path="/nope/definitely/missing").validate()
+
+
+def test_validate_rejects_a_model_path_without_the_onnx(tmp_path):
+    """A flat copy of model.onnx alone is not a vendored model: fastembed also reads
+    config.json and the tokenizer from the same directory."""
+    from mcp_server.core.config import RerankConfig
+    from mcp_server.core.exceptions import ConfigurationError
+    with pytest.raises(ConfigurationError, match="no onnx/model.onnx"):
+        RerankConfig(enabled=False, model_path=str(tmp_path)).validate()
+
+
+def test_validate_accepts_a_vendored_snapshot_layout(tmp_path):
+    from mcp_server.core.config import RerankConfig
+    onnx_dir = tmp_path / "onnx"
+    onnx_dir.mkdir()
+    (onnx_dir / "model.onnx").write_bytes(b"fake onnx bytes")
+    (tmp_path / "config.json").write_text("{}")
+    RerankConfig(enabled=False, model_path=str(tmp_path)).validate()
+
+
+def test_ensure_loaded_passes_the_vendored_path_to_fastembed(monkeypatch, tmp_path):
+    """model_path must reach fastembed as specific_model_path, which is what makes the
+    vendor-and-pin deployment reach no download path at all, pinned or not."""
+    from mcp_server.core import rerank
+    from mcp_server.core.config import config
+    _reset()
+    model_dir = str(tmp_path)
+    _, digest = _write_onnx(model_dir)
+    captured = _install_fake_fastembed(monkeypatch, model_dir)
+    config.rerank.enabled = True
+    config.rerank.sha256 = digest
+    config.rerank.model_path = model_dir
+    try:
+        assert rerank._ensure_loaded() is True
+        assert captured["specific_model_path"] == model_dir
+        assert captured["local_files_only"] is True, "the pin must still force offline"
+    finally:
+        _reset()
+
+
+def test_ensure_loaded_leaves_specific_model_path_unset_by_default(monkeypatch, tmp_path):
+    """No vendored dir configured means no specific_model_path, so fastembed keeps
+    resolving from its own cache: the default deployment is unchanged."""
+    from mcp_server.core import rerank
+    from mcp_server.core.config import config
+    _reset()
+    model_dir = str(tmp_path)
+    _, digest = _write_onnx(model_dir)
+    captured = _install_fake_fastembed(monkeypatch, model_dir)
+    config.rerank.enabled = True
+    config.rerank.sha256 = digest
+    try:
+        assert rerank._ensure_loaded() is True
+        assert captured["specific_model_path"] is None
+    finally:
+        _reset()

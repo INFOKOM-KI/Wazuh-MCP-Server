@@ -485,18 +485,26 @@ def _fastembed_rerank_models() -> Optional[set[str]]:
 @dataclass
 class RerankConfig:
     """Two stage retrieval reranker (BM25 recall -> cross-encoder rerank), ON by default.
-    Tools expose a ``rerank`` flag (default true) that re-scores BM25 candidates
-    with a local ONNX cross-encoder (``BAAI/bge-reranker-base``, MIT, ~1.0 GB).
+    Tools expose a ``rerank`` flag whose default is per tool (see each tool's field) that
+    re-scores BM25 candidates with a local ONNX cross-encoder
+    (``BAAI/bge-reranker-base``, MIT, ~1.0 GB).
     Never a hosted API: query and document text never leave the process.
     Startup is fail-closed. With ``enabled=True``, an unsupported model name or a
     missing fastembed raises ConfigurationError at boot instead of silently
     ranking with BM25. Set ``BLUETEAM_RERANK_ENABLED=false`` to accept BM25-only.
     ``sha256`` pins the exact cached ONNX file; when set the model is never
     downloaded at runtime (air-gapped hosts stay air-gapped).
+    ``model_path`` points at a VENDORED model directory already on disk (the layout
+    ``huggingface_hub.snapshot_download`` writes: ``config.json`` plus ``onnx/model.onnx``
+    and its tokenizer files). When set it is handed to fastembed as
+    ``specific_model_path``, so the weights are read from that path and no download path
+    is reachable at all, pinned or not. Combine with ``sha256`` for a vendor-and-pin
+    deployment: the pin proves the file has not changed since it was hashed.
     """
     enabled: bool = True
     model: str = "BAAI/bge-reranker-base"
     cache_path: str = ""            # empty = fastembed default cache dir
+    model_path: str = ""            # vendored model dir; empty = resolve via fastembed
     max_candidates: int = 100       # hard ceiling for the rerank_candidates tool param
     sha256: str = ""                # supply chain pin: sha256 of the cached ONNX fastembed loads
 
@@ -506,12 +514,15 @@ class RerankConfig:
             enabled=_bool(os.environ.get("BLUETEAM_RERANK_ENABLED", "true")),
             model=os.environ.get("BLUETEAM_RERANK_MODEL", "BAAI/bge-reranker-base").strip(),
             cache_path=os.environ.get("BLUETEAM_RERANK_CACHE_PATH", ""),
+            model_path=os.environ.get("BLUETEAM_RERANK_MODEL_PATH", "").strip(),
             max_candidates=int(os.environ.get("BLUETEAM_RERANK_MAX_CANDIDATES", "100")),
             sha256=os.environ.get("BLUETEAM_RERANK_MODEL_SHA256", "").strip().lower(),
         )
 
     def validate(self) -> None:
         if self.enabled:
+            from mcp_server.core.rerank import register_custom_models
+            register_custom_models()
             supported = _fastembed_rerank_models()
             if supported is None:
                 raise ConfigurationError(
@@ -531,6 +542,18 @@ class RerankConfig:
                 )
         if self.max_candidates < 1:
             raise ConfigurationError("BLUETEAM_RERANK_MAX_CANDIDATES must be >= 1")
+        if self.model_path and not os.path.isdir(self.model_path):
+            raise ConfigurationError(
+                "BLUETEAM_RERANK_MODEL_PATH=%r is not an existing directory. Point it at a "
+                "vendored model dir (the snapshot_download layout: config.json plus "
+                "onnx/model.onnx and its tokenizer files)." % self.model_path
+            )
+        if self.model_path and not os.path.isfile(os.path.join(self.model_path, "onnx", "model.onnx")):
+            raise ConfigurationError(
+                "BLUETEAM_RERANK_MODEL_PATH=%r has no onnx/model.onnx. A flat copy of the "
+                "ONNX file alone is not enough: fastembed also reads config.json and the "
+                "tokenizer files from the same directory." % self.model_path
+            )
         if self.sha256 and not re.fullmatch(r"[0-9a-f]{64}", self.sha256):
             raise ConfigurationError(
                 "BLUETEAM_RERANK_MODEL_SHA256 must be a 64-char hex sha256 digest "

@@ -20,6 +20,60 @@ from mcp_server.core.config import config
 
 logger = logging.getLogger("blue_team_mcp.rerank")
 
+logger = logging.getLogger("blue_team_mcp.rerank")
+
+CUSTOM_RERANK_MODELS: dict[str, dict] = {
+    "madebyaris/rerank-indonesia": {
+        "hf": "madebyaris/rerank-indonesia",
+        "model_file": "onnx/model.onnx",
+        "additional_files": [
+            "config.json", "tokenizer.json", "tokenizer_config.json",
+            "special_tokens_map.json", "sentencepiece.bpe.model",
+        ],
+        "description": "Indonesian cross-encoder distilled from BAAI/bge-reranker-v2-m3",
+        "license": "apache-2.0",
+        "size_in_gb": 0.12,
+    },
+}
+
+
+def register_custom_models() -> int:
+    """Make the models in ``CUSTOM_RERANK_MODELS`` loadable by fastembed.
+    Idempotent and non-fatal by design: called from ``RerankConfig.validate()``, which
+    runs during ``init_config()`` at import time. A registration failure must therefore
+    degrade to the existing fail-closed registry error, never to a startup crash on a
+    host that simply has no fastembed. Returns the number registered by this call.
+    """
+    try:
+        from fastembed.common.model_description import ModelSource
+        from fastembed.rerank.cross_encoder import TextCrossEncoder
+    except ImportError:
+        return 0
+    try:
+        already = {entry["model"] for entry in TextCrossEncoder.list_supported_models()}
+        registered = 0
+        for model_name, spec in CUSTOM_RERANK_MODELS.items():
+            if model_name in already:
+                continue
+            TextCrossEncoder.add_custom_model(
+                model=model_name,
+                sources=ModelSource(hf=spec["hf"]),
+                model_file=spec["model_file"],
+                additional_files=spec["additional_files"],
+                description=spec["description"],
+                license=spec["license"],
+                size_in_gb=spec["size_in_gb"],
+            )
+            registered += 1
+        if registered:
+            logger.info("Registered %d custom cross-encoder(s): %s",
+                        registered, ", ".join(CUSTOM_RERANK_MODELS))
+        return registered
+    except Exception as exc:
+        logger.warning("Custom reranker registration failed: %s", exc)
+        return 0
+
+
 # Module level (mirrors prompt_router._get_router singleton pattern).
 _encoder: Optional[object] = None
 _reason: str = "not loaded"
@@ -108,6 +162,7 @@ def _ensure_loaded() -> bool:
                 encoder = TextCrossEncoder(
                     model_name=config.rerank.model,
                     cache_dir=config.rerank.cache_path or None,
+                    specific_model_path=config.rerank.model_path or None,
                     lazy_load=True,
                     local_files_only=True,
                 )
@@ -134,6 +189,7 @@ def _ensure_loaded() -> bool:
                 _encoder = TextCrossEncoder(
                     model_name=config.rerank.model,
                     cache_dir=config.rerank.cache_path or None,
+                    specific_model_path=config.rerank.model_path or None,
                 )
             _reason = "ready"
             logger.info("Reranker loaded model=%s", config.rerank.model)
