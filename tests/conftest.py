@@ -7,6 +7,7 @@ following the REF repository's conftest.py pattern.
 from __future__ import annotations
 
 import os
+import tempfile
 import pytest
 import httpx
 from unittest.mock import AsyncMock, MagicMock
@@ -16,6 +17,12 @@ from unittest.mock import AsyncMock, MagicMock
 # module imports mcp_server, so the default suite exercises the BM25 path. Tests
 # that need the reranker flip config.rerank.enabled themselves (tests/test_rerank.py).
 os.environ.setdefault("BLUETEAM_RERANK_ENABLED", "false")
+
+# init_config() runs when mcp_server is first imported, so every value Config owns is
+# frozen at that moment. A setdefault inside a test module loses to whichever module
+# imported the package first, and test_stix_export then writes into a temp dir while the
+# allowlist still holds the production default. Set it here, before any module imports.
+os.environ.setdefault("BLUETEAM_EXPORT_DIR", tempfile.mkdtemp(prefix="mcp-export-test-"))
 
 
 @pytest.fixture(autouse=True)

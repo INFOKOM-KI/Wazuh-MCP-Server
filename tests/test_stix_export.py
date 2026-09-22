@@ -29,10 +29,23 @@ try:
 except ImportError:
     HAS_STIX2 = False
 
-from mcp_server.core.redact import _redact_alert_data
+from mcp_server.core.redact import _redact_alert_data, get_owned_domains, set_owned_domains
 from mcp_server.core.stix_objects import TLP_MARKING_DEFINITIONS, stix_id
 from mcp_server.tools.stix_export import (StixExportInput, _build_bundle, blueteam_stix_export,
                                           classify_indicator, pattern_for)
+
+
+@pytest.fixture(autouse=True)
+def _owned_domains_configured():
+    """redact.py reads BLUETEAM_OWNED_DOMAINS into module state when it is first
+    imported, so the setdefault above loses to whichever test module imported it
+    first (test_redact sets the same var empty). set_owned_domains is the runtime API
+    for exactly this and does not depend on import order.
+    """
+    before = get_owned_domains()
+    set_owned_domains("tangerangkota.go.id")
+    yield
+    set_owned_domains(",".join(sorted(before)))
 
 PUBLIC = [
     "45.61.136.7",
@@ -205,15 +218,21 @@ def test_export_never_masks_values_into_the_bundle():
 
 @pytest.mark.skipif(not HAS_STIX2, reason="stix2 not installed")
 def test_bundle_parses_with_the_reference_stix2_library():
-    """Cross-validation against an independent STIX 2.1 implementation."""
+    """Cross-validation against an independent STIX 2.1 implementation.
+    The attack-pattern id must be a real ``<type>--<UUID>``: the spec rejects a
+    short-form placeholder, and stix2 validates ids on parse."""
+    technique_id = "attack-pattern--0c7b5b88-8ff7-4a4d-aa9d-feb398cd0061"
     bundle = _bundle_for(["45.61.136.7", "evil-c2.example.com", "http://evil.example.com/a",
                           "d41d8cd98f00b204e9800998ecf8427e"],
-                         techniques={"T1071.001": "attack-pattern--abc"})
+                         techniques={"T1071.001": technique_id})
     bundle["objects"].append({
-        "type": "attack-pattern", "spec_version": "2.1", "id": "attack-pattern--abc",
+        "type": "attack-pattern", "spec_version": "2.1", "id": technique_id,
         "created": "2026-01-01T00:00:00.000Z", "modified": "2026-01-01T00:00:00.000Z",
         "name": "Test technique",
+        "external_references": [{"source_name": "mitre-attack", "external_id": "T1071.001"}],
     })
-    parsed = stix2.parse(json.dumps(bundle), allow_custom=True)
+    # allow_custom=False: every object and property must be one the spec defines. A
+    # stray custom property would pass in lenient mode and be dropped by the peer.
+    parsed = stix2.parse(json.dumps(bundle), allow_custom=False)
     assert parsed["type"] == "bundle"
     assert len(parsed["objects"]) == len(bundle["objects"])

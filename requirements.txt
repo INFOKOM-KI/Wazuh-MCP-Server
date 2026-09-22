@@ -92,7 +92,7 @@ httpx[http2]>=0.27.0,<0.29.0
 
 # stix2 is NOT a runtime dependency and must not become one. blueteam_stix_export writes
 # plain STIX 2.1 JSON by hand (mcp_server/core/stix_objects.py), and the tool has to keep
-# working without the library. Install it only when you want the conformance cross-check in
-# tests/test_stix_export.py to run that test skips itself when stix2 is absent.
-#   pip install "stix2>=3.0,<4"
-# stix2>=3.0.0,<4.0.0
+# working without the library. It is a DEV dependency: installing it is what makes the
+# conformance cross-check in tests/test_stix_export.py actually run instead of skipping.
+# Without it, nothing parses a produced bundle with a second implementation.
+stix2>=3.0.0,<4.0.0
