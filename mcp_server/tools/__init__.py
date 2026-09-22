@@ -89,6 +89,7 @@ def register_all_tools() -> None:
         ("semantic_search",       "semantic_search",       False),  # 1 tool
         ("report_export",         "report_export",         False),  # 1 tool
         ("stix_correlation",      "stix_correlation",      False),  # 2 tools
+        ("stix_export",           "stix_export",           False),  # 1 tool STIX 2.1 bundle producer (egress, opt-in via BLUETEAM_STIX_EGRESS_ENABLED)
         ("metrics",               "metrics",               False),  # resources, not tools
         ("attack_graph",          "attack_graph",          False),  # 2 tools
         ("investigation_workflow","investigation_workflow",False),  # 1 tool
