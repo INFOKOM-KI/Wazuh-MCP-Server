@@ -153,8 +153,9 @@ class ThreatIntelConfig:
     rapidapi_cache_ttl: int = 604800          # 7 days: the binding limit is 100/month, not staleness
     rapidapi_monthly_cap: int = 100           # account-wide hard limit, shared by every product
     rapidapi_budget: int = 0                  # 0 = fail-closed, armed per incident window
-    rapidapi_budget_hours: float = 4.0
+    rapidapi_budget_hours: float = 8.0            # one shift; a restart mid-incident is worse than a long window
     rapidapi_cache_path: str = ""
+    rapidapi_raw_whois: bool = True                # documented PII exemption, bulk only.
 
     @classmethod
     def from_env(cls) -> "ThreatIntelConfig":
@@ -192,8 +193,9 @@ class ThreatIntelConfig:
             rapidapi_cache_ttl=int(os.environ.get("RAPIDAPI_CACHE_TTL", "604800")),
             rapidapi_monthly_cap=int(os.environ.get("BLUETEAM_RAPIDAPI_MONTHLY_CAP", "100")),
             rapidapi_budget=int(os.environ.get("BLUETEAM_RAPIDAPI_BUDGET", "0")),
-            rapidapi_budget_hours=float(os.environ.get("BLUETEAM_RAPIDAPI_BUDGET_HOURS", "4")),
+            rapidapi_budget_hours=float(os.environ.get("BLUETEAM_RAPIDAPI_BUDGET_HOURS", "8")),
             rapidapi_cache_path=os.environ.get("BLUETEAM_RAPIDAPI_CACHE", ""),
+            rapidapi_raw_whois=_bool(os.environ.get("BLUETEAM_RAPIDAPI_RAW_WHOIS", "true")),
         )
 
     def validate(self) -> None:
@@ -870,11 +872,13 @@ class Config:
             logger.warning("RAPIDAPI_KEY not set - RapidAPI lookups (IP blacklist / IOC search / breach check) disabled.")
         else:
             logger.info(
-                "RapidAPI budget: %d/%d armed for %.1fh; %s.",
+                "RapidAPI budget: %d/%d armed for %.1fh; %s; WHOIS %s.",
                 self.threat_intel.rapidapi_budget, self.threat_intel.rapidapi_monthly_cap,
                 self.threat_intel.rapidapi_budget_hours,
                 ("persistent cache " + self.threat_intel.rapidapi_cache_path)
                 if self.threat_intel.rapidapi_cache_path else "in-memory cache only",
+                "raw in blueteam_ip_intel_bulk" if self.threat_intel.rapidapi_raw_whois
+                else "allowlisted everywhere",
             )
             if not self.threat_intel.rapidapi_budget:
                 logger.warning(

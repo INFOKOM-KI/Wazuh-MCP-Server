@@ -400,8 +400,10 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 #   The RapidAPI budget is fail-closed: leave BLUETEAM_RAPIDAPI_BUDGET at 0 for normal
 #   operation and raise it only for a live incident window. Scheduled reports run without it.
 # export BLUETEAM_RAPIDAPI_BUDGET="0"          # requests armed for an incident window (0 = refuse everything)
-# export BLUETEAM_RAPIDAPI_BUDGET_HOURS="4"    # the window expires on its own after N hours
+# export BLUETEAM_RAPIDAPI_BUDGET_HOURS="8"    # the window expires on its own after N hours (one shift)
 # export BLUETEAM_RAPIDAPI_MONTHLY_CAP="100"   # account-wide hard limit, shared by every product
+# export BLUETEAM_RAPIDAPI_RAW_WHOIS="true"    # blueteam_ip_intel_bulk keeps the provider's WHOIS verbatim
+#                                             # for abuse escalation; "false" allowlists it (SECURITY.md 4.1d)
 # export HUDSONROCK_API_KEY="your_key"      # https://cavalier.hudsonrock.com (stealer-log check)
 # export NETRA_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
 # export NETRA_VERIFY_SSL="false"         # set to "true" for production / trusted CA
@@ -676,7 +678,7 @@ unset -f _sync_env_key 2>/dev/null || true
 # Wrapper scripts
 echo "[5/7] Creating MCP server wrapper scripts..."
 
-# Main wrapper: mcp-server-blueteam (all 148 tools)
+# Main wrapper: mcp-server-blueteam (all 147 tools)
 cat > /usr/local/bin/mcp-server-blueteam << 'EOF'
 #!/usr/bin/env bash
 # Wrapper - Claude Desktop calls this via SSH (MAESTRO-compliant)
@@ -693,8 +695,9 @@ export URLHAUS_API_KEY="${URLHAUS_API_KEY:-}"
 export URLHAUS_CACHE_TTL="${URLHAUS_CACHE_TTL:-1800}"
 export RAPIDAPI_KEY="${RAPIDAPI_KEY:-}"
 export BLUETEAM_RAPIDAPI_BUDGET="${BLUETEAM_RAPIDAPI_BUDGET:-0}"
-export BLUETEAM_RAPIDAPI_BUDGET_HOURS="${BLUETEAM_RAPIDAPI_BUDGET_HOURS:-4}"
+export BLUETEAM_RAPIDAPI_BUDGET_HOURS="${BLUETEAM_RAPIDAPI_BUDGET_HOURS:-8}"
 export BLUETEAM_RAPIDAPI_MONTHLY_CAP="${BLUETEAM_RAPIDAPI_MONTHLY_CAP:-100}"
+export BLUETEAM_RAPIDAPI_RAW_WHOIS="${BLUETEAM_RAPIDAPI_RAW_WHOIS:-true}"
 export BLUETEAM_RAPIDAPI_CACHE="${BLUETEAM_RAPIDAPI_CACHE:-/var/log/blue-team-mcp/rapidapi_state.jsonl}"
 export HUDSONROCK_API_KEY="${HUDSONROCK_API_KEY:-}"
 export BLUETEAM_CMDB_FILE="${BLUETEAM_CMDB_FILE:-}"
@@ -898,7 +901,7 @@ echo "  ThreatFox needs a free key — https://threatfox.abuse.ch/api"
 echo ""
 echo "Wrapper entry points installed:"
 echo ""
-echo "  mcp-server-blueteam    — All 148 tools (Wazuh, threat intel, host forensics,"
+echo "  mcp-server-blueteam    — All 147 tools (Wazuh, threat intel, host forensics,"
 echo "                            Sangfor blocklist, 3-Sum correlation, curated reports,"
 echo "                            CrowdSec, GreyNoise, ThreatFox)"
 echo "  mcp-server-crowdsec    — DEPRECATED — redirects to mcp-server-blueteam"

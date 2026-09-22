@@ -40,8 +40,10 @@ EXPECTED_FILES = [
 # be refused every run. Keeping them out of the prompt tables is not enough on its own,
 # because blueteam_prompt_route and blueteam_semantic_search can surface an unlisted
 # tool, so the budget note below carries the refusal reason the guard actually returns.
+# Apiverve IP Blacklist was deleted outright on 2026-09-22 and stays listed here so a
+# reintroduction cannot quietly become an advertised, unsubscribed call again.
 RAPIDAPI_TOOLS = ("blueteam_ioc_search", "blueteam_ip_intel_bulk",
-                  "blueteam_breach_check", "blueteam_ip_blacklist")
+                  "blueteam_breach_check")
 METERED_MARKER = re.compile(r"\(metered, RapidAPI\)")
 QUOTA_FREE_TOOLS = ("blueteam_threat_intel_aggregate", "crowdsec_ip_reputation",
                     "threatfox_ioc_search")

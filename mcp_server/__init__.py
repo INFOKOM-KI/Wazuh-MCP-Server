@@ -70,6 +70,7 @@ RAPIDAPI_MONTHLY_CAP  = _c.threat_intel.rapidapi_monthly_cap
 RAPIDAPI_BUDGET       = _c.threat_intel.rapidapi_budget
 RAPIDAPI_BUDGET_HOURS = _c.threat_intel.rapidapi_budget_hours
 RAPIDAPI_CACHE_PATH   = _c.threat_intel.rapidapi_cache_path
+RAPIDAPI_RAW_WHOIS    = _c.threat_intel.rapidapi_raw_whois
 
 # External API Base URLs
 CROWDSEC_BASE_URL  = _c.threat_intel.crowdsec_base_url

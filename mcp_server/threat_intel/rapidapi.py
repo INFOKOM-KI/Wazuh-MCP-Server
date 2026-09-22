@@ -1,28 +1,34 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-RapidAPI capability lookups - four providers over a shared RapidAPI transport:
-1. blueteam_ip_blacklist  - Apiverve IP Blacklist Lookup (is this srcip on a blacklist?)
-2. blueteam_ioc_search    - RapidAPI IOC Search (vendor verdicts, file + hostname telemetry)
-3. blueteam_breach_check  - RapidAPI Breach Check (was this email in a known breach?)
-4. blueteam_ip_intel_bulk - IP Threat Intelligence (N IPs in one request)
-All four accept the indicator (srcip / attacker IP / email / IP list) directly so the LLM
+RapidAPI capability lookups - three providers over a shared RapidAPI transport:
+1. blueteam_ioc_search    - RapidAPI IOC Search (vendor verdicts, file + hostname telemetry)
+2. blueteam_breach_check  - RapidAPI Breach Check (was this email in a known breach?)
+3. blueteam_ip_intel_bulk - IP Threat Intelligence (N IPs in one request)
+All three accept the indicator (srcip / attacker IP / email / IP list) directly so the LLM
 can feed values pulled from Wazuh alerts without any extra plumbing.
 
-Quota model: the account carries ONE hard limit shared by every product above, so the
+Apiverve IP Blacklist was removed on 2026-09-22: it was a fourth subscription on the same
+account-wide pool, and ``blueteam_ioc_search`` already returns blacklist verdicts from ~89
+engines. Quota model: the account carries ONE hard limit shared by every product above, so the
 budget guard in ``rapidapi_quota`` is account-wide, not per product. It defaults to 0
 (fail-closed) and is armed per incident window, because a daily report pass over 20 IPs
 would otherwise spend a fifth of the month in one run. The bulk endpoint exists for the
 same reason: N IPs cost one request instead of N.
 
 Two response strategies, matched to the payload:
-- ip_blacklist / breach_check / ip_intel_bulk use the generic `_dynamic_markdown` +
-  `_envelope` pair, so an unknown or changing third-party schema degrades to a
-  pretty-printed body instead of an empty report.
+- breach_check / ip_intel_bulk use the generic `_dynamic_markdown` + `_envelope` pair, so an
+  unknown or changing third-party schema degrades to a pretty-printed body instead of an
+  empty report.
 - ioc_search has a known, stable, ~70 KB schema, so it gets a provider-aware normalizer
   (`_normalize_ioc_search`) with three `detail_level`s. Its WHOIS block carries a natural
   person's name and postal address, which the shape-based redaction layers do not catch -
   `_strip_whois_pii` reduces it to technical registry fields at every detail level.
+
+WHOIS posture differs between the two paths by design : ioc_search
+allowlists technical registry fields, while ip_intel_bulk retains the provider's WHOIS
+verbatim for abuse-escalation context. `_scrub_whois_deep` is the knob that closes it --
+BLUETEAM_RAPIDAPI_RAW_WHOIS=false applies the same allowlist to the bulk body recursively.
 """
 from __future__ import annotations
 import hashlib, json, os, re
@@ -32,7 +38,8 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, RAPIDAPI_KEY_ENV, RAPIDAPI_CACHE_TTL, RAPIDAPI_MONTHLY_CAP,
-                        RAPIDAPI_BUDGET, RAPIDAPI_BUDGET_HOURS, RAPIDAPI_CACHE_PATH)
+                        RAPIDAPI_BUDGET, RAPIDAPI_BUDGET_HOURS, RAPIDAPI_CACHE_PATH,
+                        RAPIDAPI_RAW_WHOIS)
 from mcp_server.core.http_client import (_api_call, _handle_api_error, ValidPublicIp,
                                          CircuitOpenError)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
@@ -43,11 +50,18 @@ from mcp_server.threat_intel._cache import (cache_get, cache_set, get_limiter,
 from mcp_server.threat_intel.rapidapi_quota import RapidApiBudget
 
 # RapidAPI host endpoints (The key is shared via RAPIDAPI_KEY).
-_IP_BLACKLIST_HOST = "ip-blacklist-lookup-api-apiverve.p.rapidapi.com"
 _IOC_SEARCH_HOST = "ioc-search.p.rapidapi.com"
 _BREACH_CHECK_HOST = "breachcheck-api.p.rapidapi.com"
 _IP_INTEL_HOST = "ip-threat-intelligence.p.rapidapi.com"
 _BULK_MAX_IPS = 50
+
+# Marks a response whose WHOIS block was returned unredacted. A reader of the rendered
+# report cannot otherwise tell this tool's posture from blueteam_ioc_search's.
+_WHOIS_RAW_NOTE = (
+    "> WHOIS/registrant fields below are returned **unredacted** "
+    "(BLUETEAM_RAPIDAPI_RAW_WHOIS). Third-party data: keep it inside the "
+    "incident record and do not republish it.\n\n"
+)
 
 # Response cache and quota counter share one file, so a restart cannot hand back a
 # budget the account was already billed for.
@@ -71,8 +85,7 @@ def _rapidapi_headers(host: str) -> dict[str, str]:
     if not key:
         raise RuntimeError(
             f"{RAPIDAPI_KEY_ENV} not set. Get a key at https://rapidapi.com (the account "
-            f"limit is shared by Apiverve IP Blacklist, IOC Search, Breach Check and IP "
-            f"Threat Intelligence)."
+            f"limit is shared by IOC Search, Breach Check and IP Threat Intelligence)."
         )
     return {
         "x-rapidapi-key": key,
@@ -136,7 +149,7 @@ def _cache_store(key: str, value: Any, ttl: float) -> None:
 
 async def _rapidapi_get(host: str, path: str, ttl: int | None = None) -> dict[str, Any]:
     """GET a RapidAPI endpoint with TTL caching + rate limiting + budget guard.
-    ``ttl`` defaults to ``RAPIDAPI_CACHE_TTL`` (default 7 days). All four products
+    ``ttl`` defaults to ``RAPIDAPI_CACHE_TTL`` (default 7 days). All three products
     share one account-wide quota, so the TTL trades freshness for the month's
     allowance rather than for one product's headroom.
     Uses its own ``rapidapi`` HTTP client pool so the pool and circuit breaker are
@@ -274,6 +287,24 @@ def _strip_whois_pii(whois: str) -> dict[str, list[str]]:
     return out
 
 
+def _scrub_whois_deep(value: Any) -> Any:
+    """Apply the WHOIS allowlist to a body whose schema is unknown.
+
+    ``_strip_whois_pii`` needs to know which field holds the record. The bulk endpoint's
+    schema is unmapped, so the key is matched by name instead and the allowlist applied
+    wherever it lands. This is the ``BLUETEAM_RAPIDAPI_RAW_WHOIS=false`` path.
+    """
+    if isinstance(value, dict):
+        return {
+            k: (_strip_whois_pii(v) if isinstance(v, str) else _scrub_whois_deep(v))
+            if isinstance(k, str) and "whois" in k.lower() else _scrub_whois_deep(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_scrub_whois_deep(v) for v in value]
+    return value
+
+
 # How much of each section each detail_level carries. raw also embeds the verbatim
 # body, so its curated block matches forensic and there are two code paths, not three.
 _IOC_LIMITS: dict[str, dict[str, int]] = {
@@ -335,7 +366,7 @@ def _ioc_verdict(data: dict[str, Any], unknown: list[str]) -> dict[str, Any]:
         out["provided_reputation"] = data["reputation"]
     if isinstance(data.get("tags"), list):
         out["tags"] = data["tags"]
-    if total:  # division guard no ratio from an empty denominator
+    if total:
         out["malicious_ratio"] = round(counts["malicious"] / total, 3)
         out["band"] = _ioc_band(counts["malicious"] / total)
     return out
@@ -525,10 +556,7 @@ class _IpInput(BaseModel):
 
 
 class IocSearchInput(_IpInput):
-    """Input for blueteam_ioc_search shared IP input plus response framing.
-    Subclasses ``_IpInput`` rather than widening it: ``blueteam_ip_blacklist``
-    shares that model and must not grow a richer interface it will never use.
-    """
+    """Input for blueteam_ioc_search: shared IP input plus response framing."""
 
     detail_level: Literal["summary", "forensic", "raw"] = Field(
         default="summary",
@@ -553,27 +581,6 @@ class BreachCheckInput(BaseModel):
         if not _EMAIL_RE.match(v):
             raise ValueError(f"Invalid email address: '{v}'")
         return v
-
-
-@mcp.tool(name="blueteam_ip_blacklist",
-          annotations={"readOnlyHint": True, "destructiveHint": False,
-                       "idempotentHint": True, "openWorldHint": True})
-async def blueteam_ip_blacklist(params: _IpInput) -> str:
-    """Check whether a source IP is present on blacklists (IP Blacklist Lookup).
-    Feed the `srcip` from a Wazuh alert directly. Returns the blacklist verdict for the IP.
-    Requires `RAPIDAPI_KEY` (subscribe to "IP Blacklist Lookup" by Apiverve on RapidAPI).
-    **Worked Examples**
-    1. ``blueteam_ip_blacklist(ip="103.107.116.202")``
-    2. ``blueteam_ip_blacklist(ip="185.220.101.1", response_format="json")``
-    """
-    _audit_log("blueteam_ip_blacklist", {"ip": params.ip})
-    try:
-        raw = await _rapidapi_get(_IP_BLACKLIST_HOST, f"/v1/ipblacklistlookup?ip={quote(params.ip)}")
-    except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError, ValueError) as e:
-        _handle_api_error(e, context="blueteam_ip_blacklist")
-    if params.response_format == "json":
-        return _envelope(params.ip, "apiverve_ip_blacklist", raw, params=params)
-    return _redact_alert_data(_dynamic_markdown(f"IP Blacklist - {params.ip}", raw), params=params)
 
 
 @mcp.tool(name="blueteam_ioc_search",
@@ -700,12 +707,18 @@ async def blueteam_ip_intel_bulk(params: BulkIpIntelInput) -> str:
        ``three_sum_correlation`` to triage a whole incident in one request.
     """
     unique = sorted(dict.fromkeys(params.ips))
-    _audit_log("blueteam_ip_intel_bulk", {"count": len(unique)})
+    # The posture is recorded per call. Never the values: the audit log stays count-only.
+    _audit_log("blueteam_ip_intel_bulk", {"count": len(unique),
+                                          "whois": "raw" if RAPIDAPI_RAW_WHOIS else "allowlisted"})
     try:
         raw = await _rapidapi_post(_IP_INTEL_HOST, "/v1/ip-intel/bulk", {"ips": unique})
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError, ValueError) as e:
         _handle_api_error(e, context="blueteam_ip_intel_bulk")
+
+    body = raw if RAPIDAPI_RAW_WHOIS else _scrub_whois_deep(raw)
     if params.response_format == "json":
-        return _envelope(", ".join(unique), "rapidapi_ip_intel_bulk", raw, params=params)
-    return _redact_alert_data(
-        _dynamic_markdown(f"IP Threat Intel (bulk) - {len(unique)} IP(s)", raw), params=params)
+        return _envelope(", ".join(unique), "rapidapi_ip_intel_bulk", body, params=params)
+    rendered = _dynamic_markdown(f"IP Threat Intel (bulk) - {len(unique)} IP(s)", body)
+    if RAPIDAPI_RAW_WHOIS and "whois" in rendered.lower():
+        rendered = _WHOIS_RAW_NOTE + rendered
+    return _redact_alert_data(rendered, params=params)

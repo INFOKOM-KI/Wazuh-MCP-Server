@@ -12,6 +12,7 @@ import os
 os.environ.setdefault("WAZUH_INDEXER_URL", "https://idx:9200")
 os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "pw")
 os.environ.setdefault("RAPIDAPI_KEY", "test-key")
+import json
 import time
 import httpx
 import pytest
@@ -327,3 +328,64 @@ def test_429_without_the_header_is_unchanged():
     assert _rate_limit_text(_resp({})) == "Rate limit reached (429)."
     assert _rate_limit_text(_resp({"x-ratelimit-requests-remaining": "abc"})) == \
         "Rate limit reached (429)."
+
+
+# WHOIS posture for blueteam_ip_intel_bulk (SECURITY.md 4.1d).
+
+def test_raw_whois_exemption_is_the_shipped_default():
+    """The exemption is a policy decision, so it is the default rather than something an
+    operator discovers is off mid-incident. Changing either value here silently changes
+    the PII posture the docs describe."""
+    from mcp_server.core.config import ThreatIntelConfig
+    cfg = ThreatIntelConfig()
+    assert cfg.rapidapi_raw_whois is True
+    assert cfg.rapidapi_budget_hours == 8.0, "one shift, not a 4h window that needs a restart"
+
+
+def test_scrub_whois_deep_drops_person_fields_at_any_depth():
+    body = {
+        "data": {"whois": "netname: TOR-EXIT\nperson: Jane Doe\naddress: 1 Main St\n"
+                         "route: 1.2.3.0/24"},
+        "results": [{"whois": "org-name: ExampleHost\nphone: +3312345"}],
+    }
+    out = r._scrub_whois_deep(body)
+    blob = json.dumps(out)
+    for dropped in ("Jane Doe", "1 Main St", "+3312345", "phone", "address"):
+        assert dropped not in blob, f"{dropped} survived the allowlist"
+    assert out["data"]["whois"]["netname"] == ["TOR-EXIT"]
+    assert out["data"]["whois"]["route"] == ["1.2.3.0/24"]
+    assert out["results"][0]["whois"]["org-name"] == ["ExampleHost"]
+
+
+def test_scrub_whois_deep_targets_whois_keys_not_every_person_field():
+    """It has to fire on the field holding a registry record, or it would strip unrelated
+    keys out of an unmapped schema."""
+    body = {"network": {"asn": 1, "person": "analyst note"}}
+    assert r._scrub_whois_deep(body) == body
+
+
+@pytest.mark.asyncio
+async def test_bulk_marks_the_unredacted_whois(monkeypatch):
+    async def fake_post(host, path, payload, ttl=None):
+        return {"data": {"whois": "netname: TOR-EXIT\nperson: Jane Doe"}}
+
+    monkeypatch.setattr(r, "_rapidapi_post", fake_post)
+    monkeypatch.setattr(r, "RAPIDAPI_RAW_WHOIS", True)
+
+    out = await r.blueteam_ip_intel_bulk(r.BulkIpIntelInput(ips=["185.220.101.1"]))
+    assert r._WHOIS_RAW_NOTE.strip() in out, "an unredacted block must say so in the output"
+    assert "Jane Doe" in out, "the exemption retains the registrant field"
+
+
+@pytest.mark.asyncio
+async def test_bulk_allowlists_when_the_exemption_is_off(monkeypatch):
+    async def fake_post(host, path, payload, ttl=None):
+        return {"data": {"whois": "netname: TOR-EXIT\nperson: Jane Doe\naddress: 1 Main St"}}
+
+    monkeypatch.setattr(r, "_rapidapi_post", fake_post)
+    monkeypatch.setattr(r, "RAPIDAPI_RAW_WHOIS", False)
+
+    out = await r.blueteam_ip_intel_bulk(r.BulkIpIntelInput(ips=["185.220.101.1"]))
+    assert "Jane Doe" not in out and "1 Main St" not in out
+    assert "TOR-EXIT" in out, "the technical registry fields must survive"
+    assert r._WHOIS_RAW_NOTE.strip() not in out, "no exemption, no warning banner"

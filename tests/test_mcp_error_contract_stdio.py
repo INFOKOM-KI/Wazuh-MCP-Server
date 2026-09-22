@@ -36,13 +36,13 @@ async def test_tool_failure_sets_iserror_true():
         async with ClientSession(read, write) as session:
             await session.initialize()
             res = await session.call_tool(
-                "blueteam_ip_blacklist", {"params": {"ip": "185.220.101.49"}}
+                "blueteam_ioc_search", {"params": {"ip": "185.220.101.49"}}
             )
 
     assert res.isError is True, "a hard tool failure must not be reported as success"
     text = "".join(c.text for c in res.content if getattr(c, "type", "") == "text")
     assert "RAPIDAPI_KEY" in text, text
-    assert "blueteam_ip_blacklist" in text, text
+    assert "blueteam_ioc_search" in text, text
 
 
 @pytest.mark.asyncio

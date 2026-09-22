@@ -237,7 +237,7 @@ class TestErrorHandling:
         """A real httpx error carrying a real response (headers/body/url readable)."""
         req = httpx.Request(
             "GET",
-            "https://ip-blacklist-lookup-api-apiverve.p.rapidapi.com/v1/ipblacklistlookup?ip=1.2.3.4",
+            "https://ioc-search.p.rapidapi.com/rapid/v1/ioc/search/ip?query=1.2.3.4",
         )
         resp = httpx.Response(status_code, headers=headers or {}, content=body, request=req)
         return httpx.HTTPStatusError("boom", request=req, response=resp)
@@ -255,13 +255,15 @@ class TestErrorHandling:
     def test_403_names_the_unsubscribed_cause_and_keeps_the_body(self):
         # The verbatim 403 an unsubscribed RapidAPI product returns.
         exc = self._status_error(403, body=b'{"message":"You are not subscribed to this API."}')
-        msg = _api_error_text(exc, context="blueteam_ip_blacklist")
+        msg = _api_error_text(exc, context="blueteam_ioc_search")
         assert "403" in msg
         assert "not subscribed" in msg
         assert 'You are not subscribed to this API.' in msg  # upstream body preserved
-        # Host label is masked by the redaction boundary, but the path survives and
-        # identifies which RapidAPI product was called.
-        assert "/v1/ipblacklistlookup" in msg
+        # The context prefix is what actually names the product here. The URL cannot: the
+        # redaction boundary masks the host and any path run that looks like a hostname, so
+        # `/rapid/v1/ioc/search/ip` arrives as `.../ip [h:1d6b5f]`. The URL is still carried
+        # for the query string and for paths whose segments survive the domain layer.
+        assert msg.startswith("[blueteam_ioc_search]")
         assert ".p.rapidapi.com" in msg
 
     def test_404_not_found(self):
@@ -312,7 +314,7 @@ class TestErrorHandling:
     def test_handle_api_error_raises_with_body_and_cause(self):
         exc = self._status_error(500, body=b"upstream exploded")
         with pytest.raises(ThreatIntelError) as ei:
-            _handle_api_error(exc, context="blueteam_ip_blacklist")
+            _handle_api_error(exc, context="blueteam_ioc_search")
         assert "500" in str(ei.value)
         assert "upstream exploded" in str(ei.value)
         assert ei.value.__cause__ is exc

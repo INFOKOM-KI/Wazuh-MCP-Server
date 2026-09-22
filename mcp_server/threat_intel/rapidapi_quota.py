@@ -42,7 +42,7 @@ class RapidApiBudget:
     account ceiling. The effective allowance is the smaller of the two, so a typo in
     the arm amount cannot exceed what the account will actually serve.
     """
-    def __init__(self, budget: int = 0, hours: float = 4.0,
+    def __init__(self, budget: int = 0, hours: float = 8.0,
                  monthly_cap: int = DEFAULT_MONTHLY_CAP, store: Any = None):
         self._budget = max(0, int(budget))
         self._hours = max(0.0, float(hours))
