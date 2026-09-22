@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
 
-"""Tests for prompt_router.py - BM25 prompt-to-tool routing."""
+"""Tests for prompt_router.py BM25 prompt-to-tool routing."""
 
 from __future__ import annotations
-
 import os
 
-# mcp_server/__init__.py calls init_config() at import and hard-fails without
-# WAZUH_INDEXER_* (ConfigurationError). Seed them at module level so this file
-# passes in isolation, not only when a peer module happens to import first.
 os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
 os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
 
@@ -16,15 +12,12 @@ os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
 def test_tokenize_strips_punctuation():
     from mcp_server.tools.prompt_router import _tokenize
     tokens = _tokenize("Brute-force SSH on mail.server!")
-    # Hyphen and dot are kept as part of tokens
     assert "brute-force" in tokens
     assert "ssh" in tokens
     assert "mail.server" in tokens
-    # "on" is 2 chars kept
     assert "on" in tokens
-    # Short tokens filtered out
     tokens2 = _tokenize("a b c")
-    assert tokens2 == []  # all 1-char, filtered.
+    assert tokens2 == []
 
 
 def test_mini_bm25_basic():
@@ -53,14 +46,11 @@ def test_mini_bm25_empty_corpus():
 
 def test_mini_bm25_idf_rarity():
     from mcp_server.tools.prompt_router import _MiniBM25
-    # "rare" appears in 1 doc, "alert" appears in 2 docs
     corpus = [
-        "alert summary alert alert",  # doc 0
-        "alert beacon rare term",      # doc 1
+        "alert summary alert alert",
+        "alert beacon rare term",
     ]
     bm = _MiniBM25(corpus)
-    # "rare" appears in 1 doc → higher IDF
-    # "alert" appears in 2 docs → lower IDF
     assert "rare" in bm.idf
     assert "alert" in bm.idf
     assert bm.idf["rare"] > bm.idf["alert"]
@@ -100,9 +90,7 @@ def test_unmatched_tokens_surfaced():
     from mcp_server.tools.prompt_router import _get_router
     router = _get_router()
     result = router.token_buckets("xyzzy_nonexistent_token_abc123")
-    # The token "xyzzy_nonexistent_token_abc123" should be in unmatched
     all_unmatched = result.get("unmatched_tokens", [])
-    # All tokens are likely unmatched since this is gibberish
     assert len(all_unmatched) > 0
 
 
@@ -149,7 +137,7 @@ def test_corpus_document_includes_docstring_and_param_text():
     assert len(router.tool_corpus) > 100
     total = sum(len(t["text"]) for t in router.tool_corpus)
     assert total > 100_000, f"corpus too thin: {total} chars"
-    # the stored document is the full docstring, not the 120-char display summary
+    # the stored document is the full docstring, not the 120 char display summary
     agg = next(t for t in router.tool_corpus if t["name"] == "wazuh_alert_aggregate_analysis")
     assert len(agg["text"]) > len(agg["description"])
     # tools with no docstring still get indexable text from their param schema
@@ -247,6 +235,43 @@ def test_route_reranked_falls_back_to_bm25_when_disabled():
     assert all("rerank_score" not in r for r in results)
 
 
+def test_prompt_route_labels_itself_when_no_model_is_cached(tmp_path):
+    """Staging contract: the server must run on a host with no model cache.
+    A SHA pin forces ``local_files_only``, so a cold cache is a load error and never a
+    download, and the response must still carry BM25 results labelled ``bm25`` with the
+    reason. This is the path every test in this file relies on, asserted instead of
+    assumed. Works with fastembed absent too: that raises inside the same guard.
+    """
+    import asyncio
+    import json
+    from mcp_server.core import rerank
+    from mcp_server.core.config import config
+    import mcp_server.tools.prompt_router as pr
+    _register_and_reset()
+
+    rerank._encoder = None
+    rerank._reason = "not loaded"
+    saved = (config.rerank.enabled, config.rerank.cache_path, config.rerank.sha256)
+    config.rerank.enabled = True
+    config.rerank.cache_path = str(tmp_path)   # empty: nothing is cached here
+    config.rerank.sha256 = "0" * 64            # pin present -> no runtime egress
+    try:
+        out = json.loads(asyncio.run(pr.blueteam_prompt_route(
+            pr.PromptRouteInput(prompt="brute force ssh mail server", rerank=True))))
+    finally:
+        (config.rerank.enabled, config.rerank.cache_path, config.rerank.sha256) = saved
+        rerank._encoder = None
+        rerank._reason = "not loaded"
+
+    assert out["rerank_used"] is False
+    assert out["rerank_engine"] == "bm25"
+    assert out["rerank_status"].startswith("unavailable:"), out["rerank_status"]
+    assert out["results"], "a cold model cache must not empty the routing shortlist"
+    assert not list(tmp_path.rglob("*.onnx")), (
+        "the pinned path downloaded model weights instead of failing closed"
+    )
+
+
 def test_prompt_route_tool_output_contract():
     """Tool-level contract: the response names the engine that ranked it and
     echoes the expanded query, without touching the model (rerank is opt-in)."""
@@ -259,7 +284,7 @@ def test_prompt_route_tool_output_contract():
     assert out["mode"] == "route"
     assert out["tools_indexed"] > 100
     assert "check" in out["query_expanded"]
-    assert out["rerank_engine"] == "bm25"           # no cross-encoder was loaded
+    assert out["rerank_engine"] == "bm25"
     assert out["rerank_status"] == "not_requested"
     assert out["rerank_used"] is False
     assert out["results"] and "matched_tokens" in out["results"][0]
@@ -280,6 +305,40 @@ def test_buckets_mode_groups_expanded_tokens():
     assert "webshell" in tokens
     assert "suspicious" in tokens                   # mencurigakan -> suspicious
     assert not [b for b in ["di"] if b in tokens]   # stopword dropped
+
+
+EXPECTED_LABELLED_PROMPTS = 22
+RECALL_FLOOR_K = 10
+
+
+def test_labelled_prompt_recall_floor():
+    """Every labelled prompt must keep an acceptable tool inside BM25 top-10.
+    A failure here means the alias map or the corpus document shrank, not that the
+    ranking got slightly worse: this is the precondition for any ranking work.
+    """
+    from tests.bench_rerank_routing import PROMPTS
+    router = _register_and_reset()
+
+    assert len(PROMPTS) == EXPECTED_LABELLED_PROMPTS, (
+        f"labelled prompt set changed size ({len(PROMPTS)}). Re-baseline the floor below "
+        f"deliberately rather than letting the assertion shrink with the file."
+    )
+    corpus = {t["name"] for t in router.tool_corpus}
+    stale = sorted({tool for *_, accepted in PROMPTS for tool in accepted} - corpus)
+    assert not stale, (
+        f"labels reference tools that are not in the corpus (renamed or removed?): {stale}"
+    )
+
+    misses = []
+    for pid, lang, prompt, accepted in PROMPTS:
+        top = {h["tool"] for h in router.route(prompt, top_k=RECALL_FLOOR_K)}
+        if not (top & accepted):
+            misses.append((pid, lang, prompt, sorted(accepted)))
+    assert not misses, (
+        f"BM25 top-{RECALL_FLOOR_K} lost the acceptable tool for {len(misses)} labelled "
+        f"prompt(s); no reranker can reorder a window the tool is not in:\n"
+        + "\n".join(f"  {p} [{l}] {q!r} expected one of {a}" for p, l, q, a in misses)
+    )
 
 
 if __name__ == "__main__":

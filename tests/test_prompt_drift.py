@@ -8,9 +8,16 @@ Each test encodes one property that was wrong on 2026-09-14 and has no other
 enforcement. Run: pytest tests/test_prompt_drift.py -q
 """
 from __future__ import annotations
+import os
 import pathlib
 import re
 import pytest
+
+# mcp_server/__init__.py runs init_config() at import and hard-fails without
+# WAZUH_INDEXER_* (ConfigurationError). Seed them here so the rerank-default check
+# below passes when this file runs alone, not only after a peer module imported.
+os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
+os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
 
 PROMPT_DIR = pathlib.Path(__file__).resolve().parent.parent / "resource" / "your_prompthings"
 SKILL_PATH = pathlib.Path(__file__).resolve().parent.parent / "resource" / "skill" / "soc-analysis.md"
@@ -105,7 +112,6 @@ def test_all_twelve_prompt_files_exist():
     assert found == set(EXPECTED_FILES), f"unexpected prompt files: {found - set(EXPECTED_FILES)}"
 
 
-# Every metered RapidAPI tool is marked, and nothing else is.
 @pytest.mark.parametrize("name", EXPECTED_FILES)
 def test_metered_marker_exactly_on_the_rapidapi_tools(name):
     """A metered tool without the marker reads as free, which is the original bug."""
@@ -158,7 +164,6 @@ def test_reporting_row_names_no_metered_tool(name):
     )
 
 
-# The quota note survives, and still says the things that matter.
 @pytest.mark.parametrize("name", EXPECTED_FILES)
 def test_quota_note_present_and_complete(name):
     text = _read(name)
@@ -212,7 +217,6 @@ def test_rules_are_contiguously_numbered(name):
     assert len(rules) == 7, f"{name}: expected 7 rules, got {len(rules)}"
 
 
-# 6-7. Markdown hygiene, so an edit cannot silently break the tables or notes.
 @pytest.mark.parametrize("name", EXPECTED_FILES)
 def test_tables_and_notes_are_well_formed(name):
     lines = _read(name).splitlines()
@@ -232,3 +236,57 @@ def test_tables_and_notes_are_well_formed(name):
     for note in _notes("\n".join(lines)):
         assert note.count("`") % 2 == 0, f"{name}: unbalanced inline code in note: {note[:80]}"
         assert len(note) > 40, f"{name}: stub note left behind: {note!r}"
+
+
+RERANK_FIELD_MODELS = {
+    "blueteam_prompt_route": ("mcp_server.tools.prompt_router", "PromptRouteInput"),
+    "blueteam_semantic_search": ("mcp_server.tools.semantic_search", "SemanticSearchInput"),
+    "blueteam_rag_query": ("mcp_server.tools.rag_kb", "RagQueryInput"),
+    "blueteam_rag_fp_validate": ("mcp_server.tools.rag_kb", "RagFpValidateInput"),
+}
+
+_ON_DEFAULT = "on by default"
+_OFF_DEFAULT = "off by default"
+
+
+def _declared_rerank_defaults() -> dict[str, bool]:
+    """tool name -> its Pydantic ``rerank`` field default, the code's own answer."""
+    import importlib
+    defaults: dict[str, bool] = {}
+    for tool, (module_name, model_name) in RERANK_FIELD_MODELS.items():
+        model = getattr(importlib.import_module(module_name), model_name)
+        defaults[tool] = bool(model.model_fields["rerank"].default)
+    return defaults
+
+
+def test_rerank_default_claims_match_the_pydantic_field():
+    """Every taxonomy row that states a rerank default must match the field default.
+    Only rows asserting "on by default" / "off by default" are read, so unrelated rows
+    (a tool that is "read-only by default", say) are ignored rather than mis-parsed.
+    """
+    defaults = _declared_rerank_defaults()
+    claims: list[tuple[str, str]] = []
+    for line in SKILL_PATH.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("|"):
+            continue
+        if _ON_DEFAULT not in line and _OFF_DEFAULT not in line:
+            continue
+        match = re.search(r"blueteam_[a-z_]+", line)
+        assert match, f"rerank default claimed in a row that names no tool: {line[:90]}"
+        claims.append((match.group(0), line))
+
+    assert claims, (
+        "no 'on by default' / 'off by default' row found in soc-analysis.md. If the wording "
+        "changed, update this test: it is silently checking nothing otherwise."
+    )
+    for tool, line in claims:
+        assert tool in defaults, (
+            f"soc-analysis.md claims a rerank default for {tool}, which exposes no rerank "
+            f"field. Row: {line[:90]}"
+        )
+        expected = _ON_DEFAULT if defaults[tool] else _OFF_DEFAULT
+        assert expected in line, (
+            f"{tool}.rerank defaults to {defaults[tool]}, so its taxonomy row must say "
+            f"'{expected}'. Fix resource/skill/soc-analysis.md (README's copy is generated "
+            f"from it, never hand-edited). Row: {line[:140]}"
+        )

@@ -72,6 +72,17 @@ fi
 # installed server never needs runtime egress. Set BLUETEAM_RERANK_ENABLED=false
 # in config.env BEFORE the first run to skip it (~1 GB download); the server then
 # ranks lexically only.
+# BLUETEAM_RERANK_MODEL must name a model in fastembed's OWN cross-encoder registry.
+# Only six exist as of fastembed 0.8.0: BAAI/bge-reranker-base,
+# Xenova/ms-marco-MiniLM-L-6-v2, Xenova/ms-marco-MiniLM-L-12-v2,
+# jinaai/jina-reranker-v1-tiny-en, jinaai/jina-reranker-v1-turbo-en,
+# jinaai/jina-reranker-v2-base-multilingual. BAAI/bge-reranker-v2-m3 is NOT one of
+# them: naming it here fails the bootstrap below and the server refuses to start
+# (RerankConfig.validate), never a silent downgrade to BM25. The only multilingual
+# entry, jina-reranker-v2-base-multilingual, is CC-BY-NC-4.0 and excluded on licence
+# grounds (PRD FR-50), which is why the default is bge-reranker-base despite its
+# weak Indonesian scores. Runtime download is off by policy, so a model that is not
+# cached AND pinned never loads: reranking reports 'unavailable:' and ranks lexically.
 # Honors BLUETEAM_RERANK_* from config.env if present. On re-run it
 # also syncs the RERANK block into .env (the file the systemd unit loads),
 # which fixes the config.env-vs-.env mismatch on existing deployments.
@@ -198,9 +209,16 @@ import os, sys
 from pathlib import Path
 from fastembed.rerank.cross_encoder import TextCrossEncoder
 model, cache = sys.argv[1], sys.argv[2]
+# Check the registry BEFORE constructing the encoder: an unsupported name must not
+# trigger a download attempt, and the operator needs the supported list, not a bare
+# traceback. This is the failure an operator hits by setting bge-reranker-v2-m3.
+supported = {m["model"]: m["model_file"] for m in TextCrossEncoder.list_supported_models()}
+if model not in supported:
+    sys.exit("BLUETEAM_RERANK_MODEL=%r is not in fastembed's cross-encoder registry. "
+             "Supported: %s. Note BAAI/bge-reranker-v2-m3 is not one of them."
+             % (model, ", ".join(sorted(supported))))
 enc = TextCrossEncoder(model_name=model, cache_dir=cache, lazy_load=True)
-model_file = next(m["model_file"] for m in TextCrossEncoder.list_supported_models()
-                  if m["model"] == model)
+model_file = supported[model]
 # _model_dir lives on the INNER encoder (enc.model) in fastembed 0.5-0.8.
 # the outer TextCrossEncoder does not expose it. Fall back to a glob only
 # if the attribute is absent (future version tolerance).
@@ -429,9 +447,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export HTTP_TIMEOUT="30"                       # seconds per upstream request (Netra is pinned at 90s)
 # export WAZUH_INDEXER_MAX_SIZE="10000"          # max documents per page in Wazuh Indexer search
 
-# Reranker (two-stage retrieval: BM25 -> bge-reranker-base cross-encoder, opt-in)
-# export BLUETEAM_RERANK_ENABLED="true"           # ON by default: cross-encoder rerank on prompt_route/semantic_search/rag_query (false = BM25/vector only)
-# export BLUETEAM_RERANK_MODEL="BAAI/bge-reranker-base"
+# Reranker (two-stage retrieval: BM25 -> bge-reranker-base cross-encoder, ON at the subsystem level)
+# export BLUETEAM_RERANK_ENABLED="true"           # ON by default. Per-tool default differs: semantic_search/rag_query rerank, prompt_route does NOT (measured worse for Indonesian routing)
+# export BLUETEAM_RERANK_MODEL="BAAI/bge-reranker-base"   # must be in fastembed's registry (6 models); bge-reranker-v2-m3 is NOT
 # export BLUETEAM_RERANK_CACHE_PATH="/opt/blue-team-mcp/rerank-cache"   # model weights dir (offline after bootstrap)
 # export BLUETEAM_RERANK_MAX_CANDIDATES="100"     # hard cap for rerank candidate fan-out (all retrieval callers)
 # export BLUETEAM_RERANK_MODEL_SHA256=""          # optional: pin ONNX model SHA-256 (supply-chain integrity)

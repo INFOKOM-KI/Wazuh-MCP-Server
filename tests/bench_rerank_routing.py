@@ -2,9 +2,18 @@
 """Routing benchmark: BM25-only vs BM25 + bge-reranker-base, on prompt_route.
 
 Not a pytest module (no `test_` prefix, so pytest does not collect it). Run it
-against a live model cache:
+against a live model cache (the first run downloads ~1 GB if the cache is cold):
 
-    BLUETEAM_RERANK_MODEL_... python3 tests/bench_rerank_routing.py
+    python3 tests/bench_rerank_routing.py
+
+Or re-measure the BM25 baseline without a model, a download, or network egress:
+
+    python3 tests/bench_rerank_routing.py --bm25-only
+
+Both modes print the same table, so the two runs compare column to column. The
+--bm25-only run is what keeps the documented baseline honest: the numbers quoted in
+README.md / PRD.md FR-51 are the ones this script prints, and they move whenever the
+alias map or the corpus document changes.
 
 The question it answers: does the cross-encoder put the right tool in the top 3
 more often than BM25 alone, and what does each call cost in wall time?
@@ -14,7 +23,7 @@ deltas under ~10 points as noise at n=22. Every prompt is scored twice: BM25
 top-3, then cross-encoder top-3 over the same 20 BM25 candidates (the Q5 cap).
 """
 from __future__ import annotations
-
+import argparse
 import asyncio
 import os
 import statistics
@@ -28,9 +37,7 @@ os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "bench")
 CACHE = os.environ.get("BENCH_RERANK_CACHE", "/tmp/rerank-bench-cache")
 CANDIDATES = 20
 
-# (id, lang, prompt, acceptable tools)
 PROMPTS: list[tuple[str, str, str, set[str]]] = [
-    # --- 12 report prompts, one per saving-prompt file (6 windows x en/id) ---
     ("24h-en", "en", "Write the 24 hour SOC report for TangerangKota-CSIRT",
      {"wazuh_alert_aggregate_analysis", "wazuh_alert_timeline", "blueteam_curated_threat_report"}),
     ("24h-id", "id", "Buat laporan SOC harian untuk 24 jam terakhir",
@@ -55,7 +62,6 @@ PROMPTS: list[tuple[str, str, str, set[str]]] = [
      {"wazuh_alert_aggregate_analysis", "wazuh_alert_timeline", "blueteam_curated_threat_report"}),
     ("1yr-id", "id", "Buat laporan tahunan SOC untuk satu tahun terakhir",
      {"wazuh_alert_aggregate_analysis", "wazuh_alert_timeline", "blueteam_curated_threat_report"}),
-    # --- 10 Indonesian ad-hoc analyst questions, tight labels ---
     ("id-adhoc-1", "id", "IP ini pernah menyerang kita atau tidak?",
      {"blueteam_threat_card", "blueteam_threat_intel_aggregate", "blueteam_unified_threat_score"}),
     ("id-adhoc-2", "id", "cek apakah IP ini ada di blocklist sangfor",
@@ -84,21 +90,34 @@ def _hit(results: list[dict], acceptable: set[str], k: int) -> bool:
 
 
 async def main() -> int:
+    parser = argparse.ArgumentParser(description="Routing benchmark: BM25 vs BM25+rerank.")
+    parser.add_argument(
+        "--bm25-only", action="store_true",
+        help="Skip the cross-encoder entirely: no model load, no cache, no network. Prints "
+             "the BM25 baseline the rerank columns are compared against.",
+    )
+    args = parser.parse_args()
+
     from mcp_server.core.config import config
     from mcp_server.core.rerank import reason
     from mcp_server.tools import register_all_tools
     from mcp_server.tools.prompt_router import _get_router
 
     register_all_tools()
-    config.rerank.enabled = True
-    config.rerank.cache_path = CACHE
-    config.rerank.model = "BAAI/bge-reranker-base"
-    config.rerank.max_candidates = 100
+    if args.bm25_only:
+        config.rerank.enabled = False
+    else:
+        config.rerank.enabled = True
+        config.rerank.cache_path = CACHE
+        config.rerank.model = "BAAI/bge-reranker-base"
+        config.rerank.max_candidates = 100
 
     router = _get_router()
     print(f"tools indexed      : {len(router.tool_corpus)}")
     print(f"prompts            : {len(PROMPTS)} (12 report + 10 Indonesian ad-hoc)")
-    print(f"rerank candidates  : {CANDIDATES}\n")
+    print(f"rerank candidates  : {'n/a (--bm25-only)' if args.bm25_only else CANDIDATES}")
+    print(f"mode               : "
+          f"{'BM25 only, rerank columns mirror BM25' if args.bm25_only else 'BM25 + rerank'}\n")
 
     rows = []
     lat_bm25, lat_rerank = [], []
@@ -136,7 +155,7 @@ async def main() -> int:
               f"{','.join(t for _, t in [(0, r['tool']) for r in bt])} -> "
               f"{','.join(r['tool'] for r in rt)}")
 
-    print("\n=== summary ===")
+    print("\nsummary : ")
     tot = {"bm25_3": 0, "re_3": 0, "bm25_1": 0, "re_1": 0, "n": 0}
     for lang, s in stats.items():
         print(f"{lang}: BM25@3 {s['bm25_3']}/{s['n']} ({100*s['bm25_3']/s['n']:.0f}%) | "
@@ -155,13 +174,16 @@ async def main() -> int:
 
     print(f"\nlatency BM25   : median {statistics.median(lat_bm25)*1000:.0f} ms, "
           f"p95 {pct(lat_bm25, 0.95)*1000:.0f} ms")
-    print(f"latency rerank : median {statistics.median(lat_rerank)*1000:.0f} ms, "
-          f"p95 {pct(lat_rerank, 0.95)*1000:.0f} ms  (stage-2 inference only, model warm)")
-    print(f"rerank model   : {reason()}")
-    if fallbacks:
-        print(f"!! fallbacks (rerank did NOT run): {fallbacks}")
+    if args.bm25_only:
+        print("latency rerank : n/a (--bm25-only: no model resolved, no network touched)")
     else:
-        print("rerank ran on every prompt (no fallbacks)")
+        print(f"latency rerank : median {statistics.median(lat_rerank)*1000:.0f} ms, "
+              f"p95 {pct(lat_rerank, 0.95)*1000:.0f} ms  (stage-2 inference only, model warm)")
+        print(f"rerank model   : {reason()}")
+        if fallbacks:
+            print(f"!! fallbacks (rerank did NOT run): {fallbacks}")
+        else:
+            print("rerank ran on every prompt (no fallbacks)")
     return 0
 
 

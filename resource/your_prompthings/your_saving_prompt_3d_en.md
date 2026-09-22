@@ -18,7 +18,7 @@ Before you pick tools, send the analyst's own question to `blueteam_prompt_route
 4. If any IP looks urgent, call `blueteam_threat_card(srcip="<ip>", since="3d")` for the full picture on that one IP.
 
 
-After the steps above, pull from the toolbox whatever the findings point to: CVE & vulnerability data (`blueteam_wazuh_vulnerabilities` + the `blueteam_cve_*` tools), email & breach checks (`wazuh_email_lookup`, `blueteam_breach_check`, `stealer_log_check`), geo distribution, host forensics, and Wazuh Manager config. Use only what is relevant — do not call every tool. When unsure which tool fits, ask `blueteam_prompt_route` or `blueteam_semantic_search`; both rerank with a local cross-encoder by default, so check `rerank_engine` (`bm25` = rerank skipped, and `rerank_status` says why); read the `wazuh://rules/taxonomy` and `wazuh://mitre/attack` resources for rule/MITRE context, and `metrics://prometheus` for server telemetry.
+After the steps above, pull from the toolbox whatever the findings point to: CVE & vulnerability data (`blueteam_wazuh_vulnerabilities` + the `blueteam_cve_*` tools), email & breach checks (`wazuh_email_lookup`, `blueteam_breach_check`, `stealer_log_check`), geo distribution, host forensics, and Wazuh Manager config. Use only what is relevant — do not call every tool. When unsure which tool fits, ask `blueteam_prompt_route` or `blueteam_semantic_search`; `blueteam_prompt_route` is BM25-only by default and `blueteam_semantic_search` reranks with the local cross-encoder, so check `rerank_engine` (`bm25` = rerank skipped, and `rerank_status` says why); read the `wazuh://rules/taxonomy` and `wazuh://mitre/attack` resources for rule/MITRE context, and `metrics://prometheus` for server telemetry.
 
 ## Your full toolbox
 
