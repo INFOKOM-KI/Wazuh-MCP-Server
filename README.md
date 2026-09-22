@@ -120,14 +120,20 @@ lookups, and Manager API tools (rules, decoders, groups, agents, security events
 
 ### Semantic Search & Prompt Routing
 `blueteam_semantic_search` (BM25 over Wazuh rule/alert corpora) and `blueteam_prompt_route`
-(BM25 prompt→tool router; accepts Indonesian or English phrasing). Both run a local
+(BM25 prompt→tool router; accepts Indonesian or English phrasing). Both can run a local
 cross-encoder (`BAAI/bge-reranker-base`, ONNX, MIT) second stage over the BM25 candidates for
-synonym / cross-lingual matching, **on by default** (`BLUETEAM_RERANK_ENABLED` default `true`).
+synonym / cross-lingual matching. The reranker is enabled by default
+(`BLUETEAM_RERANK_ENABLED=true`) and pre-warmed at startup, but the per-tool default differs:
+semantic search reranks, prompt routing does not. A 2026-09-21 measurement on 22 labelled prompts
+(`tests/bench_rerank_routing.py`) put Indonesian top-3 routing accuracy at 7/16 with BM25 and 5/16
+with the cross-encoder, at 2.97 s median / 9.67 s p95 per call; direct scoring showed the model
+rates English pairs confidently (`+1.17` vs `-10.19` for a correct/incorrect tool) and Indonesian
+pairs flat and negative (`-3` to `-9`, wrong winner).
 The model name is checked against fastembed's cross-encoder registry at startup: a name it cannot
 load (`BAAI/bge-reranker-v2-m3` is not in it) is a startup error, not a quiet BM25 fallback.
 Runtime failures degrade to BM25-only and label themselves in `rerank_engine` / `rerank_status`.
 Weights are pre-downloaded by `setup.sh`
-into `BLUETEAM_RERANK_CACHE_PATH` and pre-warmed at startup — local-only, never a hosted API.
+into `BLUETEAM_RERANK_CACHE_PATH` — local-only, never a hosted API.
 
 Truncation is rank-based with no score threshold: raw cross-encoder logits are uncalibrated across
 query distributions, so a fixed floor deletes good matches. `BLUETEAM_RERANK_MAX_CANDIDATES`
@@ -332,6 +338,20 @@ Do NOT: skip the tool, invent a different tool name, or report the tool as
 broken. Always re-invoke once after the signature comes back.
 
 ## 1. Tool taxonomy (grouped by SOC function)
+
+Route the analyst's own sentence before picking from the tables below.
+`blueteam_prompt_route(prompt="<the analyst's wording, Indonesian or English>", top_k=5)` ranks
+every registered tool against that sentence and returns the best lexical matches, which is what
+works for Indonesian phrasing without translating it first. Treat the top 5 as a shortlist and
+confirm the choice against this taxonomy: the router ranks tool descriptions, it does not know your
+alert context, and it only finds a tool whose description contains the vocabulary you used. When
+nothing in the shortlist fits, fall back to the tables below rather than rephrasing until something
+appears. Read `rerank_engine` in the response (`bm25` is the expected routing path: the
+cross-encoder is off for routing because a 2026-09-21 measurement showed it lowered Indonesian
+top-3 accuracy from 7/16 to 5/16 and cost 2.97 s median per call, while it stays on for
+`blueteam_rag_query`), and use `mode="buckets"` when you want to see how it split the sentence into
+tokens. When the analyst's question is vague, ask them one clarifying question rather than routing a
+guess.
 
 Choose the tool by what the analyst wants — never invent tools.
 

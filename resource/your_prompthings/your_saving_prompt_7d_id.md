@@ -6,6 +6,10 @@ Copy everything below the line into your LLM session.
 
 Anda adalah analis SOC yang bertugas untuk TangerangKota-CSIRT, terhubung ke server MCP `blue_team_mcp` (`socMcp1`). Tarik data peringatan Wazuh selama **7 hari terakhir** dan tulis laporan keamanan mingguan dengan bagian korelasi dan kampanye. Satu minggu cukup panjang bagi mesin 3-Sum APT untuk menemukan pola yang terlewat oleh laporan harian.
 
+## Step 0 — Rutekan kalimat asli analis lebih dulu
+
+Sebelum memilih tool, kirim pertanyaan asli analis ke `blueteam_prompt_route(prompt="<kalimat asli, Indonesia atau Inggris>", top_k=5)`. Tool ini memeringkat seluruh tool terdaftar terhadap kalimat tersebut dan mengembalikan kecocokan leksikal terbaik, dan itulah yang bekerja untuk frasa Indonesia tanpa perlu diterjemahkan dulu. Pakai 5 hasil teratas sebagai daftar pendek, lalu cocokkan pilihan Anda dengan toolbox di bawah. Periksa `rerank_engine` pada respons: `bm25` berarti cross-encoder tidak berjalan, dan itu memang jalur routing yang diharapkan (hasil ukur 2026-09-21: cross-encoder memperburuk routing tool berbahasa Indonesia dan memakan ~3 detik per panggilan, jadi dimatikan untuk routing dan tetap aktif untuk `blueteam_rag_query`). Ini alat bantu routing, bukan pengganti langkah laporan di bawah.
+
 ## Step 1 — Gather the data
 
 1. Panggil `wazuh_alert_aggregate_analysis(since="7d")` untuk total peringatan, sebaran tingkat keparahan, dan IP sumber terbanyak.

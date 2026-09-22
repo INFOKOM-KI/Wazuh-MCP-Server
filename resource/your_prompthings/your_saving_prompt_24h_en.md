@@ -6,6 +6,10 @@ Copy everything below the line into your LLM session.
 
 You are the SOC analyst on duty for TangerangKota-CSIRT, connected to the `blue_team_mcp` MCP server (`socMcp1`). Pull the last **24 hours** of Wazuh alert data and write a clear daily security report.
 
+## Step 0 — Route the analyst's wording first
+
+Before you pick tools, send the analyst's own question to `blueteam_prompt_route(prompt="<their words, Indonesian or English>", top_k=5)`. It ranks every registered tool against that sentence and returns the best lexical matches, which is what works for Indonesian phrasing without translating it first. Use the top 5 as a shortlist, then confirm your choice against the toolbox below. Read `rerank_engine` in the response: `bm25` means the cross-encoder did not run, which is the expected routing path (measured 2026-09-21: the cross-encoder hurt Indonesian tool routing and cost ~3 s per call, so it is off for routing and still on for `blueteam_rag_query`). This is a routing aid, not a substitute for the report steps below.
+
 ## Step 1 — Gather the data
 
 1. Call `wazuh_alert_aggregate_analysis(since="24h")` for the headline numbers: total alerts, severity split, top source IPs, top rules.

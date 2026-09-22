@@ -37,6 +37,20 @@ broken. Always re-invoke once after the signature comes back.
 
 ## 1. Tool taxonomy (grouped by SOC function)
 
+Route the analyst's own sentence before picking from the tables below.
+`blueteam_prompt_route(prompt="<the analyst's wording, Indonesian or English>", top_k=5)` ranks
+every registered tool against that sentence and returns the best lexical matches, which is what
+works for Indonesian phrasing without translating it first. Treat the top 5 as a shortlist and
+confirm the choice against this taxonomy: the router ranks tool descriptions, it does not know your
+alert context, and it only finds a tool whose description contains the vocabulary you used. When
+nothing in the shortlist fits, fall back to the tables below rather than rephrasing until something
+appears. Read `rerank_engine` in the response (`bm25` is the expected routing path: the
+cross-encoder is off for routing because a 2026-09-21 measurement showed it lowered Indonesian
+top-3 accuracy from 7/16 to 5/16 and cost 2.97 s median per call, while it stays on for
+`blueteam_rag_query`), and use `mode="buckets"` when you want to see how it split the sentence into
+tokens. When the analyst's question is vague, ask them one clarifying question rather than routing a
+guess.
+
 Choose the tool by what the analyst wants — never invent tools.
 
 ### Triage (single IP)

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Tests for core/rerank.py; optional BM25 -> cross-encoder reranker.
 Coverage: the fallback contract (disabled / empty / unavailable / success) and
-the reason() status string. The model itself is never loaded fastembed is
-absent in CI, so the unavailable path is exercised against that absence.
+the reason() status string. The model is never loaded: fastembed's absence is
+simulated, so these tests pass whether or not the dependency is installed.
 """
 
 from __future__ import annotations
@@ -50,10 +50,11 @@ def test_rerank_unavailable_when_fastembed_missing():
     from mcp_server.core.config import config
     _reset()
     config.rerank.enabled = True
-    scores, status = asyncio.run(rerank.rerank("query", ["doc a"]))
-    assert scores == []
-    assert status is not None and status.startswith("unavailable:")
-    assert rerank.reason().startswith("model load failed")
+    with _fastembed_absent():
+        scores, status = asyncio.run(rerank.rerank("query", ["doc a"]))
+        assert scores == []
+        assert status is not None and status.startswith("unavailable:")
+        assert rerank.reason().startswith("model load failed")
     _reset()
 
 
@@ -78,18 +79,42 @@ def test_rerank_success_returns_scores_in_doc_order():
 def test_ensure_loaded_sets_reason_on_failure():
     from mcp_server.core import rerank
     _reset()
-    ok = rerank._ensure_loaded()
-    assert ok is False
-    assert rerank.reason().startswith("model load failed")
+    with _fastembed_absent():
+        ok = rerank._ensure_loaded()
+        assert ok is False
+        assert rerank.reason().startswith("model load failed")
     _reset()
 
 
 # sha256 supply chain pin (BLUETEAM_RERANK_MODEL_SHA256)
 import hashlib
+import contextlib
 import os
 import sys
 import tempfile
 from types import SimpleNamespace
+
+
+@contextlib.contextmanager
+def _fastembed_absent():
+    """Make any import of fastembed raise, no matter what is installed.
+
+    Both entries are set to None: a submodule already cached in sys.modules
+    imports fine even when the parent package is None, which is what made the
+    "unavailable" tests depend on the host's installed packages.
+    """
+    keys = ("fastembed", "fastembed.rerank.cross_encoder")
+    saved = {k: sys.modules.get(k) for k in keys}
+    for k in keys:
+        sys.modules[k] = None
+    try:
+        yield
+    finally:
+        for k, previous in saved.items():
+            if previous is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = previous
 
 
 def _install_fake_fastembed(monkeypatch, model_dir):
@@ -225,9 +250,7 @@ def test_validate_fails_closed_when_fastembed_missing():
     from mcp_server.core.config import (RerankConfig, ConfigurationError,
                                         _fastembed_rerank_models)
 
-    saved = sys.modules.get("fastembed")
-    sys.modules["fastembed"] = None  # any import of it raises ImportError
-    try:
+    with _fastembed_absent():
         assert _fastembed_rerank_models() is None
         try:
             RerankConfig(enabled=True, model="BAAI/bge-reranker-base").validate()
@@ -237,11 +260,6 @@ def test_validate_fails_closed_when_fastembed_missing():
             raise AssertionError("expected ConfigurationError when fastembed is absent")
         # An explicitly disabled reranker needs no dependency at all.
         RerankConfig(enabled=False, model="who/knows").validate()
-    finally:
-        if saved is None:
-            sys.modules.pop("fastembed", None)
-        else:
-            sys.modules["fastembed"] = saved
 
 
 def test_status_dict_names_the_engine_that_actually_ranked():
