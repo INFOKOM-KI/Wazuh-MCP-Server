@@ -287,6 +287,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_metrics` | Prometheus metrics |
 | `blueteam_playbook_run` | run a named playbook workflow |
 | `blueteam_export_report` | export a report to DOCX/XLSX/PPTX (officecli) |
+| `blueteam_stix_export` | write a STIX 2.1 bundle for a peer CSIRT (identity + TLP marking + report + indicators + `indicates` relationships). Disabled unless the operator enables egress; internal values are DROPPED, never masked |
 | `blueteam_owned_domains` / `blueteam_set_owned_domains` | view/set the runtime owned (victim) domains for `protect_victim` redaction |
 | `blueteam_yara_rule_validate(rule_source)` | compile a rule with yara-x + yaraQA-style findings (naming, short atoms, `fullword` misuse) |
 | `blueteam_yara_rule_generate(mode, …)` | draft a rule from a Wazuh alert pattern (`mode="alert"`), a sample under `BLUETEAM_ALLOWED_PATHS` (`mode="file"`), or raw text |
@@ -426,6 +427,42 @@ the signal to switch converters, not to retry. Pages whose decompressed content 
 exceeds 32 MB are listed under `Skipped pages` with a reason — report them, don't guess at
 their contents. Drop the file under `BLUETEAM_ALLOWED_PATHS` before any of this; URLs are
 rejected.
+
+### Workflow I — share confirmed indicators with a peer CSIRT (STIX 2.1)
+```
+1. blueteam_extract_iocs(text=alert_data, response_format="json")            # or the case's IOC list
+2. blueteam_ioc_lifecycle(kind="ip", since_days=7, response_format="json")    # what the store already knows
+3. blueteam_stix_killchain(srcip="X", since="7d")                             # technique IDs for context
+4. blueteam_stix_export(indicators=[...], sources=["crowdsec","threatfox"],
+                        attack_technique_ids=["T1110.001"], tlp="AMBER", confidence=70)
+5. Read `dropped[...]` and the written `path`; hand the file to the operator.
+```
+
+`blueteam_stix_export` is the only egress tool in this server. It writes a STIX 2.1 bundle
+(producer `identity`, TLP `marking-definition`, `report`, `indicator` objects, and optional
+`indicates` relationships to ATT&CK techniques resolved from the loaded bundle) under
+`BLUETEAM_EXPORT_DIR/stix/`. The file is the shareable artifact: no TAXII, no network push.
+Importing it into the peer's MISP or OpenCTI is the operator's step.
+
+Three settings decide whether it runs:
+
+- `BLUETEAM_STIX_EGRESS_ENABLED=true` — otherwise the tool is disabled.
+- `BLUETEAM_STIX_IDENTITY_NAME` — a bundle with no producer Identity is not shareable.
+- `BLUETEAM_OWNED_DOMAINS` non-empty — without it, victim domains cannot be told apart from
+  attacker domains, so the tool refuses instead of guessing.
+
+What it never shares: RFC1918 / loopback / link-local / CGNAT / reserved addresses (including
+IPv4-mapped IPv6 such as `::ffff:10.0.0.5`), owned domains and their subdomains, internal TLDs,
+single-label hostnames (asset names), emails, non-http URLs, and URLs carrying credentials.
+Excluded values are itemised in `dropped` with a reason. **A dropped value is out of the bundle,
+not masked** — do not paste one back in, and never describe one as "anonymised". A second gate
+re-runs the serialized bundle through the `protect_victim` pipeline; if it still changes, the
+export is refused, so an internal path or hostname inside `description` blocks the write instead
+of leaking. Pass `include_bundle=true` only for a small bundle you are handing straight to a MISP
+API; larger bundles are written to disk and summarised, never truncated inline.
+
+Deterministic ids (`UUIDv5` over the indicator pattern) mean re-exporting the same indicator
+yields the same `indicator--` id, so the peer deduplicates instead of accumulating copies.
 
 ## 3. Redaction & the forensic token (read before touching PII)
 
@@ -672,3 +709,8 @@ provide it once at session start and you reuse it across calls.
 6. Don't invent tools — §1 lists the common surface and the Extended toolbox
    covers the long tail. For anything else, verify the exact name via the
    tool's signature before calling.
+7. STIX sharing is egress, not enrichment. `blueteam_stix_export` stays off unless
+   the operator enabled it; a value listed in `dropped` is out of the bundle, so
+   never re-add one and never call the result "anonymised". You cannot send a
+   bundle — produce it, report `path`, `sha256`, `tlp`, and let the operator
+transport it.

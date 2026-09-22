@@ -14,7 +14,7 @@ aiosqlite>=0.20,<1.0
 #   uvicorn - mcp_server/core/server_auth.py imports it inside serve_authenticated()
 #             (transitive via mcp, which requires uvicorn>=0.31.1)
 #   pyyaml  - mcp_server/tools/sigma_rules.py imports it at module top level, so
-#             its absence breaks register_all_tools() for all 146 tools at once.
+#             its absence breaks register_all_tools() for all 147 tools at once.
 #             Also used lazily in mcp_server/sigma/engine.py. Currently transitive
 #             via langgraph -> langchain-core.
 #   numpy   - mcp_server/core/rag_store.py imports it inside functions (never at
@@ -89,3 +89,10 @@ yara-x>=1.20.0,<2.0.0
 pytest>=7.0
 pytest-asyncio>=0.21
 httpx[http2]>=0.27.0,<0.29.0
+
+# stix2 is NOT a runtime dependency and must not become one. blueteam_stix_export writes
+# plain STIX 2.1 JSON by hand (mcp_server/core/stix_objects.py), and the tool has to keep
+# working without the library. Install it only when you want the conformance cross-check in
+# tests/test_stix_export.py to run that test skips itself when stix2 is absent.
+#   pip install "stix2>=3.0,<4"
+# stix2>=3.0.0,<4.0.0

@@ -556,6 +556,14 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_INVESTIGATION_HISTORY="/var/log/blue-team-mcp/investigation_history.jsonl"
 # export BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES="10000"
 # export BLUETEAM_EXPORT_DIR="/var/log/blue-team-mcp/exports"
+# STIX 2.1 egress — the only path that shares indicators OUT of the perimeter (off by default)
+# export BLUETEAM_STIX_EGRESS_ENABLED="false"      # "true" allows blueteam_stix_export to write a bundle
+# export BLUETEAM_STIX_IDENTITY_NAME="TangerangKota CSIRT"   # producer Identity, required once egress is on
+# export BLUETEAM_STIX_IDENTITY_SECTORS="government"         # comma-separated STIX sectors
+# export BLUETEAM_STIX_IDENTITY_CONTACT="csirt@example.go.id" # contact the peer CSIRT should use
+# export BLUETEAM_STIX_DEFAULT_TLP="AMBER"         # WHITE | GREEN | AMBER | RED
+# export BLUETEAM_STIX_NAMESPACE=""                # optional UUIDv5 namespace shared with a peer
+# export BLUETEAM_STIX_MARKINGS_FILE=""            # optional JSON: extra marking-definitions (TLP:CLEAR, TLP:AMBER+STRICT)
 # export MITRE_ATTACK_STIX="https://raw.githubusercontent.com/mitre-attack/attack-stix-data/refs/heads/master/enterprise-attack/enterprise-attack.json"  # public repo mitre attack
 # export BLUETEAM_AUDIT_LOG="/var/log/blue-team-mcp/audit.log"
 # export BLUETEAM_RATE_LIMIT="0"
@@ -710,6 +718,16 @@ export BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES="${BLUETEAM_INVESTIGATION_HIST
 export BLUETEAM_EXPORT_DIR="${BLUETEAM_EXPORT_DIR:-/var/log/blue-team-mcp/exports}"
 export MITRE_ATTACK_STIX="${MITRE_ATTACK_STIX:-https://raw.githubusercontent.com/mitre-attack/attack-stix-data/refs/heads/master/enterprise-attack/enterprise-attack.json}"
 export BLUETEAM_STIX_CACHE="${BLUETEAM_STIX_CACHE:-/var/log/blue-team-mcp/mitre_enterprise_attack.json}"
+# STIX 2.1 egress (bundle producer) — stays off until explicitly enabled. Needs an identity
+# and a non-empty BLUETEAM_OWNED_DOMAINS; private IPs, owned domains, internal hostnames and
+# emails are dropped from every bundle (never masked).
+export BLUETEAM_STIX_EGRESS_ENABLED="${BLUETEAM_STIX_EGRESS_ENABLED:-false}"
+export BLUETEAM_STIX_IDENTITY_NAME="${BLUETEAM_STIX_IDENTITY_NAME:-}"
+export BLUETEAM_STIX_IDENTITY_SECTORS="${BLUETEAM_STIX_IDENTITY_SECTORS:-government}"
+export BLUETEAM_STIX_IDENTITY_CONTACT="${BLUETEAM_STIX_IDENTITY_CONTACT:-}"
+export BLUETEAM_STIX_DEFAULT_TLP="${BLUETEAM_STIX_DEFAULT_TLP:-AMBER}"
+export BLUETEAM_STIX_NAMESPACE="${BLUETEAM_STIX_NAMESPACE:-}"
+export BLUETEAM_STIX_MARKINGS_FILE="${BLUETEAM_STIX_MARKINGS_FILE:-}"
 export BLUETEAM_AUDIT_LOG="${BLUETEAM_AUDIT_LOG:-}"
 export BLUETEAM_RATE_LIMIT="${BLUETEAM_RATE_LIMIT:-0}"
 # Data masking (six-layer pipeline)

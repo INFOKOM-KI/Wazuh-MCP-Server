@@ -5,7 +5,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **146 tools + 4 resources** (120 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
+offensive tooling. **147 tools + 4 resources** (121 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, local case RAG, and host forensics. Read-only by default.
 
@@ -100,6 +100,7 @@ optional — tools degrade gracefully without them.
 | Outbound lookup spacing | `NETRA_MIN_INTERVAL`, `ARGUS_MIN_INTERVAL`, `SANGFOR_MIN_INTERVAL` | seconds between upstream lookups — default `30`/`30`/`5` |
 | Outbound HTTP timeout | `HTTP_TIMEOUT` | seconds per upstream request — default `30`. Netra overrides it per request at 90s because its fan-out measured ~34s. A timeout counts as a breaker failure, so a budget below real latency trips the breaker for that upstream |
 | ATT&CK STIX bundle | `MITRE_ATTACK_STIX`, `BLUETEAM_STIX_CACHE`, `BLUETEAM_STIX_MAX_AGE_DAYS`, `BLUETEAM_STIX_MAX_MB`, `BLUETEAM_STIX_RETRY_S` | `https://` URL or a local path (no `file://`/`ftp://`), cache path (default `/var/log/blue-team-mcp/mitre_enterprise_attack.json`), refresh TTL (7 days), fetch cap (100 MB — the corpus is 40 MB), retry after a failed first load (60s). A failed refresh keeps the last good bundle |
+| STIX 2.1 egress | `BLUETEAM_STIX_EGRESS_ENABLED`, `BLUETEAM_STIX_IDENTITY_NAME`, `BLUETEAM_STIX_IDENTITY_SECTORS`, `BLUETEAM_STIX_IDENTITY_CONTACT`, `BLUETEAM_STIX_DEFAULT_TLP`, `BLUETEAM_STIX_NAMESPACE`, `BLUETEAM_STIX_MARKINGS_FILE` | the only egress path: `blueteam_stix_export` writes a shareable bundle. Off by default; on, it also needs `IDENTITY_NAME` and a non-empty `BLUETEAM_OWNED_DOMAINS` (fail-closed, see Security & Privacy). `DEFAULT_TLP` defaults `AMBER`. `NAMESPACE` aligns UUIDv5 ids with a peer. `MARKINGS_FILE` adds markings this repo does not ship (TLP:CLEAR, TLP:AMBER+STRICT) |
 | Redaction | `BLUETEAM_REDACTION_POLICY`, `BLUETEAM_OWNED_DOMAINS`, `BLUETEAM_REDACT_*` | see Security & Privacy |
 | Forensic gate | `BLUETEAM_ALLOW_FORENSIC_BYPASS`, `BLUETEAM_FORENSIC_TOKEN` | default `false` / empty |
 | SSRF allowlist | `ALLOWED_INTERNAL_DOMAINS` | comma-separated internal domains `blueteam_check_webshell` may reach on non-public IPs (default: reject all non-public hosts) |
@@ -107,7 +108,7 @@ optional — tools degrade gracefully without them.
 | Inbound hardening | `BLUETEAM_HTTP_RATE_LIMIT`, `BLUETEAM_ALLOWED_ORIGINS` | per-IP sliding-window rate limit (req/min, `0`=off) + Origin allowlist (loopback always allowed) |
 | Audit & persistence | `BLUETEAM_AUDIT_LOG`, `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CMDB_FILE` | JSONL audit trail + stores (optional) |
 | Local case RAG | `BLUETEAM_RAG_ENABLED`, `BLUETEAM_RAG_DB`, `BLUETEAM_RAG_MODEL`, `BLUETEAM_RAG_CACHE_PATH`, `BLUETEAM_RAG_MAX_CANDIDATES`, `BLUETEAM_RAG_TOP_K`, `BLUETEAM_RAG_MAX_CHUNKS`, `BLUETEAM_RAG_CHUNK_CHARS`, `BLUETEAM_RAG_CHUNK_OVERLAP`, `BLUETEAM_RAG_ALLOW_DOWNLOAD`, `BLUETEAM_RAG_MODEL_SHA256` | SQLite retrieval corpus over cases / confirmed false positives / IR playbooks. `ENABLED=true` requires an absolute `DB` path or startup raises. `ALLOW_DOWNLOAD` defaults `false` (`local_files_only`). |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **120 tools registered** instead of 146: `146 - 23 - 3 = 120`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **121 tools registered** instead of 147: `147 - 23 - 3 = 121`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
@@ -281,10 +282,11 @@ reviewed step.
 
 - `MCP_API_KEY` — format `btm_<43-char-urlsafe-base64>` (47 chars). Stored only as a SHA-256
   digest, compared with `hmac.compare_digest` (constant-time).
-- `MCP_API_KEY_SCOPES` — default `wazuh:read` (read-only). Add `wazuh:write` to unlock the 11
+- `MCP_API_KEY_SCOPES` — default `wazuh:read` (read-only). Add `wazuh:write` to unlock the 13
   write tools (`blueteam_fail2ban_unban`, `blueteam_case_*`, `blueteam_set_owned_domains`,
   `blueteam_mark_investigated`, `blueteam_wazuh_export`, `blueteam_export_report`,
-  `blueteam_capture_traffic`, `blueteam_yara_rule_save`, `blueteam_sigma_rule_save`). Fail-closed: no scope ⇒ read-only.
+  `blueteam_stix_export`, `blueteam_rag_ingest`, `blueteam_capture_traffic`,
+  `blueteam_yara_rule_save`, `blueteam_sigma_rule_save`). Fail-closed: no scope ⇒ read-only.
 - **Bind guard** (`main.py::_start_http_transport`): a non-loopback bind without `MCP_API_KEY`
   raises `ConfigurationError` and refuses to start. Loopback stays auth-less only when no key is
   configured; when a key is set it is enforced on every request.
@@ -341,7 +343,7 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 146
+Manager (config/agent data) plus 7+ external threat-intel providers into 147
 tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
@@ -612,6 +614,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_metrics` | Prometheus metrics |
 | `blueteam_playbook_run` | run a named playbook workflow |
 | `blueteam_export_report` | export a report to DOCX/XLSX/PPTX (officecli) |
+| `blueteam_stix_export` | write a STIX 2.1 bundle for a peer CSIRT (identity + TLP marking + report + indicators + `indicates` relationships). Off unless `BLUETEAM_STIX_EGRESS_ENABLED=true`; private IPs, owned domains, internal hostnames and emails are DROPPED, never masked |
 | `blueteam_owned_domains` / `blueteam_set_owned_domains` | view/set the runtime owned (victim) domains for `protect_victim` redaction |
 | `blueteam_yara_rule_validate(rule_source)` | compile a rule with yara-x + yaraQA-style findings (naming, short atoms, `fullword` misuse) |
 | `blueteam_yara_rule_generate(mode, …)` | draft a rule from a Wazuh alert pattern (`mode="alert"`), a sample under `BLUETEAM_ALLOWED_PATHS` (`mode="file"`), or raw text |
@@ -751,6 +754,26 @@ the signal to switch converters, not to retry. Pages whose decompressed content 
 exceeds 32 MB are listed under `Skipped pages` with a reason — report them, don't guess at
 their contents. Drop the file under `BLUETEAM_ALLOWED_PATHS` before any of this; URLs are
 rejected.
+
+### Workflow I — share confirmed indicators with a peer CSIRT (STIX 2.1)
+```
+1. blueteam_extract_iocs(text=alert_data, response_format="json")            # or the case's IOC list
+2. blueteam_ioc_lifecycle(kind="ip", since_days=7, response_format="json")    # what the store already knows
+3. blueteam_stix_killchain(srcip="X", since="7d")                             # technique IDs for context
+4. blueteam_stix_export(indicators=[...], sources=["crowdsec","threatfox"],
+                        attack_technique_ids=["T1110.001"], tlp="AMBER", confidence=70)
+5. Read `dropped[...]` and the written `path`; hand the file to the operator.
+```
+
+Workflow I is the only path where data leaves the perimeter, and it stops at the file: no TAXII,
+no push to the peer. The operator imports the bundle into MISP/OpenCTI. Requirements, all
+fail-closed: `BLUETEAM_STIX_EGRESS_ENABLED=true`, `BLUETEAM_STIX_IDENTITY_NAME`, and a non-empty
+`BLUETEAM_OWNED_DOMAINS` (without it, victim domains cannot be distinguished from attacker
+domains). Private/reserved IPs, owned domains, internal TLDs, single-label hostnames, emails,
+non-http URLs, and credential-bearing URLs are dropped and listed in `dropped`; a second gate
+refuses the export if the serialized bundle still contains anything the redaction pipeline would
+mask. Deterministic UUIDv5 ids (keyed on the indicator pattern) let the peer deduplicate a value
+across re-exports.
 
 ## 3. Redaction & the forensic token (read before touching PII)
 
@@ -980,6 +1003,9 @@ provide it once at session start and you reuse it across calls.
 - Export a finished report to DOCX/XLSX/PPTX with `blueteam_export_report`
   (officecli) — markdown/JSON are the in-session formats; officecli is for
   deliverables.
+- Share confirmed indicators with `blueteam_stix_export` (STIX 2.1 bundle, no TAXII).
+  A value in `dropped` is out of the bundle, not anonymised. Produce the file,
+  report `path`/`sha256`/`tlp`, and let the operator transport it.
 - Never claim a tool "succeeded" without evidence of execution. If a tool needs
   a live credential and fails, state "not verified — requires valid key/cluster".
 - **Redacted-but-real protocol**: for PII-adjacent data (citizen IP, email),
@@ -997,6 +1023,11 @@ provide it once at session start and you reuse it across calls.
 6. Don't invent tools — §1 lists the common surface and the Extended toolbox
    covers the long tail. For anything else, verify the exact name via the
    tool's signature before calling.
+7. STIX sharing is egress, not enrichment. `blueteam_stix_export` stays off unless
+   the operator enabled it; a value listed in `dropped` is out of the bundle, so
+   never re-add one and never call the result "anonymised". You cannot send a
+   bundle — produce it, report `path`, `sha256`, `tlp`, and let the operator
+   transport it.
 ````
 
 ---
