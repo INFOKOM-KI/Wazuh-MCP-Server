@@ -66,6 +66,10 @@ URLHAUS_CACHE_TTL   = _c.threat_intel.urlhaus_cache_ttl
 HUDSONROCK_API_KEY_ENV = "HUDSONROCK_API_KEY"
 RAPIDAPI_KEY_ENV    = "RAPIDAPI_KEY"
 RAPIDAPI_CACHE_TTL  = _c.threat_intel.rapidapi_cache_ttl
+RAPIDAPI_MONTHLY_CAP  = _c.threat_intel.rapidapi_monthly_cap
+RAPIDAPI_BUDGET       = _c.threat_intel.rapidapi_budget
+RAPIDAPI_BUDGET_HOURS = _c.threat_intel.rapidapi_budget_hours
+RAPIDAPI_CACHE_PATH   = _c.threat_intel.rapidapi_cache_path
 
 # External API Base URLs
 CROWDSEC_BASE_URL  = _c.threat_intel.crowdsec_base_url

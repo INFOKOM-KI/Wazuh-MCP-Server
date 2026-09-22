@@ -148,9 +148,13 @@ class ThreatIntelConfig:
     # HudsonRock (stealer logs)
     hudsonrock_api_key: str = ""
     hudsonrock_base_url: str = "https://cavalier.hudsonrock.com/api/json/v2"
-    # RapidAPI capability lookups (IP blacklist, IOC search, breach check)
+    # RapidAPI capability lookups (IP blacklist, IOC search, breach check, bulk IP intel)
     rapidapi_key: str = ""
-    rapidapi_cache_ttl: int = 1800
+    rapidapi_cache_ttl: int = 604800          # 7 days: the binding limit is 100/month, not staleness
+    rapidapi_monthly_cap: int = 100           # account-wide hard limit, shared by every product
+    rapidapi_budget: int = 0                  # 0 = fail-closed, armed per incident window
+    rapidapi_budget_hours: float = 4.0
+    rapidapi_cache_path: str = ""
 
     @classmethod
     def from_env(cls) -> "ThreatIntelConfig":
@@ -185,7 +189,11 @@ class ThreatIntelConfig:
             hudsonrock_api_key=os.environ.get("HUDSONROCK_API_KEY", ""),
             hudsonrock_base_url=os.environ.get("HUDSONROCK_BASE_URL", "https://cavalier.hudsonrock.com/api/json/v2"),
             rapidapi_key=os.environ.get("RAPIDAPI_KEY", ""),
-            rapidapi_cache_ttl=int(os.environ.get("RAPIDAPI_CACHE_TTL", "1800")),
+            rapidapi_cache_ttl=int(os.environ.get("RAPIDAPI_CACHE_TTL", "604800")),
+            rapidapi_monthly_cap=int(os.environ.get("BLUETEAM_RAPIDAPI_MONTHLY_CAP", "100")),
+            rapidapi_budget=int(os.environ.get("BLUETEAM_RAPIDAPI_BUDGET", "0")),
+            rapidapi_budget_hours=float(os.environ.get("BLUETEAM_RAPIDAPI_BUDGET_HOURS", "4")),
+            rapidapi_cache_path=os.environ.get("BLUETEAM_RAPIDAPI_CACHE", ""),
         )
 
     def validate(self) -> None:
@@ -194,6 +202,18 @@ class ThreatIntelConfig:
             raise ConfigurationError("NETRA_MIN_INTERVAL must be >= 0")
         if self.argus_min_interval < 0:
             raise ConfigurationError("ARGUS_MIN_INTERVAL must be >= 0")
+        if self.rapidapi_budget < 0:
+            raise ConfigurationError("BLUETEAM_RAPIDAPI_BUDGET must be >= 0")
+        if self.rapidapi_budget_hours <= 0:
+            raise ConfigurationError("BLUETEAM_RAPIDAPI_BUDGET_HOURS must be > 0")
+        if self.rapidapi_monthly_cap <= 0:
+            raise ConfigurationError("BLUETEAM_RAPIDAPI_MONTHLY_CAP must be > 0")
+        if self.rapidapi_budget > self.rapidapi_monthly_cap:
+            raise ConfigurationError(
+                f"BLUETEAM_RAPIDAPI_BUDGET ({self.rapidapi_budget}) exceeds the account wide "
+                f"BLUETEAM_RAPIDAPI_MONTHLY_CAP ({self.rapidapi_monthly_cap}); the excess would "
+                f"be spent against a 429."
+            )
 
 
 @dataclass
@@ -848,6 +868,19 @@ class Config:
             logger.warning("VIRUSTOTAL_API_KEY not set - VirusTotal lookups disabled.")
         if not self.threat_intel.rapidapi_key:
             logger.warning("RAPIDAPI_KEY not set - RapidAPI lookups (IP blacklist / IOC search / breach check) disabled.")
+        else:
+            logger.info(
+                "RapidAPI budget: %d/%d armed for %.1fh; %s.",
+                self.threat_intel.rapidapi_budget, self.threat_intel.rapidapi_monthly_cap,
+                self.threat_intel.rapidapi_budget_hours,
+                ("persistent cache " + self.threat_intel.rapidapi_cache_path)
+                if self.threat_intel.rapidapi_cache_path else "in-memory cache only",
+            )
+            if not self.threat_intel.rapidapi_budget:
+                logger.warning(
+                    "BLUETEAM_RAPIDAPI_BUDGET=0 - every RapidAPI call is refused "
+                    "(fail-closed). Arm it for an incident window."
+                )
         if not self.misp.enabled:
             logger.warning("MISP_URL / MISP_API_KEY not set - MISP tools disabled.")
         elif not self.misp.verify_ssl:

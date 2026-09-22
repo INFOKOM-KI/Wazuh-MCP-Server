@@ -1,45 +1,66 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-RapidAPI capability lookups - three providers over a shared RapidAPI transport:
+RapidAPI capability lookups - four providers over a shared RapidAPI transport:
 1. blueteam_ip_blacklist  - Apiverve IP Blacklist Lookup (is this srcip on a blacklist?)
 2. blueteam_ioc_search    - RapidAPI IOC Search (vendor verdicts, file + hostname telemetry)
 3. blueteam_breach_check  - RapidAPI Breach Check (was this email in a known breach?)
-All three accept the indicator (srcip / attacker IP / email) directly so the LLM can feed
-values pulled from Wazuh alerts without any extra plumbing.
+4. blueteam_ip_intel_bulk - IP Threat Intelligence (N IPs in one request)
+All four accept the indicator (srcip / attacker IP / email / IP list) directly so the LLM
+can feed values pulled from Wazuh alerts without any extra plumbing.
+
+Quota model: the account carries ONE hard limit shared by every product above, so the
+budget guard in ``rapidapi_quota`` is account-wide, not per product. It defaults to 0
+(fail-closed) and is armed per incident window, because a daily report pass over 20 IPs
+would otherwise spend a fifth of the month in one run. The bulk endpoint exists for the
+same reason: N IPs cost one request instead of N.
+
 Two response strategies, matched to the payload:
-- ip_blacklist / breach_check use the generic `_dynamic_markdown` + `_envelope` pair, so an
-  unknown or changing third-party schema degrades to a pretty-printed body instead of an
-  empty report.
+- ip_blacklist / breach_check / ip_intel_bulk use the generic `_dynamic_markdown` +
+  `_envelope` pair, so an unknown or changing third-party schema degrades to a
+  pretty-printed body instead of an empty report.
 - ioc_search has a known, stable, ~70 KB schema, so it gets a provider-aware normalizer
   (`_normalize_ioc_search`) with three `detail_level`s. Its WHOIS block carries a natural
   person's name and postal address, which the shape-based redaction layers do not catch -
   `_strip_whois_pii` reduces it to technical registry fields at every detail level.
 """
 from __future__ import annotations
-import json, os, re
+import hashlib, json, os, re
 from datetime import datetime, timezone
 from typing import Any, Literal
 from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from mcp_server import mcp, RAPIDAPI_KEY_ENV, RAPIDAPI_CACHE_TTL
-from mcp_server.core.http_client import _api_call, _handle_api_error, ValidPublicIp
+from mcp_server import (mcp, RAPIDAPI_KEY_ENV, RAPIDAPI_CACHE_TTL, RAPIDAPI_MONTHLY_CAP,
+                        RAPIDAPI_BUDGET, RAPIDAPI_BUDGET_HOURS, RAPIDAPI_CACHE_PATH)
+from mcp_server.core.http_client import (_api_call, _handle_api_error, ValidPublicIp,
+                                         CircuitOpenError)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.exceptions import ThreatIntelError
 from mcp_server.core.redact import _redact_alert_data
-from mcp_server.threat_intel._cache import cache_get, cache_set, get_limiter
+from mcp_server.threat_intel._cache import (cache_get, cache_set, get_limiter,
+                                            PersistentJsonlCache)
+from mcp_server.threat_intel.rapidapi_quota import RapidApiBudget
 
 # RapidAPI host endpoints (The key is shared via RAPIDAPI_KEY).
 _IP_BLACKLIST_HOST = "ip-blacklist-lookup-api-apiverve.p.rapidapi.com"
 _IOC_SEARCH_HOST = "ioc-search.p.rapidapi.com"
 _BREACH_CHECK_HOST = "breachcheck-api.p.rapidapi.com"
+_IP_INTEL_HOST = "ip-threat-intelligence.p.rapidapi.com"
+_BULK_MAX_IPS = 50
 
-# One request in flight at a time: RapidAPI quota is per subscribed product, and a
-# free plan is small enough that a burst is the difference between a successful
-# lookup and a self-inflicted 429. max_concurrent=1 also makes min_interval mean
-# "time between request starts", which it does not under concurrency (the shared
-# AsyncRateLimiter reserves nothing, so N waiters wake together).
+# Response cache and quota counter share one file, so a restart cannot hand back a
+# budget the account was already billed for.
+_STORE = PersistentJsonlCache(RAPIDAPI_CACHE_PATH) if RAPIDAPI_CACHE_PATH else None
+_QUOTA = RapidApiBudget(RAPIDAPI_BUDGET, RAPIDAPI_BUDGET_HOURS, RAPIDAPI_MONTHLY_CAP, _STORE)
+
+# One request in flight at a time. The 1000/hour burst limit is the only thing this
+# limits, and an account-wide 100/month budget can never reach it, so the limiter is a
+# secondary guard behind the budget check. It still earns its place: a retry storm or a
+# loop would otherwise burn the whole monthly pool inside one second.
+# max_concurrent=1 also makes min_interval mean "time between request starts", which it
+# does not under concurrency (the shared AsyncRateLimiter reserves nothing, so N waiters
+# wake together).
 _limiter = get_limiter("rapidapi", max_concurrent=1, min_interval=0.25)  # 4 req/s, under the ~5 req/s free tier
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -49,8 +70,9 @@ def _rapidapi_headers(host: str) -> dict[str, str]:
     key = os.environ.get(RAPIDAPI_KEY_ENV)
     if not key:
         raise RuntimeError(
-            f"{RAPIDAPI_KEY_ENV} not set. Get a key at https://rapidapi.com (subscribe to the"
-            f"three providers: Apiverve IP Blacklist, IOC Search, Breach Check)."
+            f"{RAPIDAPI_KEY_ENV} not set. Get a key at https://rapidapi.com (the account "
+            f"limit is shared by Apiverve IP Blacklist, IOC Search, Breach Check and IP "
+            f"Threat Intelligence)."
         )
     return {
         "x-rapidapi-key": key,
@@ -61,26 +83,92 @@ def _rapidapi_headers(host: str) -> dict[str, str]:
     }
 
 
+async def _rapidapi_request(method: str, host: str, path: str,
+                            payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """One budgeted request. Callers must have checked the cache first: a cache hit
+    costs no quota while a budget refusal costs the operator their incident window.
+    ``max_retries=0``: a retry spends a second of 100 monthly requests on an upstream
+    fault we did not cause, and buys nothing a single attempt would not.
+    """
+    # Credentials first: a missing key is a configuration fault that arming a budget
+    # cannot fix, so reporting "budget closed" ahead of it points at the wrong problem.
+    headers = _rapidapi_headers(host)
+    _QUOTA.check()
+    kwargs: dict[str, Any] = {"headers": headers, "max_retries": 0}
+    if payload is not None:
+        kwargs["json"] = payload
+    try:
+        resp = await _api_call(method, f"https://{host}{path}", client_name="rapidapi",
+                               **kwargs)
+    except CircuitOpenError:
+        raise
+    except Exception:
+        _QUOTA.charge()
+        raise
+    _QUOTA.charge()
+    return resp.json()
+
+
+def _cache_key(host: str, path: str) -> str:
+    return f"{host}{path}"
+
+
+def _bulk_cache_key(host: str, path: str, ips: list[str]) -> str:
+    """Sorted before hashing, so [a,b] and [b,a] share one entry instead of spending
+    two of the month's requests on the same answer."""
+    digest = hashlib.sha256(json.dumps(sorted(ips)).encode()).hexdigest()[:32]
+    return f"{host}{path}#{digest}"
+
+
+def _cache_lookup(key: str) -> Any | None:
+    # `is not None`, never truthiness: PersistentJsonlCache defines __len__, so an
+    # empty store is falsy and the persistent path would silently fall through to the
+    # shared in-memory cache.
+    return _STORE.get(key) if _STORE is not None else cache_get("rapidapi", key)
+
+
+def _cache_store(key: str, value: Any, ttl: float) -> None:
+    if _STORE is not None:
+        _STORE.set(key, value, ttl)
+    else:
+        cache_set("rapidapi", key, value, ttl)
+
+
 async def _rapidapi_get(host: str, path: str, ttl: int | None = None) -> dict[str, Any]:
-    """GET a RapidAPI endpoint with TTL caching + rate limiting. Returns parsed JSON.
-    ``ttl`` defaults to ``RAPIDAPI_CACHE_TTL`` (default 1800s). The three RapidAPI
-    products share one cache namespace but have separate quotas, so the TTL is the
-    only lever an operator has to trade freshness for quota headroom.
+    """GET a RapidAPI endpoint with TTL caching + rate limiting + budget guard.
+    ``ttl`` defaults to ``RAPIDAPI_CACHE_TTL`` (default 7 days). All four products
+    share one account-wide quota, so the TTL trades freshness for the month's
+    allowance rather than for one product's headroom.
     Uses its own ``rapidapi`` HTTP client pool so the pool and circuit breaker are
     not shared with the other external threat-intel providers: a CrowdSec outage
     must not fail RapidAPI lookups fast with a circuit-open error.
     """
     if ttl is None:
         ttl = RAPIDAPI_CACHE_TTL
-    cache_key = f"{host}{path}"
-    cached = cache_get("rapidapi", cache_key)
+    cache_key = _cache_key(host, path)
+    cached = _cache_lookup(cache_key)
     if cached is not None:
         return cached
     async with _limiter:
-        resp = await _api_call("get", f"https://{host}{path}", client_name="rapidapi",
-                               headers=_rapidapi_headers(host))
-        data = resp.json()
-    cache_set("rapidapi", cache_key, data, ttl)
+        data = await _rapidapi_request("get", host, path)
+    _cache_store(cache_key, data, ttl)
+    return data
+
+
+async def _rapidapi_post(host: str, path: str, payload: dict[str, Any],
+                         ttl: int | None = None) -> dict[str, Any]:
+    """POST a RapidAPI endpoint, one budgeted request regardless of payload size.
+    Same cache and budget path as GET so a bulk call cannot bypass either.
+    """
+    if ttl is None:
+        ttl = RAPIDAPI_CACHE_TTL
+    cache_key = _bulk_cache_key(host, path, payload.get("ips", []))
+    cached = _cache_lookup(cache_key)
+    if cached is not None:
+        return cached
+    async with _limiter:
+        data = await _rapidapi_request("post", host, path, payload)
+    _cache_store(cache_key, data, ttl)
     return data
 
 
@@ -566,3 +654,58 @@ async def blueteam_breach_check(params: BreachCheckInput) -> str:
     if params.response_format == "json":
         return _envelope(params.email, "rapidapi_breach_check", _sanitize_breach(raw), params=params)
     return _redact_alert_data(_dynamic_markdown(f"Breach Check - {params.email}", _sanitize_breach(raw)), params=params)
+
+
+class BulkIpIntelInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    ips: list[ValidPublicIp] = Field(
+        ..., min_length=1, max_length=_BULK_MAX_IPS,
+        description=(f"Public source IPs to look up in one request (1-{_BULK_MAX_IPS}). "
+                     "Feed the attacker srcips from a Wazuh alert or a 3-Sum result."),
+    )
+    response_format: Literal["markdown", "json"] = Field(default="markdown")
+
+
+@mcp.tool(name="blueteam_ip_intel_bulk",
+          annotations={"readOnlyHint": True, "destructiveHint": False,
+                       "idempotentHint": True, "openWorldHint": True})
+async def blueteam_ip_intel_bulk(params: BulkIpIntelInput) -> str:
+    """Look up threat intelligence for many IPs in a single metered request.
+
+    The account carries one shared RapidAPI budget, so this is the preferred path
+    whenever more than one IP needs a verdict: 20 IPs cost one request instead of 20.
+    Duplicates are collapsed before the call, and the result is cached under a
+    sorted-IP hash so re-running the same set inside the TTL window is free.
+
+    Args:
+        params.ips: public source IPs. Private, loopback, link-local and CGNAT
+            addresses are rejected before any request is sent.
+        params.response_format: `markdown` (default) or `json`.
+
+    **Required Permissions**: `RAPIDAPI_KEY` subscribed to "IP Threat Intelligence"
+    on RapidAPI. A 403 means the key is valid but that product is not subscribed;
+    it is a separate subscription from the other three RapidAPI tools.
+
+    **Rate limits**: one request per call, drawn from the shared account-wide pool
+    (`BLUETEAM_RAPIDAPI_MONTHLY_CAP`, default 100/month). The budget is closed
+    unless the operator armed it (`BLUETEAM_RAPIDAPI_BUDGET`), so a scheduled
+    report run gets a refusal, not a verdict. Results cached for
+    `RAPIDAPI_CACHE_TTL` (default 7 days).
+
+    **Worked Examples**
+    1. ``blueteam_ip_intel_bulk(ips=["185.220.101.1", "103.46.186.148"])``
+    2. ``blueteam_ip_intel_bulk(ips=["171.25.193.25"], response_format="json")``
+    3. ``blueteam_ip_intel_bulk(ips=[...])`` with the srcip list from
+       ``three_sum_correlation`` to triage a whole incident in one request.
+    """
+    unique = sorted(dict.fromkeys(params.ips))
+    _audit_log("blueteam_ip_intel_bulk", {"count": len(unique)})
+    try:
+        raw = await _rapidapi_post(_IP_INTEL_HOST, "/v1/ip-intel/bulk", {"ips": unique})
+    except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError, ValueError) as e:
+        _handle_api_error(e, context="blueteam_ip_intel_bulk")
+    if params.response_format == "json":
+        return _envelope(", ".join(unique), "rapidapi_ip_intel_bulk", raw, params=params)
+    return _redact_alert_data(
+        _dynamic_markdown(f"IP Threat Intel (bulk) - {len(unique)} IP(s)", raw), params=params)

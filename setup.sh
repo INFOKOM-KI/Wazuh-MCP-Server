@@ -396,7 +396,12 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export ABUSEIPDB_API_KEY="your_key"     # https://www.abuseipdb.com
 # export VIRUSTOTAL_API_KEY="your_key"    # https://www.virustotal.com
 # export CROWDSEC_API_KEY="your_key"      # free tier: https://www.crowdsec.net/en/user/profile
-# export RAPIDAPI_KEY="your_key"           # https://rapidapi.com (IP Blacklist, IOC Search, Breach Check)
+# export RAPIDAPI_KEY="your_key"           # https://rapidapi.com. All products share ONE 100/month pool
+#   The RapidAPI budget is fail-closed: leave BLUETEAM_RAPIDAPI_BUDGET at 0 for normal
+#   operation and raise it only for a live incident window. Scheduled reports run without it.
+# export BLUETEAM_RAPIDAPI_BUDGET="0"          # requests armed for an incident window (0 = refuse everything)
+# export BLUETEAM_RAPIDAPI_BUDGET_HOURS="4"    # the window expires on its own after N hours
+# export BLUETEAM_RAPIDAPI_MONTHLY_CAP="100"   # account-wide hard limit, shared by every product
 # export HUDSONROCK_API_KEY="your_key"      # https://cavalier.hudsonrock.com (stealer-log check)
 # export NETRA_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
 # export NETRA_VERIFY_SSL="false"         # set to "true" for production / trusted CA
@@ -443,7 +448,8 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export THREATFOX_CACHE_TTL="900"
 # export OTX_CACHE_TTL="1800"
 # export URLHAUS_CACHE_TTL="1800"
-# export RAPIDAPI_CACHE_TTL="1800"
+# export RAPIDAPI_CACHE_TTL="604800"      # 7 days: the binding limit is 100 requests/month, not staleness
+# export BLUETEAM_RAPIDAPI_CACHE="/var/log/blue-team-mcp/rapidapi_state.jsonl"  # cache + budget counter, survives a restart
 # export BLUETEAM_INDEXER_CACHE_TTL="30"     # dedupe identical Indexer aggregations within N seconds; 0 = off
 # export BLUETEAM_GRAPH_CACHE_TTL="60"       # attack-graph cache TTL in seconds
 # export BLUETEAM_CMDB_FILE="/var/log/blue-team-mcp/cmdb_inventory.json"
@@ -670,7 +676,7 @@ unset -f _sync_env_key 2>/dev/null || true
 # Wrapper scripts
 echo "[5/7] Creating MCP server wrapper scripts..."
 
-# Main wrapper: mcp-server-blueteam (all 146 tools)
+# Main wrapper: mcp-server-blueteam (all 148 tools)
 cat > /usr/local/bin/mcp-server-blueteam << 'EOF'
 #!/usr/bin/env bash
 # Wrapper - Claude Desktop calls this via SSH (MAESTRO-compliant)
@@ -686,6 +692,10 @@ export OTX_CACHE_TTL="${OTX_CACHE_TTL:-1800}"
 export URLHAUS_API_KEY="${URLHAUS_API_KEY:-}"
 export URLHAUS_CACHE_TTL="${URLHAUS_CACHE_TTL:-1800}"
 export RAPIDAPI_KEY="${RAPIDAPI_KEY:-}"
+export BLUETEAM_RAPIDAPI_BUDGET="${BLUETEAM_RAPIDAPI_BUDGET:-0}"
+export BLUETEAM_RAPIDAPI_BUDGET_HOURS="${BLUETEAM_RAPIDAPI_BUDGET_HOURS:-4}"
+export BLUETEAM_RAPIDAPI_MONTHLY_CAP="${BLUETEAM_RAPIDAPI_MONTHLY_CAP:-100}"
+export BLUETEAM_RAPIDAPI_CACHE="${BLUETEAM_RAPIDAPI_CACHE:-/var/log/blue-team-mcp/rapidapi_state.jsonl}"
 export HUDSONROCK_API_KEY="${HUDSONROCK_API_KEY:-}"
 export BLUETEAM_CMDB_FILE="${BLUETEAM_CMDB_FILE:-}"
 export NETRA_API_KEY="${NETRA_API_KEY:-}"
@@ -744,7 +754,7 @@ export BLUETEAM_FALSE_POSITIVE_KB="${BLUETEAM_FALSE_POSITIVE_KB:-/var/log/blue-t
 export BLUETEAM_CASE_STORE="${BLUETEAM_CASE_STORE:-/var/log/blue-team-mcp/cases.jsonl}"
 export BLUETEAM_CASE_MAX="${BLUETEAM_CASE_MAX:-500}"
 export HUDSONROCK_BASE_URL="${HUDSONROCK_BASE_URL:-https://cavalier.hudsonrock.com/api/json/v2}"
-export RAPIDAPI_CACHE_TTL="${RAPIDAPI_CACHE_TTL:-1800}"
+export RAPIDAPI_CACHE_TTL="${RAPIDAPI_CACHE_TTL:-604800}"
 export BLUETEAM_INDEXER_CACHE_TTL="${BLUETEAM_INDEXER_CACHE_TTL:-30}"
 export BLUETEAM_GRAPH_CACHE_TTL="${BLUETEAM_GRAPH_CACHE_TTL:-60}"
 export BLUETEAM_FALSE_POSITIVE_TTL="${BLUETEAM_FALSE_POSITIVE_TTL:-2592000}"
@@ -870,6 +880,7 @@ echo "  sudo nano $CONFIG_FILE"
 echo ""
 echo "  Uncomment and set: THREATFOX_API_KEY, ABUSEIPDB_API_KEY, VIRUSTOTAL_API_KEY,"
 echo "  CROWDSEC_API_KEY (free tier at crowdsec.net), NETRA_API_KEY, ARGUS_API_KEY,"
+echo "  RAPIDAPI_KEY (budget stays at 0 until you arm it for an incident),"
 echo "  WAZUH_API_URL, WAZUH_API_USER, WAZUH_API_PASSWORD,"
 echo "  WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD."
 echo ""
@@ -887,7 +898,7 @@ echo "  ThreatFox needs a free key — https://threatfox.abuse.ch/api"
 echo ""
 echo "Wrapper entry points installed:"
 echo ""
-echo "  mcp-server-blueteam    — All 146 tools (Wazuh, threat intel, host forensics,"
+echo "  mcp-server-blueteam    — All 148 tools (Wazuh, threat intel, host forensics,"
 echo "                            Sangfor blocklist, 3-Sum correlation, curated reports,"
 echo "                            CrowdSec, GreyNoise, ThreatFox)"
 echo "  mcp-server-crowdsec    — DEPRECATED — redirects to mcp-server-blueteam"

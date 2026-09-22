@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Drift guard for the 12 SOC report prompts in resource/your_prompthings/.
-These are static files, not generated. When the tool set, the RapidAPI caching, or
-the metered-vs-local split changes, the prompts go stale silently and the LLM keeps
-calling a quota-metered API as if it were a local lookup.
+These are static files, not generated. When the tool set, the shared RapidAPI budget, or
+the quota-free-vs-metered split changes, the prompts go stale silently and the LLM keeps
+calling a product the account pays for by the month.
 Each test encodes one property that was wrong on 2026-09-14 and has no other
 enforcement. Run: pytest tests/test_prompt_drift.py -q
 """
@@ -34,17 +34,21 @@ EXPECTED_FILES = [
     "your_saving_prompt_1yr_en.md", "your_saving_prompt_1yr_id.md",
 ]
 
-# The RapidAPI tools that remain in prompt guidance: separate subscriptions,
-# separate quotas, both metered. `blueteam_ip_blacklist` was deliberately removed
-# from the prompts (a third paid product the SOC workflow does not need); the
-# absence assertion below keeps it removed.
-METERED_TOOLS = ("blueteam_ioc_search", "blueteam_breach_check")
-DEPRECATED_TOOLS = ("blueteam_ip_blacklist",)
-METERED_MARKER = re.compile(r"`(?P<tool>[a-z_]+)` \(metered, RapidAPI\)")
+# Every RapidAPI product draws on ONE account-wide pool (`BLUETEAM_RAPIDAPI_MONTHLY_CAP`,
+# default 100/month), and the guard is fail-closed unless the operator armed it for an
+# incident window. So the scheduled reports must not advertise any of these: they would
+# be refused every run. Keeping them out of the prompt tables is not enough on its own,
+# because blueteam_prompt_route and blueteam_semantic_search can surface an unlisted
+# tool, so the budget note below carries the refusal reason the guard actually returns.
+RAPIDAPI_TOOLS = ("blueteam_ioc_search", "blueteam_ip_intel_bulk",
+                  "blueteam_breach_check", "blueteam_ip_blacklist")
+METERED_MARKER = re.compile(r"\(metered, RapidAPI\)")
+QUOTA_FREE_TOOLS = ("blueteam_threat_intel_aggregate", "crowdsec_ip_reputation",
+                    "threatfox_ioc_search")
 
 THREAT_INTEL_LABELS = {"Intel ancaman", "Threat intel"}
 REPORTING_LABELS = {"Pelaporan & intelijen", "Reporting & intelligence"}
-QUOTA_NOTE_PREFIXES = ("> RapidAPI quota:", "> Kuota RapidAPI:")
+BUDGET_NOTE_PREFIXES = ("> RapidAPI budget:", "> Anggaran RapidAPI:")
 
 
 def _read(name: str) -> str:
@@ -113,39 +117,37 @@ def test_all_twelve_prompt_files_exist():
 
 
 @pytest.mark.parametrize("name", EXPECTED_FILES)
-def test_metered_marker_exactly_on_the_rapidapi_tools(name):
-    """A metered tool without the marker reads as free, which is the original bug."""
-    marked = set(METERED_MARKER.findall(_read(name)))
-    assert marked == set(METERED_TOOLS), f"{name}: marked={sorted(marked)}"
+def test_no_metered_marker_remains(name):
+    """The `(metered, RapidAPI)` marker advertised a tool the report run cannot pay for,
+    and it was the only thing stopping a stale prompt from looking current."""
+    assert not METERED_MARKER.search(_read(name)), f"{name}: metered marker came back"
 
 
 @pytest.mark.parametrize("name", EXPECTED_FILES)
-def test_deprecated_tools_stay_out_of_the_prompts(name):
-    """blueteam_ip_blacklist is a separate paid RapidAPI product. It stays
-    registered on the server but must not be advertised to the LLM, or every run
-    re-attempts an unsubscribed call. Removing the table row alone is not enough:
-    blueteam_prompt_route and blueteam_semantic_search can surface an unlisted
-    tool, so the quota note carries an explicit 'do not call' line."""
+def test_rapidapi_tools_stay_out_of_the_report_prompts(name):
+    """A RapidAPI tool may only appear inside the budget note, and only to say it is
+    refused. Anywhere else it reads as an available capability."""
     text = _read(name)
     rows = _rows(text)
-    for tool in DEPRECATED_TOOLS:
+    for tool in RAPIDAPI_TOOLS:
         holders = [label for label, line in rows.items() if f"`{tool}`" in line]
         assert not holders, f"{name}: {tool} back in the tool table under {holders}"
-    note_keywords = ("Do not call", "Jangan panggil")
-    assert any(k in text for k in note_keywords), (
-        f"{name}: the explicit 'do not call {DEPRECATED_TOOLS[0]}' line is gone"
-    )
+
+    for line in text.splitlines():
+        if any(f"`{tool}`" in line for tool in RAPIDAPI_TOOLS):
+            assert line.startswith(BUDGET_NOTE_PREFIXES), (
+                f"{name}: mentions a RapidAPI tool outside the budget note: {line[:70]!r}"
+            )
 
 
-# blueteam_ioc_search is a threat-intel tool, never a reporting/local one.
+# blueteam_ip_intel_bulk is a threat-intel tool, never a reporting/local one.
 @pytest.mark.parametrize("name", EXPECTED_FILES)
-def test_ioc_search_appears_only_in_the_threat_intel_row(name):
+def test_bulk_tool_is_never_in_the_threat_intel_row(name):
     rows = _rows(_read(name))
-    holders = [label for label, line in rows.items() if "`blueteam_ioc_search`" in line]
-    assert holders == ["Intel ancaman"] or holders == ["Threat intel"], (
-        f"{name}: `blueteam_ioc_search` listed under {holders}. It is a metered "
-        "RapidAPI call, not a local IOC store query."
-    )
+    for label in THREAT_INTEL_LABELS:
+        assert "blueteam_ip_intel_bulk" not in rows.get(label, ""), (
+            f"{name}: the metered bulk lookup is listed as an available threat-intel source"
+        )
 
 
 # Nothing metered is filed under reporting / local assembly
@@ -154,8 +156,8 @@ def test_reporting_row_names_no_metered_tool(name):
     rows = _rows(_read(name))
     assert REPORTING_LABELS & rows.keys(), f"{name}: no reporting row found"
     reporting = next(rows[k] for k in REPORTING_LABELS if k in rows)
-    offenders = [t for t in METERED_TOOLS if t in reporting]
-    assert not offenders, f"{name}: metered tools under reporting: {offenders}"
+    offenders = [t for t in RAPIDAPI_TOOLS if t in reporting]
+    assert not offenders, f"{name}: RapidAPI tools under reporting: {offenders}"
 
     local = rows["Pelaporan & intelijen" if "Pelaporan & intelijen" in rows
                  else "Reporting & intelligence"]
@@ -165,43 +167,39 @@ def test_reporting_row_names_no_metered_tool(name):
 
 
 @pytest.mark.parametrize("name", EXPECTED_FILES)
-def test_quota_note_present_and_complete(name):
-    text = _read(name)
-    notes = [n for n in _notes(text) if n.startswith(QUOTA_NOTE_PREFIXES)]
-    assert len(notes) == 1, f"{name}: expected exactly one RapidAPI quota note, got {len(notes)}"
+def test_budget_note_states_the_closed_pool(name):
+    """The account limit is shared and closed by default, which is the whole reason a
+    report may not call these tools. A note that drifts on the number is worse than no
+    note: the LLM would reason about a budget the server does not have."""
+    notes = [n for n in _notes(_read(name)) if n.startswith(BUDGET_NOTE_PREFIXES)]
+    assert len(notes) == 1, f"{name}: expected exactly one RapidAPI budget note, got {len(notes)}"
     note = notes[0]
-    for tool in METERED_TOOLS:
-        assert f"`{tool}`" in note, f"{name}: quota note does not name {tool}"
-    assert "403" in note and "429" in note, f"{name}: quota note lost the 403/429 guidance"
-    assert "cached" in note or "di-cache" in note, f"{name}: quota note lost the cache horizon"
-    assert "threatfox_ioc_search" in note, (
-        f"{name}: quota note must keep `blueteam_ioc_search` distinct from "
-        "`threatfox_ioc_search`; they share a name pattern and only one is metered"
+    assert "0 of 100" in note or "0 dari 100" in note, (
+        f"{name}: budget note lost the armed/account-wide pair (0 armed, 100 shared)"
     )
-
-
-@pytest.mark.parametrize("name", EXPECTED_FILES)
-def test_verdict_framing_note_present(name):
-    """detail_level is the difference between a 3-line triage answer and a 70 KB
-    dump. If the prompt stops naming the levels, the LLM defaults to raw forever."""
-    notes = [n for n in _notes(_read(name)) if "detail_level" in n]
-    assert len(notes) == 1, f"{name}: expected one ioc_search framing note, got {len(notes)}"
-    note = notes[0]
-    assert "blueteam_ioc_search" in note, f"{name}: framing note does not name the tool"
-    for level in ("detail_level=\"summary\"", "detail_level=\"forensic\"", "detail_level=\"raw\""):
-        assert level in note, f"{name}: framing note lost {level}"
+    assert "Budget closed" in note, (
+        f"{name}: budget note no longer quotes the refusal the guard returns, so the LLM "
+        "cannot connect the error it sees to this instruction"
+    )
+    for tool in RAPIDAPI_TOOLS:
+        assert f"`{tool}`" in note, f"{name}: budget note does not name {tool}"
+    for tool in QUOTA_FREE_TOOLS:
+        assert f"`{tool}`" in note, f"{name}: budget note does not offer {tool} as the substitute"
 
 
 @pytest.mark.parametrize("name", EXPECTED_FILES)
 def test_reconciliation_rule_present(name):
-    """The aggregate excludes RapidAPI, so the two can contradict each other. The
-    rule tells the LLM to report both instead of picking one."""
+    """The aggregate excludes RapidAPI and the RapidAPI tools refuse a scheduled run,
+    so the rule has to name the sources the verdict actually comes from."""
     text = _read(name)
     rules = _rules(text)
     assert rules, f"{name}: no numbered Rules section found"
-    matches = [body for _, body in rules if "blueteam_ioc_search" in body and "aggregate" in body]
+    matches = [body for _, body in rules
+               if "blueteam_threat_intel_aggregate" in body and "tor" in body]
     assert len(matches) == 1, f"{name}: expected one reconciliation rule, got {len(matches)}"
-    assert "tor" in matches[0], f"{name}: reconciliation rule lost the tor-tag guidance"
+    assert "crowdsec_ip_reputation" in matches[0], (
+        f"{name}: reconciliation rule lost the quota-free substitutes"
+    )
 
 
 @pytest.mark.parametrize("name", EXPECTED_FILES)

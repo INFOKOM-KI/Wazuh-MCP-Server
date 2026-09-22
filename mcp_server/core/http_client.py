@@ -315,6 +315,29 @@ def _applied_timeout(request: httpx.Request | None) -> float | None:
     return float(budget) if isinstance(budget, (int, float)) else None
 
 
+def _rate_limit_text(resp: httpx.Response) -> str:
+    """Separate a spent monthly pool from a transient burst limit.
+    RapidAPI answers 429 to both, and the operator action differs: one means stop
+    until next month, the other means wait a minute. The distinction is only in the
+    headers, so it is read here rather than left to the LLM to infer.
+    """
+    retry_after = resp.headers.get("Retry-After")
+    hint = f" Retry after {retry_after} seconds." if retry_after else ""
+    remaining = resp.headers.get("x-ratelimit-requests-remaining")
+    if remaining is None:
+        return f"Rate limit reached (429).{hint}"
+    try:
+        left = int(remaining)
+    except ValueError:
+        return f"Rate limit reached (429).{hint}"
+    if left <= 0:
+        return (
+            "Request quota exhausted (429) the provider reports no requests left in "
+            f"this billing period, so a retry is unlikely to help.{hint}"
+        )
+    return f"Rate limit reached (429), {left} request(s) left in the quota.{hint}"
+
+
 def _api_error_text(e: Exception, context: str = "") -> str:
     """Human-readable, actionable text for a failed upstream API call.
     Bulk tools call this to capture a per-item error string and keep going.
@@ -326,9 +349,7 @@ def _api_error_text(e: Exception, context: str = "") -> str:
     if isinstance(e, httpx.HTTPStatusError):
         status = e.response.status_code
         if status == 429:
-            retry_after = e.response.headers.get("Retry-After")
-            hint = f"Retry after {retry_after} seconds." if retry_after else ""
-            msg = f"{prefix}Error: Rate limit reached (429).{hint}"
+            msg = f"{prefix}Error: {_rate_limit_text(e.response)}"
         elif status in _STATUS_HINTS:
             msg = f"{prefix}Error: {_STATUS_HINTS[status]}"
         else:

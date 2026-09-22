@@ -5,7 +5,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **147 tools + 4 resources** (121 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
+offensive tooling. **148 tools + 4 resources** (122 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, local case RAG, and host forensics. Read-only by default.
 
@@ -96,6 +96,7 @@ optional — tools degrade gracefully without them.
 | Wazuh Manager | `WAZUH_API_URL` / `_USER` / `_PASSWORD` | Manager API (55000) — rules/agents/config |
 | TLS | `WAZUH_INDEXER_VERIFY_SSL`, `WAZUH_API_VERIFY_SSL` | default `true` |
 | Threat intel | `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `RAPIDAPI_KEY`, `HUDSONROCK_API_KEY` | 9 providers + RapidAPI + HudsonRock; all optional |
+| RapidAPI budget | `BLUETEAM_RAPIDAPI_MONTHLY_CAP`, `BLUETEAM_RAPIDAPI_BUDGET`, `BLUETEAM_RAPIDAPI_BUDGET_HOURS`, `BLUETEAM_RAPIDAPI_CACHE`, `RAPIDAPI_CACHE_TTL` | one account-wide pool (default 100/month) shared by every RapidAPI product. Budget defaults to 0, so every RapidAPI call is refused until an operator arms a window |
 | MISP | `MISP_URL`, `MISP_API_KEY`, `MISP_VERIFYCERT`, `MISP_CACHE_TTL`, `MISP_MIN_INTERVAL`, `MISP_MAX_CONCURRENT`, `MISP_TIMEOUT` | internal sharing instance; read-only key. `MISP_URL` without `MISP_API_KEY` fails startup. `VERIFYCERT` defaults `true` and is scoped to the MISP pool only |
 | Outbound lookup spacing | `NETRA_MIN_INTERVAL`, `ARGUS_MIN_INTERVAL`, `SANGFOR_MIN_INTERVAL` | seconds between upstream lookups — default `30`/`30`/`5` |
 | Outbound HTTP timeout | `HTTP_TIMEOUT` | seconds per upstream request — default `30`. Netra overrides it per request at 90s because its fan-out measured ~34s. A timeout counts as a breaker failure, so a budget below real latency trips the breaker for that upstream |
@@ -108,7 +109,7 @@ optional — tools degrade gracefully without them.
 | Inbound hardening | `BLUETEAM_HTTP_RATE_LIMIT`, `BLUETEAM_ALLOWED_ORIGINS` | per-IP sliding-window rate limit (req/min, `0`=off) + Origin allowlist (loopback always allowed) |
 | Audit & persistence | `BLUETEAM_AUDIT_LOG`, `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CMDB_FILE` | JSONL audit trail + stores (optional) |
 | Local case RAG | `BLUETEAM_RAG_ENABLED`, `BLUETEAM_RAG_DB`, `BLUETEAM_RAG_MODEL`, `BLUETEAM_RAG_CACHE_PATH`, `BLUETEAM_RAG_MAX_CANDIDATES`, `BLUETEAM_RAG_TOP_K`, `BLUETEAM_RAG_MAX_CHUNKS`, `BLUETEAM_RAG_CHUNK_CHARS`, `BLUETEAM_RAG_CHUNK_OVERLAP`, `BLUETEAM_RAG_ALLOW_DOWNLOAD`, `BLUETEAM_RAG_MODEL_SHA256` | SQLite retrieval corpus over cases / confirmed false positives / IR playbooks. `ENABLED=true` requires an absolute `DB` path or startup raises. `ALLOW_DOWNLOAD` defaults `false` (`local_files_only`). |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **121 tools registered** instead of 147: `147 - 23 - 3 = 121`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **122 tools registered** instead of 148: `148 - 23 - 3 = 122`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
@@ -197,10 +198,17 @@ store into a false-negative finding on a live alert.
 9 providers — CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise, AbuseIPDB, VirusTotal, Netra, Argus —
 with a unified `blueteam_threat_intel_aggregate` (concurrent fan-out) and a weighted
 `blueteam_unified_threat_score`. Plus `stealer_log_check` (HudsonRock) and `jarm_fingerprint`
-(TLS fingerprint for C2/malware attribution, no API key), and 3 RapidAPI lookups
-(`blueteam_ip_blacklist`, `blueteam_ioc_search`, `blueteam_breach_check`). `blueteam_ip_blacklist`
-is registered but no longer advertised in the SOC prompts: it is a third paid RapidAPI product,
-and `blueteam_ioc_search` already returns blacklist verdicts from ~89 engines.
+(TLS fingerprint for C2/malware attribution, no API key), and 4 RapidAPI lookups
+(`blueteam_ip_intel_bulk`, `blueteam_ioc_search`, `blueteam_breach_check`, `blueteam_ip_blacklist`).
+
+**Those four share one account-wide pool** (`BLUETEAM_RAPIDAPI_MONTHLY_CAP`, default 100 requests
+per month) and the guard is fail-closed: `BLUETEAM_RAPIDAPI_BUDGET` defaults to **0**, so every
+call is refused with `Budget closed` until an operator arms a window for an incident
+(`BLUETEAM_RAPIDAPI_BUDGET_HOURS`, default 4h, expiring on its own). The month-to-date counter and
+the arm window both survive a restart, and `max_retries=0` keeps a 5xx from spending a second
+request against the same pool. `blueteam_ip_intel_bulk` is the preferred path once the budget is
+armed, because 20 IPs cost one request instead of 20. The scheduled report prompts advertise none
+of the four and use the quota-free providers instead.
 
 `blueteam_misp_ioc_lookup` queries your own MISP instance over `POST /attributes/restSearch`
 (read-only). It is not part of `blueteam_threat_intel_aggregate`: the aggregate covers the six
@@ -343,7 +351,7 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 147
+Manager (config/agent data) plus 7+ external threat-intel providers into 146
 tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
@@ -411,15 +419,15 @@ Choose the tool by what the analyst wants — never invent tools.
 | Netra | `netra_ip_analysis(ip)` — 30s spaced, **90s** per-request budget because its multi-source fan-out legitimately takes ~34s |
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
 | AbuseIPDB IP reputation | **no standalone tool** — AbuseIPDB runs inside `blueteam_unified_threat_score` (weight 0.30). Do not call a `*_abuseipdb` tool; it is not registered. |
-| RapidAPI IOC search / breach | `blueteam_ioc_search` / `blueteam_breach_check` |
+| RapidAPI (one shared budget) | `blueteam_ip_intel_bulk(ips=[...])` for 1-50 IPs in **one** request; `blueteam_ioc_search(ip)` for a single IP; `blueteam_breach_check(email)`. All three draw on one account-wide pool that is **closed unless the operator armed it**, and none of them cost quota at the six-provider aggregate |
 | MISP (own instance) | `blueteam_misp_ioc_lookup(value)` — read-only `restSearch` against your MISP. Returns the attributes an indicator appears in, plus tag names; `comment` and galaxy free text are stripped by an allowlist before you see them. Needs `MISP_URL` + `MISP_API_KEY`: when unset the tool raises at call time, so report "MISP not configured", never "no results". A header reading `Capability probe: version probe skipped` is a restricted version endpoint, not a failed lookup |
 
-`blueteam_ioc_search` takes `detail_level`:
-- `"summary"` (default) - verdict line first (malicious/total engines, band, tags, ASN), top 5 communicating files, sanitized WHOIS. Answers "is this IP bad" without reading further.
-- `"forensic"` - every resolution and file, plus the flagged per-vendor verdicts. Use it only once the IP is a finding and you need to pivot on hashes or hostnames.
-- `"raw"` - verbatim provider body for fields not yet mapped. WHOIS is still filtered. Always JSON.
+**The RapidAPI budget, read this before calling any of the three.** Every RapidAPI product draws on ONE account-wide pool of `BLUETEAM_RAPIDAPI_MONTHLY_CAP` requests (default 100/month), and the guard is fail-closed: `BLUETEAM_RAPIDAPI_BUDGET` defaults to 0, so a call is refused with `Budget closed` until an operator arms a window (`BLUETEAM_RAPIDAPI_BUDGET_HOURS`, default 4h, which expires on its own). The month-to-date counter and the arm window both survive a server restart. A refusal is not an outage and not a retry prompt: report it once, then continue with the quota-free providers.
+- Prefer `blueteam_ip_intel_bulk(ips=[...])`: N IPs cost **one** request, 1-50 per call, duplicates collapsed, and the cache key ignores order so re-running the same set inside the TTL is free.
+- `blueteam_ioc_search(ip)` is the single-IP path. It takes `detail_level`: `"summary"` (default) leads with the verdict line (malicious/total engines, band, tags, ASN), the top 5 communicating files and sanitized WHOIS; `"forensic"` adds every resolution and file plus the flagged per-vendor verdicts; `"raw"` returns the verbatim provider body for fields not yet mapped, with WHOIS still filtered. All three levels cost the same one request.
+- `blueteam_ip_blacklist` is a fourth paid product. It stays registered but is denied in the report prompts: do not call it.
 
-It is unrelated to `threatfox_ioc_search` (different API, different quota). Both are metered; the `blueteam_threat_intel_aggregate` (six providers) does **not** include RapidAPI, so the two can disagree. Report both and name the source; never merge them into one verdict. `blueteam_ip_blacklist` is a third paid RapidAPI product that no longer appears in the report prompts - do not call it.
+It is unrelated to `threatfox_ioc_search` (different API, no shared budget). The `blueteam_threat_intel_aggregate` covers six providers, does **not** include RapidAPI, and costs no quota at all, which is why it is what a scheduled report uses.
 
 Netra and Argus lookups are spaced 30s apart, Sangfor 5s (`NETRA_MIN_INTERVAL` /
 `ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`). Enriching N IPs costs N×interval — batch
@@ -528,7 +536,7 @@ the index is derived and does not notice edits on its own.
 |---|---|
 | Top targeted emails | `wazuh_email_lookup(...)` |
 | Email ↔ attacker IP | `wazuh_compromised_emails_analysis(emails)` |
-| Breach check (RapidAPI) | `blueteam_breach_check(email)` |
+| Breach check (RapidAPI, budget-gated) | `blueteam_breach_check(email)` |
 | Stealer log (HudsonRock) | `stealer_log_check(email)` |
 | Domain lookup in alerts | `wazuh_domain_lookup(domain)` |
 | Typosquat variants | `blueteam_domain_permute(domain)` |
@@ -597,8 +605,9 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `sangfor_blocklist_check` / `sangfor_blocklist_list(ip=…, date_start, date_end, limit, offset)` | Sangfor firewall blocklist (list POSTs `{date_start,date_end,limit,offset,ip}` to `/blocklist`) |
 | `blueteam_baseline_profile` / `blueteam_calendar_heatmap` | day×hour scheduled-attack profiling |
 | `blueteam_extract_iocs` / `blueteam_ioc_lifecycle` | IOC extraction & lifecycle store (local, free) |
-| `blueteam_ioc_search(detail_level="summary"\|"forensic"\|"raw")` | RapidAPI IOC lookup - verdict-first summary by default; WHOIS stripped to technical registry fields at every level (no `person`/`address`/`phone`/`fax-no`). Metered; 403 = not subscribed |
-| `blueteam_ip_blacklist` | Registered but deprioritized - a separate paid RapidAPI product, redundant with `blueteam_ioc_search` for blacklist verdicts |
+| `blueteam_ip_intel_bulk(ips=[...])` | 1-50 IPs in one metered RapidAPI request, duplicates collapsed: the preferred path once the budget is armed. Private, loopback, link-local and CGNAT addresses are rejected before any request is sent |
+| `blueteam_ioc_search(detail_level="summary"\|"forensic"\|"raw")` | RapidAPI single-IP lookup: verdict-first summary by default; WHOIS stripped to technical registry fields at every level (no `person`/`address`/`phone`/`fax-no`). One shared account-wide budget, so a `403` means "not subscribed" while a `Budget closed` refusal means "no window armed" |
+| `blueteam_ip_blacklist` | Registered but denied in the report prompts: a fourth paid RapidAPI product, redundant with `blueteam_ioc_search` for blacklist verdicts |
 | `wazuh_alert_focused_crawl` | surgical alert deep-dive (`rule_id`/`src_ip`/`sample_size`) |
 | `wazuh_alert_aggregate_analysis` | zero-doc full-index statistical summary |
 | `wazuh_alert_dsl_query` | raw OpenSearch DSL (script-injection guarded) |
@@ -614,7 +623,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_metrics` | Prometheus metrics |
 | `blueteam_playbook_run` | run a named playbook workflow |
 | `blueteam_export_report` | export a report to DOCX/XLSX/PPTX (officecli) |
-| `blueteam_stix_export` | write a STIX 2.1 bundle for a peer CSIRT (identity + TLP marking + report + indicators + `indicates` relationships). Off unless `BLUETEAM_STIX_EGRESS_ENABLED=true`; private IPs, owned domains, internal hostnames and emails are DROPPED, never masked |
+| `blueteam_stix_export` | write a STIX 2.1 bundle for a peer CSIRT (identity + TLP marking + report + indicators + `indicates` relationships). Disabled unless the operator enables egress; internal values are DROPPED, never masked |
 | `blueteam_owned_domains` / `blueteam_set_owned_domains` | view/set the runtime owned (victim) domains for `protect_victim` redaction |
 | `blueteam_yara_rule_validate(rule_source)` | compile a rule with yara-x + yaraQA-style findings (naming, short atoms, `fullword` misuse) |
 | `blueteam_yara_rule_generate(mode, …)` | draft a rule from a Wazuh alert pattern (`mode="alert"`), a sample under `BLUETEAM_ALLOWED_PATHS` (`mode="file"`), or raw text |
@@ -662,7 +671,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 ```
 1. wazuh_email_lookup(top_n=20, since="7d", reveal_owned=true)
 2. wazuh_compromised_emails_analysis(emails=["<top emails>"], enrich_with_netra=false)
-3. blueteam_breach_check(email="<official dinas email>")
+3. blueteam_breach_check(email="<official dinas email>")   # needs an armed budget, otherwise it refuses
 4. stealer_log_check(email="<official dinas email>")
 ```
 
@@ -765,15 +774,31 @@ rejected.
 5. Read `dropped[...]` and the written `path`; hand the file to the operator.
 ```
 
-Workflow I is the only path where data leaves the perimeter, and it stops at the file: no TAXII,
-no push to the peer. The operator imports the bundle into MISP/OpenCTI. Requirements, all
-fail-closed: `BLUETEAM_STIX_EGRESS_ENABLED=true`, `BLUETEAM_STIX_IDENTITY_NAME`, and a non-empty
-`BLUETEAM_OWNED_DOMAINS` (without it, victim domains cannot be distinguished from attacker
-domains). Private/reserved IPs, owned domains, internal TLDs, single-label hostnames, emails,
-non-http URLs, and credential-bearing URLs are dropped and listed in `dropped`; a second gate
-refuses the export if the serialized bundle still contains anything the redaction pipeline would
-mask. Deterministic UUIDv5 ids (keyed on the indicator pattern) let the peer deduplicate a value
-across re-exports.
+`blueteam_stix_export` is the only egress tool in this server. It writes a STIX 2.1 bundle
+(producer `identity`, TLP `marking-definition`, `report`, `indicator` objects, and optional
+`indicates` relationships to ATT&CK techniques resolved from the loaded bundle) under
+`BLUETEAM_EXPORT_DIR/stix/`. The file is the shareable artifact: no TAXII, no network push.
+Importing it into the peer's MISP or OpenCTI is the operator's step.
+
+Three settings decide whether it runs:
+
+- `BLUETEAM_STIX_EGRESS_ENABLED=true` — otherwise the tool is disabled.
+- `BLUETEAM_STIX_IDENTITY_NAME` — a bundle with no producer Identity is not shareable.
+- `BLUETEAM_OWNED_DOMAINS` non-empty — without it, victim domains cannot be told apart from
+  attacker domains, so the tool refuses instead of guessing.
+
+What it never shares: RFC1918 / loopback / link-local / CGNAT / reserved addresses (including
+IPv4-mapped IPv6 such as `::ffff:10.0.0.5`), owned domains and their subdomains, internal TLDs,
+single-label hostnames (asset names), emails, non-http URLs, and URLs carrying credentials.
+Excluded values are itemised in `dropped` with a reason. **A dropped value is out of the bundle,
+not masked** — do not paste one back in, and never describe one as "anonymised". A second gate
+re-runs the serialized bundle through the `protect_victim` pipeline; if it still changes, the
+export is refused, so an internal path or hostname inside `description` blocks the write instead
+of leaking. Pass `include_bundle=true` only for a small bundle you are handing straight to a MISP
+API; larger bundles are written to disk and summarised, never truncated inline.
+
+Deterministic ids (`UUIDv5` over the indicator pattern) mean re-exporting the same indicator
+yields the same `indicator--` id, so the peer deduplicates instead of accumulating copies.
 
 ## 3. Redaction & the forensic token (read before touching PII)
 
@@ -856,6 +881,10 @@ Do not lower below these without production telemetry evidence.
 | `"Request timed out after <N>s for <host>"` | the call exceeded its budget. `<N>` is the budget actually applied (global `HTTP_TIMEOUT`, default 30s; 90s for Netra), `<host>` is the upstream | a timeout is a slow or unreachable upstream, never a finding. Retry once; if it repeats, report the upstream as degraded |
 | `"Access forbidden (403) ... not subscribed to this API"` | RapidAPI key is valid but that specific product was never subscribed | use a different RapidAPI tool, or tell the operator to subscribe. Check the `url:` in the error to see which product was called |
 | `"Rate limit reached (429)"` | quota exhausted for that provider (per-product on RapidAPI) | read the `x-ratelimit-*` fields in the error; do not retry immediately |
+| `"[rapidapi] Budget closed: 0 requests armed"` | the account-wide budget was never armed, so the guard refused before sending anything. Expected on a scheduled report | switch to the quota-free providers (`blueteam_threat_intel_aggregate`, `crowdsec_ip_reputation`, `threatfox_ioc_search`). An operator arms `BLUETEAM_RAPIDAPI_BUDGET` and restarts for an incident window |
+| `"Budget exhausted: N/100 requests used this month"` | the shared account pool is spent. A month-long block, so no retry will help | report it and stop calling RapidAPI tools until the reset date the message names |
+| `"Arm window closed after 4h with N request(s) unspent"` | the incident window expired on its own, with budget still left | an operator restarts the server to arm a new window; the monthly counter is preserved |
+| `"Request quota exhausted (429)"` | RapidAPI answered 429 with `x-ratelimit-requests-remaining: 0`, so the pool is gone for the billing period | terminal. Report it and do not retry |
 | `"tool not available in this request"` | client didn't expose that tool this session | use an equivalent tool or note it |
 | `"raw/forensic bypass requires ... token"` | correct gate behavior | pass the token value (see §3) |
 | missing-key provider errors | provider skipped gracefully in `errors[]` | report partial result, note which provider skipped |
@@ -917,8 +946,9 @@ closes. If it fails, the timer resets.
    manual reset command — just wait and retry.
 
 **What NOT to do:**
-- Don't call `blueteam_breach_check` repeatedly when the breaker is open —
-  each call fails instantly with the same error.
+- Don't call `blueteam_breach_check` repeatedly when the breaker is open:
+  each call fails instantly with the same error. A `Budget closed` refusal
+  behaves the same way and will not clear on its own, so report it and stop.
 - Don't restart the server hoping to clear the breaker — breakers are
   in-memory per pool. Restarting an MCP server mid-session is worse than
   waiting (it breaks the JSON-RPC channel).
@@ -930,7 +960,7 @@ closes. If it fails, the timer resets.
 | Pool key | Typical tools | Backend |
 |---|---|---|
 | URL host (default) | CrowdSec, OTX, AbuseIPDB, VirusTotal, URLhaus, GreyNoise, WHOIS/RDAP/CRT.sh, Netra | Derived from the request URL host when the caller passes no `client_name`, so unrelated upstreams never share one breaker |
-| `rapidapi` | `blueteam_ioc_search`, `blueteam_breach_check`, `blueteam_ip_blacklist` | Own pool and own breaker. Products have separate subscriptions and separate quotas |
+| `rapidapi` | `blueteam_ioc_search`, `blueteam_ip_intel_bulk`, `blueteam_breach_check`, `blueteam_ip_blacklist` | Own pool and own breaker. All four products share ONE account-wide quota (100/month) enforced by `rapidapi_quota`, and every call is refused while the budget is closed |
 | `indexer` | alert search, geo, timeline, correlation, email/domain alert lookup | Wazuh Indexer (OpenSearch) |
 | `wazuh` | agent/rule/SCA queries | Wazuh Manager API |
 | `argus` | Argus IP lookup | Argus threat-intel API (standalone pool) |
@@ -1003,9 +1033,6 @@ provide it once at session start and you reuse it across calls.
 - Export a finished report to DOCX/XLSX/PPTX with `blueteam_export_report`
   (officecli) — markdown/JSON are the in-session formats; officecli is for
   deliverables.
-- Share confirmed indicators with `blueteam_stix_export` (STIX 2.1 bundle, no TAXII).
-  A value in `dropped` is out of the bundle, not anonymised. Produce the file,
-  report `path`/`sha256`/`tlp`, and let the operator transport it.
 - Never claim a tool "succeeded" without evidence of execution. If a tool needs
   a live credential and fails, state "not verified — requires valid key/cluster".
 - **Redacted-but-real protocol**: for PII-adjacent data (citizen IP, email),
@@ -1027,7 +1054,7 @@ provide it once at session start and you reuse it across calls.
    the operator enabled it; a value listed in `dropped` is out of the bundle, so
    never re-add one and never call the result "anonymised". You cannot send a
    bundle — produce it, report `path`, `sha256`, `tlp`, and let the operator
-   transport it.
+transport it.
 ````
 
 ---

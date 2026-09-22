@@ -45,6 +45,11 @@ config.env
 *.log
 *.jsonl
 
+# RapidAPI state (response cache + month-to-date budget counter). Holds attacker IPs
+# and vendor verdicts, and the atomic-rewrite temp file lands beside it.
+rapidapi_state.jsonl*
+*.jsonl.tmp
+
 # MCP audit log output
 blue-team-mcp-audit.jsonl
 

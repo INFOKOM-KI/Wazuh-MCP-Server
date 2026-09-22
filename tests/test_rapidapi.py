@@ -323,6 +323,10 @@ async def test_rapidapi_get_uses_config_ttl_and_its_own_pool(monkeypatch):
     def fake_cache_set(namespace, key, value, ttl):
         captured["ttl"] = ttl
 
+    # Every RapidAPI request now runs through the account-wide budget guard, so these
+    # cache/pool assertions need an armed window or they fail on "Budget closed".
+    from mcp_server.threat_intel.rapidapi_quota import RapidApiBudget
+    monkeypatch.setattr(r, "_QUOTA", RapidApiBudget(budget=5, hours=1))
     monkeypatch.setattr(r, "_api_call", fake_api_call)
     monkeypatch.setattr(r, "cache_get", fake_cache_get)
     monkeypatch.setattr(r, "cache_set", fake_cache_set)
@@ -353,6 +357,8 @@ async def test_rapidapi_get_honours_explicit_ttl(monkeypatch):
     def fake_cache_set(namespace, key, value, ttl):
         captured["ttl"] = ttl
 
+    from mcp_server.threat_intel.rapidapi_quota import RapidApiBudget
+    monkeypatch.setattr(r, "_QUOTA", RapidApiBudget(budget=5, hours=1))
     monkeypatch.setattr(r, "_api_call", fake_api_call)
     monkeypatch.setattr(r, "cache_get", fake_cache_get)
     monkeypatch.setattr(r, "cache_set", fake_cache_set)
