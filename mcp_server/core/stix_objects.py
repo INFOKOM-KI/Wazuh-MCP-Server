@@ -207,7 +207,11 @@ def load_markings_file(path: str | None = None) -> tuple[list[dict], str]:
             return [], f"markings file entry has type={obj.get('type')!r}, expected 'marking-definition'"
         if not str(obj.get("id", "")).startswith("marking-definition--"):
             return [], "markings file entry has a malformed id"
-        if not obj.get("name") or "definition" not in obj:
-            return [], "markings file entry is missing name/definition"
+        if not obj.get("name"):
+            return [], "markings file entry is missing name"
+        # TLP 1.0 uses a top-level ``definition``; TLP 2.0 and other
+        # extension-based markings carry the value in ``extensions``.
+        if "definition" not in obj and not obj.get("extensions"):
+            return [], "markings file entry is missing definition or extensions"
         out.append(obj)
     return out, ""

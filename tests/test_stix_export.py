@@ -30,7 +30,7 @@ except ImportError:
     HAS_STIX2 = False
 
 from mcp_server.core.redact import _redact_alert_data, get_owned_domains, set_owned_domains
-from mcp_server.core.stix_objects import TLP_MARKING_DEFINITIONS, stix_id
+from mcp_server.core.stix_objects import TLP_MARKING_DEFINITIONS, load_markings_file, stix_id
 from mcp_server.tools.stix_export import (StixExportInput, _build_bundle, blueteam_stix_export,
                                           classify_indicator, pattern_for)
 
@@ -236,3 +236,94 @@ def test_bundle_parses_with_the_reference_stix2_library():
     parsed = stix2.parse(json.dumps(bundle), allow_custom=False)
     assert parsed["type"] == "bundle"
     assert len(parsed["objects"]) == len(bundle["objects"])
+
+
+# Markings file: TLP 1.0 and TLP 2.0 shapes
+TLP_2_0_AMBER_STRICT = {
+    "type": "marking-definition", "spec_version": "2.1",
+    "id": "marking-definition--939a9414-2ddd-4d32-a0cd-375ea402b003",
+    "created": "2022-10-01T00:00:00.000Z", "name": "TLP:AMBER+STRICT",
+    "extensions": {
+        "extension-definition--60a3c5c5-0d10-413e-aab3-9e08dde9e88d": {
+            "extension_type": "property-extension", "tlp_2_0": "amber+strict"}},
+}
+
+
+def _write_markings(tmp_path, payload):
+    path = tmp_path / "markings.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return str(path)
+
+
+def test_markings_file_accepts_tlp_2_0_extension_form(tmp_path):
+    """TLP 2.0 carries the value in `extensions`, not a top-level `definition`.
+    The validator used to reject the exact form the module docstring names."""
+    bundle = {"type": "bundle", "id": "bundle--d6e3c0b4-f916-4d15-a01f-e3761c5f48ac",
+              "objects": [TLP_2_0_AMBER_STRICT]}
+    objects, err = load_markings_file(_write_markings(tmp_path, bundle))
+    assert err == ""
+    assert objects[0]["name"] == "TLP:AMBER+STRICT"
+    extension = objects[0]["extensions"]["extension-definition--60a3c5c5-0d10-413e-aab3-9e08dde9e88d"]
+    assert extension["tlp_2_0"] == "amber+strict"
+
+
+def test_markings_file_still_accepts_tlp_1_0_definition(tmp_path):
+    objects, err = load_markings_file(_write_markings(tmp_path, TLP_MARKING_DEFINITIONS["AMBER"]))
+    assert err == ""
+    assert objects[0]["definition"] == {"tlp": "amber"}
+
+
+def test_markings_file_accepts_list_and_single_object(tmp_path):
+    for payload in ([TLP_2_0_AMBER_STRICT], TLP_2_0_AMBER_STRICT):
+        objects, err = load_markings_file(_write_markings(tmp_path, payload))
+        assert err == ""
+        assert len(objects) == 1
+
+
+@pytest.mark.parametrize("entry,needle", [
+    ({"type": "marking-definition", "id": "marking-definition--x", "extensions": {"a": 1}}, "name"),
+    ({"type": "marking-definition", "id": "marking-definition--x", "name": "n"}, "definition or extensions"),
+    ({"type": "identity", "id": "identity--x", "name": "n", "definition": {}}, "expected 'marking-definition'"),
+    ({"type": "marking-definition", "id": "marking-x", "name": "n", "definition": {}}, "malformed id"),
+    ("not an object", "non-object"),
+])
+def test_markings_file_rejects_invalid_entries(tmp_path, entry, needle):
+    objects, err = load_markings_file(_write_markings(tmp_path, [entry, TLP_2_0_AMBER_STRICT]))
+    assert objects == []
+    assert needle in err
+
+
+def test_markings_file_rejects_invalid_json_and_unreadable_path(tmp_path):
+    empty = tmp_path / "empty.json"
+    empty.write_text("", encoding="utf-8")
+    objects, err = load_markings_file(str(empty))
+    assert objects == []
+    assert "not valid JSON" in err
+    objects, err = load_markings_file(str(tmp_path / "missing.json"))
+    assert objects == []
+    assert "unreadable" in err
+
+
+def test_markings_file_size_cap(tmp_path):
+    path = tmp_path / "big.json"
+    path.write_text("[]" + " " * (1024 * 1024), encoding="utf-8")
+    objects, err = load_markings_file(str(path))
+    assert objects == []
+    assert "exceeds" in err
+
+
+def test_markings_file_unset_is_not_an_error(monkeypatch):
+    monkeypatch.delenv("BLUETEAM_STIX_MARKINGS_FILE", raising=False)
+    assert load_markings_file() == ([], "")
+
+
+def test_export_includes_tlp_2_0_extra_marking(tmp_path, monkeypatch):
+    bundle = {"type": "bundle", "id": "bundle--d6e3c0b4-f916-4d15-a01f-e3761c5f48ac",
+              "objects": [TLP_2_0_AMBER_STRICT]}
+    monkeypatch.setenv("BLUETEAM_STIX_MARKINGS_FILE", _write_markings(tmp_path, bundle))
+    result = json.loads(asyncio.run(blueteam_stix_export(StixExportInput(
+        indicators=["45.61.136.7"], include_bundle=True, response_format="json"))))
+    assert "error" not in result, result
+    names = [obj.get("name") for obj in result["bundle"]["objects"]
+             if obj.get("type") == "marking-definition"]
+    assert "TLP:AMBER+STRICT" in names
