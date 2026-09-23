@@ -210,6 +210,26 @@ def test_location_path_in_description_trips_the_fixed_point_gate():
     assert "Egress refused" in result["error"], result
 
 
+def test_identity_contact_at_owned_domain_is_publishable(monkeypatch):
+    """The operator own contact is publishable metadata. Before the fix an
+    owned domain address here refused every export, including minimal ones."""
+    monkeypatch.setenv("BLUETEAM_STIX_IDENTITY_CONTACT", "csirt@tangerangkota.go.id")
+    result = json.loads(asyncio.run(blueteam_stix_export(StixExportInput(
+        indicators=["45.61.136.7"], include_bundle=True, response_format="json"))))
+    assert "error" not in result, result
+    identity = next(o for o in result["bundle"]["objects"] if o["type"] == "identity")
+    assert identity["contact_information"] == "csirt@tangerangkota.go.id"
+
+
+def test_owned_domain_in_description_still_refuses():
+    """Exempting the identity contact must not weaken the gate for alert text."""
+    result = json.loads(asyncio.run(blueteam_stix_export(StixExportInput(
+        indicators=["45.61.136.7"],
+        description="callback to csirt.tangerangkota.go.id",
+        response_format="json"))))
+    assert "Egress refused" in result["error"], result
+
+
 def test_export_never_masks_values_into_the_bundle():
     """Exclusions are drops, never '*' masks - a masked IOC is a wrong IOC."""
     payload = json.dumps(_bundle_for(PUBLIC + NOT_SHAREABLE), sort_keys=True)

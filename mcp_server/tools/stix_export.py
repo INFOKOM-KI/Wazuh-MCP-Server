@@ -432,7 +432,16 @@ async def blueteam_stix_export(params: StixExportInput) -> str:
     })
     payload = json.dumps(bundle, indent=2, ensure_ascii=False, sort_keys=True)
 
-    if _redact_alert_data(payload, policy="protect_victim") != payload:
+    # The identity contact is the operator's own published address, so an owned
+    # domain there is intentional; everything else must survive the gate.
+    check_objects = [
+        ({k: v for k, v in obj.items() if k != "contact_information"}
+         if obj.get("type") == "identity" and "contact_information" in obj else obj)
+        for obj in bundle.get("objects", [])
+    ]
+    check_payload = json.dumps({**bundle, "objects": check_objects},
+                               indent=2, ensure_ascii=False, sort_keys=True)
+    if _redact_alert_data(check_payload, policy="protect_victim") != check_payload:
         logger.warning("STIX egress refused: bundle is not a fixed point of the redaction pipeline")
         return json.dumps({"error": "Egress refused: the bundle still contains a value the redaction "
                                     "pipeline would mask (internal host, path, credential pattern, or "
