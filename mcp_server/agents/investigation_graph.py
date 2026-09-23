@@ -28,7 +28,7 @@ _NODE_TIMEOUT = float(os.environ.get("BLUETEAM_LANGGRAPH_NODE_TIMEOUT", "120"))
 # State persistence: BLUETEAM_LANGGRAPH_DB (SQLite file) enables durable
 # checkpointing; empty/unset falls back to InMemorySaver (state lost on restart).
 # AsyncSqliteSaver must be created lazily INSIDE the running event loop (see
-# run_investigation) - aiosqlite connections are bound to the loop that created
+# run_investigation) aiosqlite connections are bound to the loop that created
 # them, so a module-level checkpointer would die on the first asyncio.run().
 _DB_PATH = os.environ.get("BLUETEAM_LANGGRAPH_DB", "").strip()
 
@@ -70,6 +70,7 @@ class InvestigationState(TypedDict, total=False):
     enrichment: Optional[dict]
     vulnerabilities: Optional[list]
     correlation: Optional[dict]
+    clusters: Optional[dict]
     attack_graph: Optional[dict]
     killchain: Optional[dict]
     baseline: Optional[dict]
@@ -268,6 +269,34 @@ def _as_json(raw, label: str) -> dict:
         return {"error": f"{label}: non-JSON response"}
 
 
+async def cluster_step(state: InvestigationState) -> dict:
+    """Assign the investigation's srcip to the stored cluster fit.
+    Assignment only, never a fit: a refit inside every investigation would change
+    the label space under an analyst. Skipped (and said so) when clustering is
+    disabled, when there is no srcip, and when no fit has been stored yet.
+    """
+    from mcp_server.core.config import config
+    if not config.cluster.enabled:
+        return {"steps": ["cluster: disabled"]}
+    srcip = state.get("srcip")
+    if not srcip:
+        return {"steps": ["cluster: skipped (no srcip)"]}
+    from mcp_server.tools.cluster import blueteam_alert_cluster_assign, AlertClusterAssignInput
+    try:
+        out = await _with_timeout(
+            blueteam_alert_cluster_assign(AlertClusterAssignInput(
+                srcip=srcip, response_format="json")), "cluster")
+        payload = json.loads(out)
+        if payload.get("status") != "ok":
+            return {"clusters": payload, "steps": [f"cluster: {payload.get('status')}"]}
+        assignment = payload.get("assignment") or {}
+        return {"clusters": payload,
+                "steps": [f"cluster: label {assignment.get('label')} "
+                          f"(novelty={assignment.get('novelty')})"]}
+    except Exception as e:
+        return {"errors": [f"cluster: {e}"], "steps": ["cluster: degraded"]}
+
+
 async def analytics_step(state: InvestigationState) -> dict:
     """Run attack graph analysis + STIX killchain in parallel.
     graph_step and killchain_step are independent, the attack graph
@@ -378,6 +407,12 @@ async def report_step(state: InvestigationState) -> dict:
             "paragraphs": [summary, json.dumps(corr.get("unified_scoring", {}), indent=2)],
             "bullets": steps[-10:],
         }]
+        clusters = state.get("clusters") or {}
+        assignment = clusters.get("assignment") if isinstance(clusters, dict) else None
+        if assignment:
+            sections[0]["bullets"].append(
+                f"cluster: label {assignment.get('label')} "
+                f"(novelty={assignment.get('novelty')}, distance={assignment.get('distance')})")
         if cve_ids:
             advisory = await _advisory_paragraphs(cve_ids)
             sections.append({
@@ -456,7 +491,7 @@ def build_investigation_graph(checkpointer=None):
     """Build and compile the StateGraph. checkpointer defaults to InMemorySaver;
     pass an AsyncSqliteSaver (created inside the running loop) for durable
     persistence.
-    Graph: START -> extract -> fp_check -> enrich -> vuln -> correlate -> analytics -> baseline -> report -> verdict -> END
+    Graph: START -> extract -> fp_check -> enrich -> vuln -> correlate -> cluster -> analytics -> baseline -> report -> verdict -> END
     fp_check is opt-in (check_false_positive) and routes straight to verdict when
     the indicator is already suppressed, skipping enrichment, correlation and the
     report for an alert an analyst already closed.
@@ -468,6 +503,7 @@ def build_investigation_graph(checkpointer=None):
     g.add_node("enrich", enrich_step)
     g.add_node("vuln", vuln_step)
     g.add_node("correlate", correlate_step)
+    g.add_node("cluster", cluster_step)
     g.add_node("analytics", analytics_step)
     g.add_node("baseline", baseline_step)
     g.add_node("report", report_step)
@@ -478,7 +514,8 @@ def build_investigation_graph(checkpointer=None):
         "suppressed": "verdict", "enrich": "enrich", "analytics": "analytics"})
     g.add_edge("enrich", "vuln")
     g.add_edge("vuln", "correlate")
-    g.add_edge("correlate", "analytics")
+    g.add_edge("correlate", "cluster")
+    g.add_edge("cluster", "analytics")
     g.add_conditional_edges("analytics", _after_analytics, {
         "baseline": "baseline", "report": "report", "verdict": "verdict", END: END})
     g.add_conditional_edges("baseline", _after_baseline, {

@@ -108,6 +108,7 @@ def register_all_tools() -> None:
         ("yara_rules",              "yara_rules",              False),  # 2 tools YARA rule synthesis + validation (yara-x)
         ("sigma_rules",             "sigma_rules",             False),  # 3 tools Sigma rule synthesis + validation + staging save
         ("rag_kb",                  "rag_kb",                  False),  # 3 tools local RAG corpus (ingest/query/fp_validate)
+        ("cluster",                 "cluster",                 False),  # 2 tools alert-entity clustering (fit/assign)
     ]
 
     for attr, category, skip_ro in _MODULES:

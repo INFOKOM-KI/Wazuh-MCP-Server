@@ -778,6 +778,57 @@ class SigmaConfig:
             )
 
 
+@dataclass
+class ClusterConfig:
+    """Alert-entity clustering settings (blueteam_alert_cluster).
+    Disabled by default: the store is a new on-disk artifact and the optional
+    scikit-learn dependency is absent on a plain install, so enabling it is an
+    explicit operator decision. ``enabled`` with no ``store_path`` is fatal at
+    startup an enabled cluster subsystem that cannot persist a fit can only
+    return noise.
+    """
+    enabled: bool = False
+    store_path: str = ""
+    store_max: int = 20000
+    ttl_seconds: int = 86400
+    min_cluster_size: int = 5
+    min_samples: int = 3
+    assign_factor: float = 1.0
+
+    @classmethod
+    def from_env(cls) -> "ClusterConfig":
+        return cls(
+            enabled=_bool(os.environ.get("BLUETEAM_CLUSTER_ENABLED", "false"), False),
+            store_path=os.environ.get("BLUETEAM_CLUSTER_STORE", "").strip(),
+            store_max=int(os.environ.get("BLUETEAM_CLUSTER_STORE_MAX", "20000")),
+            ttl_seconds=int(os.environ.get("BLUETEAM_CLUSTER_TTL", "86400")),
+            min_cluster_size=int(os.environ.get("BLUETEAM_CLUSTER_MIN_SIZE", "5")),
+            min_samples=int(os.environ.get("BLUETEAM_CLUSTER_MIN_SAMPLES", "3")),
+            assign_factor=float(os.environ.get("BLUETEAM_CLUSTER_ASSIGN_FACTOR", "1.0")),
+        )
+
+    def validate(self) -> None:
+        if self.enabled and not self.store_path:
+            raise ConfigurationError(
+                "BLUETEAM_CLUSTER_ENABLED=true requires BLUETEAM_CLUSTER_STORE "
+                "(an absolute path); a fit that cannot persist cannot be assigned against."
+            )
+        if self.store_path and not os.path.isabs(self.store_path):
+            raise ConfigurationError(
+                f"BLUETEAM_CLUSTER_STORE must be an absolute path (got {self.store_path!r})"
+            )
+        if self.store_max < 1:
+            raise ConfigurationError("BLUETEAM_CLUSTER_STORE_MAX must be >= 1")
+        if self.ttl_seconds < 0:
+            raise ConfigurationError("BLUETEAM_CLUSTER_TTL must be >= 0 (0 disables expiry)")
+        if self.min_cluster_size < 2:
+            raise ConfigurationError("BLUETEAM_CLUSTER_MIN_SIZE must be >= 2")
+        if self.min_samples < 1:
+            raise ConfigurationError("BLUETEAM_CLUSTER_MIN_SAMPLES must be >= 1")
+        if self.assign_factor <= 0:
+            raise ConfigurationError("BLUETEAM_CLUSTER_ASSIGN_FACTOR must be > 0")
+
+
 # Top level Config aggregating all groups
 @dataclass
 class Config:
@@ -806,6 +857,7 @@ class Config:
     ssrf: SSRFConfig = field(default_factory=SSRFConfig)
     yara: YaraConfig = field(default_factory=YaraConfig)
     sigma: SigmaConfig = field(default_factory=SigmaConfig)
+    cluster: ClusterConfig = field(default_factory=ClusterConfig)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -829,6 +881,7 @@ class Config:
             ssrf=SSRFConfig.from_env(),
             yara=YaraConfig.from_env(),
             sigma=SigmaConfig.from_env(),
+            cluster=ClusterConfig.from_env(),
         )
 
     def validate(self) -> None:
@@ -851,6 +904,7 @@ class Config:
         self.ssrf.validate()
         self.yara.validate()
         self.sigma.validate()
+        self.cluster.validate()
 
     def emit_warnings(self) -> None:
         """Log warnings for non-fatal configuration issues.
@@ -909,6 +963,13 @@ class Config:
                 logger.warning(
                     "BLUETEAM_RAG_DB=%s does not exist yet - ingest a corpus to "
                     "create it (setup.sh does not seed the store).", self.rag.db_path
+                )
+        if self.cluster.enabled:
+            import importlib.util
+            if importlib.util.find_spec("sklearn") is None:
+                logger.warning(
+                    "BLUETEAM_CLUSTER_ENABLED=true but scikit-learn is not installed - "
+                    "blueteam_alert_cluster will report unavailable, not empty clusters."
                 )
 
 
