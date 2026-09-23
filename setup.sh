@@ -403,7 +403,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_RAPIDAPI_BUDGET_HOURS="8"    # the window expires on its own after N hours (one shift)
 # export BLUETEAM_RAPIDAPI_MONTHLY_CAP="100"   # account-wide hard limit, shared by every product
 # export BLUETEAM_RAPIDAPI_RAW_WHOIS="true"    # blueteam_ip_intel_bulk keeps the provider's WHOIS verbatim
-#                                             # for abuse escalation; "false" allowlists it (SECURITY.md 4.1d)
+#                                             # for abuse escalation; "false" allowlists it.
 # export HUDSONROCK_API_KEY="your_key"      # https://cavalier.hudsonrock.com (stealer-log check)
 # export NETRA_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
 # export NETRA_VERIFY_SSL="false"         # set to "true" for production / trusted CA
