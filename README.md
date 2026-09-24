@@ -8,7 +8,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **150 tools + 4 resources** (124 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
+offensive tooling. **151 tools + 4 resources** (125 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, local case RAG, host forensics, and opt-in HDBSCAN clustering + ATT&CK incident
 labeling. Read-only by default.
@@ -116,7 +116,7 @@ optional — tools degrade gracefully without them.
 | Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
 | Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder — no torch, no second model resident. `BACKEND=laya` requires `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `MAX_CONCURRENCY` defaults `1` |
 | CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **124 tools registered** instead of 150: `150 - 23 - 3 = 124`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **125 tools registered** instead of 151: `151 - 23 - 3 = 125`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
@@ -205,10 +205,10 @@ store into a false-negative finding on a live alert.
 9 providers — CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise, AbuseIPDB, VirusTotal, Netra, Argus —
 with a unified `blueteam_threat_intel_aggregate` (concurrent fan-out) and a weighted
 `blueteam_unified_threat_score`. Plus `stealer_log_check` (HudsonRock) and `jarm_fingerprint`
-(TLS fingerprint for C2/malware attribution, no API key), and 3 RapidAPI lookups
-(`blueteam_ip_intel_bulk`, `blueteam_ioc_search`, `blueteam_breach_check`).
+(TLS fingerprint for C2/malware attribution, no API key), and 4 RapidAPI tools
+(`blueteam_ip_intel_bulk`, `blueteam_ioc_search`, `blueteam_ioc_search_bulk`, `blueteam_breach_check`).
 
-**Those three share one account-wide pool** (`BLUETEAM_RAPIDAPI_MONTHLY_CAP`, default 100 requests
+**They share one account-wide pool** (`BLUETEAM_RAPIDAPI_MONTHLY_CAP`, default 100 requests
 per month) and the guard is fail-closed: `BLUETEAM_RAPIDAPI_BUDGET` defaults to **0**, so every
 call is refused with `Budget closed` until an operator arms a window for an incident
 (`BLUETEAM_RAPIDAPI_BUDGET_HOURS`, default 8h, expiring on its own). The month-to-date counter and
@@ -488,7 +488,7 @@ Choose the tool by what the analyst wants — never invent tools.
 | Netra | `netra_ip_analysis(ip)` — 30s spaced, **90s** per-request budget because its multi-source fan-out legitimately takes ~34s |
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
 | AbuseIPDB IP reputation | **no standalone tool** — AbuseIPDB runs inside `blueteam_unified_threat_score` (weight 0.30). Do not call a `*_abuseipdb` tool; it is not registered. |
-| RapidAPI (one shared budget) | `blueteam_ip_intel_bulk(ips=[...])` for 1-50 IPs in **one** request; `blueteam_ioc_search(ip)` for a single IP; `blueteam_breach_check(email)`. All three draw on one account-wide pool that is **closed unless the operator armed it**, and none of them cost quota at the six-provider aggregate |
+| RapidAPI (one shared budget) | `blueteam_ip_intel_bulk(ips=[...])` for 1-50 IPs in **one** request; `blueteam_ioc_search(ip)` for a single IP; `blueteam_ioc_search_bulk(ips=[...])` for 1-25 IPs one request each; `blueteam_breach_check(email)`. All four draw on one account-wide pool that is **closed unless the operator armed it**, and none of them cost quota at the six-provider aggregate |
 | MISP (own instance) | `blueteam_misp_ioc_lookup(value)` — read-only `restSearch` against your MISP. Returns the attributes an indicator appears in, plus tag names; `comment` and galaxy free text are stripped by an allowlist before you see them. Needs `MISP_URL` + `MISP_API_KEY`: when unset the tool raises at call time, so report "MISP not configured", never "no results". A header reading `Capability probe: version probe skipped` is a restricted version endpoint, not a failed lookup |
 
 **The RapidAPI budget, read this before calling any RapidAPI tool.** Every RapidAPI product draws on ONE account-wide pool of `BLUETEAM_RAPIDAPI_MONTHLY_CAP` requests (default 100/month), and the guard is fail-closed: `BLUETEAM_RAPIDAPI_BUDGET` defaults to 0, so a call is refused with `Budget closed` until an operator arms a window (`BLUETEAM_RAPIDAPI_BUDGET_HOURS`, default 8h, which expires on its own). The month-to-date counter and the arm window both survive a server restart. A refusal is not an outage and not a retry prompt: report it once, then continue with the quota-free providers.
@@ -501,7 +501,10 @@ Choose the tool by what the analyst wants — never invent tools.
 It is unrelated to `threatfox_ioc_search` (different API, no shared budget). The `blueteam_threat_intel_aggregate` covers six providers, does **not** include RapidAPI, and costs no quota at all, which is why it is what a scheduled report uses.
 
 Netra and Argus lookups are spaced 30s apart, Sangfor 5s (`NETRA_MIN_INTERVAL` /
-`ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`). Enriching N IPs costs N×interval — batch
+`ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`); the RapidAPI tools are spaced by
+`BLUETEAM_RAPIDAPI_MIN_INTERVAL` (default 0.25s; set 7.0 where the plan allows one lookup
+per 7s) from one shared limiter, so `blueteam_ioc_search_bulk` and parallel single calls
+both obey it. Enriching N IPs costs N×interval — batch
 only the IPs the analysis actually needs, and don't re-query an IP you already have.
 
 Netra also gets a 90s per-request budget (the rest of the server runs on
@@ -723,6 +726,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_extract_iocs` / `blueteam_ioc_lifecycle` | IOC extraction & lifecycle store (local, free) |
 | `blueteam_ip_intel_bulk(ips=[...])` | 1-50 IPs in one metered RapidAPI request, duplicates collapsed: the preferred path once the budget is armed. Private, loopback, link-local and CGNAT addresses are rejected before any request is sent |
 | `blueteam_ioc_search(detail_level="summary"\|"forensic"\|"raw")` | RapidAPI single-IP lookup: verdict-first summary by default; WHOIS stripped to technical registry fields at every level (no `person`/`address`/`phone`/`fax-no`). One shared account-wide budget, so a `403` means "not subscribed" while a `Budget closed` refusal means "no window armed" |
+| `blueteam_ioc_search_bulk(ips=[...], detail_level="summary"\|"forensic")` | 1-25 IPs, one metered RapidAPI request each, sequential and spaced by `BLUETEAM_RAPIDAPI_MIN_INTERVAL`. Same IOC Search product as `blueteam_ioc_search`, so it needs only that subscription; use it when `blueteam_ip_intel_bulk` is not subscribed or the plan requires paced single lookups. No `raw` level. One failing IP is reported per IP and never hides the rest |
 | `wazuh_alert_focused_crawl` | surgical alert deep-dive (`rule_id`/`src_ip`/`sample_size`) |
 | `wazuh_alert_aggregate_analysis` | zero-doc full-index statistical summary |
 | `wazuh_alert_dsl_query` | raw OpenSearch DSL (script-injection guarded) |

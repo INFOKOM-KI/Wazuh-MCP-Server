@@ -498,6 +498,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_RAPIDAPI_BUDGET_HOURS="8"    # the window expires on its own after N hours (one shift)
 # export BLUETEAM_RAPIDAPI_MONTHLY_CAP="100"   # account-wide hard limit, shared by every product
 # export BLUETEAM_RAPIDAPI_RAW_WHOIS="true"    # blueteam_ip_intel_bulk keeps the provider's WHOIS verbatim
+# export BLUETEAM_RAPIDAPI_MIN_INTERVAL="0.25" # seconds between RapidAPI requests; set 7.0 where the plan allows one lookup per 7s
 #                                             # for abuse escalation; "false" allowlists it.
 # export HUDSONROCK_API_KEY="your_key"      # https://cavalier.hudsonrock.com (stealer-log check)
 # export NETRA_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
@@ -865,6 +866,7 @@ export BLUETEAM_RAPIDAPI_BUDGET="${BLUETEAM_RAPIDAPI_BUDGET:-0}"
 export BLUETEAM_RAPIDAPI_BUDGET_HOURS="${BLUETEAM_RAPIDAPI_BUDGET_HOURS:-8}"
 export BLUETEAM_RAPIDAPI_MONTHLY_CAP="${BLUETEAM_RAPIDAPI_MONTHLY_CAP:-100}"
 export BLUETEAM_RAPIDAPI_RAW_WHOIS="${BLUETEAM_RAPIDAPI_RAW_WHOIS:-true}"
+export BLUETEAM_RAPIDAPI_MIN_INTERVAL="${BLUETEAM_RAPIDAPI_MIN_INTERVAL:-0.25}"
 export BLUETEAM_RAPIDAPI_CACHE="${BLUETEAM_RAPIDAPI_CACHE:-/var/log/blue-team-mcp/rapidapi_state.jsonl}"
 export HUDSONROCK_API_KEY="${HUDSONROCK_API_KEY:-}"
 export BLUETEAM_CMDB_FILE="${BLUETEAM_CMDB_FILE:-}"

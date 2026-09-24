@@ -84,19 +84,23 @@ Choose the tool by what the analyst wants — never invent tools.
 | Netra | `netra_ip_analysis(ip)` — 30s spaced, **90s** per-request budget because its multi-source fan-out legitimately takes ~34s |
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
 | AbuseIPDB IP reputation | **no standalone tool** — AbuseIPDB runs inside `blueteam_unified_threat_score` (weight 0.30). Do not call a `*_abuseipdb` tool; it is not registered. |
-| RapidAPI (one shared budget) | `blueteam_ip_intel_bulk(ips=[...])` for 1-50 IPs in **one** request; `blueteam_ioc_search(ip)` for a single IP; `blueteam_breach_check(email)`. All three draw on one account-wide pool that is **closed unless the operator armed it**, and none of them cost quota at the six-provider aggregate |
+| RapidAPI (one shared budget) | `blueteam_ip_intel_bulk(ips=[...])` for 1-50 IPs in **one** request; `blueteam_ioc_search(ip)` for a single IP; `blueteam_ioc_search_bulk(ips=[...])` for 1-25 IPs one request each; `blueteam_breach_check(email)`. All four draw on one account-wide pool that is **closed unless the operator armed it**, and none of them cost quota at the six-provider aggregate |
 | MISP (own instance) | `blueteam_misp_ioc_lookup(value)` — read-only `restSearch` against your MISP. Returns the attributes an indicator appears in, plus tag names; `comment` and galaxy free text are stripped by an allowlist before you see them. Needs `MISP_URL` + `MISP_API_KEY`: when unset the tool raises at call time, so report "MISP not configured", never "no results". A header reading `Capability probe: version probe skipped` is a restricted version endpoint, not a failed lookup |
 
-**The RapidAPI budget, read this before calling any of the three.** Every RapidAPI product draws on ONE account-wide pool of `BLUETEAM_RAPIDAPI_MONTHLY_CAP` requests (default 100/month), and the guard is fail-closed: `BLUETEAM_RAPIDAPI_BUDGET` defaults to 0, so a call is refused with `Budget closed` until an operator arms a window (`BLUETEAM_RAPIDAPI_BUDGET_HOURS`, default 8h, which expires on its own). The month-to-date counter and the arm window both survive a server restart. A refusal is not an outage and not a retry prompt: report it once, then continue with the quota-free providers.
+**The RapidAPI budget, read this before calling any RapidAPI tool.** Every RapidAPI product draws on ONE account-wide pool of `BLUETEAM_RAPIDAPI_MONTHLY_CAP` requests (default 100/month), and the guard is fail-closed: `BLUETEAM_RAPIDAPI_BUDGET` defaults to 0, so a call is refused with `Budget closed` until an operator arms a window (`BLUETEAM_RAPIDAPI_BUDGET_HOURS`, default 8h, which expires on its own). The month-to-date counter and the arm window both survive a server restart. A refusal is not an outage and not a retry prompt: report it once, then continue with the quota-free providers.
 - Prefer `blueteam_ip_intel_bulk(ips=[...])`: N IPs cost **one** request, 1-50 per call, duplicates collapsed, and the cache key ignores order so re-running the same set inside the TTL is free.
 - `blueteam_ioc_search(ip)` is the single-IP path. It takes `detail_level`: `"summary"` (default) leads with the verdict line (malicious/total engines, band, tags, ASN), the top 5 communicating files and sanitized WHOIS; `"forensic"` adds every resolution and file plus the flagged per-vendor verdicts; `"raw"` returns the verbatim provider body for fields not yet mapped, with WHOIS still filtered. All three levels cost the same one request.
+- `blueteam_ioc_search_bulk(ips=[...])` runs that same IOC Search product for 1-25 IPs, one metered request per IP, sequentially and spaced by `BLUETEAM_RAPIDAPI_MIN_INTERVAL`. Use it when `blueteam_ip_intel_bulk` is not subscribed, or when the plan requires paced single lookups.
 
 **WHOIS differs between the two IP tools, deliberately.** `blueteam_ioc_search` allowlists the technical registry fields (no `person`/`address`/`phone`/`fax-no`). `blueteam_ip_intel_bulk` returns the provider's WHOIS **verbatim** and marks the block in its output, because abuse-desk and registrant context is what escalation needs. Treat the WHOIS block from that tool as third-party data: keep it in the incident record, do not republish it, and do not carry it into a shared report. An operator can close the gap with `BLUETEAM_RAPIDAPI_RAW_WHOIS=false`, which applies the same allowlist to the bulk body.
 
 It is unrelated to `threatfox_ioc_search` (different API, no shared budget). The `blueteam_threat_intel_aggregate` covers six providers, does **not** include RapidAPI, and costs no quota at all, which is why it is what a scheduled report uses.
 
 Netra and Argus lookups are spaced 30s apart, Sangfor 5s (`NETRA_MIN_INTERVAL` /
-`ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`). Enriching N IPs costs N×interval — batch
+`ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`); the RapidAPI tools are spaced by
+`BLUETEAM_RAPIDAPI_MIN_INTERVAL` (default 0.25s; set 7.0 where the plan allows one lookup
+per 7s) from one shared limiter, so `blueteam_ioc_search_bulk` and parallel single calls
+both obey it. Enriching N IPs costs N×interval — batch
 only the IPs the analysis actually needs, and don't re-query an IP you already have.
 
 Netra also gets a 90s per-request budget (the rest of the server runs on
@@ -318,6 +322,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_extract_iocs` / `blueteam_ioc_lifecycle` | IOC extraction & lifecycle store (local, free) |
 | `blueteam_ip_intel_bulk(ips=[...])` | 1-50 IPs in one metered RapidAPI request, duplicates collapsed: the preferred path once the budget is armed. Private, loopback, link-local and CGNAT addresses are rejected before any request is sent |
 | `blueteam_ioc_search(detail_level="summary"\|"forensic"\|"raw")` | RapidAPI single-IP lookup: verdict-first summary by default; WHOIS stripped to technical registry fields at every level (no `person`/`address`/`phone`/`fax-no`). One shared account-wide budget, so a `403` means "not subscribed" while a `Budget closed` refusal means "no window armed" |
+| `blueteam_ioc_search_bulk(ips=[...], detail_level="summary"\|"forensic")` | 1-25 IPs, one metered RapidAPI request each, sequential and spaced by `BLUETEAM_RAPIDAPI_MIN_INTERVAL`. Same IOC Search product as `blueteam_ioc_search`, so it needs only that subscription; use it when `blueteam_ip_intel_bulk` is not subscribed or the plan requires paced single lookups. No `raw` level. One failing IP is reported per IP and never hides the rest |
 | `wazuh_alert_focused_crawl` | surgical alert deep-dive (`rule_id`/`src_ip`/`sample_size`) |
 | `wazuh_alert_aggregate_analysis` | zero-doc full-index statistical summary |
 | `wazuh_alert_dsl_query` | raw OpenSearch DSL (script-injection guarded) |
@@ -696,7 +701,7 @@ closes. If it fails, the timer resets.
 | Pool key | Typical tools | Backend |
 |---|---|---|
 | URL host (default) | CrowdSec, OTX, AbuseIPDB, VirusTotal, URLhaus, GreyNoise, WHOIS/RDAP/CRT.sh, Netra | Derived from the request URL host when the caller passes no `client_name`, so unrelated upstreams never share one breaker |
-| `rapidapi` | `blueteam_ioc_search`, `blueteam_ip_intel_bulk`, `blueteam_breach_check` | Own pool and own breaker. All three products share ONE account-wide quota (100/month) enforced by `rapidapi_quota`, and every call is refused while the budget is closed |
+| `rapidapi` | `blueteam_ioc_search`, `blueteam_ioc_search_bulk`, `blueteam_ip_intel_bulk`, `blueteam_breach_check` | Own pool and own breaker. All three products share ONE account-wide quota (100/month) enforced by `rapidapi_quota`, and every call is refused while the budget is closed |
 | `indexer` | alert search, geo, timeline, correlation, email/domain alert lookup | Wazuh Indexer (OpenSearch) |
 | `wazuh` | agent/rule/SCA queries | Wazuh Manager API |
 | `argus` | Argus IP lookup | Argus threat-intel API (standalone pool) |
