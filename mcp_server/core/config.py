@@ -156,6 +156,7 @@ class ThreatIntelConfig:
     rapidapi_budget_hours: float = 8.0            # one shift; a restart mid-incident is worse than a long window
     rapidapi_cache_path: str = ""
     rapidapi_raw_whois: bool = True                # documented PII exemption, bulk only.
+    rapidapi_min_interval: float = 0.25       # seconds between RapidAPI requests; 7.0 where the plan requires it
 
     @classmethod
     def from_env(cls) -> "ThreatIntelConfig":
@@ -196,6 +197,7 @@ class ThreatIntelConfig:
             rapidapi_budget_hours=float(os.environ.get("BLUETEAM_RAPIDAPI_BUDGET_HOURS", "8")),
             rapidapi_cache_path=os.environ.get("BLUETEAM_RAPIDAPI_CACHE", ""),
             rapidapi_raw_whois=_bool(os.environ.get("BLUETEAM_RAPIDAPI_RAW_WHOIS", "true")),
+            rapidapi_min_interval=float(os.environ.get("BLUETEAM_RAPIDAPI_MIN_INTERVAL", "0.25")),
         )
 
     def validate(self) -> None:
@@ -204,6 +206,8 @@ class ThreatIntelConfig:
             raise ConfigurationError("NETRA_MIN_INTERVAL must be >= 0")
         if self.argus_min_interval < 0:
             raise ConfigurationError("ARGUS_MIN_INTERVAL must be >= 0")
+        if self.rapidapi_min_interval < 0:
+            raise ConfigurationError("BLUETEAM_RAPIDAPI_MIN_INTERVAL must be >= 0")
         if self.rapidapi_budget < 0:
             raise ConfigurationError("BLUETEAM_RAPIDAPI_BUDGET must be >= 0")
         if self.rapidapi_budget_hours <= 0:

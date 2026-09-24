@@ -2,9 +2,11 @@
 """
 © NAuliajati - TangerangKota-CSIRT
 RapidAPI capability lookups - three providers over a shared RapidAPI transport:
-1. blueteam_ioc_search    - RapidAPI IOC Search (vendor verdicts, file + hostname telemetry)
-2. blueteam_breach_check  - RapidAPI Breach Check (was this email in a known breach?)
-3. blueteam_ip_intel_bulk - IP Threat Intelligence (N IPs in one request)
+1. blueteam_ioc_search      - RapidAPI IOC Search (vendor verdicts, file + hostname telemetry)
+2. blueteam_breach_check    - RapidAPI Breach Check (was this email in a known breach?)
+3. blueteam_ip_intel_bulk   - IP Threat Intelligence (N IPs in one request)
+4. blueteam_ioc_search_bulk - IOC Search over N IP, one metered request per IP, spaced
+                              by BLUETEAM_RAPIDAPI_MIN_INTERVAL
 All three accept the indicator (srcip / attacker IP / email / IP list) directly so the LLM
 can feed values pulled from Wazuh alerts without any extra plumbing.
 
@@ -39,7 +41,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, RAPIDAPI_KEY_ENV, RAPIDAPI_CACHE_TTL, RAPIDAPI_MONTHLY_CAP,
                         RAPIDAPI_BUDGET, RAPIDAPI_BUDGET_HOURS, RAPIDAPI_CACHE_PATH,
-                        RAPIDAPI_RAW_WHOIS)
+                        RAPIDAPI_RAW_WHOIS, RAPIDAPI_MIN_INTERVAL)
 from mcp_server.core.http_client import (_api_call, _handle_api_error, ValidPublicIp,
                                          CircuitOpenError)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
@@ -54,6 +56,9 @@ _IOC_SEARCH_HOST = "ioc-search.p.rapidapi.com"
 _BREACH_CHECK_HOST = "breachcheck-api.p.rapidapi.com"
 _IP_INTEL_HOST = "ip-threat-intelligence.p.rapidapi.com"
 _BULK_MAX_IPS = 50
+# Lower than _BULK_MAX_IPS: that tool sends one request for the whole list, this one
+# sends one request per IP at BLUETEAM_RAPIDAPI_MIN_INTERVAL spacing.
+_IOC_BULK_MAX_IPS = 25
 
 # Marks a response whose WHOIS block was returned unredacted. A reader of the rendered
 # report cannot otherwise tell this tool's posture from blueteam_ioc_search's.
@@ -68,14 +73,10 @@ _WHOIS_RAW_NOTE = (
 _STORE = PersistentJsonlCache(RAPIDAPI_CACHE_PATH) if RAPIDAPI_CACHE_PATH else None
 _QUOTA = RapidApiBudget(RAPIDAPI_BUDGET, RAPIDAPI_BUDGET_HOURS, RAPIDAPI_MONTHLY_CAP, _STORE)
 
-# One request in flight at a time. The 1000/hour burst limit is the only thing this
-# limits, and an account-wide 100/month budget can never reach it, so the limiter is a
-# secondary guard behind the budget check. It still earns its place: a retry storm or a
-# loop would otherwise burn the whole monthly pool inside one second.
-# max_concurrent=1 also makes min_interval mean "time between request starts", which it
-# does not under concurrency (the shared AsyncRateLimiter reserves nothing, so N waiters
-# wake together).
-_limiter = get_limiter("rapidapi", max_concurrent=1, min_interval=0.25)  # 4 req/s, under the ~5 req/s free tier
+# One request in flight: max_concurrent=1 makes min_interval mean "time between
+# request starts" (the shared AsyncRateLimiter reserves nothing under concurrency).
+# BLUETEAM_RAPIDAPI_MIN_INTERVAL is the plan-level pacing knob (7.0 where required).
+_limiter = get_limiter("rapidapi", max_concurrent=1, min_interval=RAPIDAPI_MIN_INTERVAL)
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -568,6 +569,24 @@ class IocSearchInput(_IpInput):
     )
 
 
+class IocSearchBulkInput(BaseModel):
+    """Input for blueteam_ioc_search_bulk: N public IPs, one request each."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    ips: list[ValidPublicIp] = Field(
+        ..., min_length=1, max_length=_IOC_BULK_MAX_IPS,
+        description=(f"Public source IPs to look up one at a time (1-{_IOC_BULK_MAX_IPS}). "
+                     "Each IP costs one metered RapidAPI request."),
+    )
+    detail_level: Literal["summary", "forensic"] = Field(
+        default="summary",
+        description=("summary: verdict-first triage per IP. "
+                     "forensic: all resolutions and files per IP. "
+                     "No raw level: N verbatim bodies would overflow the context."),
+    )
+    response_format: Literal["markdown", "json"] = Field(default="markdown")
+
+
 class BreachCheckInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     email: str = Field(..., min_length=6, max_length=254,
@@ -605,8 +624,9 @@ async def blueteam_ioc_search(params: IocSearchInput) -> str:
     it is a separate subscription from the other RapidAPI tools.
 
     **Rate limits**: its own RapidAPI product quota. Requests are serialized at
-    4/s and successful results are cached for `RAPIDAPI_CACHE_TTL` (default
-    1800s), so re-querying the same IP inside 30 minutes is free.
+    `BLUETEAM_RAPIDAPI_MIN_INTERVAL` (default 0.25s; 7.0 where the plan requires
+    it) and successful results are cached for `RAPIDAPI_CACHE_TTL` (default 7
+    days), so re-querying the same IP inside the window is free.
 
     **Worked Examples**
     1. ``blueteam_ioc_search(ip="185.220.101.49")`` triage a Tor exit.
@@ -638,6 +658,81 @@ async def blueteam_ioc_search(params: IocSearchInput) -> str:
         return _truncate_if_needed(
             json.dumps(_redact_alert_data(summary), indent=2, ensure_ascii=False))
     return _truncate_if_needed(_redact_alert_data(_render_ioc_search(summary)))
+
+
+def _render_ioc_bulk(results: list[dict[str, Any]]) -> str:
+    """One report per IP, separated so a single failing IP never hides the rest."""
+    state = _QUOTA.state()
+    blocks = [f"# IOC Search (bulk) - {len(results)} IP(s)", "",
+              f"> One metered request per IP, {RAPIDAPI_MIN_INTERVAL:g}s apart.",
+              f"> RapidAPI budget: {state['remaining']}/{state['allowance']} remaining "
+              f"this month."]
+    for r in results:
+        if "error" in r:
+            blocks.append(f"# IOC Search - {r['ip']}\n\n**Lookup failed**: {r['error']}")
+        elif "skipped" in r:
+            blocks.append(f"# IOC Search - {r['ip']}\n\n**Skipped**: {r['skipped']}")
+        else:
+            blocks.append(_render_ioc_search(r))
+    return "\n\n---\n\n".join(blocks)
+
+
+@mcp.tool(name="blueteam_ioc_search_bulk",
+          annotations={"readOnlyHint": True, "destructiveHint": False,
+                       "idempotentHint": True, "openWorldHint": True})
+async def blueteam_ioc_search_bulk(params: IocSearchBulkInput) -> str:
+    """Search IOC databases for many source IPs, one metered request per IP.
+    Use this instead of calling ``blueteam_ioc_search`` in a loop when you hold a
+    list of srcips: the requests run sequentially inside one tool call and obey
+    the configured spacing. Every uncached IP costs one request from the shared
+    account pool, so prefer ``blueteam_ip_intel_bulk`` when that product is
+    subscribed (N IPs in one request).
+
+    Args:
+        params.ips: public source IPs. Private, loopback, link-local and CGNAT
+            addresses are rejected before any request is sent.
+        params.detail_level: `summary` (default) or `forensic` per IP.
+        params.response_format: `markdown` (default) or `json`.
+
+    **Required Permissions**: `RAPIDAPI_KEY` subscribed to "IOC Search" on
+    RapidAPI. A 403 means the key is valid but that product is not subscribed.
+
+    **Rate limits**: one request per uncached IP, at least
+    `BLUETEAM_RAPIDAPI_MIN_INTERVAL` apart (default 0.25s; set 7.0 where the
+    plan requires it), drawn from the shared `BLUETEAM_RAPIDAPI_MONTHLY_CAP`
+    (default 100/month). A cached IP is answered without a request or a delay.
+
+    **Worked Examples**
+    1. ``blueteam_ioc_search_bulk(ips=["185.220.101.49", "103.46.186.148"])``
+    2. ``blueteam_ioc_search_bulk(ips=["185.220.101.49"], detail_level="forensic")``
+    3. ``blueteam_ioc_search_bulk(ips=[...], response_format="json")``
+    """
+    unique_ips = sorted(dict.fromkeys(params.ips))
+    _audit_log("blueteam_ioc_search_bulk", {"count": len(unique_ips),
+                                            "detail_level": params.detail_level})
+    results: list[dict[str, Any]] = []
+    for ip in unique_ips:
+        try:
+            raw = await _rapidapi_get(
+                _IOC_SEARCH_HOST, f"/rapid/v1/ioc/search/ip?query={quote(ip)}")
+        except (RuntimeError, ThreatIntelError, CircuitOpenError) as e:
+            # Key, budget and circuit state are process-wide: every later IP would
+            # fail identically, so stop instead of repeating the same error N times.
+            results.append({"ip": ip, "error": str(e)[:300]})
+            results += [{"ip": left, "skipped": "not attempted after a process-wide failure"}
+                        for left in unique_ips[len(results):]]
+            break
+        except (httpx.HTTPStatusError, httpx.TimeoutException, ValueError) as e:
+            results.append({"ip": ip, "error": str(e)[:300]})
+            continue
+        results.append(_normalize_ioc_search(ip, raw, params.detail_level))
+
+    if params.response_format == "json":
+        return _truncate_if_needed(json.dumps(_redact_alert_data(
+            {"query": unique_ips, "source": "rapidapi_ioc_search_bulk",
+             "detail_level": params.detail_level, "results": results,
+             "budget": _QUOTA.state()}), indent=2, ensure_ascii=False))
+    return _truncate_if_needed(_redact_alert_data(_render_ioc_bulk(results)))
 
 
 @mcp.tool(name="blueteam_breach_check",

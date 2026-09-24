@@ -365,3 +365,44 @@ async def test_rapidapi_get_honours_explicit_ttl(monkeypatch):
 
     await r._rapidapi_get("example.p.rapidapi.com", "/x", ttl=60)
     assert captured["ttl"] == 60
+
+
+def test_ioc_bulk_input_rejects_private_and_caps_the_list():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        r.IocSearchBulkInput(ips=["192.168.1.1"])
+    with pytest.raises(ValidationError):
+        r.IocSearchBulkInput(ips=[])
+    with pytest.raises(ValidationError):
+        r.IocSearchBulkInput(ips=[f"10.{i}.0.1" for i in range(30)])
+
+
+def test_ioc_bulk_input_rejects_raw_level():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        r.IocSearchBulkInput(ips=["185.220.101.49"], detail_level="raw")
+
+
+def test_rapidapi_limiter_uses_the_configured_interval():
+    assert r._limiter.min_interval == r.RAPIDAPI_MIN_INTERVAL
+
+@pytest.mark.asyncio
+async def test_ioc_bulk_runs_in_order_and_stops_on_a_global_failure(monkeypatch):
+    from mcp_server.core.exceptions import ThreatIntelError
+    calls: list[str] = []
+
+    async def fake_get(host, path):
+        ip = path.rsplit("=", 1)[1]
+        calls.append(ip)
+        if ip == "171.25.193.25":
+            raise ThreatIntelError("[rapidapi] Budget exhausted: test")
+        return {"is_success": True, "data": {}}
+
+    monkeypatch.setattr(r, "_rapidapi_get", fake_get)
+    out = await r.blueteam_ioc_search_bulk(r.IocSearchBulkInput(
+        ips=["185.220.101.49", "103.46.186.148", "171.25.193.25"]))
+
+    assert calls == ["103.46.186.148", "171.25.193.25"]
+    assert "103.46.186.148" in out
+    assert "Lookup failed" in out
+    assert "Skipped" in out
