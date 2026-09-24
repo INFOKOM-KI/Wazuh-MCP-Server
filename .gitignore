@@ -64,6 +64,10 @@ graphify-out/
 rerank-cache/
 rag-cache/
 
+# Calibration report from scripts/calibrate_labeler.py. Per-case labels and accuracy
+# figures are regenerable; never commit the output.
+calibration_report.md
+
 # Local RAG corpus. Holds UNREDACTED analyst case notes, confirmed false-positive
 # reasons and IR-playbook chunks, so it carries attacker IOCs, internal hostnames
 # and victim context in one file. Written 0600 by rag_store; never commit it.
