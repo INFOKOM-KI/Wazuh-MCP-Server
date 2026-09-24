@@ -207,6 +207,9 @@ Reading the output:
   `label: disabled` and the run continues.
 - Accuracy is **unmeasured**. No top-1, no ECE, no confidence you did not read off the
   response. Report the label, the category, the confidence and the floor, and nothing more.
+- `scripts/calibrate_labeler.py` sweeps the floor and `BLUETEAM_LAYA_TEMPERATURE` over a
+  labelled JSONL set and writes `calibration_report.md` with top-1, per-tactic support, a
+  confusion matrix and the uncertain ratio. Applying the suggested values is an operator action.
 
 ### Investigation / case management
 | Want | Tool |

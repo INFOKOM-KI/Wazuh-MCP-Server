@@ -312,3 +312,31 @@ def test_prewarm_survives_a_failing_backend(monkeypatch, caplog):
     # The thread is gone by the time this runs, so the log row is the evidence that it
     # ran at all: the failure is swallowed there and never reaches the startup path.
     assert any("prewarm skipped" in record.message for record in caplog.records)
+
+
+def test_classify_many_batches_one_embedder_call():
+    calls: list = []
+    labeler = ONNXPrototypeLabeler(0.6, embedder=_fake_embedder(calls), temperature=0.01)
+    verdicts = _run(labeler.classify_many(["beacon to c2", "ransomware note"]))
+    assert [verdict.label for verdict in verdicts] == ["Command and Control", "Impact"]
+    assert calls[0] == ["beacon to c2", "ransomware note"], "texts must batch in one call"
+    assert len(calls) == 2, "one text batch plus one anchor build"
+
+
+def test_temperature_override_changes_the_softmax_sharpness():
+    hot = _run(ONNXPrototypeLabeler(0.6, embedder=_fake_embedder([]),
+                                    temperature=1.0).classify("beacon to c2"))
+    cold = _run(ONNXPrototypeLabeler(0.6, embedder=_fake_embedder([]),
+                                     temperature=0.01).classify("beacon to c2"))
+    assert cold.confidence > hot.confidence
+    assert hot.status == "uncertain" and hot.scored
+    assert cold.status == "ok" and not cold.uncertain
+
+
+def test_temperature_config_rejects_out_of_range():
+    from mcp_server.core.config import LabelConfig
+    from mcp_server.core.exceptions import ConfigurationError
+    for bad in (0.0, -0.1, 1.5):
+        with pytest.raises(ConfigurationError, match="BLUETEAM_LAYA_TEMPERATURE"):
+            LabelConfig(temperature=bad).validate()
+    LabelConfig(temperature=0.05).validate()

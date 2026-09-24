@@ -2,13 +2,10 @@
 """
 © NAuliajati - TangerangKota-CSIRT
 The two labeling backends behind ``blueteam_incident_label``.
-
 ``onnx_prototype`` is the default: it reuses the RAG embedder's ONNX session and
 scores the taxonomy prototypes by cosine similarity, so it adds no dependency and
 no second model to the CPU. ``laya`` runs the real classifier and needs CPU torch
-plus vendored weights.
-
-Both return the same ``LabelVerdict``, and both apply the same floor rule: a label
+plus vendored weights. Both return the same ``LabelVerdict``, and both apply the same floor rule: a label
 is only handed back above ``confidence_floor``, and a backend that exposes no
 scores reports ``scored=False, uncertain=True`` rather than a fabricated number.
 A verdict is never a claim that an alert is malicious - it is the phase the text
@@ -37,8 +34,9 @@ STATUS_UNAVAILABLE = "unavailable"
 # narrow band, so a raw softmax over 16 classes is nearly flat and the floor would
 # reject everything. The constant sharpens the distribution; it is NOT calibrated and
 # only ever made the output stricter. Calibrate it together with
-# BLUETEAM_LAYA_CONFIDENCE_FLOOR on labelled data - the full probability vector in
-# every response is what makes that possible without a code change.
+# BLUETEAM_LAYA_CONFIDENCE_FLOOR on labelled data; the deployed override is
+# BLUETEAM_LAYA_TEMPERATURE, and every response carries the full probability vector,
+# so a calibrated value needs no code change.
 _TEMPERATURE = 0.05
 
 Embedder = Callable[[List[str]], Awaitable[Tuple[Optional[Any], Optional[str]]]]
@@ -97,8 +95,6 @@ class _BaseLabeler:
                   label: Optional[str] = None,
                   reason: Optional[str] = None) -> LabelVerdict:
         if scores is None:
-            # Unscored: the floor cannot be applied, so the label is reported as
-            # uncertain and the caller decides what to do with a model's bare choice.
             return LabelVerdict(backend=self.name, status=STATUS_UNCERTAIN,
                                 criteria_version=criteria.version(), label=label,
                                 category=MITRE_TACTIC_TO_CATEGORY.get(label) if label else None,
@@ -125,7 +121,6 @@ class _BaseLabeler:
 
 class ONNXPrototypeLabeler(_BaseLabeler):
     """Nearest-prototype classification over the taxonomy descriptions.
-
     Prototype embeddings are built once per process and cached; a second call costs
     one embedding plus 16 dot products. No numpy: the arithmetic is 16 x 384 floats,
     well under the cost of the embedding call it follows.
@@ -133,9 +128,11 @@ class ONNXPrototypeLabeler(_BaseLabeler):
 
     name = "onnx_prototype"
 
-    def __init__(self, floor: float, embedder: Optional[Embedder] = None) -> None:
+    def __init__(self, floor: float, embedder: Optional[Embedder] = None,
+                 temperature: Optional[float] = None) -> None:
         super().__init__(floor)
         self._embedder = embedder
+        self.temperature = _TEMPERATURE if temperature is None else float(temperature)
         self._anchors: Optional[Tuple[List[str], List[List[float]]]] = None
 
     async def _anchor_matrix(self) -> Tuple[Optional[Tuple[List[str], List[List[float]]]], Optional[str]]:
@@ -165,19 +162,31 @@ class ONNXPrototypeLabeler(_BaseLabeler):
         self._anchors = (tactics, anchors)
         return self._anchors, None
 
-    async def classify(self, state_text: str) -> LabelVerdict:
+    async def classify_many(self, state_texts: List[str]) -> List[LabelVerdict]:
+        """One embedder call for all texts, one finalize per row. The calibration
+        harness applies floors to these vectors instead of re-embedding per grid point."""
+        if not state_texts:
+            return []
         embedder = self._embedder or _default_embedder()
-        matrix, status = await embedder([state_text])
+        matrix, status = await embedder(list(state_texts))
         if matrix is None:
-            return self._unavailable(status or "the embedding model is unavailable")
+            return [self._unavailable(status or "the embedding model is unavailable")
+                    for _ in state_texts]
         anchors, anchor_status = await self._anchor_matrix()
         if anchors is None:
-            return self._unavailable(anchor_status or "prototype anchors unavailable")
+            return [self._unavailable(anchor_status or "prototype anchors unavailable")
+                    for _ in state_texts]
         tactics, anchor_rows = anchors
-        row = [float(value) for value in matrix[0]]
-        similarities = [sum(a * b for a, b in zip(row, anchor)) for anchor in anchor_rows]
-        probabilities = _softmax(similarities, _TEMPERATURE)
-        return self._finalize(dict(zip(tactics, probabilities)))
+        verdicts: List[LabelVerdict] = []
+        for row in matrix:
+            vector = [float(value) for value in row]
+            similarities = [sum(a * b for a, b in zip(vector, anchor)) for anchor in anchor_rows]
+            probabilities = _softmax(similarities, self.temperature)
+            verdicts.append(self._finalize(dict(zip(tactics, probabilities))))
+        return verdicts
+
+    async def classify(self, state_text: str) -> LabelVerdict:
+        return (await self.classify_many([state_text]))[0]
 
     async def prewarm(self) -> None:
         """Embed the taxonomy prototypes ahead of the first call. The budget is 300 ms

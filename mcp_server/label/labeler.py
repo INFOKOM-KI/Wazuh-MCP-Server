@@ -70,7 +70,8 @@ def _build() -> _BaseLabeler:
     if config.label.backend == "laya":
         return LayaLabeler(config.label.confidence_floor, config.label.model_path,
                            config.label.model_sha256, config.label.allow_download)
-    return ONNXPrototypeLabeler(config.label.confidence_floor)
+    return ONNXPrototypeLabeler(config.label.confidence_floor,
+                                temperature=config.label.temperature)
 
 
 def _ensure() -> Tuple[_BaseLabeler, asyncio.Semaphore]:

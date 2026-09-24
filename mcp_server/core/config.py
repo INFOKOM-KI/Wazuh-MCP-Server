@@ -854,6 +854,7 @@ class LabelConfig:
     model_sha256: str = ""
     allow_download: bool = False
     confidence_floor: float = 0.6
+    temperature: float = 0.05   # For Laya Model
     max_concurrency: int = 1
 
     @classmethod
@@ -865,6 +866,7 @@ class LabelConfig:
             model_sha256=os.environ.get("BLUETEAM_LAYA_MODEL_SHA256", "").strip().lower(),
             allow_download=_bool(os.environ.get("BLUETEAM_LAYA_ALLOW_DOWNLOAD", "false")),
             confidence_floor=float(os.environ.get("BLUETEAM_LAYA_CONFIDENCE_FLOOR", "0.6")),
+            temperature=float(os.environ.get("BLUETEAM_LAYA_TEMPERATURE", "0.05")),
             max_concurrency=int(os.environ.get("BLUETEAM_LAYA_MAX_CONCURRENCY", "1")),
         )
 
@@ -881,6 +883,11 @@ class LabelConfig:
             )
         if self.max_concurrency < 1:
             raise ConfigurationError("BLUETEAM_LAYA_MAX_CONCURRENCY must be >= 1")
+        if not 0.0 < self.temperature <= 1.0:
+            raise ConfigurationError(
+                "BLUETEAM_LAYA_TEMPERATURE must be in (0, 1]; a lower value sharpens "
+                "the softmax, and a higher one flattens it past usefulness."
+            )
         if self.enabled and self.backend == "laya":
             # Fail closed at startup: unpinned weights must never load, and a load
             # that cannot succeed turns every label into `unavailable`.
