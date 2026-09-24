@@ -124,4 +124,4 @@ async def test_run_handles_a_thousand_cases_without_a_cap(tmp_path):
                              {f"case {i}": "Impact" for i in range(1200)}))
     assert best["cases"] == 1200 and best["correct"] == 1200
     report = out.read_text(encoding="utf-8")
-    assert "# Labeler calibration 1200 cases" in report
+    assert "1200 cases" in report

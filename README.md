@@ -613,9 +613,13 @@ Reading the output:
   `label: disabled` and the run continues.
 - Accuracy is **unmeasured**. No top-1, no ECE, no confidence you did not read off the
   response. Report the label, the category, the confidence and the floor, and nothing more.
-- `scripts/calibrate_labeler.py` sweeps the floor and `BLUETEAM_LAYA_TEMPERATURE` over a
-  labelled JSONL set and writes `calibration_report.md` with top-1, per-tactic support, a
-  confusion matrix and the uncertain ratio. Applying the suggested values is an operator action.
+- Three operator scripts run the loop: `scripts/export_case_labels.py` pre-fills candidates
+  from the FP KB and the investigation history, `scripts/calibrate_labeler.py` sweeps the
+  floor and `BLUETEAM_LAYA_TEMPERATURE` over the labelled JSONL and writes
+  `calibration_report.md` with top-1, per-tactic support, a confusion matrix and the uncertain
+  ratio, and `scripts/label_health.py` computes coverage and the rolling uncertain ratio from
+  the audit log, failing a cron gate with `--fail`. Applying suggested values is an operator
+  action.
 
 ### Investigation / case management
 | Want | Tool |
