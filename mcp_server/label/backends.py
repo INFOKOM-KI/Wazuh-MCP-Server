@@ -15,7 +15,6 @@ A verdict is never a claim that an alert is malicious - it is the phase the text
 resembles.
 """
 from __future__ import annotations
-
 import asyncio
 import hashlib
 import logging
@@ -24,7 +23,6 @@ import os
 import threading
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
-
 from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY
 from mcp_server.core.rerank import _sha256_file
 from mcp_server.label import criteria
@@ -86,6 +84,10 @@ class _BaseLabeler:
 
     def __init__(self, floor: float) -> None:
         self.floor = float(floor)
+
+    async def prewarm(self) -> None:
+        """Warm whatever the first classify would otherwise pay for. No-op by default."""
+        return None
 
     def _unavailable(self, reason: str) -> LabelVerdict:
         return LabelVerdict(backend=self.name, status=STATUS_UNAVAILABLE,
@@ -176,6 +178,12 @@ class ONNXPrototypeLabeler(_BaseLabeler):
         similarities = [sum(a * b for a, b in zip(row, anchor)) for anchor in anchor_rows]
         probabilities = _softmax(similarities, _TEMPERATURE)
         return self._finalize(dict(zip(tactics, probabilities)))
+
+    async def prewarm(self) -> None:
+        """Embed the taxonomy prototypes ahead of the first call. The budget is 300 ms
+        warm; the cold path is the ONNX session build plus 32 embeddings, which is an
+        order of magnitude more than a classify."""
+        await self._anchor_matrix()
 
 
 def _tree_sha256(root: str) -> str:

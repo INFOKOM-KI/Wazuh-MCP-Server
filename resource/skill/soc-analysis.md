@@ -171,8 +171,10 @@ that an entity is malicious.
 - `blueteam_alert_cluster` needs `BLUETEAM_CLUSTER_ENABLED=true` plus a scikit-learn
   install (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`).
 - `blueteam_incident_label` needs `BLUETEAM_LAYA_ENABLED=true`. The default `onnx`
-  backend reuses the RAG embedder and costs no extra memory; `BLUETEAM_LAYA_BACKEND=laya`
-  runs the real classifier and needs CPU torch plus vendored weights.
+  backend reuses the RAG embedder and costs no extra memory. The `laya` backend is
+  **unsupported by policy** — CPU torch plus weights exceed the agreed 250 MB / 300 ms budget —
+  so do not ask the operator to enable it. If a call reports it as the active backend, treat
+  that as an operator exemption and say so in the report rather than presenting it as normal.
 - While a flag is off the tool raises an enable hint. That hint is a configuration
   answer, not a failure — report it and stop, do not retry.
 
@@ -195,6 +197,8 @@ Reading the output:
 - Both tools stamp a version into every response (`feature_version` for the fit,
   `criteria_version` for the label). Two results with different stamps are not comparable;
   say so instead of comparing them.
+- Accuracy is **unmeasured**. No top-1, no ECE, no confidence you did not read off the
+  response. Report the label, the category, the confidence and the floor, and nothing more.
 
 ### Investigation / case management
 | Want | Tool |

@@ -93,6 +93,28 @@ async def classify_state(state_text: str) -> LabelVerdict:
         return await backend.classify(state_text)
 
 
+def prewarm() -> None:
+    """Build the prototype anchors on a daemon thread so the first analyst call does not
+    pay the ONNX session build plus 32 embeddings. Never blocks startup, and a failure is
+    only logged: the classify path already reports `unavailable` with a reason.
+
+    The semaphore is created here but never awaited here - constructing it does not bind
+    an event loop, so the server loop can still acquire it later.
+    """
+    if not labeler_enabled():
+        return
+
+    def _run() -> None:
+        try:
+            backend, _gate = _ensure()
+            asyncio.run(backend.prewarm())
+            logger.info("Labeling prewarm finished (backend=%s)", backend.name)
+        except Exception as exc:
+            logger.warning("Labeling prewarm skipped: %s", exc)
+
+    threading.Thread(target=_run, name="label-prewarm", daemon=True).start()
+
+
 def _lookup(alert: Any, path: str) -> Any:
     """Nested lookup with a flat fallback: an alert may carry ``data.srcip`` as
     nested objects or as a literal dotted key, and both shapes reach here."""

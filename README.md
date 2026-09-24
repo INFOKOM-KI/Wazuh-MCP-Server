@@ -292,7 +292,6 @@ reviewed step.
 per-cluster radii; `blueteam_alert_cluster_assign` places one entity into that fit.
 `blueteam_incident_label` names the ATT&CK tactic an alert or text resembles and derives its
 A/B/C category from the same mapping 3-Sum uses.
-
 What makes clustering cheap: the feature vector is the aggregation the 3-Sum engine already
 runs — 16 MITRE tactic level sums plus `score_a`/`score_b`/`score_c`/`total` — so there is no
 embedding model, no new taxonomy and no extra Indexer work beyond the profile query. What
@@ -314,6 +313,21 @@ structural facts to expect:
 Deliberate non-features: no automatic refit, no background scheduler inside the server, no
 member IP lists in cluster output (use `_assign` for one entity), and no stored labels.
 
+**A campaign means one window.** `blueteam_alert_cluster` groups entities that resemble each
+other *in the window you asked for*. Cluster ids are scoped to a fit, so the same campaign can
+carry a different id after a refit; cross-window campaign identity is not implemented. To persist
+one today, create a case for the cluster (`blueteam_case_create`) — that is a deliberate choice to
+avoid a new store with its own lifecycle.
+
+**The label vocabulary is baked, not fetched.** `mcp_server/label/mitre_tactics_generated.py` is
+generated offline from the ATT&CK bundle by `python3 bake_mitre_tactics.py --bundle <path>`
+(`--fetch` to download first, `--check` to report drift without writing). The runtime imports that
+module: no STIX parse, no startup I/O, no network. The vocabulary is a **union** — STIX ships 15
+`x-mitre-tactic` objects while this deployment scores 16 names, because the production ruleset
+still emits the pre-v18 `Defense Evasion`, which v18 split into `Stealth` + `Defense Impairment`. A
+bake that trusted upstream alone would drop that name and the criteria guard would raise at import.
+Never edit the generated file by hand; regenerate it and let `git diff` show the vocabulary change.
+
 #### CPU & memory envelope
 Threads are capped at 2 by default (`OMP_NUM_THREADS`, inherited by MKL/OpenBLAS/NumExpr) and
 `BLUETEAM_LAYA_MAX_CONCURRENCY` defaults to 1, because three model pools share the CPU: the
@@ -321,10 +335,19 @@ cross-encoder reranker (`bge-reranker-base`, ~1 GB, on by default), the RAG embe
 (`bge-small-en-v1.5`, ONNX), and — only when `BLUETEAM_LAYA_BACKEND=laya` — CPU torch plus the
 Laya weights. The `onnx` labeler adds no model: it borrows the RAG embedder.
 
-Latency and accuracy targets are **provisional until measured on production data** (Phase 3
-bench): label top-1 ≥ 0.70 and ECE ≤ 0.10, cluster ARI ≥ 0.60 with noise ≤ 0.50, assign p95 ≤ 1 s,
-label p95 ≤ 2 s. Nothing in this repository has been benchmarked against a real alert corpus
-for these two subsystems, so treat an unmeasured number as unmeasured.
+**Measured budget (owner decision, 2026-09-24).** Warm label latency p95 ≤ **300 ms** per call on
+the target host, and **no new resident model above 250 MB marginal RSS** measured in a process
+that has already loaded the reranker. The `onnx` backend meets both by construction: it reuses the
+embedder that is already resident. The first call also builds the ONNX session and embeds 32
+taxonomy phrases, so the anchors are prewarmed on a daemon thread at startup instead of being paid
+by the first analyst. `BLUETEAM_LAYA_BACKEND=laya` is **unsupported by policy** — CPU torch plus
+weights exceed the envelope — so the code and its tests stay as an escape hatch and are not
+advertised in the report prompts; enabling it is an explicit operator exemption, not a tuning knob.
+
+**Accuracy is unmeasured.** The floor and the softmax temperature were calibrated on a small set of
+closed cases only. No top-1 or ECE figure is claimed until 200–300 labelled cases exist, and the
+status is reported as "unmeasured (calibrated baseline)". Treat any accuracy number you did not
+measure on this host as unmeasured.
 
 ---
 
@@ -552,8 +575,10 @@ that an entity is malicious.
 - `blueteam_alert_cluster` needs `BLUETEAM_CLUSTER_ENABLED=true` plus a scikit-learn
   install (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`).
 - `blueteam_incident_label` needs `BLUETEAM_LAYA_ENABLED=true`. The default `onnx`
-  backend reuses the RAG embedder and costs no extra memory; `BLUETEAM_LAYA_BACKEND=laya`
-  runs the real classifier and needs CPU torch plus vendored weights.
+  backend reuses the RAG embedder and costs no extra memory. The `laya` backend is
+  **unsupported by policy** — CPU torch plus weights exceed the agreed 250 MB / 300 ms budget —
+  so do not ask the operator to enable it. If a call reports it as the active backend, treat
+  that as an operator exemption and say so in the report rather than presenting it as normal.
 - While a flag is off the tool raises an enable hint. That hint is a configuration
   answer, not a failure — report it and stop, do not retry.
 
@@ -576,6 +601,8 @@ Reading the output:
 - Both tools stamp a version into every response (`feature_version` for the fit,
   `criteria_version` for the label). Two results with different stamps are not comparable;
   say so instead of comparing them.
+- Accuracy is **unmeasured**. No top-1, no ECE, no confidence you did not read off the
+  response. Report the label, the category, the confidence and the floor, and nothing more.
 
 ### Investigation / case management
 | Want | Tool |

@@ -30,6 +30,24 @@ MITRE_TACTIC_TO_CATEGORY: Dict[str, str] = {
     "Collection":              "C",
 }
 
+# Tactic names this deployment still scores that upstream ATT&CK no longer ships.
+# v18 split "Defense Evasion" into Stealth + Defense Impairment, but the Wazuh ruleset
+# in production still emits the old string, so the label vocabulary is a union of the
+# baked bundle and these names. Dropping one would silently stop labelling real alerts.
+LEGACY_MITRE_TACTICS: Tuple[str, ...] = ("Defense Evasion",)
+
+
+def mitre_vocabulary_drift(upstream: set) -> Tuple[List[str], List[str]]:
+    """Compare the scored vocabulary with what a bundle ships.
+    Returns ``(missing, extra)``. ``missing`` are tactics this deployment scores that
+    upstream does not ship and that are not legacy aliases: a stale or wrong-version
+    bake, which is fatal. ``extra`` are tactics upstream ships that this deployment
+    does not score: informational, because the labeler cannot emit them.
+    """
+    expected = set(MITRE_TACTIC_TO_CATEGORY)
+    legacy = set(LEGACY_MITRE_TACTICS)
+    return sorted(expected - set(upstream) - legacy), sorted(set(upstream) - expected)
+
 # MITRE ATT&CK tactic -> APT signal weight (dynamic risk scoring, MCP-TAXONOMY-V2).
 # Higher = stronger APT indicator. C2/exfil/impact weigh most; recon weighs least.
 MITRE_TACTIC_WEIGHTS: Dict[str, float] = {

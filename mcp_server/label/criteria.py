@@ -14,14 +14,25 @@ Editing a phrase changes ``version()``, which is stamped into every response and
 audit row, so labels produced under different wording are never compared as equal.
 """
 from __future__ import annotations
-
 import hashlib
 import json
 from typing import Any, Dict, List, Tuple
+from mcp_server.core.constants import LEGACY_MITRE_TACTICS, MITRE_TACTIC_TO_CATEGORY, mitre_vocabulary_drift
 
-from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY
+try:
+    from mcp_server.label.mitre_tactics_generated import TACTICS as MITRE_TACTICS
+except ImportError as exc:
+    raise RuntimeError(
+        "mcp_server/label/mitre_tactics_generated.py is missing. Regenerate it with "
+        "`python3 bake_mitre_tactics.py --bundle <enterprise-attack.json>`; the labeler "
+        "refuses to import without a baked vocabulary rather than guess one."
+    ) from exc
 
 CRITERIA_VERSION = "v1"
+
+# STIX ships 15 x-mitre-tactic objects; this deployment also scores the pre-v18 name
+# its ruleset still emits (constants.LEGACY_MITRE_TACTICS), so the vocabulary is a union.
+LEGACY_TACTICS = LEGACY_MITRE_TACTICS
 
 QUESTION = "Which MITRE ATT&CK tactic phase does `body` most likely belong to?"
 
@@ -146,15 +157,23 @@ _TABLE: Dict[str, Dict[str, Any]] = {
 
 
 def _assert_vocabulary() -> None:
-    """Fail at import, not at the first call: a tactic added to constants.py and not
-    to this table would otherwise surface as a label with no prototypes, and the
-    prototype backend would silently rank a class it cannot describe."""
+    """Fail at import, not at the first call: a tactic added to constants.py and not to
+    this table would otherwise surface as a label with no prototypes, and the prototype
+    backend would silently rank a class it cannot describe."""
     missing = sorted(set(TACTICS) - set(_TABLE))
     extra = sorted(set(_TABLE) - set(TACTICS))
     if missing or extra:
         raise RuntimeError(
             f"criteria.py is out of sync with MITRE_TACTIC_TO_CATEGORY "
             f"(missing: {missing or 'none'}; unknown: {extra or 'none'})"
+        )
+    upstream = {spec["name"] for spec in MITRE_TACTICS.values()}
+    stale, _unscored = mitre_vocabulary_drift(upstream)
+    if stale:
+        raise RuntimeError(
+            f"the baked ATT&CK vocabulary is stale: {stale} are scored by this "
+            f"deployment but absent from mitre_tactics_generated.py. Re-run "
+            f"`python3 bake_mitre_tactics.py --bundle <enterprise-attack.json>`."
         )
 
 

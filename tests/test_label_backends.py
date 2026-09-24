@@ -7,8 +7,10 @@ the weight pin are the parts worth testing here, not the model quality.
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 import sys
+import threading
 import types
 import pytest
 from mcp_server.label import criteria
@@ -246,3 +248,67 @@ def _install_fake_laya(monkeypatch, result: dict):
     module = types.SimpleNamespace(load=lambda path: _Agent())
     monkeypatch.setitem(sys.modules, "laya", module)
     return _Agent
+
+
+def test_prewarm_is_a_noop_when_the_labeler_is_disabled(monkeypatch):
+    from mcp_server.core.config import config
+    from mcp_server.label import labeler
+
+    monkeypatch.setattr(config.label, "enabled", False)
+    labeler.prewarm()
+    assert not [t for t in threading.enumerate() if t.name == "label-prewarm"]
+
+
+def test_prewarm_builds_the_anchors_on_a_daemon_thread(monkeypatch):
+    from mcp_server.core.config import config
+    from mcp_server.label import labeler
+
+    started = threading.Event()
+    release = threading.Event()
+    calls: list = []
+
+    class _Backend:
+        name = "stub"
+
+        async def prewarm(self):
+            calls.append("prewarm")
+            started.set()
+            release.wait(timeout=5)
+
+    monkeypatch.setattr(config.label, "enabled", True)
+    monkeypatch.setattr(labeler, "_backend", _Backend())
+    monkeypatch.setattr(labeler, "_gate", asyncio.Semaphore(1))
+    labeler.prewarm()
+    assert started.wait(timeout=5), "prewarm thread never reached the backend"
+    thread = next(t for t in threading.enumerate() if t.name == "label-prewarm")
+    assert thread.daemon is True
+    release.set()
+    thread.join(timeout=5)
+    assert calls == ["prewarm"]
+
+
+def test_prewarm_survives_a_failing_backend(monkeypatch, caplog):
+    from mcp_server.core.config import config
+    from mcp_server.label import labeler
+
+    raised = threading.Event()
+
+    class _Backend:
+        name = "stub"
+
+        async def prewarm(self):
+            raised.set()
+            raise RuntimeError("embedder not bootstrapped")
+
+    monkeypatch.setattr(config.label, "enabled", True)
+    monkeypatch.setattr(labeler, "_backend", _Backend())
+    monkeypatch.setattr(labeler, "_gate", asyncio.Semaphore(1))
+    with caplog.at_level(logging.WARNING, logger="blue_team_mcp.label"):
+        labeler.prewarm()
+        assert raised.wait(timeout=5), "prewarm thread never reached the backend"
+    for thread in threading.enumerate():
+        if thread.name == "label-prewarm":
+            thread.join(timeout=5)
+    # The thread is gone by the time this runs, so the log row is the evidence that it
+    # ran at all: the failure is swallowed there and never reaches the startup path.
+    assert any("prewarm skipped" in record.message for record in caplog.records)

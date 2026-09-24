@@ -84,6 +84,10 @@ def main() -> None:
     from mcp_server.core.rerank import prewarm
     prewarm()
 
+    # 5b: Same contract for the labeling anchors, and a no-op unless the labeler is on.
+    from mcp_server.label.labeler import prewarm as prewarm_labels
+    prewarm_labels()
+
     # 6: Start transport
     tool_count = len(getattr(mcp._tool_manager, "_tools", {}))
     logger.info("%d tools registered. Starting %s transport on %s:%s",
