@@ -205,6 +205,65 @@ else
   echo "[.] Sigma conversion SKIPPED (set BLUETEAM_INSTALL_SIGMA=1 to enable)."
 fi
 
+# Alert-entity clustering (blueteam_alert_cluster / _assign) - OPTIONAL install.
+# Enable with BLUETEAM_INSTALL_CLUSTER=1 (env or config.env). scikit-learn is the
+# only new package: HDBSCAN is sklearn.cluster.HDBSCAN, no compiled extra.
+# The feature vector comes from the 3-Sum aggregation the server already runs
+# (16 MITRE tactic sums + 4 engine scores), so this path has no embedding model,
+# no download and no GPU.
+# scikit-learn is pinned to the same range as the Marker block on purpose: two
+# blocks installing two different scikit-learns into one venv breaks marker-pdf.
+if [[ "${BLUETEAM_INSTALL_CLUSTER:-0}" == "1" || "${BLUETEAM_INSTALL_CLUSTER:-0}" == "true" ]]; then
+  echo "[+] Installing scikit-learn for alert-entity clustering..."
+  "$INSTALL_DIR/venv/bin/pip" install --quiet "scikit-learn>=1.6.1,<2"
+  # Fail fast at install time: without this the first fit answers 'unavailable'.
+  if ! "$INSTALL_DIR/venv/bin/python3" -c \
+      "from sklearn.cluster import HDBSCAN; HDBSCAN(); print('scikit-learn ok')"; then
+    echo "[!] scikit-learn HDBSCAN unavailable after install." >&2
+    exit 1
+  fi
+else
+  echo "[.] Alert-entity clustering SKIPPED (set BLUETEAM_INSTALL_CLUSTER=1 to enable)."
+fi
+
+# Laya-Multilingual incident labeling (blueteam_laya_classify) - OPTIONAL install.
+# Enable with BLUETEAM_INSTALL_LAYA=1 (env or config.env).
+# Two inputs are required rather than defaulted, because neither is verified in
+# this repo yet:
+#   BLUETEAM_LAYA_PIP_SPEC    the distribution name behind `import laya`. A guessed
+#                             name either installs nothing or installs an unrelated
+#                             package that happens to share it.
+#   BLUETEAM_LAYA_MODEL_PATH  the vendored weights directory (see the vendor block
+#                             below); nothing is fetched from the hub here.
+# torch comes from the CPU index only: the default wheel pulls CUDA, which is
+# multi-GB on a host with no GPU and is the largest thing this block can get wrong.
+if [[ "${BLUETEAM_INSTALL_LAYA:-0}" == "1" || "${BLUETEAM_INSTALL_LAYA:-0}" == "true" ]]; then
+  if [[ -z "${BLUETEAM_LAYA_PIP_SPEC:-}" ]]; then
+    echo "[!] BLUETEAM_INSTALL_LAYA=1 requires BLUETEAM_LAYA_PIP_SPEC (the package name is not" >&2
+    echo "    pinned in this repo yet). Example: BLUETEAM_LAYA_PIP_SPEC='laya==0.1.0'" >&2
+    exit 1
+  fi
+  echo "[+] Installing CPU torch + $BLUETEAM_LAYA_PIP_SPEC for Laya labeling..."
+  "$INSTALL_DIR/venv/bin/pip" install --quiet torch \
+    --index-url https://download.pytorch.org/whl/cpu
+  "$INSTALL_DIR/venv/bin/pip" install --quiet "$BLUETEAM_LAYA_PIP_SPEC"
+  # Import cost is the risk this catches. USE_TF/USE_FLAX stop transformers from
+  # probing a framework Laya does not need; the server must still import it lazily.
+  if ! USE_TF=0 USE_FLAX=0 "$INSTALL_DIR/venv/bin/python3" -c "import laya; print('laya ok')"; then
+    echo "[!] 'import laya' failed after install. Check BLUETEAM_LAYA_PIP_SPEC." >&2
+    exit 1
+  fi
+else
+  echo "[.] Laya labeling SKIPPED (set BLUETEAM_INSTALL_LAYA=1 to enable)."
+fi
+
+# Non-fatal on purpose: the optional blocks share one venv and overlapping pins,
+# and an orphan package from an earlier install reports a conflict that has nothing
+# to do with this run. Print it, do not block the install on it.
+if ! "$INSTALL_DIR/venv/bin/pip" check; then
+  echo "[!] pip check reported conflicts above. Verify they do not touch the modules you rely on." >&2
+fi
+
 RERANK_ENABLED="${BLUETEAM_RERANK_ENABLED:-true}"
 RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 RERANK_CACHE="${BLUETEAM_RERANK_CACHE_PATH:-$INSTALL_DIR/rerank-cache}"
@@ -380,6 +439,42 @@ PYEOF
   rm -f "$ERR_LOG"
 else
   echo "  RAG disabled (BLUETEAM_RAG_ENABLED=false) - skipping embedding model bootstrap."
+fi
+
+# Laya model: vendored only, never fetched at label time.
+# The pin is a sha256 over the tree, built from RELATIVE paths so moving the
+# directory does not invalidate it. Rule: one line per file, '<hex>  <relpath>',
+# files sorted by relpath, sha256 of that text. mcp_server/laya/predictor.py has to
+# reproduce the rule exactly or every load fails the comparison.
+LAYA_ENABLED="${BLUETEAM_LAYA_ENABLED:-false}"
+LAYA_MODEL_PATH="${BLUETEAM_LAYA_MODEL_PATH:-}"
+LAYA_SHA="${BLUETEAM_LAYA_MODEL_SHA256:-}"
+if [[ -n "$LAYA_MODEL_PATH" ]]; then
+  if [[ ! -d "$LAYA_MODEL_PATH" ]]; then
+    echo "[!] BLUETEAM_LAYA_MODEL_PATH=$LAYA_MODEL_PATH is not a directory." >&2
+    exit 1
+  fi
+  if [[ -z "$(find "$LAYA_MODEL_PATH" -type f -print -quit)" ]]; then
+    echo "[!] BLUETEAM_LAYA_MODEL_PATH=$LAYA_MODEL_PATH is empty - vendor the weights first." >&2
+    echo "    Hub repo: convaiinnovations/laya-multilingual" >&2
+    exit 1
+  fi
+  VENDORED_LAYA_SHA=$(cd "$LAYA_MODEL_PATH" && find . -type f -printf '%P\0' | LC_ALL=C sort -z | \
+    xargs -0 sha256sum | sha256sum | awk '{print $1}')
+  echo "[.] Vendored Laya model at $LAYA_MODEL_PATH (no download)."
+  if [[ -n "$LAYA_SHA" ]]; then
+    if [[ "$VENDORED_LAYA_SHA" == "$LAYA_SHA" ]]; then
+      echo "  BLUETEAM_LAYA_MODEL_SHA256 verified (matches the vendored tree)."
+    else
+      echo "  WARNING: BLUETEAM_LAYA_MODEL_SHA256 mismatch - the vendored tree hashes to $VENDORED_LAYA_SHA."
+      echo "  The server refuses to load those weights: labels stay 'unavailable'."
+    fi
+  else
+    LAYA_SHA="$VENDORED_LAYA_SHA"
+    echo "  Generated BLUETEAM_LAYA_MODEL_SHA256=$LAYA_SHA"
+  fi
+else
+  echo "[.] Laya model not vendored (BLUETEAM_LAYA_MODEL_PATH unset) - labeling stays unavailable."
 fi
 
 # Config file for environment variables
@@ -623,6 +718,38 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_SIGMA_VERIFY_FIELDS="true"             # probe the Indexer for unmapped fields (finding SG9)
 # export BLUETEAM_SIGMA_CHECK_EXISTING="true"            # search Manager rules for overlapping detections
 
+# Alert-entity clustering (blueteam_alert_cluster / _assign) — needs the optional
+# scikit-learn install: set BLUETEAM_INSTALL_CLUSTER=1 above. Both tools return an enable
+# hint while BLUETEAM_CLUSTER_ENABLED=false, so leaving this off is safe.
+# export BLUETEAM_CLUSTER_ENABLED="false"         # true = register the fit/assign path
+# export BLUETEAM_CLUSTER_STORE="/var/log/blue-team-mcp/clusters.db"  # SQLite, written 0600
+# export BLUETEAM_CLUSTER_STORE_MAX="20000"       # entity rows kept before the oldest are evicted
+# export BLUETEAM_CLUSTER_TTL="86400"             # fit TTL in seconds; a fit past TTL is refit on demand
+# export BLUETEAM_CLUSTER_MIN_SIZE="5"            # HDBSCAN min_cluster_size
+# export BLUETEAM_CLUSTER_MIN_SAMPLES="3"         # HDBSCAN min_samples
+# export BLUETEAM_CLUSTER_ASSIGN_FACTOR="1.0"     # multiplier on a cluster's stored radius
+
+# Laya-Multilingual labeling (blueteam_laya_classify) — needs BLUETEAM_INSTALL_LAYA=1 and a
+# vendored, pinned model directory. Without weights the tool reports 'unavailable'; it never
+# falls back to a hub download at call time.
+# export BLUETEAM_LAYA_ENABLED="false"
+# export BLUETEAM_LAYA_BACKEND="onnx"            # 'onnx' reuses the RAG embedder; 'laya' needs CPU torch
+# export BLUETEAM_LAYA_MODEL_PATH="/opt/blue-team-mcp/laya-model"  # vendored weights (laya backend only)
+# export BLUETEAM_LAYA_MODEL_SHA256=""           # generated by setup.sh from the vendored tree
+# export BLUETEAM_LAYA_ALLOW_DOWNLOAD="false"
+# export BLUETEAM_LAYA_CONFIDENCE_FLOOR="0.6"    # below this the answer is 'uncertain', not a label
+# export BLUETEAM_LAYA_MAX_CONCURRENCY="1"       # CPU guard: one inference at a time
+
+# CPU hardening (set unconditionally by setup.sh; uncomment only to override)
+# export USE_TF="0"                      # stop transformers probing for TensorFlow
+# export USE_FLAX="0"
+# export TOKENIZERS_PARALLELISM="false"  # avoids the fork warning and thread pile-up
+# export HF_HUB_OFFLINE="1"              # 0 re-enables runtime model downloads
+# export OMP_NUM_THREADS="2"             # BLAS/ONNX thread cap; three model pools share the CPU
+# export MKL_NUM_THREADS="2"
+# export OPENBLAS_NUM_THREADS="2"
+# export NUMEXPR_NUM_THREADS="2"
+
 # Path restrictions (defaults shown)
 # export BLUETEAM_ALLOWED_PATHS="/var:/etc:/home:/opt:/usr"
 # export BLUETEAM_CAPTURE_DIR="/tmp"
@@ -673,12 +800,52 @@ for _envf in "$CONFIG_FILE" "$ENV_FILE"; do
   _sync_env_key "$_envf" "BLUETEAM_RAG_CHUNK_OVERLAP" "${BLUETEAM_RAG_CHUNK_OVERLAP:-200}"
   _sync_env_key "$_envf" "BLUETEAM_RAG_MODEL_SHA256" "$RAG_SHA"
 done
+# Cluster + Laya blocks - synced with the effective values resolved above.
+for _envf in "$CONFIG_FILE" "$ENV_FILE"; do
+  _sync_env_key "$_envf" "BLUETEAM_CLUSTER_ENABLED" "${BLUETEAM_CLUSTER_ENABLED:-false}"
+  _sync_env_key "$_envf" "BLUETEAM_CLUSTER_STORE" "${BLUETEAM_CLUSTER_STORE:-/var/log/blue-team-mcp/clusters.db}"
+  _sync_env_key "$_envf" "BLUETEAM_CLUSTER_STORE_MAX" "${BLUETEAM_CLUSTER_STORE_MAX:-20000}"
+  _sync_env_key "$_envf" "BLUETEAM_CLUSTER_TTL" "${BLUETEAM_CLUSTER_TTL:-86400}"
+  _sync_env_key "$_envf" "BLUETEAM_CLUSTER_MIN_SIZE" "${BLUETEAM_CLUSTER_MIN_SIZE:-5}"
+  _sync_env_key "$_envf" "BLUETEAM_CLUSTER_MIN_SAMPLES" "${BLUETEAM_CLUSTER_MIN_SAMPLES:-3}"
+  _sync_env_key "$_envf" "BLUETEAM_CLUSTER_ASSIGN_FACTOR" "${BLUETEAM_CLUSTER_ASSIGN_FACTOR:-1.0}"
+  _sync_env_key "$_envf" "BLUETEAM_LAYA_ENABLED" "$LAYA_ENABLED"
+  _sync_env_key "$_envf" "BLUETEAM_LAYA_BACKEND" "${BLUETEAM_LAYA_BACKEND:-onnx}"
+  _sync_env_key "$_envf" "BLUETEAM_LAYA_MODEL_PATH" "$LAYA_MODEL_PATH"
+  _sync_env_key "$_envf" "BLUETEAM_LAYA_MODEL_SHA256" "$LAYA_SHA"
+  _sync_env_key "$_envf" "BLUETEAM_LAYA_ALLOW_DOWNLOAD" "${BLUETEAM_LAYA_ALLOW_DOWNLOAD:-false}"
+  _sync_env_key "$_envf" "BLUETEAM_LAYA_CONFIDENCE_FLOOR" "${BLUETEAM_LAYA_CONFIDENCE_FLOOR:-0.6}"
+  _sync_env_key "$_envf" "BLUETEAM_LAYA_MAX_CONCURRENCY" "${BLUETEAM_LAYA_MAX_CONCURRENCY:-1}"
+done
+
+# CPU hardening - unconditional, written to both env files.
+# The reranker, the RAG embedder and Laya each build a runtime pool that defaults to
+# every core. Three pools on one CPU is the oversubscription that turns a sub-second
+# rerank into seconds and doubles RSS. Two is a starting value, not a measurement:
+# the Phase 3 bench is what should move it.
+# HF_HUB_OFFLINE follows the allow-download flags, because a hard offline switch
+# silently defeats BLUETEAM_RAG_ALLOW_DOWNLOAD=true.
+_HF_OFFLINE_DEFAULT=1
+if [[ "${BLUETEAM_RAG_ALLOW_DOWNLOAD:-false}" == "true" || "${BLUETEAM_LAYA_ALLOW_DOWNLOAD:-false}" == "true" ]]; then
+  _HF_OFFLINE_DEFAULT=0
+fi
+for _envf in "$CONFIG_FILE" "$ENV_FILE"; do
+  _sync_env_key "$_envf" "USE_TF" "${USE_TF:-0}"
+  _sync_env_key "$_envf" "USE_FLAX" "${USE_FLAX:-0}"
+  _sync_env_key "$_envf" "TOKENIZERS_PARALLELISM" "${TOKENIZERS_PARALLELISM:-false}"
+  _sync_env_key "$_envf" "HF_HUB_OFFLINE" "${HF_HUB_OFFLINE:-$_HF_OFFLINE_DEFAULT}"
+  _sync_env_key "$_envf" "TRANSFORMERS_OFFLINE" "${TRANSFORMERS_OFFLINE:-$_HF_OFFLINE_DEFAULT}"
+  _sync_env_key "$_envf" "OMP_NUM_THREADS" "${OMP_NUM_THREADS:-2}"
+  _sync_env_key "$_envf" "MKL_NUM_THREADS" "${MKL_NUM_THREADS:-${OMP_NUM_THREADS:-2}}"
+  _sync_env_key "$_envf" "OPENBLAS_NUM_THREADS" "${OPENBLAS_NUM_THREADS:-${OMP_NUM_THREADS:-2}}"
+  _sync_env_key "$_envf" "NUMEXPR_NUM_THREADS" "${NUMEXPR_NUM_THREADS:-${OMP_NUM_THREADS:-2}}"
+done
 unset -f _sync_env_key 2>/dev/null || true
 
 # Wrapper scripts
 echo "[5/7] Creating MCP server wrapper scripts..."
 
-# Main wrapper: mcp-server-blueteam (all 147 tools)
+# Main wrapper: mcp-server-blueteam (every registered tool)
 cat > /usr/local/bin/mcp-server-blueteam << 'EOF'
 #!/usr/bin/env bash
 # Wrapper - Claude Desktop calls this via SSH (MAESTRO-compliant)
@@ -815,6 +982,33 @@ export BLUETEAM_RAG_MAX_CANDIDATES="${BLUETEAM_RAG_MAX_CANDIDATES:-100}"
 export BLUETEAM_RAG_TOP_K="${BLUETEAM_RAG_TOP_K:-10}"
 export BLUETEAM_RAG_MAX_CHUNKS="${BLUETEAM_RAG_MAX_CHUNKS:-50000}"
 export BLUETEAM_RAG_MODEL_SHA256="${BLUETEAM_RAG_MODEL_SHA256:-}"
+# Alert-entity clustering (HDBSCAN; needs BLUETEAM_INSTALL_CLUSTER=1 at install time)
+export BLUETEAM_CLUSTER_ENABLED="${BLUETEAM_CLUSTER_ENABLED:-false}"
+export BLUETEAM_CLUSTER_STORE="${BLUETEAM_CLUSTER_STORE:-/var/log/blue-team-mcp/clusters.db}"
+export BLUETEAM_CLUSTER_STORE_MAX="${BLUETEAM_CLUSTER_STORE_MAX:-20000}"
+export BLUETEAM_CLUSTER_TTL="${BLUETEAM_CLUSTER_TTL:-86400}"
+export BLUETEAM_CLUSTER_MIN_SIZE="${BLUETEAM_CLUSTER_MIN_SIZE:-5}"
+export BLUETEAM_CLUSTER_MIN_SAMPLES="${BLUETEAM_CLUSTER_MIN_SAMPLES:-3}"
+export BLUETEAM_CLUSTER_ASSIGN_FACTOR="${BLUETEAM_CLUSTER_ASSIGN_FACTOR:-1.0}"
+# Laya labeling (needs BLUETEAM_INSTALL_LAYA=1 and a vendored, pinned model directory)
+export BLUETEAM_LAYA_ENABLED="${BLUETEAM_LAYA_ENABLED:-false}"
+export BLUETEAM_LAYA_BACKEND="${BLUETEAM_LAYA_BACKEND:-onnx}"
+export BLUETEAM_LAYA_MODEL_PATH="${BLUETEAM_LAYA_MODEL_PATH:-}"
+export BLUETEAM_LAYA_MODEL_SHA256="${BLUETEAM_LAYA_MODEL_SHA256:-}"
+export BLUETEAM_LAYA_ALLOW_DOWNLOAD="${BLUETEAM_LAYA_ALLOW_DOWNLOAD:-false}"
+export BLUETEAM_LAYA_CONFIDENCE_FLOOR="${BLUETEAM_LAYA_CONFIDENCE_FLOOR:-0.6}"
+export BLUETEAM_LAYA_MAX_CONCURRENCY="${BLUETEAM_LAYA_MAX_CONCURRENCY:-1}"
+# CPU hardening: three resident model pools share one CPU, and no runtime download
+# happens after install. USE_TF stops transformers probing for TensorFlow.
+export USE_TF="${USE_TF:-0}"
+export USE_FLAX="${USE_FLAX:-0}"
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-2}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-2}"
+export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-2}"
 export CROWDSEC_CACHE_TTL="${CROWDSEC_CACHE_TTL:-900}"
 export BLUETEAM_REDACT_SALT="${BLUETEAM_REDACT_SALT:-}"
 export BLUE_TEAM_MCP_SERVER_NAME="${BLUE_TEAM_MCP_SERVER_NAME:-blue_team_mcp}"

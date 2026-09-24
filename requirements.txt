@@ -14,7 +14,7 @@ aiosqlite>=0.20,<1.0
 #   uvicorn - mcp_server/core/server_auth.py imports it inside serve_authenticated()
 #             (transitive via mcp, which requires uvicorn>=0.31.1)
 #   pyyaml  - mcp_server/tools/sigma_rules.py imports it at module top level, so
-#             its absence breaks register_all_tools() for all 147 tools at once.
+#             its absence breaks register_all_tools() for every tool at once.
 #             Also used lazily in mcp_server/sigma/engine.py. Currently transitive
 #             via langgraph -> langchain-core.
 #   numpy   - mcp_server/core/rag_store.py imports it inside functions (never at
@@ -84,6 +84,29 @@ yara-x>=1.20.0,<2.0.0
 # The backend entry point is opensearch_lucene; setup.sh asserts it after install.
 # pysigma>=1.5.0,<2.0.0
 # pySigma-backend-opensearch>=2.0.0,<3.0.0
+
+# Alert-entity clustering (blueteam_alert_cluster / _assign) - OPTIONAL.
+# scikit-learn is the only new package: HDBSCAN is sklearn.cluster.HDBSCAN, no
+# compiled extra and no model download. Opt-in via setup.sh
+# BLUETEAM_INSTALL_CLUSTER=1, or manually:
+#   pip install "scikit-learn>=1.6.1,<2"
+# The range matches the Marker block on purpose: two blocks installing two
+# different scikit-learns into one venv breaks marker-pdf's >=1.6.1 floor.
+# Absence is not fatal - the tool answers 'unavailable: scikit-learn is not
+# installed' instead of failing at startup, because the import is inside the call.
+# scikit-learn>=1.6.1,<2.0.0
+
+# Laya-Multilingual incident labeling (blueteam_incident_label, backend=laya).
+# NOT installed by default, and NOT the default backend: BLUETEAM_LAYA_BACKEND=onnx
+# scores the taxonomy prototypes through the fastembed ONNX embedder declared above,
+# which adds no dependency at all. This block is only for the laya backend.
+# The distribution name behind `import laya` is not pinned in this repo yet, so
+# setup.sh requires it in BLUETEAM_LAYA_PIP_SPEC rather than guessing:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install "<laya-distribution>"
+# torch comes from the CPU index only: the default wheel pulls CUDA, which is
+# multi-GB on a host with no GPU. Weights are vendored and sha256-pinned by
+# setup.sh and never fetched at call time.
 
 # Dev dependencies (install with: pip install -r requirements.txt on venv environtment variable)
 pytest>=7.0

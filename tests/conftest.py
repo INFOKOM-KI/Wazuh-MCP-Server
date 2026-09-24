@@ -24,6 +24,11 @@ os.environ.setdefault("BLUETEAM_RERANK_ENABLED", "false")
 # allowlist still holds the production default. Set it here, before any module imports.
 os.environ.setdefault("BLUETEAM_EXPORT_DIR", tempfile.mkdtemp(prefix="mcp-export-test-"))
 
+# false_positive_kb reads its TTL at module import, and another test module imports it
+# before test_false_positive_kb.py's own env block runs, so that file's 1s TTL lost the
+# race and _expired(now-10) came back False. Same freeze as BLUETEAM_EXPORT_DIR above.
+os.environ.setdefault("BLUETEAM_FALSE_POSITIVE_TTL", "5")
+
 
 @pytest.fixture(autouse=True)
 def _clean_env():

@@ -155,16 +155,20 @@ def _ensure_loaded() -> bool:
             return False
 
 
-async def embed_texts(texts: list[str]) -> tuple[Optional[object], Optional[str]]:
+async def embed_texts(texts: list[str], *,
+                      require_store: bool = True) -> tuple[Optional[object], Optional[str]]:
     """Embed ``texts`` to L2-normalized float32 rows.
     Returns ``(matrix, status)``: ``matrix`` is shape ``(len(texts), dim)`` and
     ``status`` is ``None`` on success, else ``"empty"`` / ``"disabled"`` /
     ``"unavailable: ..."``. Normalizing at write time means cosine similarity
     downstream is a plain dot product.
+    ``require_store=False`` skips the RAG enabled/db_path gate so a caller that
+    needs vectors but no corpus (the ONNX labeler) shares this embedder instead
+    of loading a second ONNX session of the same model.
     """
     if not texts:
         return None, "empty"
-    if not config.rag.enabled or not _db_path():
+    if require_store and (not config.rag.enabled or not _db_path()):
         return None, "disabled"
     if not await asyncio.to_thread(_ensure_loaded):
         return None, f"unavailable: {_reason}"

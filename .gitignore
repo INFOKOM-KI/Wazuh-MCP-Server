@@ -75,6 +75,24 @@ rag.db-shm
 *.rag.db-wal
 *.rag.db-shm
 
+# Alert-cluster store (blueteam_alert_cluster). Holds srcip entity keys, their cluster
+# assignments and the fitted centroids: attacker indicators plus the shape of the
+# monitored estate. Written 0600 by cluster_store; never commit it. BLUETEAM_CLUSTER_STORE
+# is operator configurable, so match by extension, not by name.
+clusters.db
+clusters.db-wal
+clusters.db-shm
+*.cluster.db
+*.cluster.db-wal
+*.cluster.db-shm
+
+# Vendored Laya weights (BLUETEAM_LAYA_MODEL_PATH) and the HuggingFace snapshot
+# layout they are copied from. Multi-GB, and a snapshot copies the licence-gated
+# original into the repo root when an operator vendors it in place.
+laya-model/
+laya-cache/
+models--convaiinnovations--laya-multilingual/
+
 # Evidence PDFs (blueteam_pdf_extract / blueteam_markitdown_convert /
 # blueteam_document_convert and blueteam_rag_ingest(source="pdf")). Operators drop
 # vendor advisories, IR reports and case exhibits under BLUETEAM_ALLOWED_PATHS, which

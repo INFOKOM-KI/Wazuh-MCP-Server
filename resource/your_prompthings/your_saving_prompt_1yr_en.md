@@ -32,6 +32,7 @@ After the steps above, pull from the toolbox whatever the findings point to: CVE
 | IP triage | `blueteam_threat_card`, `blueteam_wazuh_alert_summarize`, `blueteam_attack_chain`, `blueteam_stix_killchain`, `blueteam_beacon_detect`, `wazuh_attack_velocity`, `blueteam_wazuh_alert_compare` |
 | Threat intel | `blueteam_threat_intel_aggregate`, `blueteam_unified_threat_score`, `crowdsec_ip_reputation`, `crowdsec_ip_reputation_bulk`, `threatfox_ioc_search`, `threatfox_ioc_search_bulk`, `otx_lookup`, `otx_lookup_bulk`, `greynoise_ip_context`, `argus_ip_lookup`, `netra_ip_analysis`, `urlhaus_lookup`, `urlhaus_lookup_bulk`, `urlhaus_hash_lookup`, `jarm_fingerprint`, `blueteam_lookup_domain_virustotal`, `blueteam_lookup_hash_virustotal`, `blueteam_ai_bot_recon`, `blueteam_misp_ioc_lookup` |
 | Correlation & campaigns | `three_sum_correlation`, `blueteam_attack_graph`, `blueteam_campaign_watch`, `blueteam_pivot_suggest`, `blueteam_stix_analyze`, `blueteam_baseline_drift`, `blueteam_baseline_profile`, `blueteam_calendar_heatmap`, `blueteam_false_positive_kb`, `blueteam_false_positive_tracker`, `blueteam_rag_query` / `blueteam_rag_fp_validate` (local corpus, opt-in), `blueteam_rag_ingest` (writes the local index) |
+| Clustering & labeling (opt-in) | `blueteam_alert_cluster` (fit/status), `blueteam_alert_cluster_assign`, `blueteam_incident_label` — need `BLUETEAM_CLUSTER_ENABLED` / `BLUETEAM_LAYA_ENABLED`; an enable hint is a configuration answer, not a failure |
 | CVE & vulnerability | `blueteam_wazuh_vulnerabilities`, `blueteam_cve_lookup`, `blueteam_cve_score`, `blueteam_cve_ssvc`, `blueteam_cve_epss`, `blueteam_cve_kev`, `blueteam_cve_poc`, `blueteam_cve_attack_mapping`, `blueteam_cve_advisory`, `blueteam_dependency_scan` |
 | Email / breach / domain | `wazuh_email_lookup`, `wazuh_compromised_emails_analysis`, `stealer_log_check`, `wazuh_domain_lookup`, `blueteam_domain_permute`, `blueteam_whois_lookup`, `blueteam_crtsh_lookup` |
 | Geo & host forensics | `blueteam_wazuh_geo_heatmap`, `blueteam_wazuh_geo_distribution`, `blueteam_wazuh_syscheck`, `blueteam_wazuh_compliance`, `blueteam_check_webshell`, `blueteam_hash_file`, `blueteam_fail2ban_status`, `blueteam_fail2ban_jail_status`, `blueteam_fail2ban_unban`, `blueteam_list_processes`, `blueteam_list_connections`, `blueteam_list_listening_ports`, `blueteam_list_users`, `blueteam_list_cron_jobs`, `blueteam_who_is_logged_in`, `blueteam_last_logins`, `blueteam_failed_logins`, `blueteam_sudo_history`, `blueteam_find_suid_files`, `blueteam_find_world_writable`, `blueteam_journalctl`, `blueteam_read_auth_log`, `blueteam_read_syslog`, `blueteam_read_web_log`, `blueteam_rootkit_scan`, `blueteam_lynis_audit`, `blueteam_system_health`, `blueteam_check_updates`, `blueteam_check_open_firewall`, `blueteam_check_ssh_authorized_keys`, `blueteam_capture_traffic` |
@@ -58,6 +59,27 @@ After the steps above, pull from the toolbox whatever the findings point to: CVE
 >
 > Argus renders every provider the response contains, with no fixed shape, so read the whole section rather than expecting a score/sources pair. Its report comments are summarised as `N text value(s), not expanded`; ask the operator for the raw payload if you need the comment text, and never read the summary as an empty field.
 
+## Step 1b — Clustering & incident labeling (opt-in)
+
+Two subsystems that answer "what shape is this window" and "what phase is this alert". Both are off
+by default: if either raises `... is disabled. Set <ENV VAR>=true ...`, report the hint once and
+carry on. There is no lexical fallback for a cluster or a label, and an unavailable subsystem is
+not a finding about an alert.
+
+1. Fit the shape of the window: `blueteam_alert_cluster(mode="fit", time_window_minutes=525600, response_format="json")`. Report `entity_count`, `noise_ratio` and each cluster's `size`, `medoid` and `top_tactics`. `status="insufficient_data"` means the window is too small — say that, and never describe it as "no clusters found".
+2. Label the alert you are actually writing about: `blueteam_incident_label(mode="alert", alert=<the alert object>, response_format="json")`. Report `label`, its `category`, `confidence` and the `floor`. `status="uncertain"` is a result — report it as uncertain and read `alternatives`; do not pick the most plausible one. If `scored=false`, the backend exposes no probabilities: report the model's choice as unscored and never invent a confidence for it. `status="unavailable"` carries a `reason`; report the reason and stop.
+3. To place a source IP: `blueteam_alert_cluster_assign(srcip="<ip>")`. `label=-1` with `novelty=true` means it sits outside every stored cluster — an outlier against the fit, not a verdict about the IP.
+4. `three_sum_correlation(time_window_minutes=525600)` for the scores the cluster vector is built from, then `blueteam_rag_query` for "have we closed something like this before".
+
+A label is a resemblance, not an attribution. Never write "this is a C2 beacon" — write "labeled
+Command and Control (category C), confidence X against floor Y". Never lower the confidence floor to
+force a label. Both tools stamp a version (`feature_version` for a fit, `criteria_version` for a
+label): if two results carry different stamps, say so instead of comparing them.
+
+A fit covers at most 14 days (`time_window_minutes` ≤ 20160). This report window is
+longer, so fit the most recent 14 days and name the sub-window the clusters describe rather than implying they cover the whole period.
+
+
 ## Step 2 — Write the report
 
 Structure it like this:
@@ -75,7 +97,8 @@ Structure it like this:
 1. Write for a non-technical reader. Plain language, no tool names in the final report.
 2. If a tool returns "hasn't been inspected yet — its signature is below", read the signature and re-invoke once with matching params.
 3. Respect redaction. Mask PII and credentials. If you need raw data, ask the operator for the forensic token — never print raw values yourself.
-4. If a tool returns `_degraded: true` or a missing key, say "unknown". Never claim "clean" or "no threats" from incomplete data.
+4. If a tool returns `_degraded: true` or a missing key, say "unknown". Never claim "clean" or "no threats" from incomplete data. The same applies to clustering and labeling: an enable hint, `status="unavailable"` or `status="uncertain"` is not a label — report the verdict and the reason instead of picking a tactic, and never lower the confidence floor to force one.
 5. Threat intel sources disagree. `blueteam_threat_intel_aggregate` covers six providers and RapidAPI is not one of them: the RapidAPI tools are budget-gated and refuse a scheduled run, so they are not an option here. Take the aggregate, `crowdsec_ip_reputation` and `threatfox_ioc_search` as the verdict, name which source said what, and never merge two sources into one verdict. A minority-malicious count plus a `tor` tag is anonymising infrastructure: elevated, not confirmed C2.
 6. This server is defensive-only. Recommend manual actions; never claim an IP was auto-blocked.
 7. Write in English.
+

@@ -829,6 +829,65 @@ class ClusterConfig:
             raise ConfigurationError("BLUETEAM_CLUSTER_ASSIGN_FACTOR must be > 0")
 
 
+@dataclass
+class LabelConfig:
+    """Incident labeling settings (blueteam_incident_label).
+    Disabled by default: both backends need something that is not on a plain
+    install, and an enabled labeler that cannot load would report `unavailable`
+    on every call.
+    Env vars carry the ``LAYA_`` prefix because that is the tool's origin, but the
+    default backend is ``onnx`` - it reuses the RAG embedder's ONNX session, so the
+    CPU cost is one model already resident rather than a second one. ``laya`` is the
+    real classifier: it needs CPU torch plus a vendored, pinned weight directory.
+    """
+    enabled: bool = False
+    backend: str = "onnx"
+    model_path: str = ""
+    model_sha256: str = ""
+    allow_download: bool = False
+    confidence_floor: float = 0.6
+    max_concurrency: int = 1
+
+    @classmethod
+    def from_env(cls) -> "LabelConfig":
+        return cls(
+            enabled=_bool(os.environ.get("BLUETEAM_LAYA_ENABLED", "false")),
+            backend=os.environ.get("BLUETEAM_LAYA_BACKEND", "onnx").strip().lower(),
+            model_path=os.environ.get("BLUETEAM_LAYA_MODEL_PATH", "").strip(),
+            model_sha256=os.environ.get("BLUETEAM_LAYA_MODEL_SHA256", "").strip().lower(),
+            allow_download=_bool(os.environ.get("BLUETEAM_LAYA_ALLOW_DOWNLOAD", "false")),
+            confidence_floor=float(os.environ.get("BLUETEAM_LAYA_CONFIDENCE_FLOOR", "0.6")),
+            max_concurrency=int(os.environ.get("BLUETEAM_LAYA_MAX_CONCURRENCY", "1")),
+        )
+
+    def validate(self) -> None:
+        if self.backend not in ("onnx", "laya"):
+            raise ConfigurationError(
+                f"BLUETEAM_LAYA_BACKEND must be 'onnx' or 'laya' (got {self.backend!r})"
+            )
+        if not 0.0 < self.confidence_floor < 1.0:
+            raise ConfigurationError(
+                "BLUETEAM_LAYA_CONFIDENCE_FLOOR must be between 0 and 1 exclusive; "
+                "a floor of 1 means no label is ever returned, and 0 means every "
+                "label is."
+            )
+        if self.max_concurrency < 1:
+            raise ConfigurationError("BLUETEAM_LAYA_MAX_CONCURRENCY must be >= 1")
+        if self.enabled and self.backend == "laya":
+            # Fail closed at startup: unpinned weights must never load, and a load
+            # that cannot succeed turns every label into `unavailable`.
+            if not self.model_path:
+                raise ConfigurationError(
+                    "BLUETEAM_LAYA_BACKEND=laya requires BLUETEAM_LAYA_MODEL_PATH "
+                    "(the vendored weights directory)."
+                )
+            if not self.model_sha256:
+                raise ConfigurationError(
+                    "BLUETEAM_LAYA_BACKEND=laya requires BLUETEAM_LAYA_MODEL_SHA256; "
+                    "run setup.sh to generate it from the vendored tree."
+                )
+
+
 # Top level Config aggregating all groups
 @dataclass
 class Config:
@@ -858,6 +917,7 @@ class Config:
     yara: YaraConfig = field(default_factory=YaraConfig)
     sigma: SigmaConfig = field(default_factory=SigmaConfig)
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
+    label: LabelConfig = field(default_factory=LabelConfig)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -882,6 +942,7 @@ class Config:
             yara=YaraConfig.from_env(),
             sigma=SigmaConfig.from_env(),
             cluster=ClusterConfig.from_env(),
+            label=LabelConfig.from_env(),
         )
 
     def validate(self) -> None:
@@ -905,6 +966,7 @@ class Config:
         self.yara.validate()
         self.sigma.validate()
         self.cluster.validate()
+        self.label.validate()
 
     def emit_warnings(self) -> None:
         """Log warnings for non-fatal configuration issues.

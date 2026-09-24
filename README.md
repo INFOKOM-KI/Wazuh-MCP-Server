@@ -8,9 +8,10 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **147 tools + 4 resources** (121 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
+offensive tooling. **150 tools + 4 resources** (124 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
-workflows, local case RAG, and host forensics. Read-only by default.
+workflows, local case RAG, host forensics, and opt-in HDBSCAN clustering + ATT&CK incident
+labeling. Read-only by default.
 
 **Programmer**: `NAuliajati` (`csirt[at]tangerangkota[.]go[.]id`)
 
@@ -112,7 +113,10 @@ optional — tools degrade gracefully without them.
 | Inbound hardening | `BLUETEAM_HTTP_RATE_LIMIT`, `BLUETEAM_ALLOWED_ORIGINS` | per-IP sliding-window rate limit (req/min, `0`=off) + Origin allowlist (loopback always allowed) |
 | Audit & persistence | `BLUETEAM_AUDIT_LOG`, `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CMDB_FILE` | JSONL audit trail + stores (optional) |
 | Local case RAG | `BLUETEAM_RAG_ENABLED`, `BLUETEAM_RAG_DB`, `BLUETEAM_RAG_MODEL`, `BLUETEAM_RAG_CACHE_PATH`, `BLUETEAM_RAG_MAX_CANDIDATES`, `BLUETEAM_RAG_TOP_K`, `BLUETEAM_RAG_MAX_CHUNKS`, `BLUETEAM_RAG_CHUNK_CHARS`, `BLUETEAM_RAG_CHUNK_OVERLAP`, `BLUETEAM_RAG_ALLOW_DOWNLOAD`, `BLUETEAM_RAG_MODEL_SHA256` | SQLite retrieval corpus over cases / confirmed false positives / IR playbooks. `ENABLED=true` requires an absolute `DB` path or startup raises. `ALLOW_DOWNLOAD` defaults `false` (`local_files_only`). |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **121 tools registered** instead of 147: `147 - 23 - 3 = 121`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
+| Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
+| Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder — no torch, no second model resident. `BACKEND=laya` requires `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `MAX_CONCURRENCY` defaults `1` |
+| CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **124 tools registered** instead of 150: `150 - 23 - 3 = 124`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
@@ -283,6 +287,45 @@ Sigma to native Wazuh XML rules is out of scope and needs a
 written scope amendment. Promotion out of either staging directory is a manual,
 reviewed step.
 
+### Alert Clustering & Incident Labeling (opt-in)
+`blueteam_alert_cluster` fits HDBSCAN over `srcip` entities and persists centroids, medoids and
+per-cluster radii; `blueteam_alert_cluster_assign` places one entity into that fit.
+`blueteam_incident_label` names the ATT&CK tactic an alert or text resembles and derives its
+A/B/C category from the same mapping 3-Sum uses.
+
+What makes clustering cheap: the feature vector is the aggregation the 3-Sum engine already
+runs — 16 MITRE tactic level sums plus `score_a`/`score_b`/`score_c`/`total` — so there is no
+embedding model, no new taxonomy and no extra Indexer work beyond the profile query. What
+makes labeling cheap: the default `onnx` backend reuses the RAG embedder's ONNX session, so the
+marginal cost is one embedding per call after a one-time 32-phrase anchor build.
+
+Both tools are off by default and answer with an enable hint while their flag is down. Two
+structural facts to expect:
+
+- **Assignment is nearest-centroid, not inductive.** The pinned scikit-learn exposes
+  `fit_predict` only, so a new entity is accepted when it falls inside a stored cluster's
+  radius (95th percentile of member distances) and reported as `novel` otherwise.
+- **A label is a resemblance, not an attribution.** `status="uncertain"` means no tactic
+  reached the confidence floor — a result, not an error. The full score vector is returned so a
+  human can calibrate the floor on labelled data. `scored=false` means the backend exposes no
+  probabilities and the model's bare choice is reported as unscored, never with an invented
+  confidence.
+
+Deliberate non-features: no automatic refit, no background scheduler inside the server, no
+member IP lists in cluster output (use `_assign` for one entity), and no stored labels.
+
+#### CPU & memory envelope
+Threads are capped at 2 by default (`OMP_NUM_THREADS`, inherited by MKL/OpenBLAS/NumExpr) and
+`BLUETEAM_LAYA_MAX_CONCURRENCY` defaults to 1, because three model pools share the CPU: the
+cross-encoder reranker (`bge-reranker-base`, ~1 GB, on by default), the RAG embedder
+(`bge-small-en-v1.5`, ONNX), and — only when `BLUETEAM_LAYA_BACKEND=laya` — CPU torch plus the
+Laya weights. The `onnx` labeler adds no model: it borrows the RAG embedder.
+
+Latency and accuracy targets are **provisional until measured on production data** (Phase 3
+bench): label top-1 ≥ 0.70 and ECE ≤ 0.10, cluster ARI ≥ 0.60 with noise ≤ 0.50, assign p95 ≤ 1 s,
+label p95 ≤ 2 s. Nothing in this repository has been benchmarked against a real alert corpus
+for these two subsystems, so treat an unmeasured number as unmeasured.
+
 ---
 
 ## Security & Privacy
@@ -354,7 +397,7 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 146
+Manager (config/agent data) plus 7+ external threat-intel providers into 150
 tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
@@ -492,6 +535,47 @@ gate. SSVC stays advisory metadata, never a correlation input.
 > returns a STIX load error, report ATT&CK enrichment as unavailable for that pass, note it in the
 > report, and continue with the remaining tools — do not retry in a loop. A missing `rule.mitre.id`
 > on the alerts is the more common cause and it is worth reporting on its own.
+
+### Alert clustering & incident labeling (opt-in)
+
+Two opt-in subsystems. Clustering groups entities by the scores the 3-Sum engine already
+computes; labeling names the ATT&CK phase a single alert resembles. Neither one asserts
+that an entity is malicious.
+
+| Want | Tool |
+|---|---|
+| Fit clusters over a window | `blueteam_alert_cluster(mode="fit", time_window_minutes=1440)` |
+| Read the stored fit | `blueteam_alert_cluster(mode="status")` |
+| Place one entity in the fit | `blueteam_alert_cluster_assign(srcip="X")` |
+| Name the ATT&CK phase of an alert or text | `blueteam_incident_label(mode="alert"\|"text")` |
+
+- `blueteam_alert_cluster` needs `BLUETEAM_CLUSTER_ENABLED=true` plus a scikit-learn
+  install (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`).
+- `blueteam_incident_label` needs `BLUETEAM_LAYA_ENABLED=true`. The default `onnx`
+  backend reuses the RAG embedder and costs no extra memory; `BLUETEAM_LAYA_BACKEND=laya`
+  runs the real classifier and needs CPU torch plus vendored weights.
+- While a flag is off the tool raises an enable hint. That hint is a configuration
+  answer, not a failure — report it and stop, do not retry.
+
+Reading the output:
+
+- **A label is a resemblance, not an attribution.** It says which phase the activity
+  looks like, never that the activity is confirmed. Feed it to the category, to
+  `three_sum_correlation` and to `blueteam_rag_query`; never to a mitigation decision.
+- `uncertain` is a result. `status="uncertain"` means no tactic reached the confidence
+  floor: the honest answer for mixed or unscorable text. The full score vector is
+  attached so a human can calibrate; **do not lower the floor to force a label**.
+  `scored=false` means the backend exposes no probabilities — report the model's bare
+  choice as unscored and never invent a confidence number for it.
+- `noise` (`-1`) from a cluster fit is a result too: those entities resemble nothing in
+  the window. `novelty=true` on an assignment means the entity fell outside every stored
+  cluster radius, so the stored fit no longer describes the current traffic — evidence for
+  an operator-run refit, never an automatic one.
+- The cluster response carries **no member IP lists**, by design. Use
+  `blueteam_alert_cluster_assign(srcip="X")` to ask about one entity.
+- Both tools stamp a version into every response (`feature_version` for the fit,
+  `criteria_version` for the label). Two results with different stamps are not comparable;
+  say so instead of comparing them.
 
 ### Investigation / case management
 | Want | Tool |
@@ -635,6 +719,9 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_sigma_rule_validate(rule_source)` | YAML + schema check, plus a pySigma parse when pySigma is installed. `engine` names the stages that ran |
 | `blueteam_sigma_rule_convert(rule_source, output_format)` | Sigma → OpenSearch: `lucene` (query string), `dsl` (`_search` body), `monitor` (Dashboards alerting monitor), `saved_search` |
 | `blueteam_sigma_rule_save(rule_source, …)` | write the YAML to the staging dir (`BLUETEAM_SIGMA_RULES_DIR`); needs `wazuh:write` |
+| `blueteam_alert_cluster(mode="fit"\|"status", time_window_minutes, min_cluster_size, min_samples)` | HDBSCAN over srcip entities built from the 3-Sum aggregation (16 tactic sums + 4 scores). Returns clusters, medoids, noise ratio; `insufficient_data` instead of an empty cluster list when the population is too small |
+| `blueteam_alert_cluster_assign(srcip, fit_id, assign_factor, use_cached)` | nearest-centroid assignment against the stored fit. `label=-1` + `novelty=true` = outside every cluster radius. `pending_novelty`/`pending_refit` flag when a refit is justified |
+| `blueteam_incident_label(mode="alert"\|"text", alert, text, include_probabilities, top_k)` | label one alert or text with one of the 16 ATT&CK tactics, plus the A/B/C category derived from it. `status` is `ok` / `uncertain` / `unavailable`, and `unavailable` carries the reason |
 
 ### Resources (read via MCP resource reads, not tool calls)
 
@@ -802,6 +889,29 @@ API; larger bundles are written to disk and summarised, never truncated inline.
 
 Deterministic ids (`UUIDv5` over the indicator pattern) mean re-exporting the same indicator
 yields the same `indicator--` id, so the peer deduplicates instead of accumulating copies.
+
+### Workflow J — window shape, then phase label (opt-in)
+```
+1. blueteam_alert_cluster(mode="fit", time_window_minutes=1440, response_format="json")
+   # read entity_count, noise_ratio, and each cluster's medoid + top_tactics
+2. blueteam_alert_cluster(mode="status", response_format="json")   # the stored fit + pending novelty
+3. blueteam_incident_label(mode="alert", alert={...}, response_format="json")
+   # label + category + confidence + floor; status ok | uncertain | unavailable
+4. blueteam_alert_cluster_assign(srcip="X")     # is this entity inside a stored cluster?
+5. three_sum_correlation(time_window_minutes=1440)  # the scores the cluster vector is built from
+6. blueteam_rag_query(query="<label> + the alert description")   # have we closed something like this before
+```
+
+Use this when the question is "what kinds of activity are in this window" (step 1) and "what
+phase does this alert look like" (step 3). Step 3 needs one alert, not a window — pass the alert
+you are actually investigating, not a sample of the window.
+
+Two orderings matter. Clustering first: the fit is over the same scores step 5 returns, so a
+label read before the window shape has no context to sit in. RAG last: it answers "seen this
+before", which is only a useful question once you can name what you are looking at.
+
+If either flag is off, skip the workflow instead of substituting another tool — there is no
+lexical fallback for a cluster or a label.
 
 ## 3. Redaction & the forensic token (read before touching PII)
 
@@ -1058,6 +1168,12 @@ provide it once at session start and you reuse it across calls.
    never re-add one and never call the result "anonymised". You cannot send a
    bundle — produce it, report `path`, `sha256`, `tlp`, and let the operator
 transport it.
+8. A label is never a verdict. `blueteam_incident_label` says what an alert
+   resembles; `status="uncertain"` and `scored=false` mean "not enough signal",
+   and neither is a reason to relax the floor or to promote an entity to malicious.
+9. Only call the cluster/label tools when their flag is on. An enable hint from
+   `blueteam_alert_cluster` or `blueteam_incident_label` names the exact env var
+   and the setup.sh flag; report both and move on.
 ````
 
 ---
