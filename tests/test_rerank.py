@@ -23,6 +23,7 @@ def _reset():
     config.rerank.sha256 = ""
     config.rerank.cache_path = ""
     config.rerank.model_path = ""
+    config.rerank.allow_download = False
     rerank._encoder = None
     rerank._reason = "not loaded"
 
@@ -189,6 +190,29 @@ def test_rerank_pin_match_loads_verified_file(monkeypatch):
     assert captured["lazy_load"] is True
     assert captured["local_files_only"] is True
     assert captured["cache_dir"] == model_dir
+    _reset()
+
+
+def test_rerank_unpinned_load_is_offline_by_default(monkeypatch):
+    from mcp_server.core import rerank
+    from mcp_server.core.config import config
+    _reset()
+    captured = _install_fake_fastembed(monkeypatch, tempfile.mkdtemp())
+    config.rerank.enabled = True
+    assert rerank._ensure_loaded() is True
+    assert captured["local_files_only"] is True
+    _reset()
+
+
+def test_rerank_unpinned_load_permits_download_when_opted_in(monkeypatch):
+    from mcp_server.core import rerank
+    from mcp_server.core.config import config
+    _reset()
+    captured = _install_fake_fastembed(monkeypatch, tempfile.mkdtemp())
+    config.rerank.enabled = True
+    config.rerank.allow_download = True
+    assert rerank._ensure_loaded() is True
+    assert captured["local_files_only"] is False
     _reset()
 
 

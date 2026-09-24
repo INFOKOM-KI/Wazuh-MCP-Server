@@ -520,6 +520,8 @@ class RerankConfig:
     ranking with BM25. Set ``BLUETEAM_RERANK_ENABLED=false`` to accept BM25-only.
     ``sha256`` pins the exact cached ONNX file; when set the model is never
     downloaded at runtime (air-gapped hosts stay air-gapped).
+    ``allow_download`` (default false) puts the unpinned path behind the same
+    ``local_files_only=True``; only a controlled bootstrap should ever enable it.
     ``model_path`` points at a VENDORED model directory already on disk (the layout
     ``huggingface_hub.snapshot_download`` writes: ``config.json`` plus ``onnx/model.onnx``
     and its tokenizer files). When set it is handed to fastembed as
@@ -533,6 +535,7 @@ class RerankConfig:
     model_path: str = ""            # vendored model dir; empty = resolve via fastembed
     max_candidates: int = 100       # hard ceiling for the rerank_candidates tool param
     sha256: str = ""                # supply chain pin: sha256 of the cached ONNX fastembed loads
+    allow_download: bool = False    # False = local_files_only; setup.sh is the bootstrap path
 
     @classmethod
     def from_env(cls) -> "RerankConfig":
@@ -543,6 +546,7 @@ class RerankConfig:
             model_path=os.environ.get("BLUETEAM_RERANK_MODEL_PATH", "").strip(),
             max_candidates=int(os.environ.get("BLUETEAM_RERANK_MAX_CANDIDATES", "100")),
             sha256=os.environ.get("BLUETEAM_RERANK_MODEL_SHA256", "").strip().lower(),
+            allow_download=_bool(os.environ.get("BLUETEAM_RERANK_ALLOW_DOWNLOAD", "false")),
         )
 
     def validate(self) -> None:

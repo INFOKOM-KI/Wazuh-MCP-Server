@@ -190,6 +190,7 @@ def _ensure_loaded() -> bool:
                     model_name=config.rerank.model,
                     cache_dir=config.rerank.cache_path or None,
                     specific_model_path=config.rerank.model_path or None,
+                    local_files_only=not config.rerank.allow_download,
                 )
             _reason = "ready"
             logger.info("Reranker loaded model=%s", config.rerank.model)

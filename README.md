@@ -165,7 +165,9 @@ The model name is checked against fastembed's cross-encoder registry at startup:
 load (`BAAI/bge-reranker-v2-m3` is not in it) is a startup error, not a quiet BM25 fallback.
 Runtime failures degrade to BM25-only and label themselves in `rerank_engine` / `rerank_status`.
 Weights are pre-downloaded by `setup.sh`
-into `BLUETEAM_RERANK_CACHE_PATH` — local-only, never a hosted API.
+into `BLUETEAM_RERANK_CACHE_PATH`. Runtime loads are offline by default: with
+`BLUETEAM_RERANK_ALLOW_DOWNLOAD=false` the unpinned path is also constructed with
+`local_files_only=True`, so a cache miss degrades to BM25 instead of fetching.
 
 Truncation is rank-based with no score threshold: raw cross-encoder logits are uncalibrated across
 query distributions, so a fixed floor deletes good matches. `BLUETEAM_RERANK_MAX_CANDIDATES`
@@ -605,6 +607,10 @@ Reading the output:
 - Both tools stamp a version into every response (`feature_version` for the fit,
   `criteria_version` for the label). Two results with different stamps are not comparable;
   say so instead of comparing them.
+- Inside `blueteam_investigation_workflow`, the subject alert is labeled automatically after
+  cluster assignment when `BLUETEAM_LAYA_ENABLED=true`; the verdict is returned as
+  `incident_label` and appears in the report bullets. Disabled labeling records
+  `label: disabled` and the run continues.
 - Accuracy is **unmeasured**. No top-1, no ECE, no confidence you did not read off the
   response. Report the label, the category, the confidence and the floor, and nothing more.
 

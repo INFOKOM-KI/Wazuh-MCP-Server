@@ -3,7 +3,7 @@
 © NAuliajati - TangerangKota-CSIRT
 LangGraph SOC investigation workflow - orchestrates the platform's in-process
 tool functions as a stateful, conditionally-routed graph.
-Graph: START -> extract -> enrich -> vuln -> correlate -> analytics -> baseline -> report -> verdict -> END
+Graph: START -> extract -> fp_check -> enrich -> vuln -> correlate -> cluster -> label -> analytics -> baseline -> report -> verdict -> END
 Conditional routing:
 - enrich/vuln/correlate skipped when there are no IOCs, no srcip, and no manifest
 - killchain runs only when a srcip is provided
@@ -71,6 +71,7 @@ class InvestigationState(TypedDict, total=False):
     vulnerabilities: Optional[list]
     correlation: Optional[dict]
     clusters: Optional[dict]
+    incident_label: Optional[dict]
     attack_graph: Optional[dict]
     killchain: Optional[dict]
     baseline: Optional[dict]
@@ -297,6 +298,41 @@ async def cluster_step(state: InvestigationState) -> dict:
         return {"errors": [f"cluster: {e}"], "steps": ["cluster: degraded"]}
 
 
+async def label_step(state: InvestigationState) -> dict:
+    """Label the investigation subject with one ATT&CK tactic.
+    Text mode only: the state carries ``alert_text``, not the raw alert object, so
+    the tool's ``mode='alert'`` is not reachable here. Skipped (and said so) when
+    labeling is disabled or there is no text; ``uncertain`` is a result, an
+    ``unavailable`` backend is recorded as an error.
+    """
+    from mcp_server.core.config import config
+    if not config.label.enabled:
+        return {"steps": ["label: disabled"]}
+    text = (state.get("alert_text") or "").strip()
+    if not text:
+        return {"steps": ["label: skipped (no alert_text)"]}
+    from mcp_server.label.labeler import MAX_STATE_CHARS
+    from mcp_server.tools.label import blueteam_incident_label, LabelClassifyInput
+    try:
+        result = await _with_timeout(
+            blueteam_incident_label(LabelClassifyInput(
+                mode="text", text=text[:MAX_STATE_CHARS], response_format="json")), "label")
+        if isinstance(result, dict):
+            return {"errors": list(result.get("errors", [])),
+                    "steps": list(result.get("steps", ["label: timed out"]))}
+        payload = json.loads(result)
+        if payload.get("status") == "unavailable":
+            return {"incident_label": payload,
+                    "errors": [f"label: unavailable ({payload.get('reason')})"],
+                    "steps": ["label: degraded (backend unavailable)"]}
+        return {"incident_label": payload,
+                "steps": [f"label: {payload.get('label') or 'uncertain'} "
+                          f"(confidence={payload.get('confidence')}, "
+                          f"status={payload.get('status')})"]}
+    except Exception as e:
+        return {"errors": [f"label: {e}"], "steps": ["label: degraded"]}
+
+
 async def analytics_step(state: InvestigationState) -> dict:
     """Run attack graph analysis + STIX killchain in parallel.
     graph_step and killchain_step are independent, the attack graph
@@ -413,6 +449,11 @@ async def report_step(state: InvestigationState) -> dict:
             sections[0]["bullets"].append(
                 f"cluster: label {assignment.get('label')} "
                 f"(novelty={assignment.get('novelty')}, distance={assignment.get('distance')})")
+        label = state.get("incident_label") or {}
+        if label:
+            sections[0]["bullets"].append(
+                f"label: {label.get('label') or label.get('status')} "
+                f"(confidence={label.get('confidence')}, status={label.get('status')})")
         if cve_ids:
             advisory = await _advisory_paragraphs(cve_ids)
             sections.append({
@@ -491,7 +532,7 @@ def build_investigation_graph(checkpointer=None):
     """Build and compile the StateGraph. checkpointer defaults to InMemorySaver;
     pass an AsyncSqliteSaver (created inside the running loop) for durable
     persistence.
-    Graph: START -> extract -> fp_check -> enrich -> vuln -> correlate -> cluster -> analytics -> baseline -> report -> verdict -> END
+    Graph: START -> extract -> fp_check -> enrich -> vuln -> correlate -> cluster -> label -> analytics -> baseline -> report -> verdict -> END
     fp_check is opt-in (check_false_positive) and routes straight to verdict when
     the indicator is already suppressed, skipping enrichment, correlation and the
     report for an alert an analyst already closed.
@@ -504,6 +545,7 @@ def build_investigation_graph(checkpointer=None):
     g.add_node("vuln", vuln_step)
     g.add_node("correlate", correlate_step)
     g.add_node("cluster", cluster_step)
+    g.add_node("label", label_step)
     g.add_node("analytics", analytics_step)
     g.add_node("baseline", baseline_step)
     g.add_node("report", report_step)
@@ -515,7 +557,8 @@ def build_investigation_graph(checkpointer=None):
     g.add_edge("enrich", "vuln")
     g.add_edge("vuln", "correlate")
     g.add_edge("correlate", "cluster")
-    g.add_edge("cluster", "analytics")
+    g.add_edge("cluster", "label")
+    g.add_edge("label", "analytics")
     g.add_conditional_edges("analytics", _after_analytics, {
         "baseline": "baseline", "report": "report", "verdict": "verdict", END: END})
     g.add_conditional_edges("baseline", _after_baseline, {
@@ -576,6 +619,7 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
         "enrichment": final.get("enrichment"),
         "vulnerabilities": final.get("vulnerabilities"),
         "correlation": (final.get("correlation") or {}).get("unified_scoring"),
+        "incident_label": final.get("incident_label"),
         "attack_graph": final.get("attack_graph"),
         "killchain": (final.get("killchain") or {}).get("tactics_seen"),
         "baseline": (final.get("baseline") or {}).get("stats"),

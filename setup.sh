@@ -604,6 +604,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_RERANK_CACHE_PATH="/opt/blue-team-mcp/rerank-cache"   # model weights dir (offline after bootstrap)
 # export BLUETEAM_RERANK_MAX_CANDIDATES="100"     # hard cap for rerank candidate fan-out (all retrieval callers)
 # export BLUETEAM_RERANK_MODEL_SHA256=""          # optional: pin ONNX model SHA-256 (supply-chain integrity)
+# export BLUETEAM_RERANK_ALLOW_DOWNLOAD="false"   # false = runtime load is local_files_only; setup.sh is the bootstrap path
 
 # Local case RAG (opt-in; retrieval over cases / confirmed false positives / IR playbooks)
 # Enabling this REQUIRES an absolute BLUETEAM_RAG_DB - the server refuses to start without one.
@@ -782,11 +783,13 @@ _sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_MODEL" "$RERANK_MODEL"
 _sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_CACHE_PATH" "$RERANK_CACHE"
 _sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_MAX_CANDIDATES" "${BLUETEAM_RERANK_MAX_CANDIDATES:-100}"
 _sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_MODEL_SHA256" "$RERANK_SHA"
+_sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_ALLOW_DOWNLOAD" "${BLUETEAM_RERANK_ALLOW_DOWNLOAD:-false}"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_ENABLED" "$RERANK_ENABLED"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MODEL" "$RERANK_MODEL"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_CACHE_PATH" "$RERANK_CACHE"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MAX_CANDIDATES" "${BLUETEAM_RERANK_MAX_CANDIDATES:-100}"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MODEL_SHA256" "$RERANK_SHA"
+_sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_ALLOW_DOWNLOAD" "${BLUETEAM_RERANK_ALLOW_DOWNLOAD:-false}"
 # RAG block - synced with the same effective values the bootstrap resolved.
 for _envf in "$CONFIG_FILE" "$ENV_FILE"; do
   _sync_env_key "$_envf" "BLUETEAM_RAG_ENABLED" "$RAG_ENABLED"
@@ -974,6 +977,7 @@ export BLUETEAM_RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 export BLUETEAM_RERANK_CACHE_PATH="${BLUETEAM_RERANK_CACHE_PATH:-/opt/blue-team-mcp/rerank-cache}"
 export BLUETEAM_RERANK_MAX_CANDIDATES="${BLUETEAM_RERANK_MAX_CANDIDATES:-100}"
 export BLUETEAM_RERANK_MODEL_SHA256="${BLUETEAM_RERANK_MODEL_SHA256:-}"
+export BLUETEAM_RERANK_ALLOW_DOWNLOAD="${BLUETEAM_RERANK_ALLOW_DOWNLOAD:-false}"
 # Local case RAG (opt-in; BLUETEAM_RAG_ENABLED=true requires an absolute BLUETEAM_RAG_DB)
 export BLUETEAM_RAG_ENABLED="${BLUETEAM_RAG_ENABLED:-false}"
 export BLUETEAM_RAG_DB="${BLUETEAM_RAG_DB:-/opt/blue-team-mcp/rag.db}"

@@ -201,6 +201,10 @@ Reading the output:
 - Both tools stamp a version into every response (`feature_version` for the fit,
   `criteria_version` for the label). Two results with different stamps are not comparable;
   say so instead of comparing them.
+- Inside `blueteam_investigation_workflow`, the subject alert is labeled automatically after
+  cluster assignment when `BLUETEAM_LAYA_ENABLED=true`; the verdict is returned as
+  `incident_label` and appears in the report bullets. Disabled labeling records
+  `label: disabled` and the run continues.
 - Accuracy is **unmeasured**. No top-1, no ECE, no confidence you did not read off the
   response. Report the label, the category, the confidence and the floor, and nothing more.
 
