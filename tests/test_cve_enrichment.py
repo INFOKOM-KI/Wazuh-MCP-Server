@@ -4,7 +4,6 @@
 Tests for CVE enrichment: pure scoring + CVE-ID validation.
 """
 from __future__ import annotations
-
 import os
 
 # mcp_server/__init__.py calls init_config() at import and hard-fails without
@@ -14,6 +13,8 @@ os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
 os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
 
 import pytest
+from mcp_server.core.http_client import _api_error_text
+from mcp_server.threat_intel import cve_enrichment as cve_threat_intel
 from mcp_server.threat_intel.cve_enrichment import (
     normalize_cve,
     score_cve,
@@ -81,3 +82,23 @@ def test_score_cve_naive_published_does_not_raise():
                        {"cveID": "CVE-2021-44228"}, {"confidence": "PUBLIC_EXPLOIT"})
     assert result["risk_score"] == 100.0
     assert isinstance(result["days_since_published"], int)
+
+
+@pytest.mark.asyncio
+async def test_fetch_nvd_empty_vulnerabilities_raises(monkeypatch):
+    """NVD answers HTTP 200 with totalResults=1 and an empty list (seen in
+    production). That is an upstream degradation, not "CVE not found"."""
+    class _EmptyNvdResponse:
+        content = b"{}"
+
+        @staticmethod
+        def json():
+            return {"totalResults": 1, "vulnerabilities": []}
+
+    async def _fake_api_call(*args, **kwargs):
+        return _EmptyNvdResponse()
+
+    monkeypatch.setattr(cve_threat_intel, "_api_call", _fake_api_call)
+    with pytest.raises(ValueError, match="returned no record") as exc:
+        await cve_threat_intel._fetch_nvd("CVE-2024-99999")
+    assert "upstream degraded" in _api_error_text(exc.value, context="blueteam_cve_lookup")

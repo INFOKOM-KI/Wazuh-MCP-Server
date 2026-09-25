@@ -362,7 +362,7 @@ def _api_error_text(e: Exception, context: str = "") -> str:
         where = f" for {host}" if host else ""
         return (f"{prefix}Error: Request timed out after "
                 f"{budget if budget is not None else HTTP_TIMEOUT}s{where}. Try again.")
-    if isinstance(e, RuntimeError):
+    if isinstance(e, (RuntimeError, ValueError)):
         return f"{prefix}Error: {e}"
     return f"{prefix}Error: Unexpected error ({type(e).__name__})."
 

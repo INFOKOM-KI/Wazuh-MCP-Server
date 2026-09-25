@@ -73,7 +73,11 @@ def _guard_size(resp: httpx.Response) -> None:
 
 
 async def _fetch_nvd(cve_id: str) -> dict | None:
-    """Fetch a CVE record from NVD. Returns None when the CVE is unknown."""
+    """Fetch a CVE record from NVD. Returns None when the CVE is unknown.
+    Raises:
+        ValueError: NVD reported matches but returned an empty list an upstream
+            degradation, not an unknown CVE. Reporting it as "not found" would be a false negative.
+    """
     key = f"cve:{cve_id}"
     cached = cache_get("cve", key)
     if cached is not None:
@@ -84,9 +88,15 @@ async def _fetch_nvd(cve_id: str) -> dict | None:
         _guard_size(resp)
         data = resp.json()
 
-    if data.get("totalResults", 0) == 0:
+    vulns = data.get("vulnerabilities") or []
+    if not vulns:
+        if data.get("totalResults", 0):
+            raise ValueError(
+                f"NVD returned no record for {cve_id} "
+                f"(totalResults={data['totalResults']}) - upstream degraded."
+            )
         return None
-    record = data["vulnerabilities"][0]["cve"]
+    record = vulns[0]["cve"]
     cache_set("cve", key, record, TTL_CVE)
     return record
 
