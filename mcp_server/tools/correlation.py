@@ -16,7 +16,8 @@ from mcp_server.core.http_client import _api_call, _handle_api_error, ValidPubli
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY
 from mcp_server.core.validators import ValidAgentName, ValidRuleGroups, ValidKeyword
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _wazuh_indexer_msearch, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _SRCIP_FIELD_PATHS
+from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _wazuh_indexer_msearch, _wazuh_indexer_field_caps,
+                                      _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _SRCIP_FIELD_PATHS)
 from mcp_server.wazuh.time_utils import _parse_time_window, _auto_bucket_interval, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 from mcp_server.core.attacker_registry import register_attacker_ioc, register_attacker_ips
@@ -179,6 +180,45 @@ def _score_category_bucket(bucket: dict, category: str, use_mitre: bool,
     return total
 
 
+async def _srcip_buckets(query: dict, extra_aggs: dict,
+                         label: str) -> tuple[list[dict], list[str], bool]:
+    """Entity buckets for one category query, keyed on a srcip path the index maps.
+    multi_terms over every candidate path looked portable, but it drops any
+    document missing a single key component, and an alert populates exactly one
+    path - every bucket came back empty. Resolve the mapped paths with
+    ``_field_caps`` and query each with a plain terms agg. Returns
+    ``(buckets, warnings, failed)``; ``failed`` is True only when every query
+    errored.
+    """
+    caps = await _wazuh_indexer_field_caps(_SRCIP_FIELD_PATHS)
+    live = [f for f in _SRCIP_FIELD_PATHS if f in caps]
+    warnings: list[str] = []
+    if not live:
+        probe = "field_caps probe returned nothing" if not caps else "no known srcip path is mapped"
+        live = ["data.srcip"]
+        warnings.append(f"{probe} - queried data.srcip for '{label}'")
+    raw_results = await asyncio.gather(*[
+        _wazuh_indexer_post({"size": 0, "query": query, "aggs": {"unique_srcips": {
+            "terms": {"field": field, "size": 10000}, "aggs": extra_aggs}}})
+        for field in live])
+    merged: dict[str, dict] = {}
+    failed = True
+    for raw in raw_results:
+        if "error" in raw:
+            warnings.append(f"srcip agg failed for '{label}': {raw.get('error')}")
+            continue
+        failed = False
+        for bucket in raw.get("aggregations", {}).get("unique_srcips", {}).get("buckets", []):
+            key = bucket.get("key")
+            if key is None:
+                continue
+            # The same IP via two mapped paths would double its alert_count; keep the richer bucket.
+            current = merged.get(str(key))
+            if current is None or int(bucket.get("doc_count", 0)) > int(current.get("doc_count", 0)):
+                merged[str(key)] = bucket
+    return list(merged.values()), warnings, failed
+
+
 async def fetch_srcip_profiles(categories: list[tuple[str, str, list[str]]], since_iso: str,
                                until_iso: str, use_mitre: bool = True,
                                technique_tactics: Optional[dict] = None,
@@ -195,8 +235,7 @@ async def fetch_srcip_profiles(categories: list[tuple[str, str, list[str]]], sin
     Returns ``{"profiles": {ip: {"tactics", "score_a", "score_b", "score_c",
     "total", "alert_count"}}, "warnings": [...], "failures": n}``. Score merge is
     max-per-category, matching ``evaluate_engine_a``; tactic level sums are added
-    across buckets because decoder field-path fragmentation can split one IP over
-    several multi_terms keys.
+    across buckets because one entity can appear under several categories.
     """
     if use_mitre and technique_tactics is None:
         technique_tactics = await _load_mitre_technique_map()
@@ -214,32 +253,16 @@ async def fetch_srcip_profiles(categories: list[tuple[str, str, list[str]]], sin
     async def _one(category: str, label: str, groups: list[str]) -> tuple:
         query = _scoped(_category_filter(category, groups, since_iso, until_iso,
                                          use_mitre, category_techniques or {}))
-        body = {"size": 0, "query": query, "aggs": {"unique_srcips": {
-            "multi_terms": {"terms": [{"field": f} for f in _SRCIP_FIELD_PATHS],
-                             "size": 10000},
-            "aggs": _category_agg(use_mitre)}}}
-        raw = await _wazuh_indexer_post(body)
-        warning = None
-        if "error" in raw or not raw.get("aggregations", {}).get("unique_srcips"):
-            warning = (f"multi_terms agg unavailable or empty for '{label}' "
-                       f"(index may not support it) fell back to {_SRCIP_FIELD_PATHS[0]}")
-            raw = await _wazuh_indexer_post({
-                "size": 0, "query": query,
-                "aggs": {"unique_srcips": {
-                    "terms": {"field": _SRCIP_FIELD_PATHS[0], "size": 10000},
-                    "aggs": _category_agg(use_mitre)}}})
-            if "error" in raw:
-                return category, label, [], warning + " ; single-field fallback also failed", True
-        buckets = raw.get("aggregations", {}).get("unique_srcips", {}).get("buckets", [])
-        return category, label, buckets, warning, False
+        buckets, agg_warnings, failed = await _srcip_buckets(
+            query, _category_agg(use_mitre), label)
+        return category, label, buckets, agg_warnings, failed
 
     results = await asyncio.gather(*[_one(c, label, groups) for c, label, groups in categories])
     profiles: dict[str, dict] = {}
     warnings: list[str] = []
     failures = 0
-    for category, _label, buckets, warning, failed in results:
-        if warning:
-            warnings.append(warning)
+    for category, _label, buckets, agg_warnings, failed in results:
+        warnings.extend(agg_warnings)
         if failed:
             failures += 1
             continue
@@ -579,44 +602,25 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
             return _score_category_bucket(b, category, params.use_mitre, technique_tactics)
 
         async def _fetch_srcips(category, label, groups):
-            """Engine A srcips per category with dynamic rule.level x tactic-weight scoring.
-            Falls back to single-field terms when multi_terms is unavailable."""
-            warning = None
-            body = {"size": 0, "query": _build_filter(category, groups),
-                    "aggs": {"unique_srcips": {
-                        "multi_terms": {"terms": [{"field": f} for f in _SRCIP_FIELD_PATHS],
-                                         "size": 10000},
-                        "aggs": _agg()}}}
-            raw = await _wazuh_indexer_post(body)
-            if "error" in raw or not raw.get("aggregations", {}).get("unique_srcips"):
-                warning = (f"multi_terms agg unavailable or empty for '{label}' "
-                           f"(index may not support it) - fell back to {_SRCIP_FIELD_PATHS[0]}")
-                raw = await _wazuh_indexer_post({
-                    "size": 0, "query": _build_filter(category, groups),
-                    "aggs": {"unique_srcips": {
-                        "terms": {"field": _SRCIP_FIELD_PATHS[0], "size": 10000},
-                        "aggs": _agg()}}})
-                if "error" in raw:
-                    return (label, [], warning + " ; single-field fallback also failed")
-            buckets = raw.get("aggregations", {}).get("unique_srcips", {}).get("buckets", [])
+            """Engine A srcips per category with dynamic rule.level x tactic-weight scoring."""
+            buckets, w, failed = await _srcip_buckets(
+                _build_filter(category, groups), _agg(), label)
             entries = []
             for b in buckets:
-                key = b.get("key")
-                ip = next((v for v in key if v is not None), "0.0.0.0") if isinstance(key, list) else key
-                if ip and ip != "0.0.0.0":
+                ip = b.get("key")
+                if ip:
                     entries.append((ip, round(_score_bucket(b, category), 2)))
-            return (label, entries, warning)
+            return (label, entries, w, failed)
 
         fetched = await asyncio.gather(*[_fetch_srcips(c, l, g) for c, l, g in categories])
         srcips_by_label = {}
         engine_a_warnings: list[str] = []
         engine_a_query_failures = 0
-        for l, e, w in fetched:
+        for l, e, w, failed in fetched:
             srcips_by_label[l] = e
-            if w:
-                engine_a_warnings.append(w)
-                if "also failed" in w:
-                    engine_a_query_failures += 1
+            engine_a_warnings.extend(w)
+            if failed:
+                engine_a_query_failures += 1
 
         # CVE enrichment -> Engine A exploitability signal (seam 3).
         # Each CVE's techniques map to categories via MITRE_TACTIC_TO_CATEGORY;
@@ -781,27 +785,12 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
             tier_a_results = None
             if params.engine_a_enabled:
                 async def _tier_fetch(category, label, groups):
-                    w = None
-                    body = {"size": 0, "query": _tier_filter(category, groups),
-                            "aggs": {"unique_srcips": {"multi_terms": {
-                                "terms": [{"field": f} for f in _SRCIP_FIELD_PATHS], "size": 10000},
-                                "aggs": _agg()}}}
-                    raw = await _wazuh_indexer_post(body)
-                    if "error" in raw or not raw.get("aggregations", {}).get("unique_srcips"):
-                        w = f"multi_terms fallback at {tier['label']}"
-                        raw = await _wazuh_indexer_post({
-                            "size": 0, "query": _tier_filter(category, groups),
-                            "aggs": {"unique_srcips": {
-                                "terms": {"field": _SRCIP_FIELD_PATHS[0], "size": 10000},
-                                "aggs": _agg()}}})
-                        if "error" in raw:
-                            return (label, [], w + " also failed")
-                    buckets = raw.get("aggregations", {}).get("unique_srcips", {}).get("buckets", [])
+                    buckets, w, _failed = await _srcip_buckets(
+                        _tier_filter(category, groups), _agg(), label)
                     entries = []
                     for b in buckets:
-                        key = b.get("key")
-                        ip = next((v for v in key if v is not None), "0.0.0.0") if isinstance(key, list) else key
-                        if ip and ip != "0.0.0.0":
+                        ip = b.get("key")
+                        if ip:
                             entries.append((ip, round(_score_bucket(b, category), 2)))
                     return (label, entries, w)
                 fet = await asyncio.gather(*[_tier_fetch(c, l, g) for c, l, g in categories])
