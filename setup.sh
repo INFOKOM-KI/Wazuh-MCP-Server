@@ -243,7 +243,9 @@ fi
 #                             installed in the venv. A gated repo needs HF_TOKEN. Copy an
 #                             existing tree with tar or `rsync -L`, never a symlink farm:
 #                             `find -type f` below skips symlinks and would report an empty
-#                             directory.
+#                             directory. The Hugging Face CLI is equivalent and validates the
+#                             download itself (run inside the target directory):
+#                               hf download convaiinnovations/laya-multilingual --local-dir ./
 # torch comes from the CPU index only: the default wheel pulls CUDA, which is
 # multi-GB on a host with no GPU and is the largest thing this block can get wrong.
 if [[ "${BLUETEAM_INSTALL_LAYA:-0}" == "1" || "${BLUETEAM_INSTALL_LAYA:-0}" == "true" ]]; then
