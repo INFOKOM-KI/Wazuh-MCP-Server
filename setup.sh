@@ -233,7 +233,17 @@ fi
 #                             is built against. A guessed name either installs nothing or
 #                             installs an unrelated package that happens to share it.
 #   BLUETEAM_LAYA_MODEL_PATH  the vendored weights directory (see the vendor block
-#                             below); nothing is fetched from the hub here.
+#                             below); nothing is fetched from the hub here. This script
+#                             validates and pins the tree, it never downloads it, because an
+#                             unpinned fetch is the thing the pin exists to prevent. Vendor
+#                             it first (as the install user):
+#                               python3 -c "from huggingface_hub import snapshot_download as d; \
+#                                 d(repo_id='convaiinnovations/laya-multilingual', local_dir='/opt/laya-models')"
+#                             Use $INSTALL_DIR/venv/bin/python when huggingface_hub is only
+#                             installed in the venv. A gated repo needs HF_TOKEN. Copy an
+#                             existing tree with tar or `rsync -L`, never a symlink farm:
+#                             `find -type f` below skips symlinks and would report an empty
+#                             directory.
 # torch comes from the CPU index only: the default wheel pulls CUDA, which is
 # multi-GB on a host with no GPU and is the largest thing this block can get wrong.
 if [[ "${BLUETEAM_INSTALL_LAYA:-0}" == "1" || "${BLUETEAM_INSTALL_LAYA:-0}" == "true" ]]; then
