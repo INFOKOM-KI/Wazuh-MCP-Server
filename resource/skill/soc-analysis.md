@@ -179,6 +179,8 @@ that an entity is malicious.
   **unsupported by policy** — CPU torch plus weights exceed the agreed 250 MB / 300 ms budget —
   so do not ask the operator to enable it. If a call reports it as the active backend, treat
   that as an operator exemption and say so in the report rather than presenting it as normal.
+  The sanctioned offline use of that checkpoint is labeling the calibration corpus while `onnx`
+  serves requests.
 - While a flag is off the tool raises an enable hint. That hint is a configuration
   answer, not a failure — report it and stop, do not retry.
 
@@ -205,15 +207,19 @@ Reading the output:
   cluster assignment when `BLUETEAM_LAYA_ENABLED=true`; the verdict is returned as
   `incident_label` and appears in the report bullets. Disabled labeling records
   `label: disabled` and the run continues.
-- Accuracy is **unmeasured**. No top-1, no ECE, no confidence you did not read off the
-  response. Report the label, the category, the confidence and the floor, and nothing more.
-- Three operator scripts run the loop: `scripts/export_case_labels.py` pre-fills candidates
-  from the FP KB and the investigation history, `scripts/calibrate_labeler.py` sweeps the
-  floor and `BLUETEAM_LAYA_TEMPERATURE` over the labelled JSONL and writes
-  `calibration_report.md` with top-1, per-tactic support, a confusion matrix and the uncertain
-  ratio, and `scripts/label_health.py` computes coverage and the rolling uncertain ratio from
-  the audit log, failing a cron gate with `--fail`. Applying suggested values is an operator
-  action.
+- Accuracy is **unmeasured until the operator's gate passes**. `confidence` is the model's own
+  score, not a measured accuracy: quote no macro-F1, ECE or accuracy figure unless the operator
+  shows a `calibrate_labeler.py --gate` run that passed. Report the label, the category, the
+  confidence and the floor, and nothing more.
+- The operator loop, in order: `scripts/build_label_corpus.py` projects local checkouts of CAR,
+  Atomic Red Team and Splunk attack_data into calibration rows (a technique lands in exactly one
+  split, `rule.mitre.*` omitted so the label is not leaked); `scripts/export_case_labels.py`
+  pre-fills candidate rows from the FP KB and the investigation history; 
+  `scripts/calibrate_labeler.py --gate` sweeps the floor and the backend-aware temperature and
+  writes `calibration_report.md` with macro-F1, per-tactic precision/recall, coverage and ECE,
+  exiting 2 when the provisional thresholds miss; `scripts/label_health.py` computes coverage and
+  the rolling uncertain ratio from the audit log, failing a cron gate with `--fail`. Applying the
+  suggested values is an operator action.
 
 ### Investigation / case management
 | Want | Tool |

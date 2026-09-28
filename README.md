@@ -114,7 +114,7 @@ optional — tools degrade gracefully without them.
 | Audit & persistence | `BLUETEAM_AUDIT_LOG`, `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CMDB_FILE` | JSONL audit trail + stores (optional) |
 | Local case RAG | `BLUETEAM_RAG_ENABLED`, `BLUETEAM_RAG_DB`, `BLUETEAM_RAG_MODEL`, `BLUETEAM_RAG_CACHE_PATH`, `BLUETEAM_RAG_MAX_CANDIDATES`, `BLUETEAM_RAG_TOP_K`, `BLUETEAM_RAG_MAX_CHUNKS`, `BLUETEAM_RAG_CHUNK_CHARS`, `BLUETEAM_RAG_CHUNK_OVERLAP`, `BLUETEAM_RAG_ALLOW_DOWNLOAD`, `BLUETEAM_RAG_MODEL_SHA256` | SQLite retrieval corpus over cases / confirmed false positives / IR playbooks. `ENABLED=true` requires an absolute `DB` path or startup raises. `ALLOW_DOWNLOAD` defaults `false` (`local_files_only`). |
 | Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
-| Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder — no torch, no second model resident. `BACKEND=laya` requires `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults `0.05` and is calibrated with the floor by `scripts/calibrate_labeler.py`. `MAX_CONCURRENCY` defaults `1` |
+| Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder — no torch, no second model resident. `BACKEND=laya` requires `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya` (its option distribution is already softmaxed) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`. `MAX_CONCURRENCY` defaults `1` |
 | CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
 | Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **125 tools registered** instead of 151: `151 - 23 - 3 = 125`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
@@ -351,6 +351,30 @@ closed cases only. No top-1 or ECE figure is claimed until the first 1,000-case 
 status is reported as "unmeasured (calibrated baseline)". Treat any accuracy number you did not
 measure on this host as unmeasured.
 
+**Building a calibration corpus.** `scripts/build_label_corpus.py` projects local checkouts of
+MITRE CAR (`analytics/*.yaml`), Atomic Red Team (`atomics/T*/T*.yaml`) and Splunk attack_data
+(`datasets/attack_techniques/T*/*/*.yml`) into rows the calibration harness reads, with the STIX
+bundle as the technique→tactic oracle. It needs `--stix`, at least one source directory, and no
+network. Two invariants that make the score mean something: a technique lands in exactly one of
+train/val/test, and `rule.mitre.*` is omitted by default because those fields state the answer —
+`--with-rule-mitre` emits the leaky variant so the accuracy delta can be measured. Multi-tactic
+techniques are dropped: the tool is single-label. The projected descriptions are synthetic text,
+so the corpus complements, never replaces, analyst-adjudicated alerts exported by
+`scripts/export_case_labels.py`. Then run `scripts/calibrate_labeler.py --backend onnx|laya` over
+the result and apply the suggested floor and temperature. `--gate` makes that run exit 2 when the
+suggested point misses the provisional thresholds — macro-F1 0.80, selective accuracy 0.90,
+coverage 0.60, ECE 0.10 — and `--split test` scores the held-out split, so a regression fails
+CI instead of writing a report nobody reads.
+
+There is no hosted CI for this: the corpus and the weights stay on the stage host, so the gate runs
+from cron and the exit code is the failure signal.
+
+```cron
+17 4 * * * cd /opt/blue-team-mcp && ./venv/bin/python3 scripts/calibrate_labeler.py \
+  --input /var/lib/blue-team-mcp/calibration/corpus.jsonl --split test --gate \
+  --out /var/log/blue-team-mcp/calibration_report.md
+```
+
 ---
 
 ## Security & Privacy
@@ -585,6 +609,8 @@ that an entity is malicious.
   **unsupported by policy** — CPU torch plus weights exceed the agreed 250 MB / 300 ms budget —
   so do not ask the operator to enable it. If a call reports it as the active backend, treat
   that as an operator exemption and say so in the report rather than presenting it as normal.
+  The sanctioned offline use of that checkpoint is labeling the calibration corpus while `onnx`
+  serves requests.
 - While a flag is off the tool raises an enable hint. That hint is a configuration
   answer, not a failure — report it and stop, do not retry.
 
@@ -611,15 +637,19 @@ Reading the output:
   cluster assignment when `BLUETEAM_LAYA_ENABLED=true`; the verdict is returned as
   `incident_label` and appears in the report bullets. Disabled labeling records
   `label: disabled` and the run continues.
-- Accuracy is **unmeasured**. No top-1, no ECE, no confidence you did not read off the
-  response. Report the label, the category, the confidence and the floor, and nothing more.
-- Three operator scripts run the loop: `scripts/export_case_labels.py` pre-fills candidates
-  from the FP KB and the investigation history, `scripts/calibrate_labeler.py` sweeps the
-  floor and `BLUETEAM_LAYA_TEMPERATURE` over the labelled JSONL and writes
-  `calibration_report.md` with top-1, per-tactic support, a confusion matrix and the uncertain
-  ratio, and `scripts/label_health.py` computes coverage and the rolling uncertain ratio from
-  the audit log, failing a cron gate with `--fail`. Applying suggested values is an operator
-  action.
+- Accuracy is **unmeasured until the operator's gate passes**. `confidence` is the model's own
+  score, not a measured accuracy: quote no macro-F1, ECE or accuracy figure unless the operator
+  shows a `calibrate_labeler.py --gate` run that passed. Report the label, the category, the
+  confidence and the floor, and nothing more.
+- The operator loop, in order: `scripts/build_label_corpus.py` projects local checkouts of CAR,
+  Atomic Red Team and Splunk attack_data into calibration rows (a technique lands in exactly one
+  split, `rule.mitre.*` omitted so the label is not leaked); `scripts/export_case_labels.py`
+  pre-fills candidate rows from the FP KB and the investigation history; 
+  `scripts/calibrate_labeler.py --gate` sweeps the floor and the backend-aware temperature and
+  writes `calibration_report.md` with macro-F1, per-tactic precision/recall, coverage and ECE,
+  exiting 2 when the provisional thresholds miss; `scripts/label_health.py` computes coverage and
+  the rolling uncertain ratio from the audit log, failing a cron gate with `--fail`. Applying the
+  suggested values is an operator action.
 
 ### Investigation / case management
 | Want | Tool |

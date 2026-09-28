@@ -11,15 +11,12 @@ Pipeline position
 
 The label is a resemblance verdict, not an attribution. Nothing here writes,
 mitigates or escalates; the analyst decides.
-
-NOTE: No ``from __future__ import annotations`` - deferred annotation evaluation
+NOTE: No ``from __future__ import annotations`` deferred annotation evaluation
       (PEP 563) breaks @blueteam_tool type resolution.
 """
 import json
 from typing import Any, Literal, Optional
-
 from pydantic import BaseModel, ConfigDict, Field
-
 from mcp_server.core.audit import _audit_log
 from mcp_server.core.config import config
 from mcp_server.core.exceptions import BlueTeamMCPError
@@ -101,8 +98,11 @@ async def blueteam_incident_label(params: LabelClassifyInput) -> str:
     Two backends, selected by ``BLUETEAM_LAYA_BACKEND``:
     ``onnx`` (default) reuses the RAG embedder and costs no extra memory;
     ``laya`` runs the real classifier and requires CPU torch plus vendored weights.
-    A backend that exposes no scores reports ``scored=false`` and never invents a
-    confidence value.
+    The Laya call passes ``BLUETEAM_LAYA_MAX_LEN`` (default 1024 tokens, 8192 max) so
+    long state text is not silently truncated, and rescales the model's own option
+    distribution by ``BLUETEAM_LAYA_TEMPERATURE`` (default 1.0 = neutral, because
+    the checkpoint ships uncalibrated).
+    A backend that exposes no scores reports ``scored=false`` and never invents a confidence value.
 
     Args:
         params.mode: 'text' (default) or 'alert'.

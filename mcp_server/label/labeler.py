@@ -69,7 +69,9 @@ def require_enabled() -> None:
 def _build() -> _BaseLabeler:
     if config.label.backend == "laya":
         return LayaLabeler(config.label.confidence_floor, config.label.model_path,
-                           config.label.model_sha256, config.label.allow_download)
+                           config.label.model_sha256, config.label.allow_download,
+                           temperature=config.label.temperature,
+                           max_len=config.label.max_len)
     return ONNXPrototypeLabeler(config.label.confidence_floor,
                                 temperature=config.label.temperature)
 

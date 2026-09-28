@@ -854,19 +854,27 @@ class LabelConfig:
     model_sha256: str = ""
     allow_download: bool = False
     confidence_floor: float = 0.6
-    temperature: float = 0.05   # For Laya Model
+    temperature: float = 0.05
+    max_len: int = 1024
     max_concurrency: int = 1
 
     @classmethod
     def from_env(cls) -> "LabelConfig":
+        backend = os.environ.get("BLUETEAM_LAYA_BACKEND", "onnx").strip().lower()
+        # One env var, two score distributions: the onnx backend softmaxes cosine
+        # similarities and needs sharpening, while Laya returns an already-softmaxed
+        # option distribution that must not be sharpened a second time. The default
+        # is neutral for Laya and sharpening for onnx; an explicit value always wins.
+        default_temperature = "1.0" if backend == "laya" else "0.05"
         return cls(
             enabled=_bool(os.environ.get("BLUETEAM_LAYA_ENABLED", "false")),
-            backend=os.environ.get("BLUETEAM_LAYA_BACKEND", "onnx").strip().lower(),
+            backend=backend,
             model_path=os.environ.get("BLUETEAM_LAYA_MODEL_PATH", "").strip(),
             model_sha256=os.environ.get("BLUETEAM_LAYA_MODEL_SHA256", "").strip().lower(),
             allow_download=_bool(os.environ.get("BLUETEAM_LAYA_ALLOW_DOWNLOAD", "false")),
             confidence_floor=float(os.environ.get("BLUETEAM_LAYA_CONFIDENCE_FLOOR", "0.6")),
-            temperature=float(os.environ.get("BLUETEAM_LAYA_TEMPERATURE", "0.05")),
+            temperature=float(os.environ.get("BLUETEAM_LAYA_TEMPERATURE") or default_temperature),
+            max_len=int(os.environ.get("BLUETEAM_LAYA_MAX_LEN", "1024")),
             max_concurrency=int(os.environ.get("BLUETEAM_LAYA_MAX_CONCURRENCY", "1")),
         )
 
@@ -887,6 +895,12 @@ class LabelConfig:
             raise ConfigurationError(
                 "BLUETEAM_LAYA_TEMPERATURE must be in (0, 1]; a lower value sharpens "
                 "the softmax, and a higher one flattens it past usefulness."
+            )
+        if not 128 <= self.max_len <= 8192:
+            raise ConfigurationError(
+                "BLUETEAM_LAYA_MAX_LEN must be between 128 and 8192; Laya's encoder "
+                "accepts up to 8192 tokens and the shipped default of 1024 truncates "
+                "long alerts."
             )
         if self.enabled and self.backend == "laya":
             # Fail closed at startup: unpinned weights must never load, and a load

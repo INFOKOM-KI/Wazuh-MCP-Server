@@ -67,6 +67,12 @@ rag-cache/
 # Calibration report from scripts/calibrate_labeler.py. Per-case labels and accuracy
 # figures are regenerable; never commit the output.
 calibration_report.md
+# Projected calibration corpus from scripts/build_label_corpus.py: description text taken
+# from the ATT&CK datasets plus technique labels. Regenerable from the local checkouts,
+# and the dataset text carries its own licence.
+calibration/
+corpus.jsonl
+corpus.jsonl.report.json
 
 # Local RAG corpus. Holds UNREDACTED analyst case notes, confirmed false-positive
 # reasons and IR-playbook chunks, so it carries attacker IOCs, internal hostnames

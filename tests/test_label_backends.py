@@ -5,7 +5,6 @@ Laya backend gets a fake ``laya`` module in sys.modules. The worker-thread offlo
 the weight pin are the parts worth testing here, not the model quality.
 """
 from __future__ import annotations
-
 import asyncio
 import logging
 import subprocess
@@ -188,6 +187,75 @@ def test_laya_logits_are_not_treated_as_probabilities(tmp_path, monkeypatch):
     assert verdict.confidence is None
 
 
+def test_laya_passes_the_token_budget_to_predict(tmp_path, monkeypatch):
+    (tmp_path / "config.json").write_text("{}")
+    agent = _install_fake_laya(monkeypatch, {"answers": {"tactic": {"choice": "Impact"}}})
+    labeler = LayaLabeler(0.6, str(tmp_path), _tree_sha256(str(tmp_path)), max_len=8192)
+    _run(labeler.classify("ransomware note"))
+    assert agent.calls[0][2] == {"max_len": 8192}
+
+
+def test_laya_temperature_sharpens_and_flattens_the_distribution(tmp_path, monkeypatch):
+    (tmp_path / "config.json").write_text("{}")
+    scores = {tactic: 0.01 for tactic in criteria.TACTICS}
+    scores["Collection"] = 0.10
+    scores["Impact"] = 1.0 - scores["Collection"] - 0.01 * (len(criteria.TACTICS) - 2)
+    _install_fake_laya(monkeypatch,
+                       {"answers": {"tactic": {"choice": "Impact", "scores": scores}}})
+    digest = _tree_sha256(str(tmp_path))
+    cold = _run(LayaLabeler(0.0, str(tmp_path), digest,
+                            temperature=0.5).classify("ransomware note"))
+    hot = _run(LayaLabeler(0.0, str(tmp_path), digest,
+                           temperature=2.0).classify("ransomware note"))
+    assert cold.confidence > scores["Impact"] > hot.confidence
+    # 6-decimal rounding in _finalize, so the sum drifts by a few parts per million.
+    assert abs(sum(cold.probabilities.values()) - 1.0) < 1e-4
+
+
+def test_laya_classify_many_keeps_the_order_it_was_given(tmp_path, monkeypatch):
+    (tmp_path / "config.json").write_text("{}")
+    agent = _install_fake_laya(monkeypatch, {"answers": {"tactic": {"choice": "Impact"}}})
+    labeler = LayaLabeler(0.6, str(tmp_path), _tree_sha256(str(tmp_path)))
+    verdicts = _run(labeler.classify_many(["first", "second", "third"]))
+    assert len(verdicts) == 3
+    assert [call[0]["body"] for call in agent.calls] == ["first", "second", "third"]
+
+
+def test_laya_backend_defaults_temperature_to_neutral(monkeypatch):
+    from mcp_server.core.config import LabelConfig
+
+    monkeypatch.delenv("BLUETEAM_LAYA_TEMPERATURE", raising=False)
+    monkeypatch.setenv("BLUETEAM_LAYA_BACKEND", "laya")
+    assert LabelConfig.from_env().temperature == 1.0
+    monkeypatch.setenv("BLUETEAM_LAYA_BACKEND", "onnx")
+    assert LabelConfig.from_env().temperature == 0.05
+    monkeypatch.setenv("BLUETEAM_LAYA_TEMPERATURE", "0.2")
+    assert LabelConfig.from_env().temperature == 0.2
+
+
+def test_max_len_config_rejects_out_of_range():
+    from mcp_server.core.config import LabelConfig
+    from mcp_server.core.exceptions import ConfigurationError
+    for bad in (0, 127, 8193):
+        with pytest.raises(ConfigurationError, match="BLUETEAM_LAYA_MAX_LEN"):
+            LabelConfig(max_len=bad).validate()
+    LabelConfig(max_len=8192).validate()
+
+
+def test_build_passes_temperature_and_max_len_to_laya(monkeypatch):
+    from mcp_server.core.config import config
+    from mcp_server.label import labeler
+
+    monkeypatch.setattr(config.label, "backend", "laya")
+    monkeypatch.setattr(config.label, "model_path", "/tmp/vendored")
+    monkeypatch.setattr(config.label, "model_sha256", "0" * 64)
+    monkeypatch.setattr(config.label, "temperature", 0.4)
+    monkeypatch.setattr(config.label, "max_len", 4096)
+    built = labeler._build()
+    assert isinstance(built, LayaLabeler)
+    assert built.temperature == 0.4 and built.max_len == 4096
+
+
 def test_laya_unrecognized_shape_is_unavailable(tmp_path, monkeypatch):
     (tmp_path / "config.json").write_text("{}")
     _install_fake_laya(monkeypatch, {"unexpected": True})
@@ -240,8 +308,8 @@ def _install_fake_laya(monkeypatch, result: dict):
     class _Agent:
         calls: list = []
 
-        def predict(self, payload, questions):
-            _Agent.calls.append((payload, questions))
+        def predict(self, payload, questions, **kwargs):
+            _Agent.calls.append((payload, questions, kwargs))
             return result
 
     _Agent.calls = []

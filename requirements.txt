@@ -100,10 +100,10 @@ yara-x>=1.20.0,<2.0.0
 # NOT installed by default, and NOT the default backend: BLUETEAM_LAYA_BACKEND=onnx
 # scores the taxonomy prototypes through the fastembed ONNX embedder declared above,
 # which adds no dependency at all. This block is only for the laya backend.
-# The distribution name behind `import laya` is not pinned in this repo yet, so
-# setup.sh requires it in BLUETEAM_LAYA_PIP_SPEC rather than guessing:
+# The distribution is `laya` on PyPI (published by Convai Innovations), pinned to the
+# version setup.sh installs by default; BLUETEAM_LAYA_PIP_SPEC overrides it.
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
-#   pip install "<laya-distribution>"
+#   pip install "laya==0.3.21"
 # torch comes from the CPU index only: the default wheel pulls CUDA, which is
 # multi-GB on a host with no GPU. Weights are vendored and sha256-pinned by
 # setup.sh and never fetched at call time.

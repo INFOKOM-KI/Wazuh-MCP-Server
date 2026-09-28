@@ -74,6 +74,21 @@ def _softmax(values: List[float], temperature: float) -> List[float]:
     return [value / total for value in exps]
 
 
+def _temperature_scale(distribution: Dict[str, float], temperature: float) -> Dict[str, float]:
+    """Rescale an already-softmaxed distribution by re-softmaxing its log-probabilities.
+    Laya ships uncalibrated (its own config carries temperature [1.0, 1.0, 1.0]), so
+    refitting one temperature per (question type, option count) on held-out data is the
+    documented fix; 1.0 is a no op."""
+    if temperature == 1.0:
+        return distribution
+    logs = {label: math.log(max(value, 1e-12)) / temperature
+            for label, value in distribution.items()}
+    peak = max(logs.values())
+    exps = {label: math.exp(value - peak) for label, value in logs.items()}
+    total = sum(exps.values())
+    return {label: value / total for label, value in exps.items()}
+
+
 class _BaseLabeler:
     """Floor application shared by both backends. Subclasses supply scores or a
     bare label; nothing else decides whether a label may be returned."""
@@ -86,6 +101,11 @@ class _BaseLabeler:
     async def prewarm(self) -> None:
         """Warm whatever the first classify would otherwise pay for. No-op by default."""
         return None
+
+    async def classify_many(self, state_texts: List[str]) -> List[LabelVerdict]:
+        """Sequential default. The ONNX backend overrides this with one batched embedder
+        call; the calibration harness needs the method on every backend."""
+        return [await self.classify(text) for text in state_texts]
 
     def _unavailable(self, reason: str) -> LabelVerdict:
         return LabelVerdict(backend=self.name, status=STATUS_UNAVAILABLE,
@@ -234,19 +254,23 @@ def _score_payload(payload: Any) -> Optional[Dict[str, float]]:
 
 
 class LayaLabeler(_BaseLabeler):
-    """Laya-Multilingual classifier. Loads lazily, verifies the weight pin before
+    """Laya-Multilingual classifier. Loads and verifies the weight pin before
     importing the runtime, and never swaps models per request: one agent resident
     is the whole point of the CPU budget, so ``Router`` and ``preload`` are unused.
+    ``temperature`` rescales the models own option distribution when it is not 1.0
+    (the checkpoint ships uncalibrated), and ``max_len`` is passed through because
+    the shipped default of 1024 tokens truncates a 4000-character state text.
     """
-
     name = "laya"
-
     def __init__(self, floor: float, model_path: str, model_sha256: str,
-                 allow_download: bool = False) -> None:
+                 allow_download: bool = False, temperature: float = 1.0,
+                 max_len: int = 1024) -> None:
         super().__init__(floor)
         self.model_path = model_path
         self.model_sha256 = (model_sha256 or "").strip().lower()
         self.allow_download = bool(allow_download)
+        self.temperature = float(temperature)
+        self.max_len = int(max_len)
         self._agent: Optional[Any] = None
         self._reason = "not loaded"
         self._load_lock = threading.Lock()
@@ -289,7 +313,8 @@ class LayaLabeler(_BaseLabeler):
         questions = {"tactic": {"type": "choice", "instructions": criteria.QUESTION,
                                 "criteria": criteria.criteria_map()}}
         try:
-            result = self._agent.predict({"body": state_text}, questions)
+            result = self._agent.predict({"body": state_text}, questions,
+                                         max_len=self.max_len)
         except Exception as exc:
             return self._unavailable(f"prediction failed: {exc}")
         answers = result.get("answers") if isinstance(result, dict) else None
@@ -306,7 +331,7 @@ class LayaLabeler(_BaseLabeler):
                 break
         if scores is None:
             return self._finalize(None, label=choice)
-        return self._finalize(scores)
+        return self._finalize(_temperature_scale(scores, self.temperature))
 
     async def classify(self, state_text: str) -> LabelVerdict:
         return await asyncio.to_thread(self._predict, state_text)
