@@ -36,6 +36,10 @@ most-connected nodes in the code graph:
 audit (_audit_log) -> call -> redact (_redact_alert_data) -> truncate (_truncate_if_needed)
 ```
 
+`CHARACTER_LIMIT` (100000 by default) caps what leaves the server. An oversized JSON body comes
+back as valid JSON with `truncated: true` instead of a sliced document, and in-process langgraph
+calls skip the cap entirely so the workflow parses the full payload (SECURITY.md 4.5).
+
 All outbound HTTP flows through a per-pool circuit breaker (`http_client.CircuitBreaker`:
 5 consecutive failures -> open, 60s cooldown, single half-open trial). 429 and 4xx never count
 as failures, so an outage on one upstream fails fast instead of stacking retries across tools.
@@ -689,6 +693,11 @@ the corpus was searched and came up short; `validation_incomplete` means it was 
 (store down, model failed, node timed out) and those two are not interchangeable. `evidence.confidence`
 is always `not_computed`; there is no calibrated probability in this pipeline, so never quote one.
 
+Registry hits carry provenance. The rationale names the source that registered the indicator:
+`manual`/`verdict`/`analyst` is an analyst confirmation, while `engine_a`, `enrichment`,
+`webshell_check` or `auto_promote` is an automated lead and the rationale says so. Quote the
+source the tool reports; never upgrade an automated hit into "an analyst confirmed this".
+
 Nothing here auto-closes an alert. Record the decision with `blueteam_mark_investigated`.
 Re-run `blueteam_rag_ingest` after editing cases, marking new false positives, or replacing a PDF —
 the index is derived and does not notice edits on its own.
@@ -1054,6 +1063,10 @@ Key reads from the `stats` block:
 **`_degraded: true` → Indexer unreachable → severity=NONE means *unknown*, not
 *clean*.** Never report "no threats" from a degraded run.
 
+**`truncated: true` is a size limit, not an empty result.** A JSON response that crosses the
+server's character cap comes back as a valid JSON object with `truncated: true` instead of a
+sliced document. Narrow the window or the limit and re-call; never report the body as complete.
+
 Conservative production defaults (validated): `time_window_minutes=10080`,
 `threshold_score=35` (dynamic rule.level × MITRE-tactic-weight scaling),
 `z_score_threshold=2.5`. Note the 7-day tier loosens to `z_score_threshold=2.0`.
@@ -1064,6 +1077,8 @@ Do not lower below these without production telemetry evidence.
 | Error | Meaning | Correct action |
 |---|---|---|
 | **any tool result with `isError: true`** | the tool failed; the text is a diagnostic, **not a finding** | report the failure and the named cause. Never read an error string as a verdict |
+| `{"truncated": true, ...}` | the response crossed `CHARACTER_LIMIT`; the tool kept it valid JSON instead of slicing it | narrow the window or add `limit`/`offset` and re-call. Never read it as empty |
+| `"<step>: degraded"` in a workflow response | that step failed and the reason is listed under `errors[]` | quote the reason in the report limitations; never substitute your own result for the missing step |
 | `"hasn't been inspected yet"` | MCP handshake, not an error | re-invoke with matching params |
 | `"circuit breaker open for '<upstream>' (N consecutive failures)"` | that one upstream failed N times in a row. The name is the pool: a URL host (`otx.alienvault.com`, `urlhaus.abuse.ch`, the Netra host) or an explicit pool (`argus`, `rapidapi`, `indexer`, `wazuh`). Breakers are per upstream, so everything else still works | skip that provider, name it in the report, retry the same call after 60s |
 | `"Request timed out after <N>s for <host>"` | the call exceeded its budget. `<N>` is the budget actually applied (global `HTTP_TIMEOUT`, default 30s; 90s for Netra), `<host>` is the upstream | a timeout is a slow or unreachable upstream, never a finding. Retry once; if it repeats, report the upstream as degraded |
@@ -1249,6 +1264,11 @@ transport it.
 9. Only call the cluster/label tools when their flag is on. An enable hint from
    `blueteam_alert_cluster` or `blueteam_incident_label` names the exact env var
    and the setup.sh flag; report both and move on.
+10. `truncated: true` in a tool response is a size limit, not an empty result. Narrow
+    the window or the limit and re-call; never report the body as complete.
+11. Registry hits carry provenance. Quote the source the tool names: only
+    `manual`/`verdict`/`analyst` is an analyst confirmation, while `engine_a` or
+    `enrichment` is an automated lead that still needs corroboration.
 ````
 
 ---

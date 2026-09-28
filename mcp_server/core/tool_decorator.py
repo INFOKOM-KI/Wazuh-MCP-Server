@@ -20,7 +20,9 @@ import functools
 import inspect
 import json
 import time
-from typing import Any, Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Callable, Iterator
 from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data
@@ -34,6 +36,21 @@ _READ_ONLY_ANNOTATIONS = {
     "idempotentHint": True,
     "openWorldHint": False,
 }
+
+# The graph orchestrators call tools in-process and json.loads the result.
+# CHARACTER_LIMIT is a transport cap, and a sliced JSON document fails that parse
+# on the truncation banner, so in-process calls opt out of truncation.
+_FULL_PAYLOAD: ContextVar[bool] = ContextVar("blueteam_full_payload", default=False)
+
+
+@contextmanager
+def full_payload() -> Iterator[None]:
+    """Disable response truncation for every tool call inside the block."""
+    token = _FULL_PAYLOAD.set(True)
+    try:
+        yield
+    finally:
+        _FULL_PAYLOAD.reset(token)
 
 
 def _make_params_dict(params: Any) -> dict:
@@ -110,18 +127,17 @@ def blueteam_tool(
             # post-call: redact (default ON uniform security boundary)
             if redact:
                 result = _redact_alert_data(result, params=params)
-                if not isinstance(result, str):
-                    result = json.dumps(result, indent=2, ensure_ascii=False)
+            if not isinstance(result, str):
+                result = json.dumps(result, indent=2, ensure_ascii=False)
 
-            # post-call: truncate (nearly always)
-            if truncate:
+            # post-call: truncate (nearly always; in-process callers need the full body)
+            if truncate and not _FULL_PAYLOAD.get():
                 bypass_char = (
                     getattr(params, "bypass_character_limit", False)
                     if params is not None and hasattr(params, "bypass_character_limit")
                     else False
                 )
-                result_str = result if isinstance(result, str) else str(result)
-                result = _truncate_if_needed(result_str, bypass=bypass_char)
+                result = _truncate_if_needed(result, bypass=bypass_char)
 
             return result
 

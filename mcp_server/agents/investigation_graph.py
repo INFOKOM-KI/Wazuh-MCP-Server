@@ -18,6 +18,7 @@ from typing import Annotated, Optional, TypedDict
 from operator import add
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
+from mcp_server.core.tool_decorator import full_payload
 
 logger = logging.getLogger("blue_team_mcp.investigation_graph")
 
@@ -246,8 +247,8 @@ async def correlate_step(state: InvestigationState) -> dict:
                 vuln_srcip=state.get("srcip"),
                 vuln_context=vuln_context or None,
             )), "correlate")
-        result = json.loads(out)
-        if isinstance(result, dict) and result.get("error"):
+        result = _as_json(out)
+        if result.get("error"):
             return {"correlation": result,
                     "errors": [f"correlate: {result['error']}"],
                     "steps": ["correlate: degraded (no indexer data)"]}
@@ -256,7 +257,7 @@ async def correlate_step(state: InvestigationState) -> dict:
         return {"errors": [f"correlate: {e}"], "steps": ["correlate: degraded"]}
 
 
-def _as_json(raw, label: str) -> dict:
+def _as_json(raw) -> dict:
     """Parse a step handler's JSON output, degrading instead of raising.
 
     The attack-graph and killchain handlers return JSON on success but a plain
@@ -267,7 +268,7 @@ def _as_json(raw, label: str) -> dict:
     try:
         return json.loads(raw)
     except (ValueError, TypeError):
-        return {"error": f"{label}: non-JSON response"}
+        return {"error": "non-JSON response"}
 
 
 async def cluster_step(state: InvestigationState) -> dict:
@@ -287,7 +288,9 @@ async def cluster_step(state: InvestigationState) -> dict:
         out = await _with_timeout(
             blueteam_alert_cluster_assign(AlertClusterAssignInput(
                 srcip=srcip, response_format="json")), "cluster")
-        payload = json.loads(out)
+        payload = _as_json(out)
+        if payload.get("error"):
+            return {"errors": [f"cluster: {payload['error']}"], "steps": ["cluster: degraded"]}
         if payload.get("status") != "ok":
             return {"clusters": payload, "steps": [f"cluster: {payload.get('status')}"]}
         assignment = payload.get("assignment") or {}
@@ -320,7 +323,9 @@ async def label_step(state: InvestigationState) -> dict:
         if isinstance(result, dict):
             return {"errors": list(result.get("errors", [])),
                     "steps": list(result.get("steps", ["label: timed out"]))}
-        payload = json.loads(result)
+        payload = _as_json(result)
+        if payload.get("error"):
+            return {"errors": [f"label: {payload['error']}"], "steps": ["label: degraded"]}
         if payload.get("status") == "unavailable":
             return {"incident_label": payload,
                     "errors": [f"label: unavailable ({payload.get('reason')})"],
@@ -344,7 +349,7 @@ async def analytics_step(state: InvestigationState) -> dict:
     async def _run_graph():
         from mcp_server.tools.attack_graph import blueteam_attack_graph, AttackGraphInput
         out = await blueteam_attack_graph(AttackGraphInput(response_format="json"))
-        return ("graph", _as_json(out, "attack_graph"), None)
+        return ("graph", _as_json(out), None)
 
     async def _run_killchain():
         if not srcip:
@@ -352,7 +357,7 @@ async def analytics_step(state: InvestigationState) -> dict:
         from mcp_server.tools.stix_correlation import blueteam_stix_killchain, StixKillchainInput
         out = await blueteam_stix_killchain(StixKillchainInput(
             srcip=srcip, since=state.get("window", "24h"), response_format="json"))
-        return ("killchain", _as_json(out, "killchain"), None)
+        return ("killchain", _as_json(out), None)
 
     tasks = [
         _with_timeout(_run_graph(), "graph"),
@@ -384,7 +389,10 @@ async def baseline_step(state: InvestigationState) -> dict:
             blueteam_baseline_drift(BaselineDriftInput(
                 window=state.get("window", "24h"), response_format="json")),
             "baseline")
-        return {"baseline": json.loads(out), "steps": ["baseline: drift evaluated"]}
+        payload = _as_json(out)
+        if payload.get("error"):
+            return {"errors": [f"baseline: {payload['error']}"], "steps": ["baseline: degraded"]}
+        return {"baseline": payload, "steps": ["baseline: drift evaluated"]}
     except Exception as e:
         return {"errors": [f"baseline: {e}"], "steps": ["baseline: degraded"]}
 
@@ -468,8 +476,11 @@ async def report_step(state: InvestigationState) -> dict:
             title="SOC Investigation — Blue Team MCP",
             docx_sections=sections,
         ))
-        d = json.loads(out)
-        return {"report_path": d.get("path"), "steps": [f"report: {d.get('path')}"]}
+        payload = _as_json(out)
+        if payload.get("error"):
+            return {"errors": [f"report: {payload['error']}"], "steps": ["report: degraded"]}
+        return {"report_path": payload.get("path"),
+                "steps": [f"report: {payload.get('path')}"]}
     except Exception as e:
         return {"errors": [f"report: {e}"], "steps": ["report: degraded"]}
 
@@ -483,7 +494,10 @@ async def verdict_step(state: InvestigationState) -> dict:
         out = await blueteam_mark_investigated(MarkInvestigatedInput(
             srcip=srcip, verdict=state.get("verdict_label", "suspicious"),
             notes="auto investigation workflow"))
-        return {"verdict": json.loads(out), "steps": ["verdict: recorded"]}
+        payload = _as_json(out)
+        if payload.get("error"):
+            return {"errors": [f"verdict: {payload['error']}"], "steps": ["verdict: degraded"]}
+        return {"verdict": payload, "steps": ["verdict: recorded"]}
     except Exception as e:
         return {"errors": [f"verdict: {e}"], "steps": ["verdict: degraded"]}
 
@@ -606,9 +620,11 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
             os.makedirs(parent, exist_ok=True)
         async with AsyncSqliteSaver.from_conn_string(_DB_PATH) as cp:
             graph = build_investigation_graph(cp)
-            final = await graph.ainvoke(initial, config=config)
+            with full_payload():
+                final = await graph.ainvoke(initial, config=config)
     else:
-        final = await _investigation_graph.ainvoke(initial, config=config)
+        with full_payload():
+            final = await _investigation_graph.ainvoke(initial, config=config)
     return {
         "status": "complete",
         "srcip": srcip,

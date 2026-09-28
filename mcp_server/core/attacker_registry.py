@@ -2,15 +2,16 @@
 """
 © NAuliajati - TangerangKota-CSIRT
 In-memory + JSONL-persistent attacker-IOC registry.
-
 Values registered here are treated as confirmed/suspected attacker indicators
 and are EXEMPTED from shape-based masking in the redaction pipeline (never from
 Layer 1 credential stripping - credentials stay masked everywhere).
 
 Populated by:
-  - 3-Sum Engine A trigger IPs (three_sum_correlation)
-  - Threat-intel enrichment lookups (CrowdSec / ThreatFox)
-  - True-positive investigation verdicts (blueteam_mark_investigated)
+- 3-Sum Engine A trigger IPs (source="engine_a") - automated
+- Threat-intel enrichment lookups (source="enrichment") - automated
+- True-positive investigation verdicts (source="verdict") - analyst decision
+A lookup returns the registering source, so a caller can tell an automated lead
+from an analyst-confirmed indicator (ANALYST_SOURCES).
 
 Persistence (BLUETEAM_ATTACKER_REGISTRY=path, optional):
   - JSONL entries {"ioc", "ts", "source"} appended atomically (tmp+rename).
@@ -40,6 +41,7 @@ _SWEEP_INTERVAL = 60.0
 
 _SEP_CHARS = " /\\"
 
+ANALYST_SOURCES = frozenset({"manual", "verdict", "analyst"})
 
 def _looks_like_ip(v: str) -> bool:
     try:
@@ -189,27 +191,32 @@ def register_attacker_domains(values: list[str], source: str = "manual") -> None
         register_attacker_ioc(v, source=source)
 
 
-def is_attacker_ioc(value: str) -> bool:
-    """True if value (or its domain) is a registered, unexpired attacker indicator.
-    Lazy-sweeps expired entries (at most once per 60s) before checking.
+def attacker_ioc_source(value: str) -> str | None:
+    """Return the source that registered ``value``, or None when it is absent.
+    Applies the same domain matching as ``is_attacker_ioc``: exact value, or
+    exactly one subdomain level of a registered domain. Lazy-sweeps expired
+    entries before checking.
     """
     _sweep_expired()  # lazy guard: O(1) unless interval elapsed
     v = (value or "").strip().lower()
     if not v:
-        return False
-    if v in _ATTACKER_EXACT:
-        return True
+        return None
+    entry = _ENTRIES.get(v)
+    if entry is not None:
+        return str(entry.get("source") or "unknown")
     dom = v.rsplit("@", 1)[-1] if "@" in v else v
     # Match: exact domain OR exactly one subdomain level (e.g. www.evil.com)
     # matches evil.com, but subdo.evil.com does not).
     for d in _ATTACKER_DOMAINS:
-        if dom == d:
-            return True
-        if dom.endswith("." + d):
-            prefix = dom[:-(len(d) + 1)]
-            if "." not in prefix:  # exactly one subdomain level
-                return True
-    return False
+        if dom == d or (dom.endswith("." + d) and "." not in dom[:-(len(d) + 1)]):
+            entry = _ENTRIES.get(d)
+            return str(entry.get("source") or "unknown") if entry else None
+    return None
+
+
+def is_attacker_ioc(value: str) -> bool:
+    """True if value (or its domain) is a registered, unexpired attacker indicator."""
+    return attacker_ioc_source(value) is not None
 
 
 def registry_stats() -> dict:

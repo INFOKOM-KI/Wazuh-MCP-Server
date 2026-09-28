@@ -138,10 +138,24 @@ def _truncate_if_needed(text: str, *, bypass: bool = False) -> str:
             return text
     if len(text) <= CHARACTER_LIMIT:
         return text
+    if text.lstrip()[:1] in ("{", "["):
+        try:
+            json.loads(text)
+        except ValueError:
+            pass
+        else:
+            # A sliced JSON document is not JSON: the caller's json.loads fails on
+            # the banner instead of reading a status. Hand back a valid document.
+            return json.dumps({
+                "error": f"response exceeds {CHARACTER_LIMIT} characters",
+                "truncated": True,
+                "response_chars": len(text),
+                "hint": "narrow the query (smaller window or limit) and retry",
+            })
     truncated = text[:CHARACTER_LIMIT]
     return (
         truncated
-        + f"\n\n... [truncated - response exceeds {CHARACTER_LIMIT} characters. "
+        + f"\n\n... [truncated response exceeds {CHARACTER_LIMIT} characters. "
         "Use a smaller limit per page (e.g. limit=50) or iterate with the next_cursor "
         "to process results incrementally.]"
     )

@@ -39,7 +39,7 @@ from typing import Annotated, Optional, TypedDict
 from operator import add
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
-from mcp_server.core.attacker_registry import is_attacker_ioc
+from mcp_server.core.attacker_registry import ANALYST_SOURCES, attacker_ioc_source
 from mcp_server.core.config import config
 from mcp_server.core.false_positive_kb import is_false_positive
 from mcp_server.core.rerank import rerank_hits
@@ -89,6 +89,7 @@ def _empty_evidence(min_matches: int, floor: Optional[float]) -> dict:
     return {
         "exact_suppression_match": False,
         "attacker_registry_match": False,
+        "attacker_registry_source": None,
         "kb_matches": 0,
         "min_matches_required": min_matches,
         "top_vector_score": None,
@@ -126,17 +127,18 @@ async def assemble_evidence(state: FPValidatorState) -> dict:
     min_matches = state.get("min_matches", 3)
     evidence = _empty_evidence(min_matches, state.get("min_rerank_score"))
     exact = is_false_positive(indicator)
-    attacker = is_attacker_ioc(indicator)
+    attacker_source = attacker_ioc_source(indicator)
     evidence["exact_suppression_match"] = exact
-    evidence["attacker_registry_match"] = attacker
+    evidence["attacker_registry_match"] = attacker_source is not None
+    evidence["attacker_registry_source"] = attacker_source
 
-    if exact and attacker:
+    if exact and attacker_source:
         return {"evidence": evidence, "authority_signal": "conflicting_state",
                 "steps": ["evidence: suppression set AND attacker registry both match"]}
     if exact:
         return {"evidence": evidence, "authority_signal": "suppressed_exact",
                 "steps": ["evidence: exact suppression hit, retrieval skipped"]}
-    if attacker:
+    if attacker_source:
         return {"evidence": evidence, "authority_signal": "likely_true_positive",
                 "steps": ["evidence: attacker registry hit, corpus cannot outrank it"]}
 
@@ -196,15 +198,18 @@ async def assemble_evidence(state: FPValidatorState) -> dict:
 
 
 def decide_authority(state: FPValidatorState) -> dict:
-    """Terminal node for the two registry signals and their conflict."""
+    """Terminal node for the two registry signals and their conflict.
+    The rationale names the registering source: an automated hit is a lead, and
+    only ANALYST_SOURCES may be reported as a confirmed analyst decision.
+    """
     signal = state.get("authority_signal")
+    source = (state.get("evidence") or {}).get("attacker_registry_source")
     if signal == "conflicting_state":
         rationale = (
             "The indicator is in the false-positive suppression set AND the attacker "
-            "registry. Both were written from analyst verdicts and neither store clears "
-            "the other, so precedence is unresolved here. Resolve it before trusting "
-            "either verdict, and note that 3-Sum currently excludes the indicator as a "
-            "suppression hit."
+            f"registry (source={source}). Neither store clears the other, so precedence "
+            "is unresolved here. Resolve it before trusting either verdict, and note "
+            "that 3-Sum currently excludes the indicator as a suppression hit."
         )
     elif signal == "suppressed_exact":
         rationale = (
@@ -212,10 +217,16 @@ def decide_authority(state: FPValidatorState) -> dict:
             "excludes it, so this alert is suppressed by an existing analyst decision. "
             "Fix the upstream detection if it keeps firing."
         )
-    else:
+    elif source in ANALYST_SOURCES:
         rationale = (
             "Registered in the attacker registry from a prior analyst confirmation. "
             "That decision outranks corpus similarity. Escalate."
+        )
+    else:
+        rationale = (
+            f"Registered in the attacker registry by automated correlation (source={source}); "
+            "no analyst has confirmed it. Treat it as a lead: corroborate before "
+            "escalating, and do not cite it as an analyst verdict."
         )
     return {"verdict": signal or "insufficient_evidence", "rationale": rationale,
             "steps": [f"authority: {signal}"]}

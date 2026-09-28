@@ -312,6 +312,10 @@ async def run(input_path: str | Path, out_path: str | Path,
             rows.append(score(cases, predictions, floor, temperature))
     rows.sort(key=lambda row: (row["floor"], row["temperature"]))
     best = suggest(rows, default_temperature=1.0 if backend == "laya" else 0.05)
+    # The record ties the thresholds to the vocabulary they were measured against,
+    # so a stale calibration is detectable rather than silently applied.
+    best["criteria_version"] = version()
+    best["backend"] = backend
     if gate is not None:
         best["gate_failures"] = evaluate_gate(best, gate)
     Path(out_path).write_text(
@@ -329,6 +333,13 @@ async def run(input_path: str | Path, out_path: str | Path,
 
 def _floats(raw: str) -> tuple[float, ...]:
     return tuple(float(part) for part in raw.split(",") if part.strip())
+
+
+def _calibration_record(best: dict) -> dict:
+    """Thresholds plus the provenance a deployment needs to detect a stale calibration."""
+    keys = ("floor", "temperature", "backend", "criteria_version", "cases",
+            "macro_f1", "top1_answered", "coverage", "ece", "gate_failures")
+    return {key: best.get(key) for key in keys}
 
 
 def main() -> None:
@@ -349,6 +360,9 @@ def main() -> None:
     parser.add_argument("--max-ece", type=float, default=None)
     parser.add_argument("--floors", default=",".join(map(str, DEFAULT_FLOORS)))
     parser.add_argument("--temperatures", default=",".join(map(str, DEFAULT_TEMPERATURES)))
+    parser.add_argument("--json-out", default=None,
+                        help="Write the suggested thresholds as JSON for deployment "
+                             "tooling, tied to the criteria version. Never writes env files.")
     args = parser.parse_args()
     overrides = {key: value for key, value in vars(args).items()
                  if key in GATE_DEFAULTS and value is not None}
@@ -356,6 +370,9 @@ def main() -> None:
     best = asyncio.run(run(args.input, args.out, _floats(args.floors),
                            _floats(args.temperatures), backend=args.backend,
                            split=args.split, gate=gate))
+    if args.json_out:
+        Path(args.json_out).write_text(
+            json.dumps(_calibration_record(best), indent=2) + "\n", encoding="utf-8")
     if best.get("gate_failures"):
         raise SystemExit(2)
 
