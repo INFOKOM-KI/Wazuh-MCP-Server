@@ -606,6 +606,8 @@ that an entity is malicious.
 | Place one entity in the fit | `blueteam_alert_cluster_assign(srcip="X")` |
 | Train / inspect the tactic corpus | `blueteam_tactic_forecast(mode="train"\|"status")` |
 | Predict the next tactic for one entity | `blueteam_tactic_forecast(mode="predict", srcip="X")` |
+| Forecast next-bucket alert volume | `blueteam_volume_forecast(mode="predict", horizon_buckets=24)` |
+| Train / inspect the volume series | `blueteam_volume_forecast(mode="train"\|"status")` |
 | Name the ATT&CK phase of an alert or text | `blueteam_incident_label(mode="alert"\|"text")` |
 
 - `blueteam_alert_cluster` needs `BLUETEAM_CLUSTER_ENABLED=true` plus a scikit-learn
@@ -614,6 +616,9 @@ that an entity is malicious.
   estimator needs no optional package; `kind="hmm"` additionally needs
   `setup.sh BLUETEAM_INSTALL_FORECAST=1`. An `insufficient_data` train result means the
   window or corpus is below the configured floor, not that attacks are absent.
+- `blueteam_volume_forecast` needs the same flag. Training fits a PoissonHMM and therefore
+  needs `setup.sh BLUETEAM_INSTALL_FORECAST=1`; predict reads only the stored model. A thin,
+  all-zero or constant series returns `insufficient_data` before any fit.
 - `blueteam_incident_label` needs `BLUETEAM_LAYA_ENABLED=true`. The default `onnx`
   backend reuses the RAG embedder and costs no extra memory. The `laya` backend is
   **unsupported by policy** — CPU torch plus weights exceed the agreed 250 MB / 300 ms budget —
@@ -647,6 +652,11 @@ Reading the output:
   model's pick. `low_support=true` means the current row has fewer observed transitions than
   `BLUETEAM_FORECAST_MIN_SUPPORT`; quote the ranking and the count together.
   `anomaly.mean_logprob` is advisory, because a genuinely new campaign is supposed to score low.
+- **A volume forecast is a regime-conditional mean, not a threshold.** `expected_total` and
+  `mean_per_bucket` are the count the fitted regimes imply; `peak_probability` is the chance a
+  max-lambda regime is active in the horizon, not the chance an attack happens.
+  `posterior_fallback=true` means the observed context fitted no regime and the prior was rolled
+  forward; report that instead of quoting the numbers as fitted.
 - Both tools stamp a version into every response (`feature_version` for the fit,
   `criteria_version` for the label). Two results with different stamps are not comparable;
   say so instead of comparing them.
@@ -819,6 +829,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_alert_cluster(mode="fit"\|"status", time_window_minutes, min_cluster_size, min_samples)` | HDBSCAN over srcip entities built from the 3-Sum aggregation (16 tactic sums + 4 scores). Returns clusters, medoids, noise ratio; `insufficient_data` instead of an empty cluster list when the population is too small |
 | `blueteam_alert_cluster_assign(srcip, fit_id, assign_factor, use_cached)` | nearest-centroid assignment against the stored fit. `label=-1` + `novelty=true` = outside every cluster radius. `pending_novelty`/`pending_refit` flag when a refit is justified |
 | `blueteam_tactic_forecast(mode="train"\|"predict"\|"status", kind="markov"\|"hmm", srcip, current_tactic, model_id, top_k)` | fit or query a tactic-transition model over per-entity `rule.mitre.tactic` sequences: top-k next tactics, escalation probability, and the chain's mean log-likelihood against the corpus. `uniform_fallback`/`low_support` flag a ranking the corpus does not back; `unavailable` means hmmlearn is absent for `kind="hmm"` |
+| `blueteam_volume_forecast(mode="train"\|"predict"\|"status", horizon_buckets, context_buckets, n_components, min_buckets)` | fit or query a PoissonHMM over per-bucket alert counts (empty buckets included). Returns per-bucket expected counts, expected total, mean per bucket and `peak_probability`; `insufficient_data` on a thin/all-zero/constant series, `posterior_fallback` when the context fits no regime |
 | `blueteam_incident_label(mode="alert"\|"text", alert, text, include_probabilities, top_k)` | label one alert or text with one of the 16 ATT&CK tactics, plus the A/B/C category derived from it. `status` is `ok` / `uncertain` / `unavailable`, and `unavailable` carries the reason |
 
 ### Resources (read via MCP resource reads, not tool calls)
@@ -1000,6 +1011,8 @@ yields the same `indicator--` id, so the peer deduplicates instead of accumulati
 6. blueteam_rag_query(query="<label> + the alert description")   # have we closed something like this before
 7. blueteam_tactic_forecast(mode="predict", srcip="X", top_k=3)   # optional; needs the forecast corpus
    # top next tactics + escalation probability; uniform_fallback/low_support = the corpus does not back it
+8. blueteam_volume_forecast(mode="predict", horizon_buckets=24)     # optional; needs the forecast corpus
+   # expected volume + peak_probability; posterior_fallback = the prior was used, not a fitted posterior
 ```
 
 Use this when the question is "what kinds of activity are in this window" (step 1) and "what

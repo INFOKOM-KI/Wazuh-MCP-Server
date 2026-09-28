@@ -780,6 +780,10 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_FORECAST_HMM_MIN_SEQUENCES="15" # HMM needs more history than the chain
 # export BLUETEAM_FORECAST_HMM_ITER="50"          # EM iterations per fit
 # export BLUETEAM_FORECAST_HMM_SEED="42"          # pinned for reproducible fits
+# export BLUETEAM_FORECAST_VOLUME_MIN_BUCKETS="48"   # observed buckets needed for a PoissonHMM fit
+# export BLUETEAM_FORECAST_VOLUME_COMPONENTS="3"    # volume regimes: quiet/normal/burst
+# export BLUETEAM_FORECAST_VOLUME_HORIZON="24"      # buckets to forecast by default
+# export BLUETEAM_FORECAST_VOLUME_CONTEXT="24"      # recent buckets that filter the posterior
 
 # Laya-Multilingual labeling (blueteam_laya_classify) — needs BLUETEAM_INSTALL_LAYA=1 and a
 # vendored, pinned model directory. Without weights the tool reports 'unavailable'; it never

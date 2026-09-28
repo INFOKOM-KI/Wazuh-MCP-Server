@@ -19,11 +19,13 @@ from mcp_server.core.config import config
 from mcp_server.core.forecast_store import (
     ForecastStoreError,
     append_observations,
+    load_counts,
     load_model,
     load_observations,
     purge_expired,
     save_model,
     store_stats,
+    upsert_counts,
 )
 from mcp_server.correlation.forecast_core import (
     TACTIC_ORDER,
@@ -152,3 +154,22 @@ def test_stats_report_counts_without_entity_keys(store_path):
     assert stats["observations"] == 1
     assert stats["entities"] == 1
     assert "203.0.113.7" not in json.dumps(stats)
+
+
+def test_upsert_counts_replaces_and_orders(store_path):
+    assert upsert_counts([(2000.0, 5), (1000.0, 1)]) == 2
+    assert upsert_counts([(1000.0, 3)]) == 1
+    assert load_counts() == [3, 5]
+    assert load_counts(1500.0) == [5]
+
+
+def test_retention_purge_removes_old_counts(store_path):
+    upsert_counts([(0.0, 1), (time.time(), 2)])
+    result = purge_expired()
+    assert result["counts"] == 1
+    assert load_counts() == [2]
+
+
+def test_stats_include_counts(store_path):
+    upsert_counts([(1.0, 7)])
+    assert store_stats()["counts"] == 1

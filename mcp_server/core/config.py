@@ -859,6 +859,10 @@ class ForecastConfig:
     hmm_min_sequences: int = 15
     hmm_iter: int = 50
     hmm_seed: int = 42
+    volume_min_buckets: int = 48
+    volume_components: int = 3
+    volume_horizon_buckets: int = 24
+    volume_context_buckets: int = 24
 
     @classmethod
     def from_env(cls) -> "ForecastConfig":
@@ -875,6 +879,10 @@ class ForecastConfig:
             hmm_min_sequences=int(os.environ.get("BLUETEAM_FORECAST_HMM_MIN_SEQUENCES", "15")),
             hmm_iter=int(os.environ.get("BLUETEAM_FORECAST_HMM_ITER", "50")),
             hmm_seed=int(os.environ.get("BLUETEAM_FORECAST_HMM_SEED", "42")),
+            volume_min_buckets=int(os.environ.get("BLUETEAM_FORECAST_VOLUME_MIN_BUCKETS", "48")),
+            volume_components=int(os.environ.get("BLUETEAM_FORECAST_VOLUME_COMPONENTS", "3")),
+            volume_horizon_buckets=int(os.environ.get("BLUETEAM_FORECAST_VOLUME_HORIZON", "24")),
+            volume_context_buckets=int(os.environ.get("BLUETEAM_FORECAST_VOLUME_CONTEXT", "24")),
         )
 
     def validate(self) -> None:
@@ -905,6 +913,14 @@ class ForecastConfig:
             raise ConfigurationError("BLUETEAM_FORECAST_HMM_MIN_SEQUENCES must be >= 2")
         if self.hmm_iter < 1:
             raise ConfigurationError("BLUETEAM_FORECAST_HMM_ITER must be >= 1")
+        if self.volume_min_buckets < 8:
+            raise ConfigurationError("BLUETEAM_FORECAST_VOLUME_MIN_BUCKETS must be >= 8")
+        if not 2 <= self.volume_components <= 6:
+            raise ConfigurationError("BLUETEAM_FORECAST_VOLUME_COMPONENTS must be 2-6")
+        if not 1 <= self.volume_horizon_buckets <= 336:
+            raise ConfigurationError("BLUETEAM_FORECAST_VOLUME_HORIZON must be 1-336 buckets")
+        if not 1 <= self.volume_context_buckets <= 336:
+            raise ConfigurationError("BLUETEAM_FORECAST_VOLUME_CONTEXT must be 1-336 buckets")
 
 
 @dataclass
@@ -1140,7 +1156,7 @@ class Config:
             if importlib.util.find_spec("hmmlearn") is None:
                 logger.warning(
                     "BLUETEAM_FORECAST_ENABLED=true but hmmlearn is not installed - "
-                    "kind='markov' still works; kind='hmm' will report unavailable."
+                    "kind='hmm' and the volume PoissonHMM will report unavailable."
                 )
 
 

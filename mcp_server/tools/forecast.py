@@ -35,25 +35,30 @@ from mcp_server.core.config import config
 from mcp_server.core.exceptions import BlueTeamMCPError
 from mcp_server.core.forecast_store import (
     append_observations,
+    load_counts,
     load_model,
     load_observations,
     purge_expired,
     save_model,
     store_stats,
+    upsert_counts,
 )
 from mcp_server.core.tool_decorator import blueteam_tool
 from mcp_server.correlation.forecast_core import (
-    TAXONOMY_VERSION,
     TACTIC_ORDER,
+    VOLUME_KIND,
     build_sequences,
     fit_categorical_hmm,
     fit_markov_chain,
+    fit_poisson_hmm,
     normalize_tactics,
     predict_next_hmm,
     predict_next_markov,
+    predict_volume,
     sequence_logprob,
 )
 from mcp_server.wazuh.indexer import _SRCIP_FIELD_PATHS, _wazuh_indexer_post
+from mcp_server.wazuh.time_utils import _auto_bucket_interval
 
 logger = logging.getLogger("blue_team_mcp.forecast")
 
@@ -162,7 +167,7 @@ def _model_id(fit: dict) -> str:
     repeated train over the same corpus is idempotent instead of churning the
     model cap."""
     canonical = json.dumps(
-        {key: fit.get(key) for key in ("kind", "startprob", "transmat", "emissionprob")},
+        {key: fit.get(key) for key in ("kind", "startprob", "transmat", "emissionprob", "lambdas")},
         sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
@@ -471,3 +476,295 @@ async def blueteam_tactic_forecast(params: TacticForecastInput) -> str:
     if params.response_format == "json":
         return json.dumps(payload, indent=2, ensure_ascii=False)
     return _train_markdown(payload)
+
+
+def _interval_seconds(value) -> Optional[float]:
+    """Seconds in a ``fixed_interval`` string (``1m``, ``6h``, ``1d``). ``None``
+    for anything else, so the caller reports buckets without a fabricated span."""
+    text = str(value or "").strip().lower()
+    units = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+    if len(text) < 2 or text[-1] not in units:
+        return None
+    try:
+        return float(text[:-1]) * units[text[-1]]
+    except ValueError:
+        return None
+
+
+async def _fetch_volume_buckets(since_iso: str, until_iso: str, bucket_interval: str) -> dict:
+    """Date-histogram of alert counts. ``min_doc_count: 0`` is required: an
+    empty bucket is a zero count, which is the signal Poisson regimes are fit
+    to. Without it the series has holes and the HMM reads the gaps as missing
+    time. ``extended_bounds`` keeps the first and last partial buckets present.
+    """
+    if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
+        return {"buckets": [], "error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set.",
+                "warnings": []}
+    body = {
+        "size": 0,
+        "query": {"bool": {"filter": [
+            {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
+                                      "format": "strict_date_optional_time"}}},
+        ]}},
+        "aggs": {"over_time": {"date_histogram": {
+            "field": "@timestamp", "fixed_interval": bucket_interval,
+            "min_doc_count": 0,
+            "extended_bounds": {"min": since_iso, "max": until_iso}}}},
+    }
+    raw = await _wazuh_indexer_post(body)
+    if "error" in raw:
+        return {"buckets": [], "error": str(raw["error"]),
+                "warnings": [f"Indexer query failed: {raw['error']}"]}
+    hits_buckets = raw.get("aggregations", {}).get("over_time", {}).get("buckets", [])
+    buckets: list[dict] = []
+    for bucket in hits_buckets:
+        ts = _epoch(bucket.get("key_as_string"))
+        if ts is None:
+            key = bucket.get("key")
+            ts = float(key) / 1000.0 if isinstance(key, (int, float)) else None
+        if ts is None:
+            continue
+        buckets.append({"ts": ts, "count": int(bucket.get("doc_count", 0) or 0)})
+    return {"buckets": buckets, "error": None, "warnings": []}
+
+
+def _volume_train_markdown(payload: dict) -> str:
+    lines = [
+        f"# Volume Forecast - model `{payload['model_id']}`",
+        "",
+        f"**Kind**: `{payload['kind']}` | **Bucket interval**: `{payload['bucket_interval']}` "
+        f"| **Buckets**: {payload['n_buckets']} | **Alerts in window**: {payload['total_alerts']}",
+        f"**Window**: `{payload['window']['since']}` -> `{payload['window']['until']}`",
+        f"**Expected alerts per bucket (lambda per regime)**: "
+        + ", ".join(f"`{value}`" for value in payload["lambdas"]),
+        "",
+        "A lambda is the mean alerts per bucket while that regime is active. The model says "
+        "which regime is likely next, not which alert counts are acceptable.",
+    ]
+    if payload.get("warnings"):
+        lines += ["", "**Indexer notes**"] + [f"- {warning}" for warning in payload["warnings"]]
+    return "\n".join(lines)
+
+
+def _volume_predict_markdown(payload: dict) -> str:
+    prediction = payload["prediction"]
+    if prediction.get("status") != "ok":
+        return (f"# Volume Forecast model `{payload['model']}`\n\n"
+                f"**Status**: `{prediction.get('status')}`\n\n{prediction.get('reason') or ''}")
+    lines = [
+        f"# Volume Forecast - model `{payload['model']}`",
+        "",
+        f"**Horizon**: {payload['horizon_buckets']} buckets at `{payload['bucket_interval']}` "
+        f"| **Context**: {payload['context_buckets_used']} observed buckets",
+        f"**Expected total**: {prediction['expected_total']} alerts | "
+        f"**Mean per bucket**: {prediction['mean_per_bucket']} | "
+        f"**Peak probability**: {prediction['peak_probability']:.0%} "
+        f"(states {prediction['peak_states']})",
+        "",
+        "| Step | Expected alerts |",
+        "|------|-----------------|",
+    ]
+    shown = prediction["expected_counts"][:24]
+    lines += [f"| +{index + 1} | {value} |" for index, value in enumerate(shown)]
+    if len(prediction["expected_counts"]) > len(shown):
+        lines.append(f"| ... | {len(prediction['expected_counts']) - len(shown)} more buckets "
+                     f"(expected total listed above) |")
+    if prediction.get("posterior_fallback"):
+        lines += ["", "**Posterior fallback**: the context posterior collapsed, so the prior "
+                      "distribution was used. Do not quote this as a fitted forecast."]
+    return "\n".join(lines)
+
+
+def _volume_status_markdown(payload: dict) -> str:
+    lines = ["# Volume Forecast status", "",
+             f"**Status**: `{payload['status']}`",
+             f"**Corpus**: {payload['store']['counts']} bucketed counts, "
+             f"{payload['store']['observations']} tactic observations | "
+             f"**Models**: {payload['store']['models']}"]
+    if payload.get("model"):
+        model = payload["model"]
+        lines += ["", f"**Newest model**: `{model['model_id']}` (`{model['kind']}`, "
+                      f"{model['n_sequences']} buckets)"]
+    if payload.get("hint"):
+        lines += ["", payload["hint"]]
+    return "\n".join(lines)
+
+
+class VolumeForecastInput(BaseModel):
+    """Input model for blueteam_volume_forecast."""
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    mode: Literal["train", "predict", "status"] = Field(
+        default="predict",
+        description="'train' ingests the bucketed alert series and fits a PoissonHMM; "
+                    "'predict' forecasts the next buckets; 'status' reads the corpus and model.")
+    horizon_buckets: Optional[int] = Field(default=None, ge=1, le=336,
+        description="Buckets to forecast; default from config (24).")
+    context_buckets: Optional[int] = Field(default=None, ge=1, le=336,
+        description="Most recent observed buckets used to filter the regime posterior.")
+    n_components: Optional[int] = Field(default=None, ge=2, le=6,
+        description="Poisson regimes (default 3: quiet/normal/burst).")
+    min_buckets: Optional[int] = Field(default=None, ge=8, le=100000,
+        description="Minimum buckets required to fit; default from config (48).")
+    model_id: Optional[str] = Field(default=None, max_length=32,
+        description="Model to load; newest fit when omitted.")
+    time_window_minutes: int = Field(default=10080, ge=60, le=43200,
+        description="Training window in minutes; the bucket interval is derived from it.")
+    response_format: Literal["markdown", "json"] = Field(default="markdown")
+
+
+@blueteam_tool(
+    name="blueteam_volume_forecast",
+    annotations={"readOnlyHint": False, "destructiveHint": False,
+                 "idempotentHint": True, "openWorldHint": False},
+    audit=True, truncate=True, redact=True,
+)
+async def blueteam_volume_forecast(params: VolumeForecastInput) -> str:
+    """Fit and query a PoissonHMM over per-bucket Wazuh alert counts.
+    The series comes from a ``date_histogram`` with empty buckets included, so a
+    quiet hour is a real zero. The HMM's hidden states are volume regimes; each
+    state carries its own Poisson mean (lambda), and the forecast rolls the
+    regime distribution forward over the requested horizon. Output is an
+    expected count per bucket, an expected total, and the exact probability that
+    a maximum-lambda regime is active at least once in the horizon.
+
+    Args:
+        params.mode: 'train', 'predict' (default) or 'status'.
+        params.horizon_buckets: Future buckets to forecast (1-336).
+        params.context_buckets: Recent buckets used to filter the posterior.
+        params.n_components: Poisson regimes (2-6).
+        params.min_buckets: Minimum observed buckets to fit.
+        params.model_id: Model to use; newest when omitted.
+        params.time_window_minutes: 1 hour to 30 days for training.
+        params.response_format: 'markdown' (default) or 'json'.
+
+    Returns:
+        markdown or json. Train: model id, bucket interval, per-regime lambdas,
+        window and alert total. Predict: expected counts, expected total,
+        peak probability and the final regime distribution. Status: corpus and
+        newest-model metadata.
+
+    Worked Examples:
+        1. Weekly fit -> ``blueteam_volume_forecast(mode="train",
+           time_window_minutes=10080, response_format="json")``
+        2. Next day on the newest model -> ``blueteam_volume_forecast(
+           mode="predict", horizon_buckets=24)``
+        3. Tighter fit over a month -> ``blueteam_volume_forecast(mode="train",
+           time_window_minutes=43200, n_components=4, min_buckets=120)``
+
+    Permissions: read on the Wazuh Indexer; read/write on BLUETEAM_FORECAST_STORE.
+    Rate limits: one size-0 aggregation per train; predict is store-only. The
+    optional hmmlearn package is required to train, never to predict.
+    """
+    _require_enabled()
+    since_iso, until_iso = _window(params.time_window_minutes)
+
+    if params.mode == "status":
+        store = await asyncio.to_thread(store_stats)
+        model_summary = None
+        try:
+            loaded = await asyncio.to_thread(load_model, params.model_id)
+        except BlueTeamMCPError as exc:
+            payload = {"status": "error", "store": store, "model": None, "reason": str(exc),
+                       "hint": None}
+            if params.response_format == "json":
+                return json.dumps(payload, indent=2, ensure_ascii=False)
+            return _volume_status_markdown(payload)
+        if loaded is not None:
+            model_summary = _fit_params_summary(loaded)
+        payload = {"status": "ok" if model_summary else "no_model", "store": store,
+                   "model": model_summary,
+                   "hint": None if model_summary else "Run mode='train' first to fit a volume model."}
+        if params.response_format == "json":
+            return json.dumps(payload, indent=2, ensure_ascii=False)
+        return _volume_status_markdown(payload)
+
+    if params.mode == "predict":
+        loaded = await asyncio.to_thread(load_model, params.model_id)
+        if loaded is None:
+            raise BlueTeamMCPError(
+                "No stored volume model. Run blueteam_volume_forecast mode='train' first.")
+        if loaded["kind"] != VOLUME_KIND:
+            raise BlueTeamMCPError(
+                f"Stored model {loaded['model_id']} is a '{loaded['kind']}' model, not a "
+                "volume model. Train one with blueteam_volume_forecast mode='train'.")
+        context_size = params.context_buckets or config.forecast.volume_context_buckets
+        horizon = params.horizon_buckets or config.forecast.volume_horizon_buckets
+        all_counts = await asyncio.to_thread(load_counts)
+        context = [int(count) for count in all_counts[-context_size:]]
+        prediction = predict_volume(loaded, context, horizon)
+        bucket_interval = loaded["params"].get("bucket_interval")
+        interval_seconds = _interval_seconds(bucket_interval)
+        payload = {
+            "status": prediction.get("status", "ok"),
+            "model": loaded["model_id"], "kind": loaded["kind"],
+            "bucket_interval": bucket_interval,
+            "horizon_buckets": horizon,
+            "horizon_seconds": (None if interval_seconds is None
+                                else round(interval_seconds * horizon, 1)),
+            "context_buckets_used": len(context),
+            "prediction": prediction,
+        }
+        if params.response_format == "json":
+            return json.dumps(payload, indent=2, ensure_ascii=False)
+        return _volume_predict_markdown(payload)
+
+    bucket_interval = _auto_bucket_interval(params.time_window_minutes)
+    fetched = await _fetch_volume_buckets(since_iso, until_iso, bucket_interval)
+    if fetched["error"]:
+        payload = {"status": "error", "reason": fetched["error"],
+                   "bucket_interval": bucket_interval, "warnings": fetched["warnings"]}
+        if params.response_format == "json":
+            return json.dumps(payload, indent=2, ensure_ascii=False)
+        return (f"# Volume Forecast\n\n**Status**: `error`\n\n{fetched['error']}")
+    if not fetched["buckets"]:
+        payload = {"status": "insufficient_data", "n_buckets": 0,
+                   "bucket_interval": bucket_interval,
+                   "window": {"since": since_iso, "until": until_iso},
+                   "hint": "The aggregation returned no buckets; check the window and Indexer "
+                           "connectivity.", "warnings": fetched["warnings"]}
+        if params.response_format == "json":
+            return json.dumps(payload, indent=2, ensure_ascii=False)
+        return (f"# Volume Forecast\n\n**Status**: `insufficient_data` - no buckets in "
+                f"`{since_iso}` -> `{until_iso}`.\n")
+
+    await asyncio.to_thread(
+        upsert_counts, [(bucket["ts"], bucket["count"]) for bucket in fetched["buckets"]])
+    purged = await asyncio.to_thread(purge_expired)
+    since_ts = time.time() - params.time_window_minutes * 60
+    stored = await asyncio.to_thread(load_counts, since_ts)
+    counts = [int(count) for count in stored]
+    floor_buckets = params.min_buckets or config.forecast.volume_min_buckets
+    components = params.n_components or config.forecast.volume_components
+    fit = fit_poisson_hmm(counts, n_components=components, min_buckets=floor_buckets,
+                          seed=config.forecast.hmm_seed, n_iter=config.forecast.hmm_iter)
+    if fit["status"] != "ok":
+        payload = {"status": fit["status"], "reason": fit.get("reason"),
+                   "n_buckets": len(counts), "bucket_interval": bucket_interval,
+                   "window": {"since": since_iso, "until": until_iso},
+                   "warnings": fetched["warnings"]}
+        if params.response_format == "json":
+            return json.dumps(payload, indent=2, ensure_ascii=False)
+        return (f"# Volume Forecast\n\n**Status**: `{fit['status']}`\n\n"
+                f"{fit.get('reason') or ''}")
+
+    model_id = _model_id(fit)
+    fit_params = {"lambdas": fit["lambdas"], "n_components": fit["n_components"],
+                  "seed": fit["seed"], "n_iter": fit["n_iter"],
+                  "bucket_interval": bucket_interval, "min_buckets": floor_buckets}
+    await asyncio.to_thread(
+        save_model, model_id, fit["kind"], fit_params, fit["startprob"], fit["transmat"],
+        None, None, fit["n_buckets"], 0)
+    payload = {
+        "status": "ok", "model_id": model_id, "kind": fit["kind"],
+        "bucket_interval": bucket_interval,
+        "window": {"since": since_iso, "until": until_iso},
+        "n_buckets": fit["n_buckets"], "total_alerts": int(sum(counts)),
+        "mean_per_bucket": round(sum(counts) / len(counts), 3) if counts else 0.0,
+        "lambdas": fit["lambdas"], "n_components": fit["n_components"],
+        "buckets_appended": len(fetched["buckets"]),
+        "purged_counts": purged.get("counts", 0),
+        "warnings": fetched["warnings"],
+    }
+    if params.response_format == "json":
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+    return _volume_train_markdown(payload)

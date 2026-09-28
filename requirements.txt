@@ -98,7 +98,8 @@ yara-x>=1.20.0,<2.0.0
 
 # Tactic-sequence forecasting (blueteam_tactic_forecast) - OPTIONAL.
 # The default Markov estimator is stdlib-only and needs nothing from this block;
-# hmmlearn is required only for kind='hmm'. It pulls scipy, which the
+# hmmlearn is required only for kind='hmm' and the volume PoissonHMM
+# (blueteam_volume_forecast mode='train'). It pulls scipy, which the
 # scikit-learn range below already constrains (numpy<2/scipy<1.14 on the Marker
 # path) - verify the resolver in a staging venv before enabling both extras.
 # Opt-in via setup.sh BLUETEAM_INSTALL_FORECAST=1, or manually:

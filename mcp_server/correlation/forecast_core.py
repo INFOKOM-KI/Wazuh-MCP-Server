@@ -369,25 +369,190 @@ def fit_categorical_hmm(sequences: list[list[str]], n_components: int = 4,
     }
 
 
+VOLUME_KIND = "poisson_hmm"
+
+def poisson_logpmf(count: float, lam: float) -> float:
+    """Log Poisson pmf. The count can arrive as a float from the store; the
+    gamma function extends the factorial so no integer coercion is needed.
+    A non-positive lambda is a malformed model and maps to zero probability."""
+    if lam <= 0:
+        return 0.0 if count == 0 else float("-inf")
+    return -lam + count * math.log(lam) - math.lgamma(count + 1.0)
+
+
+def fit_poisson_hmm(counts: list[int], n_components: int = 3, min_buckets: int = 48,
+                    seed: int = 42, n_iter: int = 50) -> dict:
+    """Fit a PoissonHMM over per-bucket alert counts.
+    Counts are non-negative integers; a window with no alerts is a real zero
+    bucket, not missing data, which is why the caller must query with
+    ``min_doc_count: 0``. An all-zero or constant series has no regimes to
+    identify and returns ``insufficient_data`` before hmmlearn is imported;
+    thin coverage below ``min_buckets`` does the same. Import: a host
+    without hmmlearn answers ``unavailable`` with the install hint.
+    """
+    if len(counts) < min_buckets:
+        return _insufficient(len(counts), 0, min_buckets, 0, noun="buckets")
+    if any(count < 0 for count in counts):
+        raise ValueError("volume buckets must be non-negative counts")
+    if max(counts) == 0:
+        return {"status": "insufficient_data", "n_buckets": len(counts),
+                "reason": "every bucket is zero; no regime can be identified"}
+    if max(counts) - min(counts) == 0:
+        return {"status": "insufficient_data", "n_buckets": len(counts),
+                "reason": "the series is constant; Poisson regimes need variation"}
+    if int(n_components) < 2 or int(n_components) >= len(counts):
+        return _insufficient(len(counts), 0, max(int(n_components) + 1, min_buckets), 0,
+                             noun="buckets")
+    try:
+        from hmmlearn.hmm import PoissonHMM
+    except ImportError:
+        return {"status": "unavailable",
+                "reason": "hmmlearn is not installed; pip install hmmlearn "
+                          "(setup.sh BLUETEAM_INSTALL_FORECAST=1)"}
+
+    try:
+        model = PoissonHMM(n_components=int(n_components), n_iter=int(n_iter),
+                           random_state=int(seed))
+        model.fit([[float(count)] for count in counts])
+    except (ValueError, TypeError, RuntimeError, FloatingPointError) as exc:
+        return {"status": "unavailable", "reason": f"hmmlearn PoissonHMM fit failed: {exc}"}
+
+    lambdas = [round(float(row[0]), 6) for row in model.lambdas_]
+    if len(lambdas) != int(n_components) or min(lambdas) <= 0:
+        return {"status": "error",
+                "reason": "hmmlearn returned a lambda vector that is not usable "
+                          "(wrong length or non-positive mean)"}
+    return {
+        "status": "ok", "kind": VOLUME_KIND, "lambdas": lambdas,
+        "startprob": [round(float(value), 6) for value in model.startprob_],
+        "transmat": [[round(float(value), 6) for value in row] for row in model.transmat_],
+        "n_buckets": len(counts), "n_components": int(n_components),
+        "seed": int(seed), "n_iter": int(n_iter),
+    }
+
+
+def _volume_forward_last(counts: list, model: dict) -> Optional[list[float]]:
+    """Filtered regime posterior after the observed context buckets.
+    Scaled forward recursion with Poisson emissions in log space. ``None``
+    means the posterior collapsed (an observation no state can plausibly
+    emit); the caller falls back to the prior with a flag instead of dividing
+    by zero.
+    """
+    lambdas = [float(value) for value in model["lambdas"]]
+    size = len(lambdas)
+    posterior = [float(value) for value in model["startprob"]]
+    for count in counts:
+        posterior = [posterior[state] * math.exp(poisson_logpmf(float(count), lambdas[state]))
+                     for state in range(size)]
+        total = sum(posterior)
+        if total <= 1e-12:
+            return None
+        posterior = [value / total for value in posterior]
+    return posterior
+
+
+def _peak_probability(posterior: list[float], transmat: list[list[float]],
+                      target_states: list[int], horizon: int) -> float:
+    """Target state is active at least once in the next ``horizon`` steps.
+    Computed over the sub-chain of non-target states: mass that leaves it is
+    mass that has reached a peak, so one minus the surviving mass is the
+    answer. Current target mass is excluded from the start, which makes the
+    value 1.0 when the system is already in a peak (it continues to count as
+    active). Exact for a first-order chain; no sampling.
+    """
+    size = len(posterior)
+    target = set(target_states)
+    safe = [0.0 if state in target else float(posterior[state]) for state in range(size)]
+    for _ in range(int(horizon)):
+        following = [0.0] * size
+        for state in range(size):
+            if safe[state] <= 0.0:
+                continue
+            for to in range(size):
+                if to not in target:
+                    following[to] += safe[state] * float(transmat[state][to])
+        safe = following
+    return round(1.0 - sum(safe), 6)
+
+
+def predict_volume(model: dict, context_counts: list, horizon_buckets: int = 24) -> dict:
+    """Regime-conditional volume forecast over the next ``horizon_buckets``.
+    The state distribution after the observed context is rolled forward with
+    the transition matrix; each step's expected count is the regime mixture
+    mean ``sum_k P(state=k) * lambda_k``. ``peak_probability`` is the exact
+    probability that a max-lambda state is active at least once in the
+    horizon. A stored model whose lambdas do not separate returns
+    ``unavailable`` rather than a forecast with a meaningless peak state.
+    """
+    lambdas = [float(value) for value in model.get("lambdas") or []]
+    size = len(lambdas)
+    if size < 2:
+        return {"status": "unavailable", "reason": "stored model has no usable lambda vector"}
+    if max(lambdas) - min(lambdas) <= 1e-9:
+        return {"status": "unavailable",
+                "reason": "stored model has no distinguishable regimes "
+                          "(all lambda means are equal)"}
+    posterior = _volume_forward_last(list(context_counts or []), model)
+    posterior_fallback = posterior is None
+    if posterior_fallback:
+        posterior = [float(value) for value in model["startprob"]]
+
+    transmat = []
+    for row in model["transmat"]:
+        total = sum(float(value) for value in row) or 1.0
+        transmat.append([float(value) / total for value in row])
+    state = list(posterior)
+    expected_counts: list[float] = []
+    for _ in range(int(horizon_buckets)):
+        state = [sum(state[from_state] * transmat[from_state][to_state]
+                     for from_state in range(size)) for to_state in range(size)]
+        expected_counts.append(round(sum(state[state_index] * lambdas[state_index]
+                                         for state_index in range(size)), 4))
+    peak_states = [index for index, lam in enumerate(lambdas) if lam == max(lambdas)]
+    return {
+        "status": "ok", "method": VOLUME_KIND, "n_states": size,
+        "lambdas": lambdas, "peak_states": peak_states,
+        "context_buckets": len(context_counts or []),
+        "posterior_fallback": posterior_fallback,
+        "expected_counts": expected_counts,
+        "expected_total": round(sum(expected_counts), 3),
+        "mean_per_bucket": round(sum(expected_counts) / len(expected_counts), 3),
+        "peak_probability": _peak_probability(posterior, transmat, peak_states, horizon_buckets),
+        "final_state_distribution": [
+            {"state": index, "probability": round(state[index], 6), "lambda": lambdas[index]}
+            for index in range(size)],
+    }
+
+
 def validate_model(model: dict) -> None:
     """Refuse a stored model whose layout does not match this build.
     Raises ``ValueError`` with the exact mismatch. The store converts it to its
     own error type; nothing downstream should ever score against a matrix whose
-    columns might mean different tactics.
+    columns might mean different tactics, or a volume model whose lambda vector
+    does not match its state count.
     """
-    if list(model.get("tactics") or []) != list(TACTIC_ORDER):
+    kind = model.get("kind")
+    if kind not in ("markov", "hmm", VOLUME_KIND):
+        raise ValueError(f"unknown model kind {kind!r}")
+    if kind == VOLUME_KIND:
+        lambdas = model.get("lambdas")
+        if not isinstance(lambdas, list) or len(lambdas) < 2:
+            raise ValueError("volume model is missing a usable lambda vector")
+        if any(float(value) <= 0 for value in lambdas):
+            raise ValueError("volume model carries a non-positive lambda")
+    elif list(model.get("tactics") or []) != list(TACTIC_ORDER):
         raise ValueError("tactic vocabulary mismatch")
-    if model.get("kind") not in ("markov", "hmm"):
-        raise ValueError(f"unknown model kind {model.get('kind')!r}")
 
     size = len(TACTIC_ORDER)
     n_states = len(model["startprob"])
+    if kind == VOLUME_KIND and len(model.get("lambdas") or []) != n_states:
+        raise ValueError("lambda count does not match startprob")
     for name in ("startprob", "transmat"):
         if not isinstance(model.get(name), list) or not model[name]:
             raise ValueError(f"model is missing {name}")
     if len(model["transmat"]) != n_states:
         raise ValueError("transmat state count does not match startprob")
-    if model["kind"] == "markov" and n_states != size:
+    if kind == "markov" and n_states != size:
         raise ValueError("a Markov chain needs one state per tactic")
     if abs(sum(float(v) for v in model["startprob"]) - 1.0) > PROB_SUM_TOLERANCE:
         raise ValueError("startprob does not sum to 1")

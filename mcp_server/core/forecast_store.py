@@ -30,7 +30,12 @@ from pathlib import Path
 from typing import Iterator, Optional
 from mcp_server.core.config import config
 from mcp_server.core.exceptions import BlueTeamMCPError
-from mcp_server.correlation.forecast_core import TAXONOMY_VERSION, TACTIC_ORDER, validate_model
+from mcp_server.correlation.forecast_core import (
+    TAXONOMY_VERSION,
+    TACTIC_ORDER,
+    VOLUME_KIND,
+    validate_model,
+)
 
 logger = logging.getLogger("blue_team_mcp.forecast_store")
 
@@ -68,6 +73,11 @@ def _connect() -> sqlite3.Connection:
             PRIMARY KEY (entity_key, tactic, observed_at)
         );
         CREATE INDEX IF NOT EXISTS idx_observations_seen ON observations (observed_at);
+
+        CREATE TABLE IF NOT EXISTS counts (
+            bucket_ts REAL PRIMARY KEY,
+            count     INTEGER NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS models (
             model_id         TEXT PRIMARY KEY,
@@ -146,6 +156,44 @@ def load_observations(since_ts: Optional[float] = None) -> list[dict]:
             for row in rows]
 
 
+def upsert_counts(rows: list[tuple[float, int]]) -> int:
+    """Write ``(bucket_ts, count)`` pairs, replacing a bucket that already exists.
+    Replace, not ignore: a re-aggregation of the same window returns the same
+    count for a closed bucket, and the newest value is the correct one if a
+    trailing partial bucket was counted mid-interval. One row per bucket keeps
+    the series small (a year of hourly buckets is under 9,000 rows) and makes
+    a repeated train idempotent.
+    """
+    if not rows:
+        return 0
+    cap = max(1, int(getattr(config.forecast, "store_max", 200000) or 200000))
+    with _store() as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO counts (bucket_ts, count) VALUES (?,?)",
+            [(float(bucket_ts), int(count)) for bucket_ts, count in rows],
+        )
+        conn.execute(
+            "DELETE FROM counts WHERE rowid IN (SELECT rowid FROM counts"
+            " ORDER BY bucket_ts DESC LIMIT -1 OFFSET ?)", (cap,),
+        )
+    return len(rows)
+
+
+def load_counts(since_ts: Optional[float] = None) -> list[float]:
+    """Bucket counts ordered oldest-first, optionally bounded by an epoch start.
+    The order is the series order: the last items are the most recent context,
+    with no gap marker. A missing bucket is not interpolated, because a zero is
+    an observation and a gap is not.
+    """
+    with _store() as conn:
+        if since_ts is None:
+            rows = conn.execute("SELECT count FROM counts ORDER BY bucket_ts").fetchall()
+        else:
+            rows = conn.execute("SELECT count FROM counts WHERE bucket_ts >= ?"
+                                " ORDER BY bucket_ts", (float(since_ts),)).fetchall()
+    return [int(row[0]) for row in rows]
+
+
 def save_model(model_id: str, kind: str, params: dict, startprob: list,
                transmat: list, emissionprob: Optional[list] = None,
                row_support: Optional[list] = None,
@@ -193,7 +241,7 @@ def load_model(model_id: Optional[str] = None) -> Optional[dict]:
                 " created_at FROM models ORDER BY created_at DESC LIMIT 1").fetchone()
     if row is None:
         return None
-    if row[2] != TAXONOMY_VERSION:
+    if row[1] in ("markov", "hmm") and row[2] != TAXONOMY_VERSION:
         raise ForecastStoreError(
             f"Stored model {row[0]} uses taxonomy {row[2]}, this server builds "
             f"{TAXONOMY_VERSION}. Refusing to score a live sequence against a shifted "
@@ -208,6 +256,8 @@ def load_model(model_id: Optional[str] = None) -> Optional[dict]:
         "n_sequences": int(row[9]), "n_transitions": int(row[10]),
         "created_at": float(row[11]),
     }
+    if model["kind"] == VOLUME_KIND:
+        model["lambdas"] = model["params"].get("lambdas")
     try:
         validate_model(model)
     except ValueError as exc:
@@ -228,7 +278,10 @@ def purge_expired() -> dict:
     with _store() as conn:
         cursor = conn.execute("DELETE FROM observations WHERE observed_at < ?", (cutoff,))
         removed = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
-    return {"observations": removed, "cutoff": cutoff}
+        count_cursor = conn.execute("DELETE FROM counts WHERE bucket_ts < ?", (cutoff,))
+        counts_removed = (count_cursor.rowcount
+                          if count_cursor.rowcount and count_cursor.rowcount > 0 else 0)
+    return {"observations": removed, "counts": counts_removed, "cutoff": cutoff}
 
 
 def store_stats() -> dict:
@@ -239,11 +292,12 @@ def store_stats() -> dict:
             entities = conn.execute(
                 "SELECT COUNT(DISTINCT entity_key) FROM observations").fetchone()[0]
             models = conn.execute("SELECT COUNT(*) FROM models").fetchone()[0]
+            counts = conn.execute("SELECT COUNT(*) FROM counts").fetchone()[0]
             oldest = conn.execute("SELECT MIN(observed_at) FROM observations").fetchone()[0]
         return {"observations": int(observations), "entities": int(entities),
-                "models": int(models),
+                "models": int(models), "counts": int(counts),
                 "oldest_observation": None if oldest is None else float(oldest),
                 "path": _db_path()}
     except (ForecastStoreError, sqlite3.Error) as exc:
-        return {"observations": 0, "entities": 0, "models": 0,
+        return {"observations": 0, "entities": 0, "models": 0, "counts": 0,
                 "oldest_observation": None, "path": "", "status": f"unavailable: {exc}"}

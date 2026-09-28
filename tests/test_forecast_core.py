@@ -16,12 +16,16 @@ import pytest
 from mcp_server.correlation.forecast_core import (
     TACTIC_ORDER,
     TAXONOMY_VERSION,
+    VOLUME_KIND,
     build_sequences,
     fit_categorical_hmm,
     fit_markov_chain,
+    fit_poisson_hmm,
     normalize_tactics,
+    poisson_logpmf,
     predict_next_hmm,
     predict_next_markov,
+    predict_volume,
     sequence_logprob,
     validate_model,
 )
@@ -186,3 +190,92 @@ def test_fit_categorical_hmm_reports_unavailable_or_fits():
         assert result["status"] == "ok"
         assert len(result["transmat"]) == 2
         assert len(result["emissionprob"][0]) == len(TACTIC_ORDER)
+
+
+def _volume_series():
+    return [2, 3, 1, 4, 2] * 10 + [20, 25, 18, 22, 24] * 10
+
+
+def _hand_volume_model():
+    return {
+        "model_id": "vol", "kind": VOLUME_KIND, "taxonomy_version": TAXONOMY_VERSION,
+        "tactics": list(TACTIC_ORDER), "startprob": [1.0, 0.0],
+        "transmat": [[0.9, 0.1], [0.1, 0.9]], "lambdas": [1.0, 10.0],
+        "emissionprob": None, "row_support": None,
+        "n_sequences": 100, "n_transitions": 0, "created_at": 0.0, "params": {},
+    }
+
+
+def test_poisson_logpmf_matches_the_hand_value():
+    assert poisson_logpmf(2, 3) == pytest.approx(-1.4959, abs=1e-4)
+
+
+def test_fit_poisson_reports_insufficient_on_thin_series():
+    result = fit_poisson_hmm([1, 2, 3], min_buckets=48)
+    assert result["status"] == "insufficient_data"
+    assert "buckets" in result["reason"]
+
+
+def test_fit_poisson_rejects_all_zero_and_constant_series():
+    assert fit_poisson_hmm([0] * 60, min_buckets=48)["status"] == "insufficient_data"
+    assert fit_poisson_hmm([5] * 60, min_buckets=48)["status"] == "insufficient_data"
+
+
+def test_fit_poisson_hmm_reports_unavailable_or_fits():
+    result = fit_poisson_hmm(_volume_series(), n_components=2, min_buckets=48)
+    if result["status"] == "unavailable":
+        assert "hmmlearn" in result["reason"]
+    else:
+        assert result["status"] == "ok"
+        assert result["kind"] == VOLUME_KIND
+        assert len(result["lambdas"]) == 2
+        assert min(result["lambdas"]) > 0
+
+
+def test_validate_model_accepts_a_volume_model():
+    validate_model(_hand_volume_model())
+
+
+def test_validate_model_refuses_bad_lambdas():
+    model = _hand_volume_model()
+    model["lambdas"] = [0.0, 10.0]
+    with pytest.raises(ValueError):
+        validate_model(model)
+    model["lambdas"] = [1.0]
+    with pytest.raises(ValueError):
+        validate_model(model)
+
+
+def test_predict_volume_rolls_the_regime_chain():
+    result = predict_volume(_hand_volume_model(), [], horizon_buckets=2)
+    assert result["status"] == "ok"
+    assert result["expected_counts"] == [1.9, 2.62]
+    assert result["peak_probability"] == pytest.approx(0.19, abs=1e-3)
+    assert result["peak_states"] == [1]
+    assert result["expected_total"] == pytest.approx(4.52, abs=1e-2)
+
+
+def test_predict_volume_context_shifts_the_posterior():
+    model = _hand_volume_model()
+    # A deterministic prior would give state 1 zero mass and the filter could
+    # never move there; a real EM fit never starts that sharp.
+    model["startprob"] = [0.5, 0.5]
+    burst = predict_volume(model, [25, 25], horizon_buckets=1)
+    calm = predict_volume(model, [0, 0], horizon_buckets=1)
+    assert burst["expected_counts"][0] > 5.0
+    assert calm["expected_counts"][0] < burst["expected_counts"][0]
+    assert burst["posterior_fallback"] is False
+
+
+def test_predict_volume_flags_a_collapsed_posterior():
+    # startprob [1, 0] and an observation only state 1 can emit: the posterior
+    # collapses to zero, so the prior is used and the fallback is flagged.
+    result = predict_volume(_hand_volume_model(), [25, 25], horizon_buckets=1)
+    assert result["posterior_fallback"] is True
+    assert result["expected_counts"] == [1.9]
+
+
+def test_predict_volume_refuses_degenerate_lambdas():
+    model = _hand_volume_model()
+    model["lambdas"] = [5.0, 5.0]
+    assert predict_volume(model, [], 24)["status"] == "unavailable"
