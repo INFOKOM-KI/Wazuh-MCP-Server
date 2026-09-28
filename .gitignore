@@ -96,6 +96,17 @@ clusters.db-shm
 *.cluster.db-wal
 *.cluster.db-shm
 
+# Tactic-forecast store (blueteam_tactic_forecast). Holds per-entity MITRE tactic
+# observations (entity keys are source IPs) and fitted transition models. Written
+# 0600 by forecast_store; never commit it. BLUETEAM_FORECAST_STORE is operator
+# configurable, so match by extension, not by name.
+forecast.db
+forecast.db-wal
+forecast.db-shm
+*.forecast.db
+*.forecast.db-wal
+*.forecast.db-shm
+
 # Vendored Laya weights (BLUETEAM_LAYA_MODEL_PATH) and the HuggingFace snapshot
 # layout they are copied from. Multi-GB, and a snapshot copies the licence-gated
 # original into the repo root when an operator vendors it in place.

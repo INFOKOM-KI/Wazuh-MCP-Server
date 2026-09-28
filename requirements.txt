@@ -96,6 +96,17 @@ yara-x>=1.20.0,<2.0.0
 # installed' instead of failing at startup, because the import is inside the call.
 # scikit-learn>=1.6.1,<2.0.0
 
+# Tactic-sequence forecasting (blueteam_tactic_forecast) - OPTIONAL.
+# The default Markov estimator is stdlib-only and needs nothing from this block;
+# hmmlearn is required only for kind='hmm'. It pulls scipy, which the
+# scikit-learn range below already constrains (numpy<2/scipy<1.14 on the Marker
+# path) - verify the resolver in a staging venv before enabling both extras.
+# Opt-in via setup.sh BLUETEAM_INSTALL_FORECAST=1, or manually:
+#   pip install "hmmlearn>=0.3.2,<0.4"
+# Absence is not fatal: a stored model still serves predictions (the predict path
+# is pure arithmetic), and a missing library during training reports 'unavailable'.
+# hmmlearn>=0.3.2,<0.4.0
+
 # Laya-Multilingual incident labeling (blueteam_incident_label, backend=laya).
 # NOT installed by default, and NOT the default backend: BLUETEAM_LAYA_BACKEND=onnx
 # scores the taxonomy prototypes through the fastembed ONNX embedder declared above,

@@ -838,6 +838,76 @@ class ClusterConfig:
 
 
 @dataclass
+class ForecastConfig:
+    """Tactic sequence forecasting settings (blueteam_tactic_forecast).
+    Disabled by default: the store is a new on-disk corpus and the optional
+    hmmlearn dependency is absent on a plain install. ``enabled`` with no
+    ``store_path`` is fatal at startup an enabled forecaster that cannot
+    persist its corpus can only return noise. ``retention_days`` is deliberately
+    long: the corpus is the evidence the next retrain learns from, so it must
+    outlive the cluster store's 24h fit TTL.
+    """
+    enabled: bool = False
+    store_path: str = ""
+    store_max: int = 200000
+    retention_days: int = 365
+    alpha: float = 1.0
+    min_sequences: int = 5
+    min_transitions: int = 20
+    min_support: int = 3
+    hmm_components: int = 4
+    hmm_min_sequences: int = 15
+    hmm_iter: int = 50
+    hmm_seed: int = 42
+
+    @classmethod
+    def from_env(cls) -> "ForecastConfig":
+        return cls(
+            enabled=_bool(os.environ.get("BLUETEAM_FORECAST_ENABLED", "false"), False),
+            store_path=os.environ.get("BLUETEAM_FORECAST_STORE", "").strip(),
+            store_max=int(os.environ.get("BLUETEAM_FORECAST_STORE_MAX", "200000")),
+            retention_days=int(os.environ.get("BLUETEAM_FORECAST_RETENTION_DAYS", "365")),
+            alpha=float(os.environ.get("BLUETEAM_FORECAST_ALPHA", "1.0")),
+            min_sequences=int(os.environ.get("BLUETEAM_FORECAST_MIN_SEQUENCES", "5")),
+            min_transitions=int(os.environ.get("BLUETEAM_FORECAST_MIN_TRANSITIONS", "20")),
+            min_support=int(os.environ.get("BLUETEAM_FORECAST_MIN_SUPPORT", "3")),
+            hmm_components=int(os.environ.get("BLUETEAM_FORECAST_HMM_COMPONENTS", "4")),
+            hmm_min_sequences=int(os.environ.get("BLUETEAM_FORECAST_HMM_MIN_SEQUENCES", "15")),
+            hmm_iter=int(os.environ.get("BLUETEAM_FORECAST_HMM_ITER", "50")),
+            hmm_seed=int(os.environ.get("BLUETEAM_FORECAST_HMM_SEED", "42")),
+        )
+
+    def validate(self) -> None:
+        if self.enabled and not self.store_path:
+            raise ConfigurationError(
+                "BLUETEAM_FORECAST_ENABLED=true requires BLUETEAM_FORECAST_STORE "
+                "(an absolute path); a corpus that cannot persist cannot be forecast from."
+            )
+        if self.store_path and not os.path.isabs(self.store_path):
+            raise ConfigurationError(
+                f"BLUETEAM_FORECAST_STORE must be an absolute path (got {self.store_path!r})"
+            )
+        if self.store_max < 1:
+            raise ConfigurationError("BLUETEAM_FORECAST_STORE_MAX must be >= 1")
+        if self.retention_days < 1:
+            raise ConfigurationError("BLUETEAM_FORECAST_RETENTION_DAYS must be >= 1")
+        if self.alpha <= 0:
+            raise ConfigurationError("BLUETEAM_FORECAST_ALPHA must be > 0")
+        if self.min_sequences < 2:
+            raise ConfigurationError("BLUETEAM_FORECAST_MIN_SEQUENCES must be >= 2")
+        if self.min_transitions < 1:
+            raise ConfigurationError("BLUETEAM_FORECAST_MIN_TRANSITIONS must be >= 1")
+        if self.min_support < 1:
+            raise ConfigurationError("BLUETEAM_FORECAST_MIN_SUPPORT must be >= 1")
+        if not 2 <= self.hmm_components <= 8:
+            raise ConfigurationError("BLUETEAM_FORECAST_HMM_COMPONENTS must be 2-8")
+        if self.hmm_min_sequences < 2:
+            raise ConfigurationError("BLUETEAM_FORECAST_HMM_MIN_SEQUENCES must be >= 2")
+        if self.hmm_iter < 1:
+            raise ConfigurationError("BLUETEAM_FORECAST_HMM_ITER must be >= 1")
+
+
+@dataclass
 class LabelConfig:
     """Incident labeling settings (blueteam_incident_label).
     Disabled by default: both backends need something that is not on a plain
@@ -946,6 +1016,7 @@ class Config:
     yara: YaraConfig = field(default_factory=YaraConfig)
     sigma: SigmaConfig = field(default_factory=SigmaConfig)
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
+    forecast: ForecastConfig = field(default_factory=ForecastConfig)
     label: LabelConfig = field(default_factory=LabelConfig)
 
     @classmethod
@@ -971,6 +1042,7 @@ class Config:
             yara=YaraConfig.from_env(),
             sigma=SigmaConfig.from_env(),
             cluster=ClusterConfig.from_env(),
+            forecast=ForecastConfig.from_env(),
             label=LabelConfig.from_env(),
         )
 
@@ -995,6 +1067,7 @@ class Config:
         self.yara.validate()
         self.sigma.validate()
         self.cluster.validate()
+        self.forecast.validate()
         self.label.validate()
 
     def emit_warnings(self) -> None:
@@ -1061,6 +1134,13 @@ class Config:
                 logger.warning(
                     "BLUETEAM_CLUSTER_ENABLED=true but scikit-learn is not installed - "
                     "blueteam_alert_cluster will report unavailable, not empty clusters."
+                )
+        if self.forecast.enabled:
+            import importlib.util
+            if importlib.util.find_spec("hmmlearn") is None:
+                logger.warning(
+                    "BLUETEAM_FORECAST_ENABLED=true but hmmlearn is not installed - "
+                    "kind='markov' still works; kind='hmm' will report unavailable."
                 )
 
 

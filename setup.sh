@@ -226,6 +226,25 @@ else
   echo "[.] Alert-entity clustering SKIPPED (set BLUETEAM_INSTALL_CLUSTER=1 to enable)."
 fi
 
+# Tactic-sequence forecasting (blueteam_tactic_forecast) OPTIONAL install.
+# Enable with BLUETEAM_INSTALL_FORECAST=1 (env or config.env). The default
+# Markov estimator is stdlib-only, so this flag only buys the CategoricalHMM
+# (kind='hmm'). hmmlearn pulls scipy; the same Marker-pdf resolver constraints
+# that bound the scikit-learn block apply, so enable both extras together only
+# after a staging install resolves cleanly.
+if [[ "${BLUETEAM_INSTALL_FORECAST:-0}" == "1" || "${BLUETEAM_INSTALL_FORECAST:-0}" == "true" ]]; then
+  echo "[+] Installing hmmlearn for tactic-sequence forecasting (HMM estimator)..."
+  "$INSTALL_DIR/venv/bin/pip" install --quiet "hmmlearn>=0.3.2,<0.4"
+  # Fail fast at install time: without this the first kind='hmm' train answers 'unavailable'.
+  if ! "$INSTALL_DIR/venv/bin/python3" -c \
+      "from hmmlearn.hmm import CategoricalHMM; CategoricalHMM(n_components=2); print('hmmlearn ok')"; then
+    echo "[!] hmmlearn CategoricalHMM unavailable after install." >&2
+    exit 1
+  fi
+else
+  echo "[.] Tactic forecasting HMM SKIPPED (Markov kind needs no extra; set BLUETEAM_INSTALL_FORECAST=1 for kind='hmm')."
+fi
+
 # Laya-Multilingual incident labeling (blueteam_laya_classify) - OPTIONAL install.
 # Enable with BLUETEAM_INSTALL_LAYA=1 (env or config.env).
 # One input is required, one is defaulted:
@@ -745,6 +764,22 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_CLUSTER_MIN_SIZE="5"            # HDBSCAN min_cluster_size
 # export BLUETEAM_CLUSTER_MIN_SAMPLES="3"         # HDBSCAN min_samples
 # export BLUETEAM_CLUSTER_ASSIGN_FACTOR="1.0"     # multiplier on a cluster's stored radius
+
+# Tactic-sequence forecasting (blueteam_tactic_forecast) — the Markov estimator is
+# stdlib-only; kind='hmm' needs the optional BLUETEAM_INSTALL_FORECAST=1 install.
+# The store is a PII-adjacent training corpus (entity keys are source IPs); written 0600.
+# export BLUETEAM_FORECAST_ENABLED="false"        # true = register the forecast tool
+# export BLUETEAM_FORECAST_STORE="/var/log/blue-team-mcp/forecast.db"  # SQLite, written 0600
+# export BLUETEAM_FORECAST_STORE_MAX="200000"     # observation rows kept before oldest eviction
+# export BLUETEAM_FORECAST_RETENTION_DAYS="365"   # corpus age limit; must outlive the cluster fit TTL
+# export BLUETEAM_FORECAST_ALPHA="1.0"            # Laplace add-constant for unseen transitions (must be > 0)
+# export BLUETEAM_FORECAST_MIN_SEQUENCES="5"      # per-entity sequences needed to fit
+# export BLUETEAM_FORECAST_MIN_TRANSITIONS="20"   # transitions needed to fit
+# export BLUETEAM_FORECAST_MIN_SUPPORT="3"        # below this a row's ranking is flagged low_support
+# export BLUETEAM_FORECAST_HMM_COMPONENTS="4"     # hidden campaign phases for kind='hmm' (2-8)
+# export BLUETEAM_FORECAST_HMM_MIN_SEQUENCES="15" # HMM needs more history than the chain
+# export BLUETEAM_FORECAST_HMM_ITER="50"          # EM iterations per fit
+# export BLUETEAM_FORECAST_HMM_SEED="42"          # pinned for reproducible fits
 
 # Laya-Multilingual labeling (blueteam_laya_classify) — needs BLUETEAM_INSTALL_LAYA=1 and a
 # vendored, pinned model directory. Without weights the tool reports 'unavailable'; it never
