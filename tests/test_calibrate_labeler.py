@@ -159,6 +159,18 @@ async def test_run_writes_the_report(tmp_path):
     assert "## Suggested values" in report
     assert "export BLUETEAM_LAYA_TEMPERATURE=0.05" in report
     assert "| truth \\ predicted |" in report
+    assert best["criteria_version"].startswith("v1:")
+    assert best["backend"] == "onnx"
+
+
+def test_calibration_record_carries_the_vocabulary_stamp():
+    best = {"floor": 0.5, "temperature": 0.02, "backend": "onnx",
+            "criteria_version": "v1:abc12345", "macro_f1": 0.81,
+            "gate_failures": [], "per_tactic": {"Impact": {}}}
+    record = cal._calibration_record(best)
+    assert record["criteria_version"] == "v1:abc12345"
+    assert record["backend"] == "onnx"
+    assert "per_tactic" not in record
 
 
 @pytest.mark.asyncio
