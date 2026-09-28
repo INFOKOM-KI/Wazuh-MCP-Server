@@ -604,10 +604,16 @@ that an entity is malicious.
 | Fit clusters over a window | `blueteam_alert_cluster(mode="fit", time_window_minutes=1440)` |
 | Read the stored fit | `blueteam_alert_cluster(mode="status")` |
 | Place one entity in the fit | `blueteam_alert_cluster_assign(srcip="X")` |
+| Train / inspect the tactic corpus | `blueteam_tactic_forecast(mode="train"\|"status")` |
+| Predict the next tactic for one entity | `blueteam_tactic_forecast(mode="predict", srcip="X")` |
 | Name the ATT&CK phase of an alert or text | `blueteam_incident_label(mode="alert"\|"text")` |
 
 - `blueteam_alert_cluster` needs `BLUETEAM_CLUSTER_ENABLED=true` plus a scikit-learn
   install (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`).
+- `blueteam_tactic_forecast` needs `BLUETEAM_FORECAST_ENABLED=true`. The default Markov
+  estimator needs no optional package; `kind="hmm"` additionally needs
+  `setup.sh BLUETEAM_INSTALL_FORECAST=1`. An `insufficient_data` train result means the
+  window or corpus is below the configured floor, not that attacks are absent.
 - `blueteam_incident_label` needs `BLUETEAM_LAYA_ENABLED=true`. The default `onnx`
   backend reuses the RAG embedder and costs no extra memory. The `laya` backend is
   **unsupported by policy** — CPU torch plus weights exceed the agreed 250 MB / 300 ms budget —
@@ -634,6 +640,13 @@ Reading the output:
   an operator-run refit, never an automatic one.
 - The cluster response carries **no member IP lists**, by design. Use
   `blueteam_alert_cluster_assign(srcip="X")` to ask about one entity.
+- **A next-tactic probability is a corpus frequency, not an intent forecast.** Report the top
+  tactics with their probabilities, the escalation probability (mass on Command and Control,
+  Exfiltration, Impact, Lateral Movement) and the `support` count. `uniform_fallback=true`
+  means no known tactic anchored the row: report it as "no corpus support", never as the
+  model's pick. `low_support=true` means the current row has fewer observed transitions than
+  `BLUETEAM_FORECAST_MIN_SUPPORT`; quote the ranking and the count together.
+  `anomaly.mean_logprob` is advisory, because a genuinely new campaign is supposed to score low.
 - Both tools stamp a version into every response (`feature_version` for the fit,
   `criteria_version` for the label). Two results with different stamps are not comparable;
   say so instead of comparing them.
@@ -805,6 +818,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_sigma_rule_save(rule_source, …)` | write the YAML to the staging dir (`BLUETEAM_SIGMA_RULES_DIR`); needs `wazuh:write` |
 | `blueteam_alert_cluster(mode="fit"\|"status", time_window_minutes, min_cluster_size, min_samples)` | HDBSCAN over srcip entities built from the 3-Sum aggregation (16 tactic sums + 4 scores). Returns clusters, medoids, noise ratio; `insufficient_data` instead of an empty cluster list when the population is too small |
 | `blueteam_alert_cluster_assign(srcip, fit_id, assign_factor, use_cached)` | nearest-centroid assignment against the stored fit. `label=-1` + `novelty=true` = outside every cluster radius. `pending_novelty`/`pending_refit` flag when a refit is justified |
+| `blueteam_tactic_forecast(mode="train"\|"predict"\|"status", kind="markov"\|"hmm", srcip, current_tactic, model_id, top_k)` | fit or query a tactic-transition model over per-entity `rule.mitre.tactic` sequences: top-k next tactics, escalation probability, and the chain's mean log-likelihood against the corpus. `uniform_fallback`/`low_support` flag a ranking the corpus does not back; `unavailable` means hmmlearn is absent for `kind="hmm"` |
 | `blueteam_incident_label(mode="alert"\|"text", alert, text, include_probabilities, top_k)` | label one alert or text with one of the 16 ATT&CK tactics, plus the A/B/C category derived from it. `status` is `ok` / `uncertain` / `unavailable`, and `unavailable` carries the reason |
 
 ### Resources (read via MCP resource reads, not tool calls)
@@ -984,6 +998,8 @@ yields the same `indicator--` id, so the peer deduplicates instead of accumulati
 4. blueteam_alert_cluster_assign(srcip="X")     # is this entity inside a stored cluster?
 5. three_sum_correlation(time_window_minutes=1440)  # the scores the cluster vector is built from
 6. blueteam_rag_query(query="<label> + the alert description")   # have we closed something like this before
+7. blueteam_tactic_forecast(mode="predict", srcip="X", top_k=3)   # optional; needs the forecast corpus
+   # top next tactics + escalation probability; uniform_fallback/low_support = the corpus does not back it
 ```
 
 Use this when the question is "what kinds of activity are in this window" (step 1) and "what
