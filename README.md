@@ -608,6 +608,7 @@ that an entity is malicious.
 | Predict the next tactic for one entity | `blueteam_tactic_forecast(mode="predict", srcip="X")` |
 | Forecast next-bucket alert volume | `blueteam_volume_forecast(mode="predict", horizon_buckets=24)` |
 | Train / inspect the volume series | `blueteam_volume_forecast(mode="train"\|"status")` |
+| Track a cluster lineage across fits | `blueteam_cluster_lineage(mode="behavior")` |
 | Name the ATT&CK phase of an alert or text | `blueteam_incident_label(mode="alert"\|"text")` |
 
 - `blueteam_alert_cluster` needs `BLUETEAM_CLUSTER_ENABLED=true` plus a scikit-learn
@@ -657,6 +658,9 @@ Reading the output:
   max-lambda regime is active in the horizon, not the chance an attack happens.
   `posterior_fallback=true` means the observed context fitted no regime and the prior was rolled
   forward; report that instead of quoting the numbers as fitted.
+- **A lineage is a stable match, not a confirmed campaign.** `insufficient_history` means fewer
+  steps than `min_points`, not stability. A `None` z-score is unmeasured, not zero. `elevated` is
+  an advisory level from crossed thresholds, never a probability.
 - Both tools stamp a version into every response (`feature_version` for the fit,
   `criteria_version` for the label). Two results with different stamps are not comparable;
   say so instead of comparing them.
@@ -830,6 +834,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_alert_cluster_assign(srcip, fit_id, assign_factor, use_cached)` | nearest-centroid assignment against the stored fit. `label=-1` + `novelty=true` = outside every cluster radius. `pending_novelty`/`pending_refit` flag when a refit is justified |
 | `blueteam_tactic_forecast(mode="train"\|"predict"\|"status", kind="markov"\|"hmm", srcip, current_tactic, model_id, top_k)` | fit or query a tactic-transition model over per-entity `rule.mitre.tactic` sequences: top-k next tactics, escalation probability, and the chain's mean log-likelihood against the corpus. `uniform_fallback`/`low_support` flag a ranking the corpus does not back; `unavailable` means hmmlearn is absent for `kind="hmm"` |
 | `blueteam_volume_forecast(mode="train"\|"predict"\|"status", horizon_buckets, context_buckets, n_components, min_buckets)` | fit or query a PoissonHMM over per-bucket alert counts (empty buckets included). Returns per-bucket expected counts, expected total, mean per bucket and `peak_probability`; `insufficient_data` on a thin/all-zero/constant series, `posterior_fallback` when the context fits no regime |
+| `blueteam_cluster_lineage(mode="lineage"\|"behavior"\|"status", match_factor, min_points, shift_z)` | read-only lineage over stored cluster fits: matches each cluster to the previous fit inside its radius, then reports size trend, novelty z, tactic L1 shift, signals and an advisory `behavior_risk`. `insufficient_data` below two fits, `insufficient_history` below the point floor; no entity keys in output |
 | `blueteam_incident_label(mode="alert"\|"text", alert, text, include_probabilities, top_k)` | label one alert or text with one of the 16 ATT&CK tactics, plus the A/B/C category derived from it. `status` is `ok` / `uncertain` / `unavailable`, and `unavailable` carries the reason |
 
 ### Resources (read via MCP resource reads, not tool calls)
@@ -1013,6 +1018,8 @@ yields the same `indicator--` id, so the peer deduplicates instead of accumulati
    # top next tactics + escalation probability; uniform_fallback/low_support = the corpus does not back it
 8. blueteam_volume_forecast(mode="predict", horizon_buckets=24)     # optional; needs the forecast corpus
    # expected volume + peak_probability; posterior_fallback = the prior was used, not a fitted posterior
+9. blueteam_cluster_lineage(mode="behavior")   # optional; needs at least two stored cluster fits
+   # size trend + signals + behavior_risk; insufficient_history = too few fits, not stability
 ```
 
 Use this when the question is "what kinds of activity are in this window" (step 1) and "what

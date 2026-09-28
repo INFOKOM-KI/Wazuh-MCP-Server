@@ -109,6 +109,7 @@ def register_all_tools() -> None:
         ("sigma_rules",             "sigma_rules",             False),  # 3 tools Sigma rule synthesis + validation + staging save
         ("rag_kb",                  "rag_kb",                  False),  # 3 tools local RAG corpus (ingest/query/fp_validate)
         ("cluster",                 "cluster",                 False),  # 2 tools alert-entity clustering (fit/assign)
+        ("cluster_lineage",         "cluster",                 False),  # 1 tool cluster lineage + behavior shifts (store read)
         ("forecast",                "forecast",                False),  # 1 tool tactic sequence forecasting (markov/hmm)
         ("label",                   "label",                   False),  # 1 tool incident labeling (ONNX prototype / Laya)
     ]

@@ -764,6 +764,11 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_CLUSTER_MIN_SIZE="5"            # HDBSCAN min_cluster_size
 # export BLUETEAM_CLUSTER_MIN_SAMPLES="3"         # HDBSCAN min_samples
 # export BLUETEAM_CLUSTER_ASSIGN_FACTOR="1.0"     # multiplier on a cluster's stored radius
+# export BLUETEAM_CLUSTER_LINEAGE_MIN_FITS="2"     # fits needed before lineage is attempted
+# export BLUETEAM_CLUSTER_LINEAGE_MATCH_FACTOR="1.5"  # radius multiplier for a cross-fit match
+# export BLUETEAM_CLUSTER_LINEAGE_MIN_POINTS="3"   # lineage steps needed before a behavior verdict
+# export BLUETEAM_CLUSTER_LINEAGE_SHIFT_Z="2.5"    # z threshold for a size/novelty jump (conservative)
+# export BLUETEAM_CLUSTER_LINEAGE_TACTIC_SHIFT="0.25"  # L1 composition shift that counts as a change
 
 # Tactic-sequence forecasting (blueteam_tactic_forecast) — the Markov estimator is
 # stdlib-only; kind='hmm' needs the optional BLUETEAM_INSTALL_FORECAST=1 install.

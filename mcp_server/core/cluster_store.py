@@ -2,7 +2,6 @@
 """
 © NAuliajati - TangerangKota-CSIRT
 SQLite persistence for alert entity clusters (blueteam_alert_cluster).
-
 Stores one fit (HDBSCAN parameters, feature version, centroids, medoids and
 per-cluster radii) plus the assignment of every entity that has been scored
 against it. Nearest-centroid assignment needs the centroids to outlive the
@@ -10,7 +9,7 @@ process; a stateless refit on every call would also make ``noise`` vs
 ``novel`` meaningless, because the label space changes each run.
 Layout follows ``core/rag_store.py``: SQLite opened per call (connections are
 thread-bound and calls run inside ``asyncio.to_thread``), WAL, ``0600``, and a
-hard refusal to read a fit written under a different ``FEATURE_VERSION`` -
+hard refusal to read a fit written under a different ``FEATURE_VERSION``
 mixing layouts would assign entities to meaningless centroids.
 """
 from __future__ import annotations
@@ -182,6 +181,26 @@ def load_fit(fit_id: Optional[str] = None) -> Optional[dict]:
         "entity_count": int(row[5]), "noise_count": int(row[6]),
         "created_at": float(row[7]), "clusters": clusters,
     }
+
+
+def load_fit_history(limit: int = 20) -> list[dict]:
+    """Newest fits ordered oldest-first, each with its clusters.
+    Lineage is a read over history, so there is no second table: a fit row and
+    its centroids already carry everything the matcher needs. ``limit`` bounds
+    the read; the store caps fits at ``_MAX_FITS`` anyway. A fit under a
+    different ``FEATURE_VERSION`` refuses through ``load_fit``, because lineage
+    cannot compare vector layouts either.
+    """
+    with _store() as conn:
+        rows = conn.execute(
+            "SELECT fit_id FROM fits ORDER BY created_at DESC LIMIT ?",
+            (max(1, int(limit)),)).fetchall()
+    fits: list[dict] = []
+    for (fit_id,) in reversed(rows):
+        fit = load_fit(fit_id)
+        if fit is not None:
+            fits.append(fit)
+    return fits
 
 
 def record_assignment(entity_key: str, fit_id: str, label: int,

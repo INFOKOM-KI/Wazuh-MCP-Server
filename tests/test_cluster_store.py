@@ -8,6 +8,7 @@ permissions on a store whose entity keys are source IPs.
 from __future__ import annotations
 import os
 import sqlite3
+import time
 
 os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
 os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
@@ -18,6 +19,7 @@ from mcp_server.core.cluster_store import (
     ClusterStoreError,
     get_assignment,
     load_fit,
+    load_fit_history,
     pending_novelty_count,
     purge_expired,
     record_assignment,
@@ -57,6 +59,14 @@ def test_save_and_load_round_trip(store_path):
 
 def test_empty_store_returns_none(store_path):
     assert load_fit() is None
+
+
+def test_load_fit_history_returns_oldest_first(store_path):
+    save_fit("fit-1", {"min_cluster_size": 5}, [CLUSTER], entity_count=4, noise_count=1)
+    time.sleep(0.02)
+    save_fit("fit-2", {"min_cluster_size": 5}, [CLUSTER], entity_count=4, noise_count=1)
+    assert [fit["fit_id"] for fit in load_fit_history()] == ["fit-1", "fit-2"]
+    assert [fit["fit_id"] for fit in load_fit_history(limit=1)] == ["fit-2"]
 
 
 def test_feature_version_mismatch_refuses(store_path):

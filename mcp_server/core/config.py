@@ -802,6 +802,11 @@ class ClusterConfig:
     min_cluster_size: int = 5
     min_samples: int = 3
     assign_factor: float = 1.0
+    lineage_min_fits: int = 2
+    lineage_match_factor: float = 1.5
+    lineage_min_points: int = 3
+    lineage_shift_z: float = 2.5
+    lineage_tactic_shift: float = 0.25
 
     @classmethod
     def from_env(cls) -> "ClusterConfig":
@@ -813,6 +818,13 @@ class ClusterConfig:
             min_cluster_size=int(os.environ.get("BLUETEAM_CLUSTER_MIN_SIZE", "5")),
             min_samples=int(os.environ.get("BLUETEAM_CLUSTER_MIN_SAMPLES", "3")),
             assign_factor=float(os.environ.get("BLUETEAM_CLUSTER_ASSIGN_FACTOR", "1.0")),
+            lineage_min_fits=int(os.environ.get("BLUETEAM_CLUSTER_LINEAGE_MIN_FITS", "2")),
+            lineage_match_factor=float(
+                os.environ.get("BLUETEAM_CLUSTER_LINEAGE_MATCH_FACTOR", "1.5")),
+            lineage_min_points=int(os.environ.get("BLUETEAM_CLUSTER_LINEAGE_MIN_POINTS", "3")),
+            lineage_shift_z=float(os.environ.get("BLUETEAM_CLUSTER_LINEAGE_SHIFT_Z", "2.5")),
+            lineage_tactic_shift=float(
+                os.environ.get("BLUETEAM_CLUSTER_LINEAGE_TACTIC_SHIFT", "0.25")),
         )
 
     def validate(self) -> None:
@@ -835,6 +847,16 @@ class ClusterConfig:
             raise ConfigurationError("BLUETEAM_CLUSTER_MIN_SAMPLES must be >= 1")
         if self.assign_factor <= 0:
             raise ConfigurationError("BLUETEAM_CLUSTER_ASSIGN_FACTOR must be > 0")
+        if self.lineage_min_fits < 2:
+            raise ConfigurationError("BLUETEAM_CLUSTER_LINEAGE_MIN_FITS must be >= 2")
+        if self.lineage_match_factor <= 0:
+            raise ConfigurationError("BLUETEAM_CLUSTER_LINEAGE_MATCH_FACTOR must be > 0")
+        if self.lineage_min_points < 2:
+            raise ConfigurationError("BLUETEAM_CLUSTER_LINEAGE_MIN_POINTS must be >= 2")
+        if self.lineage_shift_z <= 0:
+            raise ConfigurationError("BLUETEAM_CLUSTER_LINEAGE_SHIFT_Z must be > 0")
+        if not 0 < self.lineage_tactic_shift < 2:
+            raise ConfigurationError("BLUETEAM_CLUSTER_LINEAGE_TACTIC_SHIFT must be in (0, 2)")
 
 
 @dataclass
