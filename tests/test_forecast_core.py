@@ -128,6 +128,18 @@ def test_sequence_logprob_needs_two_known_tactics():
     assert sequence_logprob(fit, ["Discovery"])["status"] == "insufficient_data"
 
 
+def test_sequence_logprob_non_markov_model_is_not_applicable():
+    """An HMM or volume matrix is state-indexed; tactic indexes must not select rows."""
+    shared = {"tactics": list(TACTIC_ORDER), "taxonomy_version": TAXONOMY_VERSION,
+              "startprob": [0.5, 0.5], "transmat": [[0.9, 0.1], [0.1, 0.9]]}
+    hmm = dict(shared, kind="hmm", emissionprob=[[1.0 / 16] * 16 for _ in range(2)])
+    volume = dict(shared, kind=VOLUME_KIND, lambdas=[1.0, 2.0])
+    for model in (hmm, volume):
+        result = sequence_logprob(model, ["Collection", "Discovery"])
+        assert result["status"] == "not_applicable"
+        assert "Markov-only" in result["reason"]
+
+
 def test_fit_rejects_unknown_tactic_in_corpus():
     with pytest.raises(ValueError):
         fit_markov_chain([["not-a-tactic", "Impact"]] * 5, min_sequences=2, min_transitions=1)

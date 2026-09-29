@@ -297,7 +297,8 @@ def sequence_logprob(model: dict, sequence: list[str]) -> dict:
     A low mean is evidence the chain looks unlike the training corpus an
     advisory signal, not a verdict, because a genuinely new campaign is
     supposed to look unlikely. Smoothed probabilities guarantee the logarithm
-    is defined for every pair.
+    is defined for every pair. Only a Markov model indexes its transition
+    matrix by tactic; an HMM or volume model answers ``not_applicable``.
     """
     indexes: list[int] = []
     for raw in sequence:
@@ -307,6 +308,12 @@ def sequence_logprob(model: dict, sequence: list[str]) -> dict:
     if len(indexes) < 2:
         return {"status": "insufficient_data", "reason": "need at least two known tactics"}
     transmat = model["transmat"]
+    # HMM and volume matrices are state-indexed, so a tactic index can exceed
+    # the row count; answer not_applicable instead of an IndexError.
+    if len(transmat) != len(TACTIC_ORDER):
+        return {"status": "not_applicable",
+                "reason": (f"anomaly scoring is Markov-only; this model has {len(transmat)} "
+                           f"states for {len(TACTIC_ORDER)} tactics")}
     total = 0.0
     steps = 0
     for current, following in zip(indexes, indexes[1:]):

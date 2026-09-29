@@ -18,7 +18,8 @@ import time
 import pytest
 from mcp_server.core.config import config
 from mcp_server.core.exceptions import BlueTeamMCPError
-from mcp_server.core.forecast_store import load_model
+from mcp_server.core.forecast_store import load_model, save_model
+from mcp_server.correlation.forecast_core import TACTIC_ORDER, VOLUME_KIND
 from mcp_server.tools import forecast
 
 _run = asyncio.run
@@ -69,6 +70,18 @@ def _setup(tmp_path, monkeypatch):
 
 def _train_params(**overrides):
     return forecast.TacticForecastInput(mode="train", response_format="json", **overrides)
+
+
+def _seed_hmm_model(model_id: str = "testhmmshape1", n_states: int = 2) -> str:
+    save_model(
+        model_id, "hmm", {},
+        [1.0 / n_states] * n_states,
+        [[0.9 if row == column else 0.1 / (n_states - 1)
+          for column in range(n_states)] for row in range(n_states)],
+        emissionprob=[[1.0 / 16] * 16 for _ in range(n_states)],
+        n_sequences=6, n_transitions=20,
+    )
+    return model_id
 
 
 def test_disabled_tool_raises_enable_hint():
@@ -138,6 +151,29 @@ def test_predict_srcip_rebuilds_sequence_and_reports_anomaly():
     assert payload["prediction"]["current_tactic"] == "Command and Control"
     assert payload["anomaly"]["status"] == "ok"
     assert payload["prediction"]["escalation_probability"] > 0
+
+
+def test_predict_srcip_with_hmm_model_reports_not_applicable_anomaly():
+    hmm_id = _seed_hmm_model()
+    payload = json.loads(_run(_forecast(forecast.TacticForecastInput(
+        mode="predict", srcip="203.0.113.7", model_id=hmm_id, response_format="json"))))
+    assert payload["status"] == "ok"
+    assert payload["model"]["kind"] == "hmm"
+    assert payload["prediction"]["method"] == "hmm"
+    assert payload["anomaly"]["status"] == "not_applicable"
+
+
+def test_predict_rejects_a_volume_model():
+    save_model("testvolume001", VOLUME_KIND, {"lambdas": [1.0, 5.0, 20.0]},
+               [0.4, 0.4, 0.2],
+               [[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.2, 0.2, 0.6]],
+               n_sequences=3, n_transitions=10)
+    with pytest.raises(BlueTeamMCPError) as excinfo:
+        _run(_forecast(forecast.TacticForecastInput(
+            mode="predict", current_tactic="Reconnaissance",
+            model_id="testvolume001", response_format="json")))
+    assert "not a tactic model" in str(excinfo.value)
+    assert VOLUME_KIND in str(excinfo.value)
 
 
 def test_predict_srcip_not_observed():

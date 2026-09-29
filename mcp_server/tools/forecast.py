@@ -319,8 +319,8 @@ async def blueteam_tactic_forecast(params: TacticForecastInput) -> str:
         warnings, and (Markov) the strongest observed transitions. Predict: the
         top-k next tactics with probabilities, the escalation probability, a
         ``low_support``/``uniform_fallback`` flag where applicable, and the
-        chain's mean log-likelihood against the training corpus. Status: corpus
-        and newest-model metadata.
+        chains mean log-likelihood against the training corpus (Markov models;
+        an HMM reports ``not_applicable``). Status: corpus and newest-model metadata.
 
     Worked Examples:
         1. Weekly Markov fit -> ``blueteam_tactic_forecast(mode="train",
@@ -360,6 +360,10 @@ async def blueteam_tactic_forecast(params: TacticForecastInput) -> str:
         if loaded is None:
             raise BlueTeamMCPError(
                 "No stored forecast model. Run blueteam_tactic_forecast mode='train' first.")
+        if loaded["kind"] not in ("markov", "hmm"):
+            raise BlueTeamMCPError(
+                f"Stored model {loaded['model_id']} is a '{loaded['kind']}' model, not a "
+                "tactic model. Train one with blueteam_tactic_forecast mode='train'.")
         sequence: list[str] = []
         anomaly = None
         warnings: list[str] = []
