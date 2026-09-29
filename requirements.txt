@@ -24,6 +24,14 @@ uvicorn>=0.31.1,<1.0.0
 pyyaml>=6.0.1,<7.0.0
 numpy>=1.26,<3.0
 
+# PY-TOON (Token-Oriented Object Notation) for the opt-in response_format="toon"
+# on high-volume tools. Never the default: the in-process graph orchestrators
+# json.loads tool output. Pure-Python, MIT, no runtime deps on Python 3.10+, and
+# imported (mcp_server/core/toon.py) so a partial install degrades that
+# one call to a JSON error envelope instead of failing server startup. Pinned
+# exactly the format spec is still 0.x and the encoder changes with it.
+toon_format==0.9.0b1
+
 # Two stage retrieval reranker (BM25 -> bge-reranker-base cross-encoder, MIT, ~1.0 GB).
 # ON by default (BLUETEAM_RERANK_ENABLED=true), so the server REFUSES TO START without
 # this package. Only models in fastembed's own cross-encoder registry can load;

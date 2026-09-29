@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import (
-    mcp,
+    mcp, CHARACTER_LIMIT,
     WAZUH_API_URL, WAZUH_API_PASSWORD,
     WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_URL,
 )
@@ -37,6 +37,7 @@ from mcp_server.wazuh.indexer import (
 # Indexer tools (remaining after Manager API split)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data
+from mcp_server.core.toon import encode_toon
 from mcp_server.core.subprocess import _run_async
 
 
@@ -50,6 +51,7 @@ class WazuhAlertsInput(BaseModel):
     cursor: Optional[str] = Field(default=None, description="Pagination cursor from a previous response")
     bypass_redaction: bool = Field(default=False, description="When true, skip PII/credential redaction")
     redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(default=None, description="Redaction policy")
+    response_format: str = Field(default="json", description="'json' (default) or 'toon'")
 
 
 @mcp.tool(
@@ -69,6 +71,7 @@ async def blueteam_wazuh_alerts(params: WazuhAlertsInput) -> str:
         params.cursor: Pagination cursor
         params.bypass_redaction: When true, skip PII/credential redaction
         params.redaction_policy: 'full', 'protect_victim', or 'raw'
+        params.response_format: 'json' (default) or 'toon'
     """
     _audit_log("blueteam_wazuh_alerts", {})
     p = Path(_WAZUH_ALERTS_PATH)
@@ -114,13 +117,16 @@ async def blueteam_wazuh_alerts(params: WazuhAlertsInput) -> str:
             last_sort = hit_list[-1].get("sort")
             if last_sort:
                 next_cursor = _encode_cursor({"search_after": last_sort})
-        return _truncate_if_needed(json.dumps({
+        payload = {
             "source": "wazuh-indexer",
             "alerts": _redact_alert_data(docs, bypass=params.bypass_redaction,
                                           policy=params.redaction_policy),
             "count": len(docs),
             "next_cursor": next_cursor,
-        }, indent=2))
+        }
+        if params.response_format == "toon":
+            return encode_toon(payload, limit=CHARACTER_LIMIT)
+        return _truncate_if_needed(json.dumps(payload, indent=2))
 
     # Local alerts.json path
     skip = 0
@@ -164,13 +170,16 @@ async def blueteam_wazuh_alerts(params: WazuhAlertsInput) -> str:
         except json.JSONDecodeError:
             continue
     next_cursor = _encode_cursor({"scanned": scanned}) if len(alerts) >= params.limit else None
-    return _truncate_if_needed(json.dumps({
+    payload = {
         "source": "local",
         "alerts": _redact_alert_data(alerts, bypass=params.bypass_redaction,
                                       policy=params.redaction_policy),
         "count": len(alerts),
         "next_cursor": next_cursor,
-    }, indent=2))
+    }
+    if params.response_format == "toon":
+        return encode_toon(payload, limit=CHARACTER_LIMIT)
+    return _truncate_if_needed(json.dumps(payload, indent=2))
 
 
 class WazuhIndexerSearchInput(BaseModel):
@@ -183,7 +192,7 @@ class WazuhIndexerSearchInput(BaseModel):
     max_scanned: int = Field(default=0, ge=0, le=100000, description="When >0, auto-paginate up to this many documents")
     cursor: Optional[str] = Field(default=None, description="Pagination cursor from a previous response")
     keyword: Optional[str] = Field(default=None, max_length=256, description="Free-text keyword to narrow results")
-    response_format: str = Field(default="json", description="'markdown' or 'json'")
+    response_format: str = Field(default="json", description="'json' (default) or 'toon'")
     redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(default=None, description="Redaction policy")
     reveal_owned: bool = Field(default=False, description="When true, unmask emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS)")
 
@@ -208,7 +217,7 @@ async def blueteam_wazuh_indexer_search(params: WazuhIndexerSearchInput) -> str:
         params.max_scanned: When >0, auto-paginate across pages up to this many docs
         params.cursor: Pagination cursor from a previous response
         params.keyword: Free-text keyword to narrow results
-        params.response_format: 'markdown' or 'json'
+        params.response_format: 'json' (default) or 'toon'
         params.redaction_policy: 'full', 'protect_victim', or 'raw'
         params.reveal_owned: When true, unmask emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS)
 
@@ -298,13 +307,16 @@ async def blueteam_wazuh_indexer_search(params: WazuhIndexerSearchInput) -> str:
         else None
     )
     has_more = next_cursor is not None
-    return _truncate_if_needed(json.dumps({
+    payload = {
         "total": {"value": total_val, "relation": total_relation},
         "retrieved": total_scanned,
         "has_more": has_more,
         "next_cursor": next_cursor,
         "alerts": _redact_alert_data(all_docs, policy=params.redaction_policy, reveal_owned=params.reveal_owned),
-    }, indent=2))
+    }
+    if params.response_format == "toon":
+        return encode_toon(payload, limit=CHARACTER_LIMIT)
+    return _truncate_if_needed(json.dumps(payload, indent=2))
 
 
 class MitreLookupInput(BaseModel):

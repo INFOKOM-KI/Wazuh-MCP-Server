@@ -1113,7 +1113,8 @@ Do not lower below these without production telemetry evidence.
 | Error | Meaning | Correct action |
 |---|---|---|
 | **any tool result with `isError: true`** | the tool failed; the text is a diagnostic, **not a finding** | report the failure and the named cause. Never read an error string as a verdict |
-| `{"truncated": true, ...}` | the response crossed `CHARACTER_LIMIT`; the tool kept it valid JSON instead of slicing it | narrow the window or add `limit`/`offset` and re-call. Never read it as empty |
+| `{"truncated": true, ...}` | the response crossed `CHARACTER_LIMIT`; the tool kept it valid JSON instead of slicing it. Also returned when a `response_format="toon"` response is over the cap, because a sliced TOON document cannot be parsed | narrow the window or add `limit`/`offset` and re-call. Never read it as empty |
+| `{"error": "unavailable: toon_format is not installed"}` | `response_format="toon"` was requested but the optional encoder is missing on the server | re-call the same tool with `response_format="json"`; report the server gap, it is not a finding |
 | `"<step>: degraded"` in a workflow response | that step failed and the reason is listed under `errors[]` | quote the reason in the report limitations; never substitute your own result for the missing step |
 | `"hasn't been inspected yet"` | MCP handshake, not an error | re-invoke with matching params |
 | `"circuit breaker open for '<upstream>' (N consecutive failures)"` | that one upstream failed N times in a row. The name is the pool: a URL host (`otx.alienvault.com`, `urlhaus.abuse.ch`, the Netra host) or an explicit pool (`argus`, `rapidapi`, `indexer`, `wazuh`). Breakers are per upstream, so everything else still works | skip that provider, name it in the report, retry the same call after 60s |
@@ -1269,6 +1270,15 @@ provide it once at session start and you reuse it across calls.
 
 - Default `response_format="markdown"` for analyst-facing reports; **always
   `"json"`** when piping into follow-up tools.
+- **Opt-in `response_format="toon"`** on the high-volume tools (alert read/search,
+  DSL query, timeline, bulk intel, cluster, 3-Sum and IP investigation) returns
+  TOON instead of JSON: a uniform array declares its fields once in the header
+  (`rows[120]{id,rule,level}`) and streams rows under it, which cuts tokens and
+  row-count drift on long lists. Encoding runs **after** redaction, same as JSON.
+  Use it when a large uniform row set goes straight into your reasoning; use
+  `"json"` when the payload feeds another parser or a single object. A response
+  that starts with `{` is the JSON error envelope (missing encoder, or over the
+  character cap), never TOON data.
 - Export a finished report to DOCX/XLSX/PPTX with `blueteam_export_report`
   (officecli) — markdown/JSON are the in-session formats; officecli is for
   deliverables.

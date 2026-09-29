@@ -8,11 +8,12 @@ import json, re
 from typing import Optional, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
-from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
+from mcp_server import (mcp, CHARACTER_LIMIT, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _BYPASS_REDACTION_DESC, _RESPONSE_FORMAT_DESC, _AGENT_NAME_DESC,
                         _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.redact import _redact_alert_data
+from mcp_server.core.toon import encode_toon
 from mcp_server.core.http_client import _handle_api_error
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window, _auto_bucket_interval, _duration_minutes
@@ -61,9 +62,9 @@ class WazuhAlertTimelineInput(BaseModel):
                     "blueteam_wazuh_indexer_search supports +term, -term, OR, *wildcard*, "
                     '\"exact phrase\". Example: \'gambling OR "brute force"\'',
     )
-    response_format: Literal["markdown", "json"] = Field(
+    response_format: Literal["markdown", "json", "toon"] = Field(
         default="markdown",
-        description="'markdown' for human-readable timeline, 'json' for structured bucket data.",
+        description="'markdown' for human-readable timeline, 'json' for structured bucket data, 'toon' for token efficient rows.",
     )
     bypass_redaction: bool = Field(
         default=False, description=_BYPASS_REDACTION_DESC,
@@ -118,7 +119,7 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
         params.rule_groups: Optional comma-separated rule groups filter.
         params.rule_level_min: Only count alerts at or above this severity.
         params.keyword: Optional free-text keyword filter (e.g. 'gambling OR "brute force"').
-        params.response_format: 'markdown' or 'json'.
+        params.response_format: 'markdown', 'json', or 'toon'.
         params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
         params.redaction_policy: 'full' (shape-based, default), 'protect_victim' (mask victim-owned indicators only), 'raw' (Layer 1 credential strip only, requires BLUETEAM_ALLOW_FORENSIC_BYPASS).
         params.reveal_owned: When true (forensic), expose emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS) unmasked; Layer 1 credentials remain masked.
@@ -192,8 +193,8 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
     total_alerts = sum(b.get("doc_count", 0) for b in buckets)
     buckets = _redact_alert_data(buckets, reveal_owned=params.reveal_owned)  # mask victim emails/IP/domains in bucket keys
 
-    if params.response_format == "json":
-        return _truncate_if_needed(json.dumps({
+    if params.response_format in ("json", "toon"):
+        payload = {
             "window": {"since": since_str, "until": until_str},
             "bucket_interval": bucket_interval,
             "total_buckets": len(buckets),
@@ -221,7 +222,10 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
                 }
                 for b in buckets
             ],
-        }, indent=2, ensure_ascii=False))
+        }
+        if params.response_format == "toon":
+            return encode_toon(payload, limit=CHARACTER_LIMIT)
+        return _truncate_if_needed(json.dumps(payload, indent=2, ensure_ascii=False))
 
     # Markdown
     dur_str = f"{_duration_minutes(since_str, until_str):.0f} min" if _duration_minutes(since_str, until_str) < 120 else f"{_duration_minutes(since_str, until_str) / 60:.1f}h"

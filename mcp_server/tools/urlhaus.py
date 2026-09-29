@@ -8,8 +8,9 @@ import json, re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 import httpx
-from mcp_server import mcp, URLHAUS_API_KEY_ENV
+from mcp_server import mcp, CHARACTER_LIMIT, URLHAUS_API_KEY_ENV
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.toon import encode_toon
 from mcp_server.core.http_client import _handle_api_error, _api_error_text
 from mcp_server.threat_intel.urlhaus import (_urlhaus_request, _urlhaus_payload_request,
                                              _format_urlhaus_markdown)
@@ -25,7 +26,7 @@ class UrlhausLookupInput(BaseModel):
         ..., min_length=5, max_length=2048,
         description="URL to check for malware distribution, e.g. 'http://evil.com/malware.exe'.",
     )
-    response_format: Literal["markdown", "json"] = Field(default="markdown")
+    response_format: Literal["markdown", "json", "toon"] = Field(default="markdown")
 
 
 @mcp.tool(
@@ -58,6 +59,8 @@ async def urlhaus_lookup(params: UrlhausLookupInput) -> str:
     except (httpx.HTTPStatusError, httpx.TimeoutException) as e:
         _handle_api_error(e, context="urlhaus_lookup")
 
+    if params.response_format == "toon":
+        return encode_toon(raw, limit=CHARACTER_LIMIT)
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(raw, indent=2, default=str))
 
@@ -74,7 +77,7 @@ class UrlhausHashInput(BaseModel):
         ..., min_length=32, max_length=64,
         description="File hash to look up: MD5 (32 hex) or SHA256 (64 hex).",
     )
-    response_format: Literal["markdown", "json"] = Field(default="markdown")
+    response_format: Literal["markdown", "json", "toon"] = Field(default="markdown")
 
     @field_validator("file_hash")
     @classmethod
@@ -118,6 +121,8 @@ async def urlhaus_hash_lookup(params: UrlhausHashInput) -> str:
     if raw.get("query_status") == "illegal_hash":
         return json.dumps({"error": "Invalid file hash format."}, indent=2)
 
+    if params.response_format == "toon":
+        return encode_toon(raw, limit=CHARACTER_LIMIT)
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(raw, indent=2, default=str))
 
@@ -150,7 +155,7 @@ class UrlhausBulkInput(BaseModel):
         ..., min_length=1, max_length=20,
         description="URLs to check concurrently (max 20).",
     )
-    response_format: Literal["markdown", "json"] = Field(default="markdown")
+    response_format: Literal["markdown", "json", "toon"] = Field(default="markdown")
 
 
 @mcp.tool(
@@ -184,6 +189,8 @@ async def urlhaus_lookup_bulk(params: UrlhausBulkInput) -> str:
     import asyncio
     results = await asyncio.gather(*[_one(u) for u in params.urls])
 
+    if params.response_format == "toon":
+        return encode_toon({"count": len(results), "results": results}, limit=CHARACTER_LIMIT)
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps({"count": len(results), "results": results}, indent=2))
 

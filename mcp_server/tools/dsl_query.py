@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from mcp_server import mcp, logger, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, CHARACTER_LIMIT, _REVEAL_OWNED_DESC
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data
+from mcp_server.core.toon import encode_toon
 from mcp_server.core.http_client import _handle_api_error
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 
@@ -88,9 +89,9 @@ class DslQueryInput(BaseModel):
         description="OpenSearch index pattern (default 'wazuh-alerts-*'). "
                     "Also accepts 'wazuh-events-*', 'wazuh-states-vulnerabilities-*'.",
     )
-    response_format: Literal["markdown", "json"] = Field(
+    response_format: Literal["markdown", "json", "toon"] = Field(
         default="json",
-        description="'json' (default, machine-readable) or 'markdown'.",
+        description="'json' (default, machine-readable), 'markdown', or 'toon'.",
     )
     reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
 
@@ -205,7 +206,7 @@ async def wazuh_alert_dsl_query(params: DslQueryInput) -> str:
         params.query: Optional query filter dict (only with ``aggs``).
         params.query_json: [DEPRECATED] Raw OpenSearch DSL JSON string.
         params.index_pattern: Index pattern (default 'wazuh-alerts-*').
-        params.response_format: 'json' (default) or 'markdown'.
+        params.response_format: 'json' (default), 'markdown', or 'toon'.
         params.reveal_owned: When true (forensic), expose emails/subdomains at owned
             domains (BLUETEAM_OWNED_DOMAINS) unmasked while all other protect_victim
             masking stays on. Layer 1 credentials remain masked.
@@ -248,6 +249,9 @@ async def wazuh_alert_dsl_query(params: DslQueryInput) -> str:
         )
     except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
         _handle_api_error(e, context="wazuh_alert_dsl_query")
+
+    if params.response_format == "toon":
+        return encode_toon(_redact_alert_data(data, reveal_owned=params.reveal_owned), limit=CHARACTER_LIMIT)
 
     if params.response_format == "markdown":
         if isinstance(data.get("error"), str):

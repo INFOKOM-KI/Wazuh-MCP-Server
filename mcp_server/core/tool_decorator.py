@@ -12,7 +12,8 @@ Usage:
         redact=True,     # apply 6-layer PII masking by default (opt out with redact=False)
     )
     async def blueteam_my_tool(params: MyInput) -> str:
-The decorator applies: audit -> call -> catch BlueTeamMCPError -> redact -> truncate.
+The decorator applies: audit -> call -> catch BlueTeamMCPError -> redact -> serialize
+(TOON when response_format="toon", else JSON for non-strings) -> truncate.
 The original function signature is preserved so FastMCP generates the correct tool schema.
 """
 from __future__ import annotations
@@ -23,10 +24,11 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Callable, Iterator
-from mcp_server import mcp
+from mcp_server import mcp, CHARACTER_LIMIT
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.exceptions import BlueTeamMCPError
+from mcp_server.core.toon import encode_toon
 from mcp_server.core import metrics
 
 # Sensible defaults every blue-team tool is read-only unless overridden
@@ -127,6 +129,15 @@ def blueteam_tool(
             # post-call: redact (default ON uniform security boundary)
             if redact:
                 result = _redact_alert_data(result, params=params)
+
+            # Opt-in PY TOON: encode only after redaction. A TOON string returned by
+            # the tool is already size-capped; truncating it would corrupt the format.
+            if getattr(params, "response_format", None) == "toon":
+                if not isinstance(result, str):
+                    limit = CHARACTER_LIMIT if (truncate and not _FULL_PAYLOAD.get()) else None
+                    result = encode_toon(result, limit=limit)
+                return result
+
             if not isinstance(result, str):
                 result = json.dumps(result, indent=2, ensure_ascii=False)
 

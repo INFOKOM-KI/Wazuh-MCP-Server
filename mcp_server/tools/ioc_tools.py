@@ -7,10 +7,11 @@ from __future__ import annotations
 import json, re
 from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
-from mcp_server import mcp
+from mcp_server import mcp, CHARACTER_LIMIT
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.ioc_store import record_iocs, query_iocs, ioc_stats
 from mcp_server.core.redact import _redact_alert_data
+from mcp_server.core.toon import encode_toon
 
 # IOC Patterns
 _IPV4_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\b")
@@ -79,8 +80,8 @@ class IocExtractInput(BaseModel):
 
     text: str = Field(..., min_length=1, max_length=100000,
                       description="Raw alert text, log line, or full_log field to extract IOCs from.")
-    response_format: Literal["markdown", "json"] = Field(
-        default="markdown", description="'markdown' or 'json'.")
+    response_format: Literal["markdown", "json", "toon"] = Field(
+        default="markdown", description="'markdown', 'json', or 'toon'.")
 
 
 @mcp.tool(
@@ -123,6 +124,8 @@ async def blueteam_extract_iocs(params: IocExtractInput) -> str:
             len(iocs["hashes"]["sha1"]) + len(iocs["hashes"]["sha256"]) + \
             len(iocs.get("cves", []))
 
+    if params.response_format == "toon":
+        return encode_toon({"total_iocs": total, **iocs}, limit=CHARACTER_LIMIT)
     if params.response_format == "json":
         return json.dumps({"total_iocs": total, **iocs}, indent=2, ensure_ascii=False)
 
@@ -197,8 +200,8 @@ class IocLifecycleInput(BaseModel):
         description="Minimum observation count to include (default 1).")
     top_n: int = Field(default=50, ge=1, le=200,
         description="Max IOCs to return (default 50).")
-    response_format: Literal["markdown", "json"] = Field(
-        default="markdown", description="'markdown' (default) or 'json'.")
+    response_format: Literal["markdown", "json", "toon"] = Field(
+        default="markdown", description="'markdown' (default), 'json', or 'toon'.")
 
 
 @mcp.tool(
@@ -234,6 +237,8 @@ async def blueteam_ioc_lifecycle(params: IocLifecycleInput) -> str:
             f"seen within {params.since_days}d, min_count={params.min_count}. "
             f"Run blueteam_extract_iocs or three_sum_correlation first to populate the store.")
 
+    if params.response_format == "toon":
+        return encode_toon(_redact_alert_data({"count": len(hits), "iocs": hits}), limit=CHARACTER_LIMIT)
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(
             _redact_alert_data({"count": len(hits), "iocs": hits}), indent=2, ensure_ascii=False))

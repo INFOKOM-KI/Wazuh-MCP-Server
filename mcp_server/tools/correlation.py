@@ -8,10 +8,11 @@ from datetime import datetime, timedelta
 from typing import Optional, Literal, Any
 from collections import Counter
 from pydantic import field_validator, BaseModel, ConfigDict, Field
-from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _WAZUH_INDEXER_MAX_SIZE,
+from mcp_server import (mcp, CHARACTER_LIMIT, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _WAZUH_INDEXER_MAX_SIZE,
                         _INVESTIGATION_HISTORY_FILE, CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV,
                         _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
+from mcp_server.core.toon import encode_toon
 from mcp_server.core.http_client import _api_call, _handle_api_error, ValidPublicIp
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY
@@ -332,7 +333,7 @@ class AggregateAnalysisInput(BaseModel):
     rule_gdpr: ValidRuleGroups = Field(default=None, description="Filter by GDPR article")
     rule_hipaa: ValidRuleGroups = Field(default=None, description="Filter by HIPAA control")
     rule_nist_800_53: ValidRuleGroups = Field(default=None, description="Filter by NIST 800-53 control")
-    response_format: str = Field(default="markdown")
+    response_format: str = Field(default="markdown", description="'markdown' (default), 'json', or 'toon'.")
     redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(
         default=None,
         description=_REDACTION_POLICY_DESC,
@@ -421,6 +422,8 @@ async def wazuh_alert_aggregate_analysis(params: AggregateAnalysisInput) -> str:
             raw = raw2
             aggs = raw.get("aggregations", {})
             total = raw.get("hits", {}).get("total", {}).get("value", 0)
+    if params.response_format == "toon":
+        return encode_toon({"total": total, "aggregations": aggs}, limit=CHARACTER_LIMIT)
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps({"total": total, "aggregations": aggs}, indent=2))
     sev = {b["key"]: b["doc_count"] for b in aggs.get("severity_bands", {}).get("buckets", [])}
@@ -443,7 +446,7 @@ class ThreeSumCorrelationInput(BaseModel):
                     "Default 35 ~ requires a cross-category chain or multiple high-severity alerts; "
                     "a single C2 alert (~25-32) stays below it.")
     z_score_threshold: float = Field(default=DEFAULT_Z_THRESHOLD, ge=1.0, le=5.0)
-    response_format: str = Field(default="markdown")
+    response_format: str = Field(default="markdown", description="'markdown' (default), 'json', or 'toon'.")
     throttle: int = Field(default=0, ge=0)
     use_mitre: bool = Field(default=True,
         description="Primary: classify alerts dynamically from the MITRE ATT&CK STIX bundle. "
@@ -921,8 +924,8 @@ class InvestigateIpInput(BaseModel):
                        description="Source IP to investigate.")
     since: str | None = Field(default="24h", max_length=30,
                                description="Time window. ISO 8601 or relative ('24h', '7d').")
-    response_format: Literal["markdown", "json"] = Field(
-        default="markdown", description="'markdown' or 'json'.")
+    response_format: Literal["markdown", "json", "toon"] = Field(
+        default="markdown", description="'markdown', 'json', or 'toon'.")
 
 
 @mcp.tool(
@@ -1003,8 +1006,8 @@ async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
     t_aggs = timeline_raw.get("aggregations", {})
     g_aggs = geo_raw.get("aggregations", {})
 
-    if params.response_format == "json":
-        return json.dumps({
+    if params.response_format in ("json", "toon"):
+        payload = {
             "srcip": srcip,
             "window": {"since": since_iso, "until": until_iso},
             "total_alerts": total,
@@ -1019,7 +1022,10 @@ async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
                          for b in t_aggs.get("over_time", {}).get("buckets", [])],
             "geo": [{"country": b["key"], "count": b["doc_count"]}
                     for b in g_aggs.get("by_country", {}).get("buckets", [])],
-        }, indent=2, ensure_ascii=False)
+        }
+        if params.response_format == "toon":
+            return encode_toon(payload, limit=CHARACTER_LIMIT)
+        return json.dumps(payload, indent=2, ensure_ascii=False)
 
     # Build markdown report
     lines = [

@@ -66,6 +66,12 @@ if ! "$INSTALL_DIR/venv/bin/python3" -c "import pypdf; print('[.] pypdf', pypdf.
   exit 1
 fi
 
+# TOON response_format (opt-in) - tiny pure-Python encoder from requirements.txt.
+# Runtime-optional: a missing module makes that one tool call return an
+# 'unavailable' JSON envelope, so warn instead of aborting the install.
+"$INSTALL_DIR/venv/bin/python3" -c "import toon_format; print('[.] toon_format', toon_format.__version__)" \
+  || echo "[!] toon_format not importable - response_format='toon' will degrade to an 'unavailable' error." >&2
+
 # Reranker model bootstrap.
 # ON by default: downloads BAAI/bge-reranker-base (~1.0 GB, MIT) into
 # $INSTALL_DIR/rerank-cache and auto-generates the ONNX sha256 pin, so the

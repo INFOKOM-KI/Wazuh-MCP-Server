@@ -8,8 +8,9 @@ import json, os, re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 import httpx
-from mcp_server import mcp, OTX_API_KEY_ENV
+from mcp_server import mcp, CHARACTER_LIMIT, OTX_API_KEY_ENV
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.toon import encode_toon
 from mcp_server.core.http_client import _handle_api_error, _api_error_text, _is_private_or_reserved
 from mcp_server.threat_intel.otx import (
     _otx_request, _classify_indicator, _extract_pulse_summary,
@@ -31,9 +32,9 @@ class OtxLookupInput(BaseModel):
                     "'geo' = geolocation. 'malware' = malware samples. "
                     "'passive_dns' = passive DNS history. 'url_list' = URLs in pulses.",
     )
-    response_format: Literal["markdown", "json"] = Field(
+    response_format: Literal["markdown", "json", "toon"] = Field(
         default="markdown",
-        description="Output format.",
+        description="Output format: 'markdown', 'json', or 'toon'.",
     )
 
     @field_validator("indicator")
@@ -96,7 +97,7 @@ async def otx_lookup(params: OtxLookupInput) -> str:
 
     ind_type = _classify_indicator(params.indicator)
 
-    if params.response_format == "json":
+    if params.response_format in ("json", "toon"):
         if params.section == "general":
             pulses = raw.get("pulse_info", {}).get("pulses", [])
             result = {
@@ -108,6 +109,8 @@ async def otx_lookup(params: OtxLookupInput) -> str:
         else:
             result = {"indicator": params.indicator, "indicator_type": ind_type,
                       "section": params.section, "data": raw}
+        if params.response_format == "toon":
+            return encode_toon(result, limit=CHARACTER_LIMIT)
         return _truncate_if_needed(json.dumps(result, indent=2, default=str))
 
     # Markdown
@@ -129,7 +132,7 @@ class OtxBulkInput(BaseModel):
         ..., min_length=1, max_length=20,
         description="IOCs to look up concurrently (max 20).",
     )
-    response_format: Literal["markdown", "json"] = Field(default="markdown")
+    response_format: Literal["markdown", "json", "toon"] = Field(default="markdown")
 
     @field_validator("indicators")
     @classmethod
@@ -185,6 +188,8 @@ async def otx_lookup_bulk(params: OtxBulkInput) -> str:
     import asyncio
     results = await asyncio.gather(*[_one(i) for i in params.indicators])
 
+    if params.response_format == "toon":
+        return encode_toon({"count": len(results), "results": results}, limit=CHARACTER_LIMIT)
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps({"count": len(results), "results": results}, indent=2))
 

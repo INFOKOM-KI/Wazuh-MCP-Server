@@ -147,7 +147,7 @@ class AlertClusterInput(BaseModel):
     category_a_groups: list[str] = Field(default=_DEFAULT_A_GROUPS)
     category_b_groups: list[str] = Field(default=_DEFAULT_B_GROUPS)
     category_c_groups: list[str] = Field(default=_DEFAULT_C_GROUPS)
-    response_format: Literal["markdown", "json"] = Field(default="markdown")
+    response_format: Literal["markdown", "json", "toon"] = Field(default="markdown")
 
 
 @blueteam_tool(
@@ -173,7 +173,7 @@ async def blueteam_alert_cluster(params: AlertClusterInput) -> str:
         params.min_samples: HDBSCAN conservativeness (default from config).
         params.use_mitre: MITRE-first classification with rule.groups fallback.
         params.category_*_groups: Fallback rule.groups tokens per category.
-        params.response_format: 'markdown' (default) or 'json'.
+        params.response_format: 'markdown' (default), 'json', or 'toon'.
 
     Returns:
         markdown or json with the fit id, window, entity/noise counts, cluster
@@ -210,6 +210,8 @@ async def blueteam_alert_cluster(params: AlertClusterInput) -> str:
             }
         if params.response_format == "json":
             return json.dumps(payload, indent=2, ensure_ascii=False)
+        if params.response_format == "toon":
+            return payload
         return (f"# Cluster store status\n\n"
                 f"**Status**: `{payload['status']}`\n\n"
                 f"```json\n{json.dumps(payload, indent=2, ensure_ascii=False)}\n```")
@@ -250,6 +252,8 @@ async def blueteam_alert_cluster(params: AlertClusterInput) -> str:
             }
     if params.response_format == "json":
         return json.dumps(payload, indent=2, ensure_ascii=False)
+    if params.response_format == "toon":
+        return payload
     if payload.get("status") != "ok":
         return (f"# Alert Entity Clustering\n\n**Status**: `{payload['status']}`\n\n"
                 f"{payload.get('reason') or payload.get('hint') or ''}")
@@ -272,7 +276,7 @@ class AlertClusterAssignInput(BaseModel):
     category_a_groups: list[str] = Field(default=_DEFAULT_A_GROUPS)
     category_b_groups: list[str] = Field(default=_DEFAULT_B_GROUPS)
     category_c_groups: list[str] = Field(default=_DEFAULT_C_GROUPS)
-    response_format: Literal["markdown", "json"] = Field(default="markdown")
+    response_format: Literal["markdown", "json", "toon"] = Field(default="markdown")
 
 
 @blueteam_tool(
@@ -295,7 +299,7 @@ async def blueteam_alert_cluster_assign(params: AlertClusterAssignInput) -> str:
         params.time_window_minutes: Window used to rebuild the entity profile.
         params.use_mitre: MITRE-first classification with rule.groups fallback.
         params.category_*_groups: Fallback rule.groups tokens per category.
-        params.response_format: 'markdown' (default) or 'json'.
+        params.response_format: 'markdown' (default), 'json', or 'toon'.
     Returns:
         markdown or json with ``label``, ``distance``, ``limit``, ``nearest_label``,
         ``novelty``, ``pending_novelty``, and a ``pending_refit`` flag once enough
@@ -334,6 +338,8 @@ async def blueteam_alert_cluster_assign(params: AlertClusterAssignInput) -> str:
                        "hint": "No alert for this entity in the window; nothing to assign."}
             if params.response_format == "json":
                 return json.dumps(payload, indent=2, ensure_ascii=False)
+            if params.response_format == "toon":
+                return payload
             return (f"# Cluster assignment\n\n**Status**: `not_observed` - no alert for "
                     f"`{key}` in `{since_iso}` -> `{until_iso}`.\n")
         factor = params.assign_factor or config.cluster.assign_factor
@@ -353,6 +359,8 @@ async def blueteam_alert_cluster_assign(params: AlertClusterAssignInput) -> str:
                "pending_novelty": pending, "pending_refit": pending >= _PENDING_REFIT_AT}
     if params.response_format == "json":
         return json.dumps(payload, indent=2, ensure_ascii=False)
+    if params.response_format == "toon":
+        return payload
     label = assignment["label"]
     verdict = ("cluster %d" % label) if label >= 0 else "noise (novel)"
     lines = [
