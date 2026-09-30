@@ -153,3 +153,45 @@ def test_output_loads_in_the_calibration_harness(fixtures, tmp_path):
     cases = cal.load_cases(out)
     assert len(cases) == len(rows)
     assert all(case["state_text"].startswith("rule.description=") for case in cases)
+
+
+def _synthetic(tactic: str, techniques: int, heavy_rows: int) -> list[dict]:
+    """One tactic whose first technique carries most of the rows, which is the
+    shape that starved Credential Access's test split under the hash assignment."""
+    rows = []
+    for index in range(techniques):
+        rows.extend({"technique": f"T{1000 + index}", "tactic": tactic}
+                    for _ in range(heavy_rows if index == 0 else 1))
+    return rows
+
+
+def test_splits_are_stratified_so_a_concentrated_tactic_still_fills_every_split():
+    rows = _synthetic("Credential Access", techniques=30, heavy_rows=20)
+    corpus.assign_splits(rows)
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["split"]] = counts.get(row["split"], 0) + 1
+    assert set(counts) == {"train", "val", "test"}
+    assert counts["test"] >= 5, counts
+    assert counts["train"] > counts["val"], counts
+
+
+def test_split_assignment_is_deterministic():
+    first = _synthetic("Stealth", techniques=12, heavy_rows=9)
+    second = [dict(row) for row in first]
+    corpus.assign_splits(first)
+    corpus.assign_splits(list(reversed(second)))
+    assert {row["technique"]: row["split"] for row in first} == \
+           {row["technique"]: row["split"] for row in second}
+
+
+def test_a_two_technique_tactic_cannot_seed_every_split():
+    """Documents the floor of the heuristic: with fewer techniques than splits the
+    seating pass is skipped and the volume rule decides, which leaves test empty."""
+    rows = _synthetic("Resource Development", techniques=2, heavy_rows=4)
+    corpus.assign_splits(rows)
+    per_technique: dict[str, set[str]] = {}
+    for row in rows:
+        per_technique.setdefault(row["technique"], set()).add(row["split"])
+    assert all(len(found) == 1 for found in per_technique.values())
+    assert {row["split"] for row in rows} == {"train", "val"}

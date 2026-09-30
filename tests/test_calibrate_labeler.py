@@ -11,6 +11,8 @@ os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
 
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 import pytest
 
@@ -105,7 +107,55 @@ def test_gate_fails_closed_and_names_each_miss():
     assert any("ECE" in item for item in failures)
     assert cal.evaluate_gate(best, {"min_macro_f1": 0.4, "max_ece": 0.3}) == []
     unmeasured = {"macro_f1": None, "top1_answered": 1.0, "coverage": 1.0, "ece": 0.0}
-    assert cal.evaluate_gate(unmeasured, cal.GATE_DEFAULTS) == ["macro-F1 is unmeasured"]
+    assert cal.evaluate_gate(unmeasured, cal.GATE_DEFAULTS) == [
+        "macro-F1 (covered classes) is unmeasured"]
+
+
+def test_gate_reads_the_support_restricted_macro_f1_when_present():
+    """A row from score() carries both values; the gate must read the restricted one."""
+    best = {"macro_f1": 0.95, "macro_f1_supported": 0.62, "top1_answered": 0.95,
+            "coverage": 0.7, "ece": 0.05}
+    failures = cal.evaluate_gate(best, cal.GATE_DEFAULTS)
+    assert len(failures) == 1
+    assert "macro-F1 (covered classes) 0.620 < 0.8" in failures[0]
+
+
+def test_support_floor_excludes_thin_classes_from_the_restricted_mean():
+    per_tactic = {"Discovery": {"support": 50, "f1": 0.9},
+                  "Stealth": {"support": 5, "f1": 0.8},
+                  "Reconnaissance": {"support": 1, "f1": 0.0},
+                  "Defense Evasion": {"support": 0, "f1": 0.0}}
+    macro, excluded = cal._support_restricted_f1(per_tactic, 5)
+    assert macro == pytest.approx(0.85)
+    assert excluded == [{"tactic": "Defense Evasion", "support": 0},
+                        {"tactic": "Reconnaissance", "support": 1}]
+
+
+def test_support_floor_zero_keeps_the_whole_vocabulary():
+    per_tactic = {"Reconnaissance": {"support": 1, "f1": 0.0}}
+    macro, excluded = cal._support_restricted_f1(per_tactic, 0)
+    assert macro is None and excluded == []
+
+
+def test_support_floor_above_every_class_reports_unmeasured():
+    per_tactic = {"Discovery": {"support": 3, "f1": 1.0}}
+    macro, excluded = cal._support_restricted_f1(per_tactic, 5)
+    assert macro is None
+    assert excluded == [{"tactic": "Discovery", "support": 3}]
+
+
+def test_script_resolves_the_package_from_any_working_directory(tmp_path):
+    """The operator runs `python3 scripts/calibrate_labeler.py`, so the module must
+    put the repository root on sys.path itself. pytest does that for the suite, which
+    is why this only ever broke on the command line."""
+    probe = ("import importlib.util; "
+             f"spec = importlib.util.spec_from_file_location('cal', r'{SCRIPT}'); "
+             "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); "
+             "import mcp_server.label.criteria as criteria; print(criteria.version())")
+    result = subprocess.run([sys.executable, "-c", probe], cwd=tmp_path,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip()
 
 
 def test_suggest_prefers_macro_f1_over_raw_correct():
@@ -166,10 +216,16 @@ async def test_run_writes_the_report(tmp_path):
 def test_calibration_record_carries_the_vocabulary_stamp():
     best = {"floor": 0.5, "temperature": 0.02, "backend": "onnx",
             "criteria_version": "v1:abc12345", "macro_f1": 0.81,
+            "macro_f1_supported": 0.74, "min_test_support": 5,
+            "insufficient_test_support": [{"tactic": "Reconnaissance", "support": 1}],
             "gate_failures": [], "per_tactic": {"Impact": {}}}
     record = cal._calibration_record(best)
     assert record["criteria_version"] == "v1:abc12345"
     assert record["backend"] == "onnx"
+    # A deployment reading the record must see which classes the gate left out.
+    assert record["macro_f1_supported"] == 0.74
+    assert record["min_test_support"] == 5
+    assert record["insufficient_test_support"] == [{"tactic": "Reconnaissance", "support": 1}]
     assert "per_tactic" not in record
 
 

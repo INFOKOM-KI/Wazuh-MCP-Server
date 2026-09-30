@@ -45,6 +45,7 @@ from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY  # noqa: E402
 from mcp_server.label.labeler import MAX_FIELD_CHARS  # noqa: E402
 
 TRAIN_PCT, VAL_PCT = 70, 85
+# Splits are stratified per tactic, not hashed per technique. See assign_splits.
 # attack_data logs are multi-MB event dumps; only the first command line is read.
 MAX_LOG_BYTES = 2 * 1024 * 1024
 COMMAND_PATTERNS = (
@@ -84,11 +85,50 @@ def load_technique_tactics(stix_path: Path) -> tuple[dict[str, set[str]], str, s
     return techniques, attack_version(bundle), unknown_ids
 
 
-def assign_split(technique: str) -> str:
-    bucket = int(hashlib.sha256(technique.encode("utf-8")).hexdigest()[:8], 16) % 100
-    if bucket < TRAIN_PCT:
-        return "train"
-    return "val" if bucket < VAL_PCT else "test"
+def assign_splits(rows: list[dict]) -> None:
+    """Assign each row a split, balanced per tactic and disjoint per technique.
+    Hashing the technique into 100 buckets balances rows only in expectation. Rows
+    within a tactic concentrate in a few techniques (one technique carried 79 of
+    Defense Impairment's 233 rows), so which techniques the hash picks decides the
+    split: Credential Access drew 4 test rows against 245 train rows, Exfiltration
+    drew more test rows than train rows, and Reconnaissance drew no test rows at all.
+
+    Each tactic is balanced against its own 70/15/15 target. The largest techniques
+    seed train, val and test first so no split is left empty by arithmetic accident,
+    then the remaining techniques fill whichever split sits furthest below target.
+    A technique still lands in exactly one split, which is what keeps near-duplicate
+    rows of the same technique out of two splits at once.
+
+    A tactic holding fewer than three techniques cannot seed every split; those rows
+    are reported as they fall. The assignment depends only on the tactic, technique
+    and row counts, so a rebuild from the same sources reproduces it exactly.
+    """
+    plans = (("train", TRAIN_PCT), ("val", VAL_PCT - TRAIN_PCT), ("test", 100 - VAL_PCT))
+    order = {name: index for index, (name, _pct) in enumerate(plans)}
+    per_tactic: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for row in rows:
+        per_tactic[row["tactic"]][row["technique"]] += 1
+
+    chosen: dict[str, str] = {}
+    for techniques in per_tactic.values():
+        total = sum(techniques.values())
+        ordered = sorted(techniques.items(), key=lambda item: (-item[1], item[0]))
+        share = {name: max(pct / 100 * total, 1.0) for name, pct in plans}
+        load = {name: 0.0 for name, _pct in plans}
+        queue = ordered
+        if len(ordered) >= len(plans):
+            for (name, _pct), (technique, count) in zip(plans, ordered[:len(plans)]):
+                chosen[technique] = name
+                load[name] += count
+            queue = ordered[len(plans):]
+        for technique, count in queue:
+            name = min((n for n, _pct in plans),
+                       key=lambda n: ((load[n] + count) / share[n], order[n]))
+            chosen[technique] = name
+            load[name] += count
+
+    for row in rows:
+        row["split"] = chosen[row["technique"]]
 
 
 def render_alert(text: str, technique: str, with_rule_mitre: bool) -> dict:
@@ -235,7 +275,6 @@ def build(sources: dict[str, Optional[Path]], stix_path: Path, cap: int,
                 "source_id": source_id,
                 "technique": technique,
                 "tactic": tactic,
-                "split": assign_split(technique),
                 "sha256": digest,
             })
 
@@ -245,12 +284,22 @@ def build(sources: dict[str, Optional[Path]], stix_path: Path, cap: int,
         if len(candidates) > cap:
             report.setdefault("capped", {})[tactic] = len(candidates) - cap
         rows.extend(candidates[:cap])
+    # After the cap: the split must describe the rows actually written.
+    assign_splits(rows)
     rows.sort(key=lambda row: (row["split"], row["tactic"], row["sha256"]))
+
+    per_split_tactic: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for row in rows:
+        per_split_tactic[row["split"]][row["tactic"]] += 1
 
     report["rows"] = len(rows)
     report["rows_per_source"] = dict(sorted(source_counts.items()))
     report["rows_per_tactic"] = dict(sorted(Counter(r["tactic"] for r in rows).items()))
     report["rows_per_split"] = dict(sorted(Counter(r["split"] for r in rows).items()))
+    report["split_strategy"] = "stratified_per_tactic"
+    report["rows_per_split_per_tactic"] = {
+        split: dict(sorted(tactics.items())) for split, tactics in sorted(per_split_tactic.items())
+    }
     report["techniques_used"] = len({r["technique"] for r in rows})
     report["tactics_missing"] = sorted(set(MITRE_TACTIC_TO_CATEGORY) - set(report["rows_per_tactic"]))
     return rows, report

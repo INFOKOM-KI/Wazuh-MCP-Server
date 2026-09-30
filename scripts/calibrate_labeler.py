@@ -2,7 +2,8 @@
 """Calibrate the labeler's confidence floor and score temperature.
 Reads analyst labeled cases from a JSONL file, labels each one in-process over a
 grid of (floor, temperature), and writes a markdown report with top-1 accuracy,
-macro-F1 over the 16-tactic vocabulary, per-tactic precision/recall, coverage,
+macro-F1 over the 16-tactic vocabulary and over the classes above the test-support
+floor, per-tactic precision/recall, coverage,
 selective accuracy, ECE, a confusion matrix and suggested values.
 ``--gate`` turns the suggested point into an exit code: 2 when it misses the
 provisional macro-F1 / selective-accuracy / coverage / ECE thresholds, so a
@@ -29,11 +30,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from pathlib import Path
+
+# The harness runs as `python3 scripts/calibrate_labeler.py`, which puts scripts/ on
+# sys.path and leaves the package root off it. Tests pass either way because pytest
+# adds the repository root itself, so this only ever failed for the operator.
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 DEFAULT_FLOORS = (0.4, 0.5, 0.6, 0.7, 0.8)
 DEFAULT_TEMPERATURES = (0.02, 0.05, 0.1, 0.2)
 
+MIN_TEST_SUPPORT = 5
 
 def load_cases(path: str | Path) -> list[dict]:
     """Parse and validate the JSONL corpus. Raises ValueError with the line number."""
@@ -95,6 +105,23 @@ def _counts_and_f1(rows, vocabulary: tuple[str, ...]) -> tuple[dict[str, dict], 
     return per_tactic, macro
 
 
+def _support_restricted_f1(per_tactic: dict[str, dict],
+                           min_support: int) -> tuple[float | None, list[dict]]:
+    """Macro F1 over the classes the test set covers, plus the excluded ones.
+    Support is a property of the corpus, not of the model's answers, so restricting
+    here cannot be gamed the way dropping unanswered classes could. ``per_tactic``
+    keeps the full-vocabulary mean for the caller to report unchanged.
+    """
+    if min_support <= 0:
+        return None, []
+    covered = [entry for entry in per_tactic.values() if entry["support"] >= min_support]
+    macro = sum(entry["f1"] for entry in covered) / len(covered) if covered else None
+    excluded = [{"tactic": tactic, "support": entry["support"]}
+                for tactic, entry in sorted(per_tactic.items())
+                if entry["support"] < min_support]
+    return macro, excluded
+
+
 def _ece(confidences: list[float], correctness: list[bool], bins: int = 15) -> float | None:
     """Expected calibration error over the answered rows. None when no prediction
     carried a confidence: reporting 0.0 would read as perfect calibration."""
@@ -115,7 +142,8 @@ def _ece(confidences: list[float], correctness: list[bool], bins: int = 15) -> f
 
 
 def score(cases: list[dict], predictions: list[dict],
-          floor: float, temperature: float) -> dict:
+          floor: float, temperature: float,
+          min_support: int = MIN_TEST_SUPPORT) -> dict:
     """One grid point. ``top1`` counts only verdicts that cleared the floor, and
     ``ece`` is measured only over those verdicts because an uncertain row has no
     confidence to calibrate."""
@@ -152,12 +180,16 @@ def score(cases: list[dict], predictions: list[dict],
                 correctness.append(label == truth)
     per_tactic, macro_f1 = _counts_and_f1(pairs_all, tuple(TACTICS))
     _per_tactic_answered, macro_f1_answered = _counts_and_f1(pairs_answered, tuple(TACTICS))
+    macro_f1_supported, insufficient = _support_restricted_f1(per_tactic, min_support)
     return {"floor": floor, "temperature": temperature, "cases": n, "correct": correct,
             "answered": answered, "uncertain": uncertain, "unavailable": unavailable,
             "top1": correct / n if n else 0.0,
             "top1_answered": correct / answered if answered else 0.0,
             "coverage": answered / n if n else 0.0,
             "macro_f1": macro_f1, "macro_f1_answered": macro_f1_answered,
+            "macro_f1_supported": macro_f1_supported,
+            "insufficient_test_support": insufficient,
+            "min_test_support": min_support,
             "ece": _ece(confidences, correctness),
             "support": support, "per_tactic": per_tactic, "confusion": confusion}
 
@@ -166,11 +198,21 @@ GATE_DEFAULTS = {"min_macro_f1": 0.80, "min_selective_accuracy": 0.90,
                  "min_coverage": 0.60, "max_ece": 0.10}
 
 
+def _gate_value(best: dict, metric: str):
+    """Rows from ``score`` carry the support-restricted macro-F1. A hand-built row
+    without it falls back to the full-vocabulary value so the gate stays callable."""
+    if metric == "macro_f1_supported" and "macro_f1_supported" not in best:
+        return best.get("macro_f1")
+    return best.get(metric)
+
+
 def evaluate_gate(best: dict, thresholds: dict) -> list[str]:
     """Provisional thresholds: macro F1 and selective accuracy floor the quality,
     coverage stops a high floor from answering nothing, and ECE stops an uncalibrated
-    confidence from passing on accuracy alone."""
-    checks = (("min_macro_f1", "macro_f1", "macro-F1", ">="),
+    confidence from passing on accuracy alone. The macro-F1 checked here excludes classes below ``MIN_TEST_SUPPORT``; the
+    full-vocabulary value stays in the report as ``macro_f1``.
+    """
+    checks = (("min_macro_f1", "macro_f1_supported", "macro-F1 (covered classes)", ">="),
               ("min_selective_accuracy", "top1_answered", "selective accuracy", ">="),
               ("min_coverage", "coverage", "coverage", ">="),
               ("max_ece", "ece", "ECE", "<="))
@@ -179,7 +221,7 @@ def evaluate_gate(best: dict, thresholds: dict) -> list[str]:
         bound = thresholds.get(key)
         if bound is None:
             continue
-        value = best.get(metric)
+        value = _gate_value(best, metric)
         if value is None:
             failures.append(f"{label} is unmeasured")
         elif operator == ">=" and value < bound:
@@ -194,7 +236,9 @@ def suggest(rows: list[dict], default_floor: float = 0.6,
     """Best macro-F1, then least uncertain, then nearest the current defaults.
     Raw correct would reward a threshold that only ever answers the majority tactic."""
     def rank(row: dict) -> tuple:
-        quality = row.get("macro_f1")
+        quality = row.get("macro_f1_supported")
+        if quality is None:
+            quality = row.get("macro_f1")
         if quality is None:
             quality = row.get("top1", 0.0)
         return (-quality, row["uncertain"],
@@ -241,23 +285,39 @@ def render_report(rows: list[dict], best: dict, source: str, criteria_version: s
              f"- Backend: `{backend}`",
              (f"- Split: `{split}`" if split else "- Split: all rows"),
              f"- Criteria version: `{criteria_version}`",
+             f"- Test support floor: {best.get('min_test_support', 0)}"
+             + (f", {len(best['insufficient_test_support'])} class(es) below it"
+                if best.get("insufficient_test_support") else ""),
              f"- Grid: {len(rows)} points "
              f"({len({r['floor'] for r in rows})} floors x "
              f"{len({r['temperature'] for r in rows})} temperatures)", "",
              "## Sweep", "",
-             "| floor | temperature | top-1 | macro-F1 | selective acc | coverage | ECE | uncertain | unavailable |",
-             "|---|---|---|---|---|---|---|---|---|"]
+             "| floor | temperature | top-1 | macro-F1 | macro-F1 (gated) | selective acc | coverage | ECE | uncertain | unavailable |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
     for row in rows:
         ece = f"{row['ece']:.3f}" if row["ece"] is not None else "n/a"
+        gated = row.get("macro_f1_supported")
+        gated_text = f"{gated:.2f}" if gated is not None else "n/a"
         lines.append(f"| {row['floor']} | {row['temperature']} | {row['top1']:.2f} "
                      f"({row['correct']}/{row['cases']}) | {row['macro_f1']:.2f} | "
+                     f"{gated_text} | "
                      f"{row['top1_answered']:.2f} | {row['coverage']:.2f} | {ece} | "
                      f"{row['uncertain']} | {row['unavailable']} |")
+    if best.get("insufficient_test_support"):
+        lines += ["", f"## Below the support floor ({best.get('min_test_support')} test rows)", "",
+                  "Left out of the macro-F1 the gate reads. At these sample sizes the class F1",
+                  "measures the split, not the model.", "",
+                  "| tactic | test rows |", "|---|---|"]
+        lines += [f"| {entry['tactic']} | {entry['support']} |"
+                  for entry in best["insufficient_test_support"]]
     lines += ["", "## Suggested values", "",
               f"- **floor**: `{best['floor']}`",
               f"- **temperature**: `{best['temperature']}`",
               f"- top-1: {best['correct']}/{best['cases']} ({best['top1']:.0%}), "
-              f"macro-F1 {best['macro_f1']:.3f}, coverage {best['coverage']:.2f}, "
+              f"macro-F1 {best['macro_f1']:.3f} (gated "
+              + (f"{best['macro_f1_supported']:.3f}" if best.get("macro_f1_supported") is not None
+                 else "unmeasured") + "), coverage "
+              f"{best['coverage']:.2f}, "
               f"selective accuracy {best['top1_answered']:.3f}, "
               + (f"ECE {best['ece']:.3f}" if best["ece"] is not None else "ECE unmeasured"),
               "",
@@ -289,7 +349,8 @@ async def run(input_path: str | Path, out_path: str | Path,
               floors: tuple[float, ...] = DEFAULT_FLOORS,
               temperatures: tuple[float, ...] = DEFAULT_TEMPERATURES,
               factory=None, backend: str | None = None,
-              split: str | None = None, gate: dict | None = None) -> dict:
+              split: str | None = None, gate: dict | None = None,
+              min_test_support: int = MIN_TEST_SUPPORT) -> dict:
     from mcp_server.label.criteria import version
     from mcp_server.core.config import config
     backend = backend or config.label.backend
@@ -309,7 +370,8 @@ async def run(input_path: str | Path, out_path: str | Path,
         verdicts = await classifier.classify_many(texts)
         for floor in floors:
             predictions = [_floor_verdict(verdict, floor) for verdict in verdicts]
-            rows.append(score(cases, predictions, floor, temperature))
+            rows.append(score(cases, predictions, floor, temperature,
+                              min_support=min_test_support))
     rows.sort(key=lambda row: (row["floor"], row["temperature"]))
     best = suggest(rows, default_temperature=1.0 if backend == "laya" else 0.05)
     # The record ties the thresholds to the vocabulary they were measured against,
@@ -338,7 +400,9 @@ def _floats(raw: str) -> tuple[float, ...]:
 def _calibration_record(best: dict) -> dict:
     """Thresholds plus the provenance a deployment needs to detect a stale calibration."""
     keys = ("floor", "temperature", "backend", "criteria_version", "cases",
-            "macro_f1", "top1_answered", "coverage", "ece", "gate_failures")
+            "macro_f1", "macro_f1_supported", "min_test_support",
+            "insufficient_test_support",
+            "top1_answered", "coverage", "ece", "gate_failures")
     return {key: best.get(key) for key in keys}
 
 
@@ -358,6 +422,9 @@ def main() -> None:
     parser.add_argument("--min-selective-accuracy", type=float, default=None)
     parser.add_argument("--min-coverage", type=float, default=None)
     parser.add_argument("--max-ece", type=float, default=None)
+    parser.add_argument("--min-test-support", type=int, default=MIN_TEST_SUPPORT,
+                        help="Test rows a class needs before its F1 enters the gate "
+                             "macro-F1. 0 scores every class.")
     parser.add_argument("--floors", default=",".join(map(str, DEFAULT_FLOORS)))
     parser.add_argument("--temperatures", default=",".join(map(str, DEFAULT_TEMPERATURES)))
     parser.add_argument("--json-out", default=None,
@@ -369,7 +436,8 @@ def main() -> None:
     gate = {**GATE_DEFAULTS, **overrides} if (args.gate or overrides) else None
     best = asyncio.run(run(args.input, args.out, _floats(args.floors),
                            _floats(args.temperatures), backend=args.backend,
-                           split=args.split, gate=gate))
+                           split=args.split, gate=gate,
+                           min_test_support=args.min_test_support))
     if args.json_out:
         Path(args.json_out).write_text(
             json.dumps(_calibration_record(best), indent=2) + "\n", encoding="utf-8")
