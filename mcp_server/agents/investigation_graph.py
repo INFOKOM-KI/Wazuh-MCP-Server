@@ -626,7 +626,7 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
         with full_payload():
             final = await _investigation_graph.ainvoke(initial, config=config)
     return {
-        "status": "complete",
+        "status": "degraded" if final.get("errors") else "complete",
         "srcip": srcip,
         "steps": final.get("steps", []),
         "errors": final.get("errors", []),

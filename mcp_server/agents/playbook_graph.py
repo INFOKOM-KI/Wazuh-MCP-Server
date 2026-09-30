@@ -294,7 +294,7 @@ async def run_playbook(alert_text: str | None = None, rule_id: str | None = None
     else:
         final = await _playbook_graph.ainvoke(initial, config=config)
     return {
-        "status": "complete",
+        "status": "degraded" if final.get("errors") else "complete",
         "template": final.get("template_name"),
         "hunt_total_alerts": (final.get("hunt") or {}).get("total_matching_alerts"),
         "hunt_srcips": [s["ip"] for s in final.get("srcips", [])][:10],

@@ -2,7 +2,8 @@
 """Tests for the label step in agents/investigation_graph.py.
 The step must gate on config, cap the state text at MAX_STATE_CHARS instead of
 letting the Pydantic max_length reject it, and treat an unavailable backend as an
-error rather than a label.
+error rather than a label. A workflow that collected errors must not report
+itself complete.
 """
 from __future__ import annotations
 import os
@@ -68,3 +69,31 @@ def test_graph_wires_label_between_cluster_and_analytics():
     edges = {(edge.source, edge.target) for edge in graph.get_graph().edges}
     assert ("cluster", "label") in edges
     assert ("label", "analytics") in edges
+
+
+class _StubGraph:
+    def __init__(self, final):
+        self.final = final
+
+    async def ainvoke(self, state, config=None):
+        return self.final
+
+
+@pytest.mark.asyncio
+async def test_run_investigation_reports_degraded_when_a_node_failed(monkeypatch):
+    monkeypatch.setattr(ig, "_DB_PATH", "")
+    monkeypatch.setattr(ig, "_investigation_graph",
+                        _StubGraph({"steps": ["report: degraded"],
+                                    "errors": ["report: boom"]}))
+    out = await ig.run_investigation(srcip="203.0.113.9")
+    assert out["status"] == "degraded"
+    assert out["errors"] == ["report: boom"]
+
+
+@pytest.mark.asyncio
+async def test_run_investigation_reports_complete_without_errors(monkeypatch):
+    monkeypatch.setattr(ig, "_DB_PATH", "")
+    monkeypatch.setattr(ig, "_investigation_graph",
+                        _StubGraph({"steps": ["correlate: 3-Sum complete"]}))
+    out = await ig.run_investigation(srcip="203.0.113.9")
+    assert out["status"] == "complete"
