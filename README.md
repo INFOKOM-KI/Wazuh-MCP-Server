@@ -628,7 +628,9 @@ that an entity is malicious.
   `setup.sh BLUETEAM_INSTALL_FORECAST=1`. An `insufficient_data` train result means the
   window or corpus is below the configured floor, not that attacks are absent.
 - `blueteam_volume_forecast` needs the same flag. Training fits a PoissonHMM and therefore
-  needs `setup.sh BLUETEAM_INSTALL_FORECAST=1`; predict reads only the stored model. A thin,
+  needs `setup.sh BLUETEAM_INSTALL_FORECAST=1`; predict reads only the stored model and, with
+  no `model_id`, resolves the newest volume fit (tactic fits share the store and are
+  skipped). A thin,
   all-zero or constant series returns `insufficient_data` before any fit.
 - `blueteam_incident_label` needs `BLUETEAM_LAYA_ENABLED=true`. The default `onnx`
   backend reuses the RAG embedder and costs no extra memory. The `laya` backend is
@@ -659,8 +661,10 @@ Reading the output:
 - **A next-tactic probability is a corpus frequency, not an intent forecast.** Report the top
   tactics with their probabilities, the escalation probability (mass on Command and Control,
   Exfiltration, Impact, Lateral Movement) and the `support` count. `uniform_fallback=true`
-  means no known tactic anchored the row: report it as "no corpus support", never as the
-  model's pick. `low_support=true` means the current row has fewer observed transitions than
+  means no predictive anchor was available. The prediction's `reason` names which one
+  was missing: no known tactic, a collapsed posterior, or a model stored without an
+  emission matrix. Report it as "no corpus support", never as the model's pick.
+  `low_support=true` means the current row has fewer observed transitions than
   `BLUETEAM_FORECAST_MIN_SUPPORT`; quote the ranking and the count together.
   `anomaly.mean_logprob` is advisory, because a genuinely new campaign is supposed to score low.
 - **A volume forecast is a regime-conditional mean, not a threshold.** `expected_total` and
@@ -843,7 +847,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_sigma_rule_save(rule_source, …)` | write the YAML to the staging dir (`BLUETEAM_SIGMA_RULES_DIR`); needs `wazuh:write` |
 | `blueteam_alert_cluster(mode="fit"\|"status", time_window_minutes, min_cluster_size, min_samples)` | HDBSCAN over srcip entities built from the 3-Sum aggregation (16 tactic sums + 4 scores). Returns clusters, medoids, noise ratio; `insufficient_data` instead of an empty cluster list when the population is too small |
 | `blueteam_alert_cluster_assign(srcip, fit_id, assign_factor, use_cached)` | nearest-centroid assignment against the stored fit. `label=-1` + `novelty=true` = outside every cluster radius. `pending_novelty`/`pending_refit` flag when a refit is justified |
-| `blueteam_tactic_forecast(mode="train"\|"predict"\|"status", kind="markov"\|"hmm", srcip, current_tactic, model_id, top_k)` | fit or query a tactic-transition model over per-entity `rule.mitre.tactic` sequences: top-k next tactics, escalation probability, and the chain's mean log-likelihood against the corpus (Markov models; an HMM reports `not_applicable`). `uniform_fallback`/`low_support` flag a ranking the corpus does not back; `unavailable` means hmmlearn is absent for `kind="hmm"` |
+| `blueteam_tactic_forecast(mode="train"\|"predict"\|"status", kind="markov"\|"hmm", srcip, current_tactic, model_id, top_k)` | fit or query a tactic-transition model over per-entity `rule.mitre.tactic` sequences: top-k next tactics, escalation probability, and the chain's mean log-likelihood against the corpus (Markov models; an HMM reports `not_applicable`). `uniform_fallback`/`low_support` flag a ranking the corpus does not back and `prediction.reason` names the missing anchor; `unavailable` means hmmlearn is absent for `kind="hmm"` |
 | `blueteam_volume_forecast(mode="train"\|"predict"\|"status", horizon_buckets, context_buckets, n_components, min_buckets)` | fit or query a PoissonHMM over per-bucket alert counts (empty buckets included). Returns per-bucket expected counts, expected total, mean per bucket and `peak_probability`; `insufficient_data` on a thin/all-zero/constant series, `posterior_fallback` when the context fits no regime |
 | `blueteam_cluster_lineage(mode="lineage"\|"behavior"\|"status", match_factor, min_points, shift_z)` | read-only lineage over stored cluster fits: matches each cluster to the previous fit inside its radius, then reports size trend, novelty z, tactic L1 shift, signals and an advisory `behavior_risk`. `insufficient_data` below two fits, `insufficient_history` below the point floor; no entity keys in output |
 | `blueteam_incident_label(mode="alert"\|"text", alert, text, include_probabilities, top_k)` | label one alert or text with one of the 16 ATT&CK tactics, plus the A/B/C category derived from it. `status` is `ok` / `uncertain` / `unavailable`, and `unavailable` carries the reason |
@@ -1134,6 +1138,7 @@ Do not lower below these without production telemetry evidence.
 | `{"truncated": true, ...}` | the response crossed `CHARACTER_LIMIT`; the tool kept it valid JSON instead of slicing it. Also returned when a `response_format="toon"` response is over the cap, because a sliced TOON document cannot be parsed | narrow the window or add `limit`/`offset` and re-call. Never read it as empty |
 | `{"error": "unavailable: toon_format is not installed"}` | `response_format="toon"` was requested but the optional encoder is missing on the server | re-call the same tool with `response_format="json"`; report the server gap, it is not a finding |
 | `"<step>: degraded"` in a workflow response | that step failed and the reason is listed under `errors[]` | quote the reason in the report limitations; never substitute your own result for the missing step |
+| `status="degraded"` on a workflow response | at least one step recorded an error, so the run did not finish clean | read `errors[]` with it and list those reasons in the report limitations, never as a complete run |
 | `"hasn't been inspected yet"` | MCP handshake, not an error | re-invoke with matching params |
 | `"circuit breaker open for '<upstream>' (N consecutive failures)"` | that one upstream failed N times in a row. The name is the pool: a URL host (`otx.alienvault.com`, `urlhaus.abuse.ch`, the Netra host) or an explicit pool (`argus`, `rapidapi`, `indexer`, `wazuh`). Breakers are per upstream, so everything else still works | skip that provider, name it in the report, retry the same call after 60s |
 | `"Request timed out after <N>s for <host>"` | the call exceeded its budget. `<N>` is the budget actually applied (global `HTTP_TIMEOUT`, default 30s; 90s for Netra), `<host>` is the upstream | a timeout is a slow or unreachable upstream, never a finding. Retry once; if it repeats, report the upstream as degraded |
