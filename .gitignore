@@ -114,6 +114,13 @@ laya-model/
 laya-cache/
 models--convaiinnovations--laya-multilingual/
 
+# Vendored SetFit tree (BLUETEAM_LAYA_MODEL_PATH with backend=setfit) and the
+# training-time snapshot of its default body. A git add here would commit the
+# weights the pin exists to verify.
+setfit-model/
+setfit-cache/
+models--sentence-transformers--paraphrase-multilingual-MiniLM-L12-v2/
+
 # Evidence PDFs (blueteam_pdf_extract / blueteam_markitdown_convert /
 # blueteam_document_convert and blueteam_rag_ingest(source="pdf")). Operators drop
 # vendor advisories, IR reports and case exhibits under BLUETEAM_ALLOWED_PATHS, which

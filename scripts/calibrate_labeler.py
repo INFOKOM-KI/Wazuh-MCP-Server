@@ -8,8 +8,8 @@ selective accuracy, ECE, a confusion matrix and suggested values.
 ``--gate`` turns the suggested point into an exit code: 2 when it misses the
 provisional macro-F1 / selective-accuracy / coverage / ECE thresholds, so a
 cron or CI run fails on a regression instead of writing a report nobody reads.
-Works for both backends: onnx re-embeds per temperature, Laya re-runs inference per
-temperature. Cases are embedded once per temperature and every floor is applied to
+Works for every backend: onnx re-embeds per temperature, Laya and SetFit re-run
+inference per temperature. Cases are embedded once per temperature and every floor is applied to
 the returned vectors, so a 1,000-row set costs one pass per temperature, not one
 call per grid point. The script never writes env files or code: suggestions are printed in the report
 and the operator applies them with BLUETEAM_LAYA_CONFIDENCE_FLOOR /
@@ -24,7 +24,8 @@ allowlist as the tool, so an exported Wazuh alert can be pasted unchanged. Rows 
 one of them.
 
 Run it on the controlled stage, where the embedder cache exists: python3 scripts/calibrate_labeler.py --input /var/lib/blue-team-mcp/calibration/labels.jsonl
-For the Laya backend, set BLUETEAM_LAYA_MODEL_PATH / BLUETEAM_LAYA_MODEL_SHA256 and pass --backend laya.
+For the laya and setfit backends, set BLUETEAM_LAYA_MODEL_PATH /
+BLUETEAM_LAYA_MODEL_SHA256 and pass --backend laya or --backend setfit.
 """
 from __future__ import annotations
 import argparse
@@ -274,6 +275,12 @@ def _default_factory(backend: str):
         return lambda floor, temperature: LayaLabeler(
             floor, label.model_path, label.model_sha256, label.allow_download,
             temperature=temperature, max_len=label.max_len)
+    if backend == "setfit":
+        from mcp_server.label.backends import SetFitLabeler
+        label = config.label
+        return lambda floor, temperature: SetFitLabeler(
+            floor, label.model_path, label.model_sha256, label.allow_download,
+            temperature=temperature)
     from mcp_server.label.backends import ONNXPrototypeLabeler
     return lambda floor, temperature: ONNXPrototypeLabeler(floor, temperature=temperature)
 
@@ -373,7 +380,7 @@ async def run(input_path: str | Path, out_path: str | Path,
             rows.append(score(cases, predictions, floor, temperature,
                               min_support=min_test_support))
     rows.sort(key=lambda row: (row["floor"], row["temperature"]))
-    best = suggest(rows, default_temperature=1.0 if backend == "laya" else 0.05)
+    best = suggest(rows, default_temperature=1.0 if backend in ("laya", "setfit") else 0.05)
     # The record ties the thresholds to the vocabulary they were measured against,
     # so a stale calibration is detectable rather than silently applied.
     best["criteria_version"] = version()
@@ -410,7 +417,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default="/var/lib/blue-team-mcp/calibration/labels.jsonl")
     parser.add_argument("--out", default="calibration_report.md")
-    parser.add_argument("--backend", choices=("onnx", "laya"), default=None,
+    parser.add_argument("--backend", choices=("onnx", "laya", "setfit"), default=None,
                         help="Labeler backend to calibrate; defaults to "
                              "BLUETEAM_LAYA_BACKEND (onnx when unset).")
     parser.add_argument("--split", choices=("train", "val", "test"), default=None,

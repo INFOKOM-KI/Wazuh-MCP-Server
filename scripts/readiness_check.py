@@ -18,7 +18,7 @@ def report(status: str, name: str, detail: str = "") -> None:
 
 def check_imports() -> None:
     for module, needed in (("sklearn", "cluster phase"), ("fastembed", "ONNX label + rerank"),
-                           ("onnxruntime", "ONNX runtime"), ("torch", "laya backend only")):
+                           ("onnxruntime", "ONNX runtime"), ("torch", "laya/setfit backends")):
         found = importlib.util.find_spec(module) is not None
         report(OK if found else (FAIL if module == "sklearn" else NOTE),
                f"import: {module}", "present" if found else f"missing ({needed})")

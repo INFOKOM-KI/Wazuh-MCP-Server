@@ -95,14 +95,15 @@ async def blueteam_incident_label(params: LabelClassifyInput) -> str:
     answer is ``uncertain`` with the score vector attached, which is a result and
     not a failure. The A/B/C category is derived from the tactic through the same
     mapping the 3-Sum engine uses, so the label always lands in a known category.
-    Two backends, selected by ``BLUETEAM_LAYA_BACKEND``:
+    Three backends, selected by ``BLUETEAM_LAYA_BACKEND``:
     ``onnx`` (default) reuses the RAG embedder and costs no extra memory;
-    ``laya`` runs the real classifier and requires CPU torch plus vendored weights.
+    ``laya`` runs the real classifier and ``setfit`` a fine-tuned sentence
+    transformer, both requiring CPU torch plus vendored, pinned weights.
     The Laya call passes ``BLUETEAM_LAYA_MAX_LEN`` (default 1024 tokens, 8192 max) so
-    long state text is not silently truncated, and rescales the model's own option
-    distribution by ``BLUETEAM_LAYA_TEMPERATURE`` (default 1.0 = neutral, because
-    the checkpoint ships uncalibrated).
-    A backend that exposes no scores reports ``scored=false`` and never invents a confidence value.
+    long state text is not silently truncated; SetFit runs at the truncation its
+    saved body was trained with. Both rescale the model's own distribution by
+    ``BLUETEAM_LAYA_TEMPERATURE`` (default 1.0 = neutral, because neither checkpoint
+    is calibrated out of the box). A backend that exposes no scores reports ``scored=false`` and never invents a confidence value.
 
     Args:
         params.mode: 'text' (default) or 'alert'.

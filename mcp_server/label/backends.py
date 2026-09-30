@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-The two labeling backends behind ``blueteam_incident_label``.
+The three labeling backends behind ``blueteam_incident_label``.
 ``onnx_prototype`` is the default: it reuses the RAG embedder's ONNX session and
 scores the taxonomy prototypes by cosine similarity, so it adds no dependency and
-no second model to the CPU. ``laya`` runs the real classifier and needs CPU torch
-plus vendored weights. Both return the same ``LabelVerdict``, and both apply the same floor rule: a label
+no second model to the CPU. ``laya`` runs the real classifier and ``setfit`` a
+fine-tuned sentence transformer; both need CPU torch plus vendored, pinned weights.
+All return the same ``LabelVerdict``, and all apply the same floor rule: a label
 is only handed back above ``confidence_floor``, and a backend that exposes no
 scores reports ``scored=False, uncertain=True`` rather than a fabricated number.
 A verdict is never a claim that an alert is malicious - it is the phase the text
@@ -44,7 +45,7 @@ Embedder = Callable[[List[str]], Awaitable[Tuple[Optional[Any], Optional[str]]]]
 
 @dataclass(frozen=True)
 class LabelVerdict:
-    """Result of one classification, identical in shape for both backends."""
+    """Result of one classification, identical in shape for every backend."""
     backend: str
     status: str
     criteria_version: str
@@ -90,7 +91,7 @@ def _temperature_scale(distribution: Dict[str, float], temperature: float) -> Di
 
 
 class _BaseLabeler:
-    """Floor application shared by both backends. Subclasses supply scores or a
+    """Floor application shared by every backend. Subclasses supply scores or a
     bare label; nothing else decides whether a label may be returned."""
 
     name = "base"
@@ -253,6 +254,27 @@ def _score_payload(payload: Any) -> Optional[Dict[str, float]]:
     return values
 
 
+def _resolve_vendored_root(model_path: str, model_sha256: str,
+                           allow_download: bool) -> Optional[str]:
+    """Why a pinned model tree may not be loaded, or None when it may. The pin is
+    checked before any runtime import and before ``from_pretrained`` unpickles the
+    classification head; a remote reference is refused unless downloads were
+    explicitly enabled."""
+    if not model_sha256:
+        return ("no weight pin: set BLUETEAM_LAYA_MODEL_SHA256 "
+                "(setup.sh generates it from the vendored tree)")
+    if os.path.isdir(model_path):
+        actual = _tree_sha256(model_path)
+        if actual != model_sha256:
+            return (f"weight pin mismatch: {model_path} hashes to {actual}, "
+                    f"expected {model_sha256}; refusing to load")
+        return None
+    if not allow_download:
+        return (f"{model_path!r} is not a local directory and "
+                "BLUETEAM_LAYA_ALLOW_DOWNLOAD is false")
+    return None
+
+
 class LayaLabeler(_BaseLabeler):
     """Laya-Multilingual classifier. Loads and verifies the weight pin before
     importing the runtime, and never swaps models per request: one agent resident
@@ -281,20 +303,10 @@ class LayaLabeler(_BaseLabeler):
         with self._load_lock:
             if self._agent is not None:
                 return True
-            if not self.model_sha256:
-                self._reason = ("no weight pin: set BLUETEAM_LAYA_MODEL_SHA256 "
-                                "(setup.sh generates it from the vendored tree)")
-                return False
-            local_dir = os.path.isdir(self.model_path)
-            if local_dir:
-                actual = _tree_sha256(self.model_path)
-                if actual != self.model_sha256:
-                    self._reason = (f"weight pin mismatch: {self.model_path} hashes to "
-                                    f"{actual}, expected {self.model_sha256}; refusing to load")
-                    return False
-            elif not self.allow_download:
-                self._reason = (f"{self.model_path!r} is not a local directory and "
-                                "BLUETEAM_LAYA_ALLOW_DOWNLOAD is false")
+            refusal = _resolve_vendored_root(self.model_path, self.model_sha256,
+                                             self.allow_download)
+            if refusal is not None:
+                self._reason = refusal
                 return False
             try:
                 import laya  # noqa: F401 - deliberately inside the call path
@@ -335,3 +347,105 @@ class LayaLabeler(_BaseLabeler):
 
     async def classify(self, state_text: str) -> LabelVerdict:
         return await asyncio.to_thread(self._predict, state_text)
+
+
+class SetFitLabeler(_BaseLabeler):
+    """SetFit classifier over the same 16 tactic vocabulary: a sentence transformer
+    body plus a logistic-regression head. The tree pin is verified before
+    ``from_pretrained`` unpickles ``model_head.pkl``, and the loaded label mapping is
+    asserted against ``criteria.TACTICS``; probability columns are mapped by name
+    through ``id2label``, never by position, because the column order is whatever
+    the training run saved.
+    """
+    name = "setfit"
+
+    def __init__(self, floor: float, model_path: str, model_sha256: str,
+                 allow_download: bool = False, temperature: float = 1.0) -> None:
+        super().__init__(floor)
+        self.model_path = model_path
+        self.model_sha256 = (model_sha256 or "").strip().lower()
+        self.allow_download = bool(allow_download)
+        self.temperature = float(temperature)
+        self._model: Optional[Any] = None
+        self._labels: List[str] = []
+        self._reason = "not loaded"
+        self._load_lock = threading.Lock()
+
+    def _load(self) -> bool:
+        if self._model is not None:
+            return True
+        with self._load_lock:
+            if self._model is not None:
+                return True
+            refusal = _resolve_vendored_root(self.model_path, self.model_sha256,
+                                             self.allow_download)
+            if refusal is not None:
+                self._reason = refusal
+                return False
+            try:
+                from setfit import SetFitModel
+                model = SetFitModel.from_pretrained(self.model_path)
+            except Exception as exc:
+                self._reason = f"model load failed: {exc}"
+                logger.warning("SetFit labeler unavailable: %s", self._reason)
+                return False
+            id2label = getattr(model, "id2label", None) or {}
+            labels = [str(id2label[index]) for index in sorted(id2label)]
+            if set(labels) != set(criteria.TACTICS):
+                self._reason = ("model exposes no label mapping for the criteria "
+                                f"vocabulary (got {len(labels)} labels, expected "
+                                f"{len(criteria.TACTICS)} tactics)")
+                return False
+            self._labels = labels
+            self._model = model
+            self._reason = "ready"
+            logger.info("SetFit labeler loaded model=%s", self.model_path)
+            return True
+
+    def _predict_many(self, texts: List[str]) -> Optional[List[LabelVerdict]]:
+        """Worker-thread path: load, one batched ``predict_proba``, one finalize per
+        row. A matrix that is not ``(n_rows, n_labels)`` breaks the output contract,
+        so the whole call is unavailable rather than a guessed column mapping."""
+        if not self._load():
+            return None
+        try:
+            matrix = self._model.predict_proba(list(texts))
+        except Exception as exc:
+            self._reason = f"prediction failed: {exc}"
+            return None
+        rows = getattr(matrix, "tolist", None)
+        if callable(rows):
+            matrix = rows()
+        if not isinstance(matrix, list) or len(matrix) != len(texts):
+            self._reason = "unrecognized setfit probability shape"
+            return None
+        verdicts: List[LabelVerdict] = []
+        for row in matrix:
+            if not isinstance(row, list) or len(row) != len(self._labels):
+                self._reason = "unrecognized setfit probability shape"
+                return None
+            scores = _score_payload(dict(zip(self._labels, row)))
+            if scores is None:
+                self._reason = ("setfit did not return a probability distribution; "
+                                "refusing to floor raw scores")
+                return None
+            verdicts.append(self._finalize(_temperature_scale(scores, self.temperature)))
+        return verdicts
+
+    async def classify_many(self, state_texts: List[str]) -> List[LabelVerdict]:
+        if not state_texts:
+            return []
+        verdicts = await asyncio.to_thread(self._predict_many, list(state_texts))
+        if verdicts is None:
+            return [self._unavailable(self._reason) for _ in state_texts]
+        return verdicts
+
+    async def classify(self, state_text: str) -> LabelVerdict:
+        return (await self.classify_many([state_text]))[0]
+
+    async def prewarm(self) -> None:
+        """Load the pinned model ahead of the first call; the request path then pays
+        inference only."""
+        await asyncio.to_thread(self._load)
+        if self._model is None:
+            logger.warning("SetFit labeler prewarm failed: %s", self._reason)

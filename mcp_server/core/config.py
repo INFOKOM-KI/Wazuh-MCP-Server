@@ -948,13 +948,14 @@ class ForecastConfig:
 @dataclass
 class LabelConfig:
     """Incident labeling settings (blueteam_incident_label).
-    Disabled by default: both backends need something that is not on a plain
+    Disabled by default: every backend needs something that is not on a plain
     install, and an enabled labeler that cannot load would report `unavailable`
     on every call.
     Env vars carry the ``LAYA_`` prefix because that is the tool's origin, but the
     default backend is ``onnx`` - it reuses the RAG embedder's ONNX session, so the
-    CPU cost is one model already resident rather than a second one. ``laya`` is the
-    real classifier: it needs CPU torch plus a vendored, pinned weight directory.
+    CPU cost is one model already resident rather than a second one. ``laya`` runs
+    the real classifier and ``setfit`` a fine-tuned sentence transformer: both need
+    CPU torch plus a vendored, pinned weight directory.
     """
     enabled: bool = False
     backend: str = "onnx"
@@ -970,10 +971,11 @@ class LabelConfig:
     def from_env(cls) -> "LabelConfig":
         backend = os.environ.get("BLUETEAM_LAYA_BACKEND", "onnx").strip().lower()
         # One env var, two score distributions: the onnx backend softmaxes cosine
-        # similarities and needs sharpening, while Laya returns an already-softmaxed
-        # option distribution that must not be sharpened a second time. The default
-        # is neutral for Laya and sharpening for onnx; an explicit value always wins.
-        default_temperature = "1.0" if backend == "laya" else "0.05"
+        # similarities and needs sharpening, while Laya and SetFit return an
+        # already-softmaxed distribution that must not be sharpened a second time.
+        # The default is neutral for both and sharpening for onnx; an explicit value
+        # always wins.
+        default_temperature = "1.0" if backend in ("laya", "setfit") else "0.05"
         return cls(
             enabled=_bool(os.environ.get("BLUETEAM_LAYA_ENABLED", "false")),
             backend=backend,
@@ -987,9 +989,10 @@ class LabelConfig:
         )
 
     def validate(self) -> None:
-        if self.backend not in ("onnx", "laya"):
+        if self.backend not in ("onnx", "laya", "setfit"):
             raise ConfigurationError(
-                f"BLUETEAM_LAYA_BACKEND must be 'onnx' or 'laya' (got {self.backend!r})"
+                f"BLUETEAM_LAYA_BACKEND must be 'onnx', 'laya' or 'setfit' "
+                f"(got {self.backend!r})"
             )
         if not 0.0 < self.confidence_floor < 1.0:
             raise ConfigurationError(
@@ -1010,18 +1013,19 @@ class LabelConfig:
                 "accepts up to 8192 tokens and the shipped default of 1024 truncates "
                 "long alerts."
             )
-        if self.enabled and self.backend == "laya":
+        if self.enabled and self.backend in ("laya", "setfit"):
             # Fail closed at startup: unpinned weights must never load, and a load
             # that cannot succeed turns every label into `unavailable`.
             if not self.model_path:
                 raise ConfigurationError(
-                    "BLUETEAM_LAYA_BACKEND=laya requires BLUETEAM_LAYA_MODEL_PATH "
-                    "(the vendored weights directory)."
+                    f"BLUETEAM_LAYA_BACKEND={self.backend} requires "
+                    "BLUETEAM_LAYA_MODEL_PATH (the vendored weights directory)."
                 )
             if not self.model_sha256:
                 raise ConfigurationError(
-                    "BLUETEAM_LAYA_BACKEND=laya requires BLUETEAM_LAYA_MODEL_SHA256; "
-                    "run setup.sh to generate it from the vendored tree."
+                    f"BLUETEAM_LAYA_BACKEND={self.backend} requires "
+                    "BLUETEAM_LAYA_MODEL_SHA256; run setup.sh to generate it "
+                    "from the vendored tree."
                 )
 
 

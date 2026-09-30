@@ -27,6 +27,7 @@ from mcp_server.label.backends import (
     LabelVerdict,
     LayaLabeler,
     ONNXPrototypeLabeler,
+    SetFitLabeler,
     _BaseLabeler,
 )
 
@@ -55,11 +56,14 @@ def require_enabled() -> None:
     if labeler_enabled():
         return
     backend = getattr(getattr(config, "label", None), "backend", "onnx")
-    hint = ("Install CPU torch and vendor the weights (setup.sh "
-            "BLUETEAM_INSTALL_LAYA=1) and set BLUETEAM_LAYA_BACKEND=laya."
-            if backend == "laya" else
-            "The default backend needs the RAG embedder bootstrapped: run setup.sh "
-            "with BLUETEAM_RAG_ENABLED=true once so the ONNX model is cached.")
+    if backend in ("laya", "setfit"):
+        installer = ("BLUETEAM_INSTALL_LAYA=1" if backend == "laya"
+                     else "BLUETEAM_INSTALL_SETFIT=1")
+        hint = (f"Install CPU torch and vendor the weights (setup.sh {installer}) "
+                f"and set BLUETEAM_LAYA_BACKEND={backend}.")
+    else:
+        hint = ("The default backend needs the RAG embedder bootstrapped: run setup.sh "
+                "with BLUETEAM_RAG_ENABLED=true once so the ONNX model is cached.")
     raise BlueTeamMCPError(
         f"Incident labeling is disabled. Set BLUETEAM_LAYA_ENABLED=true, then restart "
         f"the server. {hint}"
@@ -72,6 +76,10 @@ def _build() -> _BaseLabeler:
                            config.label.model_sha256, config.label.allow_download,
                            temperature=config.label.temperature,
                            max_len=config.label.max_len)
+    if config.label.backend == "setfit":
+        return SetFitLabeler(config.label.confidence_floor, config.label.model_path,
+                             config.label.model_sha256, config.label.allow_download,
+                             temperature=config.label.temperature)
     return ONNXPrototypeLabeler(config.label.confidence_floor,
                                 temperature=config.label.temperature)
 

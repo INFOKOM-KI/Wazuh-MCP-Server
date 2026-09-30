@@ -16,6 +16,7 @@ from mcp_server.label import criteria
 from mcp_server.label.backends import (
     LayaLabeler,
     ONNXPrototypeLabeler,
+    SetFitLabeler,
     _score_payload,
     _tree_sha256,
 )
@@ -227,6 +228,8 @@ def test_laya_backend_defaults_temperature_to_neutral(monkeypatch):
     monkeypatch.delenv("BLUETEAM_LAYA_TEMPERATURE", raising=False)
     monkeypatch.setenv("BLUETEAM_LAYA_BACKEND", "laya")
     assert LabelConfig.from_env().temperature == 1.0
+    monkeypatch.setenv("BLUETEAM_LAYA_BACKEND", "setfit")
+    assert LabelConfig.from_env().temperature == 1.0
     monkeypatch.setenv("BLUETEAM_LAYA_BACKEND", "onnx")
     assert LabelConfig.from_env().temperature == 0.05
     monkeypatch.setenv("BLUETEAM_LAYA_TEMPERATURE", "0.2")
@@ -245,7 +248,6 @@ def test_max_len_config_rejects_out_of_range():
 def test_build_passes_temperature_and_max_len_to_laya(monkeypatch):
     from mcp_server.core.config import config
     from mcp_server.label import labeler
-
     monkeypatch.setattr(config.label, "backend", "laya")
     monkeypatch.setattr(config.label, "model_path", "/tmp/vendored")
     monkeypatch.setattr(config.label, "model_sha256", "0" * 64)
@@ -408,3 +410,138 @@ def test_temperature_config_rejects_out_of_range():
         with pytest.raises(ConfigurationError, match="BLUETEAM_LAYA_TEMPERATURE"):
             LabelConfig(temperature=bad).validate()
     LabelConfig(temperature=0.05).validate()
+
+
+def _install_fake_setfit(monkeypatch, matrix: list, labels: list | None = None):
+    """Fake ``setfit`` module. ``matrix`` is predict_proba's return, one row per text."""
+    class _Model:
+        loads: list = []
+        calls: list = []
+
+        def __init__(self, path: str):
+            _Model.loads.append(path)
+            self.id2label = {index: label for index, label
+                             in enumerate(labels or criteria.TACTICS)}
+
+        def predict_proba(self, texts):
+            _Model.calls.append(list(texts))
+            return matrix
+
+    _Model.loads, _Model.calls = [], []
+    module = types.SimpleNamespace(
+        SetFitModel=types.SimpleNamespace(from_pretrained=lambda path: _Model(path)))
+    monkeypatch.setitem(sys.modules, "setfit", module)
+    return _Model
+
+
+def _setfit_row(label: str, confidence: float, labels: list | None = None) -> list:
+    labels = labels or list(criteria.TACTICS)
+    rest = (1.0 - confidence) / (len(labels) - 1)
+    return [confidence if name == label else rest for name in labels]
+
+
+def test_setfit_refuses_a_pin_mismatch(tmp_path, monkeypatch):
+    (tmp_path / "config_setfit.json").write_text("{}")
+    fake = _install_fake_setfit(monkeypatch, [_setfit_row("Impact", 0.9)])
+    verdict = _run(SetFitLabeler(0.6, str(tmp_path), "0" * 64).classify("ransomware note"))
+    assert verdict.status == "unavailable"
+    assert "weight pin mismatch" in verdict.reason
+    assert fake.loads == []
+
+
+def test_setfit_refuses_an_unpinned_model(tmp_path, monkeypatch):
+    fake = _install_fake_setfit(monkeypatch, [_setfit_row("Impact", 0.9)])
+    verdict = _run(SetFitLabeler(0.6, str(tmp_path), "").classify("ransomware note"))
+    assert verdict.status == "unavailable"
+    assert "no weight pin" in verdict.reason
+    assert fake.loads == []
+
+
+def test_setfit_refuses_a_remote_reference_without_download(tmp_path, monkeypatch):
+    fake = _install_fake_setfit(monkeypatch, [_setfit_row("Impact", 0.9)])
+    labeler = SetFitLabeler(0.6, "org/setfit-tactics", "a" * 64)
+    verdict = _run(labeler.classify("ransomware note"))
+    assert verdict.status == "unavailable"
+    assert "not a local directory" in verdict.reason
+    assert fake.loads == []
+
+
+def test_setfit_maps_probability_columns_by_label_name(tmp_path, monkeypatch):
+    """The saved column order is the training runs, so a reversed mapping is the
+    fixture that proves scores are keyed by name and not position."""
+    (tmp_path / "config_setfit.json").write_text("{}")
+    labels = list(reversed(criteria.TACTICS))
+    _install_fake_setfit(monkeypatch, [_setfit_row("Impact", 0.9, labels)], labels=labels)
+    labeler = SetFitLabeler(0.6, str(tmp_path), _tree_sha256(str(tmp_path)))
+    verdict = _run(labeler.classify("ransomware note"))
+    assert verdict.status == "ok"
+    assert verdict.label == "Impact" and verdict.category == "C"
+    assert verdict.scored and not verdict.uncertain
+    assert verdict.confidence == pytest.approx(0.9, abs=1e-6)
+    assert set(verdict.probabilities) == set(criteria.TACTICS)
+    assert abs(sum(verdict.probabilities.values()) - 1.0) < 1e-4
+
+
+def test_setfit_refuses_a_label_set_that_does_not_match_the_vocabulary(tmp_path, monkeypatch):
+    (tmp_path / "config_setfit.json").write_text("{}")
+    _install_fake_setfit(monkeypatch, [[0.9, 0.1]], labels=["Impact", "Collection"])
+    labeler = SetFitLabeler(0.6, str(tmp_path), _tree_sha256(str(tmp_path)))
+    verdict = _run(labeler.classify("ransomware note"))
+    assert verdict.status == "unavailable"
+    assert "label mapping" in verdict.reason
+
+
+def test_setfit_refuses_a_matrix_that_is_not_a_distribution(tmp_path, monkeypatch):
+    (tmp_path / "config_setfit.json").write_text("{}")
+    digest = _tree_sha256(str(tmp_path))
+    _install_fake_setfit(monkeypatch, [[0.9]])       # wrong column count
+    verdict = _run(SetFitLabeler(0.6, str(tmp_path), digest).classify("a"))
+    assert verdict.status == "unavailable"
+    assert "unrecognized setfit probability shape" in verdict.reason
+    _install_fake_setfit(monkeypatch, [[9.5] + [-2.0] * (len(criteria.TACTICS) - 1)])
+    verdict = _run(SetFitLabeler(0.6, str(tmp_path), digest).classify("a"))
+    assert verdict.status == "unavailable"
+    assert "did not return a probability distribution" in verdict.reason
+
+
+def test_setfit_classify_many_batches_once_and_keeps_order(tmp_path, monkeypatch):
+    (tmp_path / "config_setfit.json").write_text("{}")
+    matrix = [_setfit_row("Impact", 0.9), _setfit_row("Collection", 0.9),
+              _setfit_row("Impact", 0.9)]
+    fake = _install_fake_setfit(monkeypatch, matrix)
+    labeler = SetFitLabeler(0.6, str(tmp_path), _tree_sha256(str(tmp_path)))
+    verdicts = _run(labeler.classify_many(["first", "second", "third"]))
+    assert [verdict.label for verdict in verdicts] == ["Impact", "Collection", "Impact"]
+    assert fake.calls == [["first", "second", "third"]], "texts must batch in one call"
+
+
+def test_setfit_import_failure_is_reported_not_raised(tmp_path, monkeypatch):
+    (tmp_path / "config_setfit.json").write_text("{}")
+    monkeypatch.setitem(sys.modules, "setfit", None)
+    labeler = SetFitLabeler(0.6, str(tmp_path), _tree_sha256(str(tmp_path)))
+    verdict = _run(labeler.classify("ransomware note"))
+    assert verdict.status == "unavailable"
+    assert "model load failed" in verdict.reason
+
+
+def test_build_passes_settings_to_setfit(monkeypatch):
+    from mcp_server.core.config import config
+    from mcp_server.label import labeler
+    monkeypatch.setattr(config.label, "backend", "setfit")
+    monkeypatch.setattr(config.label, "model_path", "/tmp/vendored")
+    monkeypatch.setattr(config.label, "model_sha256", "0" * 64)
+    monkeypatch.setattr(config.label, "temperature", 0.3)
+    built = labeler._build()
+    assert isinstance(built, SetFitLabeler)
+    assert built.temperature == 0.3
+
+
+def test_setfit_enabled_requires_a_pinned_vendored_model():
+    from mcp_server.core.config import LabelConfig
+    from mcp_server.core.exceptions import ConfigurationError
+    with pytest.raises(ConfigurationError, match="BLUETEAM_LAYA_MODEL_PATH"):
+        LabelConfig(enabled=True, backend="setfit").validate()
+    with pytest.raises(ConfigurationError, match="BLUETEAM_LAYA_MODEL_SHA256"):
+        LabelConfig(enabled=True, backend="setfit", model_path="/tmp/m").validate()
+    LabelConfig(enabled=True, backend="setfit", model_path="/tmp/m",
+                model_sha256="a" * 64).validate()

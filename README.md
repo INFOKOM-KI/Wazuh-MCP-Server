@@ -118,7 +118,7 @@ optional — tools degrade gracefully without them.
 | Audit & persistence | `BLUETEAM_AUDIT_LOG`, `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CMDB_FILE` | JSONL audit trail + stores (optional) |
 | Local case RAG | `BLUETEAM_RAG_ENABLED`, `BLUETEAM_RAG_DB`, `BLUETEAM_RAG_MODEL`, `BLUETEAM_RAG_CACHE_PATH`, `BLUETEAM_RAG_MAX_CANDIDATES`, `BLUETEAM_RAG_TOP_K`, `BLUETEAM_RAG_MAX_CHUNKS`, `BLUETEAM_RAG_CHUNK_CHARS`, `BLUETEAM_RAG_CHUNK_OVERLAP`, `BLUETEAM_RAG_ALLOW_DOWNLOAD`, `BLUETEAM_RAG_MODEL_SHA256` | SQLite retrieval corpus over cases / confirmed false positives / IR playbooks. `ENABLED=true` requires an absolute `DB` path or startup raises. `ALLOW_DOWNLOAD` defaults `false` (`local_files_only`). |
 | Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
-| Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder — no torch, no second model resident. `BACKEND=laya` requires `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya` (its option distribution is already softmaxed) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`. `MAX_CONCURRENCY` defaults `1` |
+| Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder — no torch, no second model resident. `BACKEND=laya` and `BACKEND=setfit` each require `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin, and the SetFit pin is verified before its pickled head is loaded). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya`/`setfit` (already-softmaxed distributions) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya\|setfit>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`; SetFit uses its trained truncation. `MAX_CONCURRENCY` defaults `1` |
 | CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
 | Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **129 tools registered** instead of 155: `155 - 23 - 3 = 129`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
@@ -345,17 +345,20 @@ Never edit the generated file by hand; regenerate it and let `git diff` show the
 Threads are capped at 2 by default (`OMP_NUM_THREADS`, inherited by MKL/OpenBLAS/NumExpr) and
 `BLUETEAM_LAYA_MAX_CONCURRENCY` defaults to 1, because three model pools share the CPU: the
 cross-encoder reranker (`bge-reranker-base`, ~1 GB, on by default), the RAG embedder
-(`bge-small-en-v1.5`, ONNX), and — only when `BLUETEAM_LAYA_BACKEND=laya` — CPU torch plus the
-Laya weights. The `onnx` labeler adds no model: it borrows the RAG embedder.
+(`bge-small-en-v1.5`, ONNX), and — only when `BLUETEAM_LAYA_BACKEND=laya` or `=setfit` — CPU torch
+plus the vendored weights. The `onnx` labeler adds no model: it borrows the RAG embedder.
 
 **Measured budget (owner decision, 2026-09-24).** Warm label latency p95 ≤ **300 ms** per call on
 the target host, and **no new resident model above 250 MB marginal RSS** measured in a process
 that has already loaded the reranker. The `onnx` backend meets both by construction: it reuses the
 embedder that is already resident. The first call also builds the ONNX session and embeds 32
 taxonomy phrases, so the anchors are prewarmed on a daemon thread at startup instead of being paid
-by the first analyst. `BLUETEAM_LAYA_BACKEND=laya` is **unsupported by policy** — CPU torch plus
-weights exceed the envelope — so the code and its tests stay as an escape hatch and are not
-advertised in the report prompts; enabling it is an explicit operator exemption, not a tuning knob.
+by the first analyst. `BLUETEAM_LAYA_BACKEND=laya` and `=setfit` are **unsupported by policy** —
+CPU torch plus weights exceed the envelope (the SetFit body is smaller, the torch runtime alone is
+not) — so the code and its tests stay as an escape hatch and are not advertised in the report
+prompts; enabling either is an explicit operator exemption, not a tuning knob. Their sanctioned use
+is offline: `laya` labels the calibration corpus, and `scripts/train_setfit_labeler.py` trains the
+SetFit student while `onnx` serves requests.
 
 **Accuracy is unmeasured.** The floor and the softmax temperature were calibrated on a small set of
 closed cases only. No top-1 or ECE figure is claimed until the first 1,000-case calibration set exists, and the
@@ -371,8 +374,8 @@ train/val/test, and `rule.mitre.*` is omitted by default because those fields st
 `--with-rule-mitre` emits the leaky variant so the accuracy delta can be measured. Multi-tactic
 techniques are dropped: the tool is single-label. The projected descriptions are synthetic text,
 so the corpus complements, never replaces, analyst-adjudicated alerts exported by
-`scripts/export_case_labels.py`. Then run `scripts/calibrate_labeler.py --backend onnx|laya` over
-the result and apply the suggested floor and temperature. `--gate` makes that run exit 2 when the
+`scripts/export_case_labels.py`. Then run `scripts/calibrate_labeler.py --backend onnx|laya|setfit`
+over the result and apply the suggested floor and temperature. `--gate` makes that run exit 2 when the
 suggested point misses the provisional thresholds — macro-F1 0.80, selective accuracy 0.90,
 coverage 0.60, ECE 0.10 — and `--split test` scores the held-out split, so a regression fails
 CI instead of writing a report nobody reads.
@@ -634,12 +637,12 @@ that an entity is malicious.
   skipped). A thin,
   all-zero or constant series returns `insufficient_data` before any fit.
 - `blueteam_incident_label` needs `BLUETEAM_LAYA_ENABLED=true`. The default `onnx`
-  backend reuses the RAG embedder and costs no extra memory. The `laya` backend is
-  **unsupported by policy** — CPU torch plus weights exceed the agreed 250 MB / 300 ms budget —
-  so do not ask the operator to enable it. If a call reports it as the active backend, treat
-  that as an operator exemption and say so in the report rather than presenting it as normal.
-  The sanctioned offline use of that checkpoint is labeling the calibration corpus while `onnx`
-  serves requests.
+  backend reuses the RAG embedder and costs no extra memory. The `laya` and `setfit`
+  backends are **unsupported by policy** — CPU torch plus weights exceed the agreed 250 MB /
+  300 ms budget — so do not ask the operator to enable either. If a call reports one as the active
+  backend, treat that as an operator exemption and say so in the report rather than presenting it
+  as normal. Their sanctioned use is offline: the Laya checkpoint labels the calibration corpus,
+  and `scripts/train_setfit_labeler.py` trains the SetFit student, while `onnx` serves requests.
 - While a flag is off the tool raises an enable hint. That hint is a configuration
   answer, not a failure — report it and stop, do not retry.
 

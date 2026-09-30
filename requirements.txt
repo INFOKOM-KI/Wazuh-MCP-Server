@@ -128,6 +128,16 @@ yara-x>=1.20.0,<2.0.0
 # multi-GB on a host with no GPU. Weights are vendored and sha256-pinned by
 # setup.sh and never fetched at call time.
 
+# SetFit incident labeling (blueteam_incident_label, backend=setfit). Also opt-in,
+# for the same reason: torch in the venv is the cost the onnx default avoids. The
+# runtime is one install; training additionally needs datasets + optuna (see
+# scripts/train_setfit_labeler.py).
+# pip install torch --index-url https://download.pytorch.org/whl/cpu
+# pip install "setfit>=1.1,<2"
+# setfit pulls sentence-transformers, which pulls scikit-learn and huggingface_hub.
+# Resolve against the Marker pins above (numpy<2 / scipy<1.14) in a staging venv
+# before enabling both extras in one environment.
+
 # Dev dependencies (install with: pip install -r requirements.txt on venv environtment variable)
 pytest>=7.0
 pytest-asyncio>=0.21

@@ -189,12 +189,12 @@ that an entity is malicious.
   skipped). A thin,
   all-zero or constant series returns `insufficient_data` before any fit.
 - `blueteam_incident_label` needs `BLUETEAM_LAYA_ENABLED=true`. The default `onnx`
-  backend reuses the RAG embedder and costs no extra memory. The `laya` backend is
-  **unsupported by policy** — CPU torch plus weights exceed the agreed 250 MB / 300 ms budget —
-  so do not ask the operator to enable it. If a call reports it as the active backend, treat
-  that as an operator exemption and say so in the report rather than presenting it as normal.
-  The sanctioned offline use of that checkpoint is labeling the calibration corpus while `onnx`
-  serves requests.
+  backend reuses the RAG embedder and costs no extra memory. The `laya` and `setfit`
+  backends are **unsupported by policy** — CPU torch plus weights exceed the agreed 250 MB /
+  300 ms budget — so do not ask the operator to enable either. If a call reports one as the active
+  backend, treat that as an operator exemption and say so in the report rather than presenting it
+  as normal. Their sanctioned use is offline: the Laya checkpoint labels the calibration corpus,
+  and `scripts/train_setfit_labeler.py` trains the SetFit student, while `onnx` serves requests.
 - While a flag is off the tool raises an enable hint. That hint is a configuration
   answer, not a failure — report it and stop, do not retry.
 

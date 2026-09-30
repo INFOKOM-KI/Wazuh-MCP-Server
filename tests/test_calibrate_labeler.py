@@ -244,7 +244,7 @@ async def test_run_handles_a_thousand_cases_without_a_cap(tmp_path):
 
 def test_default_factory_selects_the_configured_backend(monkeypatch):
     from mcp_server.core.config import config
-    from mcp_server.label.backends import LayaLabeler, ONNXPrototypeLabeler
+    from mcp_server.label.backends import LayaLabeler, ONNXPrototypeLabeler, SetFitLabeler
 
     monkeypatch.setattr(config.label, "model_path", "/tmp/vendored")
     monkeypatch.setattr(config.label, "model_sha256", "0" * 64)
@@ -252,6 +252,9 @@ def test_default_factory_selects_the_configured_backend(monkeypatch):
     laya = cal._default_factory("laya")(0.0, 0.7)
     assert isinstance(laya, LayaLabeler)
     assert laya.temperature == 0.7 and laya.max_len == 4096
+    setfit = cal._default_factory("setfit")(0.0, 0.7)
+    assert isinstance(setfit, SetFitLabeler)
+    assert setfit.temperature == 0.7
     assert isinstance(cal._default_factory("onnx")(0.0, 0.7), ONNXPrototypeLabeler)
 
 
