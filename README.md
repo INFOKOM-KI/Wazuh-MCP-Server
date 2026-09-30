@@ -8,7 +8,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **151 tools + 4 resources** (125 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
+offensive tooling. **155 tools + 4 resources** (129 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, local case RAG, host forensics, and opt-in HDBSCAN clustering + ATT&CK incident
 labeling. Read-only by default.
@@ -26,7 +26,7 @@ main.py -> mcp_server/  (package)
                  ├─ correlation/   3-Sum engine (pure computation, MITRE-driven)
                  ├─ threat_intel/  CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise + shared cache
                  ├─ agents/        LangGraph investigation + playbook workflows
-                 └─ tools/         53 tool modules
+                 └─ tools/         64 tool modules
 ```
 
 Every tool call flows through a single pipeline in the `@blueteam_tool` decorator — the three
@@ -120,7 +120,7 @@ optional — tools degrade gracefully without them.
 | Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
 | Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder — no torch, no second model resident. `BACKEND=laya` requires `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya` (its option distribution is already softmaxed) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`. `MAX_CONCURRENCY` defaults `1` |
 | CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **125 tools registered** instead of 151: `151 - 23 - 3 = 125`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **129 tools registered** instead of 155: `155 - 23 - 3 = 129`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
@@ -253,6 +253,12 @@ generated for an alert an analyst already closed.
 WHOIS / CRT.sh, IOC extraction, JARM fingerprinting, typosquatting detection
 (`blueteam_domain_permute`), webshell scanning, server-side JSONL export, DOCX/XLSX/PPTX report
 export, and 23 host-forensics tools (log readers, fail2ban, rootkit scan, lynis, process/cron/users).
+
+Offline CIDR arithmetic sits alongside them: `blueteam_subnet_calc` splits a block into equal
+subnets (`operation="split"`) or collapses an IP/block list into the smallest covering CIDR set
+(`operation="merge"`), reporting overlap removed and any unparsed entry by input position. Pure
+stdlib - no API, no rate limit, deterministic. Output is unmasked by design (a masked CIDR is not
+an answer), and a rejected value is never echoed back.
 
 ### Detection Engineering (YARA)
 `blueteam_yara_rule_validate` compiles a rule with yara-x and runs yaraQA-style
@@ -389,11 +395,15 @@ from cron and the exit code is the failure signal.
 
 - `MCP_API_KEY` — format `btm_<43-char-urlsafe-base64>` (47 chars). Stored only as a SHA-256
   digest, compared with `hmac.compare_digest` (constant-time).
-- `MCP_API_KEY_SCOPES` — default `wazuh:read` (read-only). Add `wazuh:write` to unlock the 13
-  write tools (`blueteam_fail2ban_unban`, `blueteam_case_*`, `blueteam_set_owned_domains`,
+- `MCP_API_KEY_SCOPES` — default `wazuh:read` (read-only). Add `wazuh:write` to unlock the 17
+  write tools (`blueteam_fail2ban_unban`, `blueteam_case_*` ×3, `blueteam_set_owned_domains`,
   `blueteam_mark_investigated`, `blueteam_wazuh_export`, `blueteam_export_report`,
   `blueteam_stix_export`, `blueteam_rag_ingest`, `blueteam_capture_traffic`,
-  `blueteam_yara_rule_save`, `blueteam_sigma_rule_save`). Fail-closed: no scope ⇒ read-only.
+  `blueteam_alert_cluster`, `blueteam_alert_cluster_assign`, `blueteam_tactic_forecast`,
+  `blueteam_volume_forecast`, `blueteam_yara_rule_save`, `blueteam_sigma_rule_save`).
+  Fail-closed: no scope ⇒ read-only. The set is derived at request time from the live FastMCP
+  annotations (`readOnlyHint is not True` or `destructiveHint is True`), not a hardcoded
+  allowlist, so a newly added write tool is scoped automatically.
 - **Bind guard** (`main.py::_start_http_transport`): a non-loopback bind without `MCP_API_KEY`
   raises `ConfigurationError` and refuses to start. Loopback stays auth-less only when no key is
   configured; when a key is set it is enforced on every request.
@@ -450,7 +460,7 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 150
+Manager (config/agent data) plus 7+ external threat-intel providers into 155
 tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
@@ -799,6 +809,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_prompt_route` | Natural-language prompt→tool router over all registered tools; rerank **off by default** for routing (BM25 13/22 against 9/22 for the best available cross-encoder). Pass the analyst's own wording (Indonesian or English) when unsure which tool fits |
 | `blueteam_mitre_lookup` | ATT&CK technique/group lookup |
 | `blueteam_asset_context` | CMDB asset criticality / owner |
+| `blueteam_subnet_calc(operation="split"\|"merge", cidr, prefix, ips, max_results)` | offline CIDR arithmetic. `split` turns one block into equal subnets (netmask, network, broadcast, usable hosts, first/last host); `merge` collapses an IP list into the smallest covering CIDR set and reports overlap removed plus any value it could not parse, by input position. No API, no rate limit, deterministic. Output is deliberately unmasked (a masked CIDR is not an answer); rejected values are never echoed |
 | `blueteam_false_positive_tracker(rule_id)` | rule_id → FP-summary cross-reference |
 | `sangfor_blocklist_check` / `sangfor_blocklist_list(ip=…, date_start, date_end, limit, offset)` | Sangfor firewall blocklist (list POSTs `{date_start,date_end,limit,offset,ip}` to `/blocklist`) |
 | `blueteam_baseline_profile` / `blueteam_calendar_heatmap` | day×hour scheduled-attack profiling |
@@ -1065,6 +1076,13 @@ prompt. Do NOT claim the env var is broken.
 
 To partially unmask owned domains without `raw`, use `reveal_owned=true` +
 `redaction_policy="protect_victim"` (no token needed).
+
+**One deliberate exception: `blueteam_subnet_calc`.** It returns its output unmasked, because
+Layer 3 would rewrite the network and broadcast addresses the analyst asked for (`10.0.0.0/24` →
+`10.***.***.0/24`). It reads nothing — no Indexer, Manager, filesystem or store — so it can only
+return addresses you supplied; a rejected value is never echoed back, only its position and a
+reason; and the audit log still records through the full pipeline. Do not read its unmasked output
+as a policy change for any other tool.
 
 ## 4. Reading 3-Sum correlation results
 

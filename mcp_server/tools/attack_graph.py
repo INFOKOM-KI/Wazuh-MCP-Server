@@ -123,7 +123,10 @@ async def blueteam_attack_graph(params: AttackGraphInput) -> str:
 
 
 def _classify_ioc(v: str) -> str:
-    """Best effort IOC kind for a bare input value (ip/domain/email/hash/other)."""
+    """Best effort IOC kind for a bare input value (ip/cidr/domain/email/hash/other).
+    A network block needs its own kind: ip_address() raises on it, so a CIDR used to
+    fall through to "domain" and pivot_suggest sent it to a WHOIS lookup.
+    """
     import ipaddress
     v = (v or "").strip()
     if not v:
@@ -131,6 +134,11 @@ def _classify_ioc(v: str) -> str:
     try:
         ipaddress.ip_address(v)
         return "ip"
+    except ValueError:
+        pass
+    try:
+        ipaddress.ip_network(v, strict=False)
+        return "cidr"
     except ValueError:
         pass
     if "@" in v:
@@ -147,6 +155,7 @@ def _tool_for_kind(kind: str) -> str:
     """Map an IOC kind to the recommended MCP tool for the next pivot."""
     return {
         "ip": "blueteam_investigate_ip",
+        "cidr": "blueteam_subnet_calc",
         "domain": "blueteam_whois_lookup",
         "url": "urlhaus_lookup",
         "email": "blueteam_breach_check",

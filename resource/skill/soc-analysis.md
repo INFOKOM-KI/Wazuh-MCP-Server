@@ -16,7 +16,7 @@ description: >
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 150
+Manager (config/agent data) plus 7+ external threat-intel providers into 155
 tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
@@ -365,6 +365,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_prompt_route` | Natural-language prompt→tool router over all registered tools; rerank **off by default** for routing (BM25 13/22 against 9/22 for the best available cross-encoder). Pass the analyst's own wording (Indonesian or English) when unsure which tool fits |
 | `blueteam_mitre_lookup` | ATT&CK technique/group lookup |
 | `blueteam_asset_context` | CMDB asset criticality / owner |
+| `blueteam_subnet_calc(operation="split"\|"merge", cidr, prefix, ips, max_results)` | offline CIDR arithmetic. `split` turns one block into equal subnets (netmask, network, broadcast, usable hosts, first/last host); `merge` collapses an IP list into the smallest covering CIDR set and reports overlap removed plus any value it could not parse, by input position. No API, no rate limit, deterministic. Output is deliberately unmasked (a masked CIDR is not an answer); rejected values are never echoed |
 | `blueteam_false_positive_tracker(rule_id)` | rule_id → FP-summary cross-reference |
 | `sangfor_blocklist_check` / `sangfor_blocklist_list(ip=…, date_start, date_end, limit, offset)` | Sangfor firewall blocklist (list POSTs `{date_start,date_end,limit,offset,ip}` to `/blocklist`) |
 | `blueteam_baseline_profile` / `blueteam_calendar_heatmap` | day×hour scheduled-attack profiling |
@@ -631,6 +632,13 @@ prompt. Do NOT claim the env var is broken.
 
 To partially unmask owned domains without `raw`, use `reveal_owned=true` +
 `redaction_policy="protect_victim"` (no token needed).
+
+**One deliberate exception: `blueteam_subnet_calc`.** It returns its output unmasked, because
+Layer 3 would rewrite the network and broadcast addresses the analyst asked for (`10.0.0.0/24` →
+`10.***.***.0/24`). It reads nothing — no Indexer, Manager, filesystem or store — so it can only
+return addresses you supplied; a rejected value is never echoed back, only its position and a
+reason; and the audit log still records through the full pipeline. Do not read its unmasked output
+as a policy change for any other tool.
 
 ## 4. Reading 3-Sum correlation results
 
