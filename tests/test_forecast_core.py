@@ -196,7 +196,7 @@ def test_predict_hmm_without_a_known_tactic_is_uniform():
 
 
 def test_predict_hmm_names_the_collapsed_tactic():
-    """Regression: one zero emission entry reported the live model as store-corrupt."""
+    """Regression: one zero emission entry reported the live model as store corrupt."""
     model = _hand_hmm_model()
     impact = TACTIC_ORDER.index("Impact")
     model["emissionprob"] = [[1.0 if column == impact else 0.0
