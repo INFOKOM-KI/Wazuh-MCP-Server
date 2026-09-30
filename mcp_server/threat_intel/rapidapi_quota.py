@@ -12,8 +12,8 @@ Policy enforced here:
   cannot eat the month by accident.
 - Every product draws from one counter, because the account is metered as one.
 - The arm window expires on its own, so an incident window does not stay open.
-- Spend and window survive a restart. A restarted process must not hand back a
-  budget the account has already been billed for.
+- Spend and window survive a restart (when ``BLUETEAM_RAPIDAPI_CACHE`` is set). A
+  restarted process must not hand back a budget the account has already been billed for.
 """
 from __future__ import annotations
 import logging, time
@@ -132,8 +132,10 @@ class RapidApiBudget:
         if self._expired():
             raise ThreatIntelError(
                 f"[rapidapi] Arm window closed after {self._hours:g}h with "
-                f"{self.remaining} request(s) unspent. Restart the server to arm a new "
-                f"window; the monthly counter is preserved."
+                f"{self.remaining} request(s) unspent. The window does not re-arm on "
+                f"restart; it lifts at the month rollover, {_reset_date()}. Until then use "
+                f"the quota-free providers (blueteam_threat_intel_aggregate, "
+                f"crowdsec_ip_reputation, threatfox_ioc_search)."
             )
 
     def charge(self) -> None:

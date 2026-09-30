@@ -107,6 +107,25 @@ def test_arm_window_survives_a_restart(tmp_path):
         expired.check()
 
 
+def test_expired_window_message_matches_what_the_code_does(tmp_path):
+    """Regression: the message told an operator to restart, and the persisted window
+    proves a restart cannot re-arm it."""
+    path = str(tmp_path / "state.jsonl")
+    first = RapidApiBudget(budget=5, hours=1, store=PersistentJsonlCache(path))
+    first.check()
+    first._armed_at = time.time() - 2 * 3600
+    first._persist()
+
+    restarted = RapidApiBudget(budget=5, hours=1, store=PersistentJsonlCache(path))
+    with pytest.raises(ThreatIntelError) as err:
+        restarted.check()
+    message = str(err.value)
+    assert restarted.state()["resets"] in message
+    assert "blueteam_threat_intel_aggregate" in message
+    assert "crowdsec_ip_reputation" in message
+    assert "Restart the server to arm" not in message
+
+
 def test_new_month_refills_the_counter(tmp_path):
     path = str(tmp_path / "state.jsonl")
     store = PersistentJsonlCache(path)
