@@ -192,6 +192,28 @@ def test_predict_hmm_follows_the_hidden_transition_and_emission():
 def test_predict_hmm_without_a_known_tactic_is_uniform():
     result = predict_next_hmm(_hand_hmm_model(), ["not-a-tactic"], top_k=1)
     assert result["uniform_fallback"] is True
+    assert "no known tactic" in result["reason"]
+
+
+def test_predict_hmm_names_the_collapsed_tactic():
+    """Regression: one zero emission entry reported the live model as store-corrupt."""
+    model = _hand_hmm_model()
+    impact = TACTIC_ORDER.index("Impact")
+    model["emissionprob"] = [[1.0 if column == impact else 0.0
+                             for column in range(len(TACTIC_ORDER))]
+                            for _ in range(2)]
+    result = predict_next_hmm(model, ["Discovery"], top_k=1)
+    assert result["uniform_fallback"] is True
+    assert "'Discovery'" in result["reason"]
+    assert "no emission matrix" not in result["reason"]
+
+
+def test_predict_hmm_reports_a_missing_emission_matrix():
+    model = _hand_hmm_model()
+    model["emissionprob"] = None
+    result = predict_next_hmm(model, ["Reconnaissance"], top_k=1)
+    assert result["uniform_fallback"] is True
+    assert "no emission matrix" in result["reason"]
 
 
 def test_fit_categorical_hmm_reports_unavailable_or_fits():
@@ -202,6 +224,7 @@ def test_fit_categorical_hmm_reports_unavailable_or_fits():
         assert result["status"] == "ok"
         assert len(result["transmat"]) == 2
         assert len(result["emissionprob"][0]) == len(TACTIC_ORDER)
+        assert min(min(row) for row in result["emissionprob"]) >= 1e-6
 
 
 def _volume_series():

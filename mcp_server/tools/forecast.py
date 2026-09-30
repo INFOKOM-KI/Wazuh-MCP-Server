@@ -356,7 +356,7 @@ async def blueteam_tactic_forecast(params: TacticForecastInput) -> str:
         return _status_markdown(payload)
 
     if params.mode == "predict":
-        loaded = await asyncio.to_thread(load_model, params.model_id)
+        loaded = await asyncio.to_thread(load_model, params.model_id, ("markov", "hmm"))
         if loaded is None:
             raise BlueTeamMCPError(
                 "No stored forecast model. Run blueteam_tactic_forecast mode='train' first.")
@@ -683,7 +683,7 @@ async def blueteam_volume_forecast(params: VolumeForecastInput) -> str:
         return _volume_status_markdown(payload)
 
     if params.mode == "predict":
-        loaded = await asyncio.to_thread(load_model, params.model_id)
+        loaded = await asyncio.to_thread(load_model, params.model_id, (VOLUME_KIND,))
         if loaded is None:
             raise BlueTeamMCPError(
                 "No stored volume model. Run blueteam_volume_forecast mode='train' first.")

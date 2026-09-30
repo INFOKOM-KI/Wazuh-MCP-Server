@@ -52,6 +52,10 @@ ESCALATION_TACTICS: tuple[str, ...] = (
 # tolerance lives here so store and tests share one number.
 PROB_SUM_TOLERANCE = 1e-3
 
+# hmmlearn can leave an unseen (state, tactic) pair at ~0, and one zero emission
+# collapses the whole forward pass into a uniform non-answer.
+_EMISSION_FLOOR = 1e-6
+
 
 def normalize_tactics(value: Any) -> list[str]:
     """Canonicalise one alert's ``rule.mitre.tactic`` into known tactic names.
@@ -237,16 +241,18 @@ def predict_next_markov(model: dict, sequence: list[str], top_k: int = 3,
     }
 
 
-def _forward_gamma(sequence: list[str], model: dict) -> Optional[list[float]]:
+def _forward_gamma(sequence: list[str],
+                   model: dict) -> tuple[Optional[list[float]], str]:
     """Scaled forward pass returning P(state_T | observed sequence).
     The per-step normalisation drops a constant that the final normalised
     posterior does not need; without it, long sequences underflow to zero in
-    plain float arithmetic. ``None`` means the posterior collapsed, which the
-    caller reports as a uniform fallback rather than dividing by zero.
+    plain float arithmetic. ``(None, reason)`` marks the three cases that leave
+    no posterior to report: no emission matrix, a collapsed posterior, or a
+    sequence with no known tactic.
     """
     emission = model.get("emissionprob")
     if not emission:
-        return None
+        return None, "the stored HMM carries no emission matrix"
     n_states = len(model["startprob"])
     alpha = [float(value) for value in model["startprob"]]
     known = 0
@@ -259,9 +265,11 @@ def _forward_gamma(sequence: list[str], model: dict) -> Optional[list[float]]:
         alpha = [alpha[state] * float(emission[state][column]) for state in range(n_states)]
         total = sum(alpha)
         if total <= 1e-12:
-            return None
+            return None, f"the posterior collapsed on tactic {tactics[0]!r}"
         alpha = [value / total for value in alpha]
-    return alpha if known else None
+    if not known:
+        return None, "the sequence carries no known tactic"
+    return alpha, ""
 
 
 def predict_next_hmm(model: dict, sequence: list[str], top_k: int = 3) -> dict:
@@ -270,10 +278,9 @@ def predict_next_hmm(model: dict, sequence: list[str], top_k: int = 3) -> dict:
     forward posterior of the hidden phase after ``sequence``. Pure arithmetic:
     the stored matrices are enough, hmmlearn is needed only at training time.
     """
-    gamma = _forward_gamma(list(sequence or []), model)
+    gamma, reason = _forward_gamma(list(sequence or []), model)
     if gamma is None:
-        return _uniform_prediction(
-            "stored HMM has no usable emission matrix for this sequence", top_k, "hmm")
+        return _uniform_prediction(reason, top_k, "hmm")
 
     transmat = model["transmat"]
     emission = model["emissionprob"]
@@ -360,7 +367,8 @@ def fit_categorical_hmm(sequences: list[list[str]], n_components: int = 4,
     except (ValueError, TypeError, RuntimeError) as exc:
         return {"status": "unavailable", "reason": f"hmmlearn fit failed: {exc}"}
 
-    emissionprob = [[round(float(value), 6) for value in row] for row in model.emissionprob_]
+    emissionprob = [[max(round(float(value), 6), _EMISSION_FLOOR) for value in row]
+                    for row in model.emissionprob_]
     if len(emissionprob) != int(n_components) or len(emissionprob[0]) != len(TACTIC_ORDER):
         return {"status": "error",
                 "reason": "hmmlearn returned an emission matrix that does not match the "

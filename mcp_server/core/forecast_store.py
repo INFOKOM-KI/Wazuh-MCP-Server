@@ -222,23 +222,31 @@ def save_model(model_id: str, kind: str, params: dict, startprob: list,
             conn.execute("DELETE FROM models WHERE model_id = ?", (old,))
 
 
-def load_model(model_id: Optional[str] = None) -> Optional[dict]:
+def load_model(model_id: Optional[str] = None,
+               kinds: Optional[tuple[str, ...]] = None) -> Optional[dict]:
     """Return a model, newest when ``model_id`` is omitted, or ``None`` when empty.
+    ``kinds`` scopes that lookup to one model family: tactic and volume fits
+    share the ``models`` table, so an unscoped newest-row can come back as the
+    wrong kind and be refused by the caller's guard.
     A stored model under a different ``TAXONOMY_VERSION``, a mismatched tactic
     list, or a matrix that fails ``validate_model`` raises: returning it would
     score a live sequence against columns that no longer mean the same thing.
     """
+    columns = ("SELECT model_id, kind, taxonomy_version, tactics, params, startprob,"
+               " transmat, emissionprob, row_support, n_sequences, n_transitions,"
+               " created_at FROM models")
+    args: tuple = ()
+    if model_id:
+        where = " WHERE model_id = ?"
+        args = (model_id,)
+    elif kinds:
+        where = f" WHERE kind IN ({','.join('?' * len(kinds))})"
+        args = tuple(kinds)
+    else:
+        where = ""
     with _store() as conn:
-        if model_id:
-            row = conn.execute(
-                "SELECT model_id, kind, taxonomy_version, tactics, params, startprob,"
-                " transmat, emissionprob, row_support, n_sequences, n_transitions,"
-                " created_at FROM models WHERE model_id = ?", (model_id,)).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT model_id, kind, taxonomy_version, tactics, params, startprob,"
-                " transmat, emissionprob, row_support, n_sequences, n_transitions,"
-                " created_at FROM models ORDER BY created_at DESC LIMIT 1").fetchone()
+        row = conn.execute(
+            f"{columns}{where} ORDER BY created_at DESC LIMIT 1", args).fetchone()
     if row is None:
         return None
     if row[1] in ("markov", "hmm") and row[2] != TAXONOMY_VERSION:

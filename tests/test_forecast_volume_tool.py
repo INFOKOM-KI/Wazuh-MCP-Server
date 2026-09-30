@@ -19,7 +19,7 @@ import time
 import pytest
 from mcp_server.core.config import config
 from mcp_server.core.exceptions import BlueTeamMCPError
-from mcp_server.core.forecast_store import load_model, store_stats
+from mcp_server.core.forecast_store import load_model, save_model, store_stats
 from mcp_server.correlation.forecast_core import fit_poisson_hmm as real_fit
 from mcp_server.tools import forecast
 
@@ -175,10 +175,25 @@ def test_predict_without_a_model_raises():
 
 
 def test_predict_refuses_a_tactic_model(monkeypatch):
+    """An explicit model_id naming a tactic fit is refused, not scored."""
     monkeypatch.setattr(forecast, "load_model",
-                        lambda model_id=None: {"kind": "markov", "model_id": "m1"})
+                        lambda model_id=None, kinds=None: {"kind": "markov", "model_id": "m1"})
     with pytest.raises(BlueTeamMCPError):
-        _run(_volume(forecast.VolumeForecastInput(mode="predict", response_format="json")))
+        _run(_volume(forecast.VolumeForecastInput(mode="predict", model_id="m1",
+                                                  response_format="json")))
+
+
+def test_predict_ignores_a_newer_tactic_fit():
+    """Regression: the unnamed lookup resolved the newest row of any kind, so a
+    newer tactic fit made predict raise instead of forecasting."""
+    trained = json.loads(_run(_volume(_params())))
+    time.sleep(0.02)
+    save_model("hmm-newest", "hmm", {}, [1.0], [[1.0]], n_sequences=1, n_transitions=1)
+    assert load_model()["model_id"] == "hmm-newest"
+    payload = json.loads(_run(_volume(forecast.VolumeForecastInput(
+        mode="predict", response_format="json"))))
+    assert payload["model"] == trained["model_id"]
+    assert payload["prediction"]["status"] != "error"
 
 
 def test_predict_markdown_summarises_long_horizons():
