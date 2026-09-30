@@ -38,7 +38,7 @@ audit (_audit_log) -> call -> redact (_redact_alert_data) -> truncate (_truncate
 
 `CHARACTER_LIMIT` (100000 by default) caps what leaves the server. An oversized JSON body comes
 back as valid JSON with `truncated: true` instead of a sliced document, and in-process langgraph
-calls skip the cap entirely so the workflow parses the full payload (SECURITY.md 4.5).
+calls skip the cap entirely so the workflow parses the full payload.
 
 All outbound HTTP flows through a per-pool circuit breaker (`http_client.CircuitBreaker`:
 5 consecutive failures -> open, 60s cooldown, single half-open trial). 429 and 4xx never count
