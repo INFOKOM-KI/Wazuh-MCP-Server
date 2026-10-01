@@ -66,33 +66,41 @@ _AGG_SAFE_TYPES = ("keyword", "long", "integer", "double", "date", "boolean", "i
 
 
 def _shape(spec: dict) -> str:
-    """Mapping shape for one index, e.g. ``text+keyword+fielddata``.
-    ``fielddata`` decides aggregatability as much as the type does: a text field
-    carrying it aggregates on its bare name, and the mapping tool read both
-    shapes identically until this was included.
+    """Mapping shape for one index, e.g. ``text+fielddata+analyzer=keyword``.
+    Type and fielddata decide aggregatability; the analyzer decides whether the
+    buckets are values or tokens, so it belongs in the shape.
     """
     parts = [spec.get("type", "object")]
     if "keyword" in spec.get("fields", {}):
         parts.append("keyword")
     if spec.get("fielddata"):
         parts.append("fielddata")
+    if spec.get("analyzer"):
+        parts.append(f"analyzer={spec['analyzer']}")
     return "+".join(parts)
 
 
 def _shape_is_agg_safe(shape: str) -> bool:
     """True when the field's own name aggregates to that field's values.
-
-    A keyword sub-field does not count on its own, and neither does fielddata:
-    a text field with fielddata does aggregate, but to analysed tokens.
+    A keyword sub-field does not count on its own, and fielddata alone is not
+    enough either: it aggregates, but to whatever the analyzer emits.
     """
-    return shape.split("+")[0] in _AGG_SAFE_TYPES
+    parts = shape.split("+")
+    return parts[0] in _AGG_SAFE_TYPES or ("fielddata" in parts[1:]
+                                           and not _shape_is_tokenized(shape))
 
 
 def _shape_is_tokenized(shape: str) -> bool:
-    """fielddata over a text field buckets individual words, so the same
-    `terms` query reads "detected" where a keyword index reads the description."""
+    """fielddata over text buckets whatever the analyzer emits.
+    A keyword analyzer emits the whole value, so an IP comes back as an IP. The
+    standard analyzer splits on dots and comes back as `203`, `0`, `113`, `7`,
+    and an undeclared analyzer is the standard one.
+    """
     parts = shape.split("+")
-    return parts[0] == "text" and "fielddata" in parts[1:]
+    if parts[0] != "text" or "fielddata" not in parts[1:]:
+        return False
+    declared = [p for p in parts[1:] if p.startswith("analyzer=")]
+    return not declared or declared[0] != "analyzer=keyword"
 
 
 def _shape_counts(by_shape: dict) -> dict:
@@ -203,6 +211,8 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
                 info["agg_safe"] = all(_shape_is_agg_safe(s) for s in by_shape)
             row = {"field": f, "exists": True, **info,
                    "agg_safe_field": _agg_safe_field(f, by_shape)}
+            if spec.get("analyzer"):
+                row["analyzer"] = spec["analyzer"]
             if any(_shape_is_tokenized(s) for s in by_shape):
                 row["tokenized"] = True
             if len(by_shape) > 1:

@@ -240,6 +240,20 @@ def test_the_markdown_names_the_truncated_indices(monkeypatch):
     assert "wazuh-alerts-4.x-2026.06.03 (40)" in rendered
 
 
+def test_fielddata_with_a_keyword_analyzer_returns_whole_values(monkeypatch):
+    """`data.srcip` on the drifted indices is text+fielddata yet buckets full IPs,
+    because its analyzer does not split them."""
+    mapping = {name: {"mappings": {"properties": {"data": {"properties": {
+                "srcip": {"type": "text", "fielddata": True, "analyzer": "keyword",
+                          "fields": {"keyword": {"type": "keyword"}}}}}}}}
+            for name in ("old-a", "old-b")}
+    row = _merged_schema(mapping, ["data.srcip"], monkeypatch)["data.srcip"]
+    assert row["agg_safe"] is True
+    assert row["agg_safe_field"] == "data.srcip"
+    assert row["analyzer"] == "keyword"
+    assert "tokenized" not in row
+
+
 if __name__ == "__main__":
     import sys, traceback
     tests = [f for f in dir() if f.startswith("test_")]
