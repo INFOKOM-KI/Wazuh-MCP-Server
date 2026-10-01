@@ -49,16 +49,24 @@ _AGG_SAFE_TYPES = ("keyword", "long", "integer", "double", "date", "boolean", "i
 
 
 def _shape(spec: dict) -> str:
-    """Mapping shape for one index, e.g. ``text+keyword`` or ``keyword``."""
-    return spec.get("type", "object") + ("+keyword" if "keyword" in spec.get("fields", {}) else "")
+    """Mapping shape for one index, e.g. ``text+keyword+fielddata``.
+    ``fielddata`` decides aggregatability as much as the type does: a text field
+    carrying it aggregates on its bare name, and the mapping tool read both
+    shapes identically until this was included.
+    """
+    parts = [spec.get("type", "object")]
+    if "keyword" in spec.get("fields", {}):
+        parts.append("keyword")
+    if spec.get("fielddata"):
+        parts.append("fielddata")
+    return "+".join(parts)
 
 
 def _shape_is_agg_safe(shape: str) -> bool:
-    """True when the field's own name aggregates in that index. A
-    ``text+keyword`` field does not: the bare name is text and only the
-    ``.keyword`` sub-field aggregates, which the caller is not asking for."""
-    base, _, _keyword = shape.partition("+")
-    return base in _AGG_SAFE_TYPES
+    """True when the field's own name aggregates in that index. A keyword
+    sub-field does not count on its own: the caller is not asking for it."""
+    parts = shape.split("+")
+    return parts[0] in _AGG_SAFE_TYPES or "fielddata" in parts[1:]
 
 
 def _shape_counts(by_shape: dict) -> dict:
@@ -85,7 +93,7 @@ def _agg_safe_field(field: str, by_shape: dict) -> Optional[str]:
         return None
     if all(_shape_is_agg_safe(shape) for shape in by_shape):
         return field
-    if all(shape == "text+keyword" for shape in by_shape):
+    if all("keyword" in shape.split("+")[1:] for shape in by_shape):
         return f"{field}.keyword"
     return None
 
