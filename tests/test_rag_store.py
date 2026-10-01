@@ -45,6 +45,7 @@ def _setup(tmp_path, max_chunks=50000):
     rag_store._cache_key = None
     rag_store._cache_rows = None
     rag_store._cache_matrix = None
+    rag_store._cache_stats = None
 
 
 @pytest.fixture(autouse=True)
@@ -58,6 +59,7 @@ def _rag_reset():
     rag_store._cache_key = None
     rag_store._cache_rows = None
     rag_store._cache_matrix = None
+    rag_store._cache_stats = None
     yield
     config.rag.enabled = False
     config.rag.db_path = ""
@@ -114,6 +116,34 @@ def test_ingest_then_query_round_trip(tmp_path):
     scores = [h["vector_score"] for h in hits]
     assert scores == sorted(scores, reverse=True)
     assert {"id", "source", "seq", "text", "meta", "vector_score"} <= set(hits[0])
+
+
+def test_token_stats_counts_terms_and_documents(tmp_path):
+    """tf counts occurrences, df counts chunks. A term repeated inside one chunk has to
+    raise tf more than df, which is what separates a common word from a common topic."""
+    _setup(tmp_path)
+    asyncio.run(rag_store.add_documents([
+        {"source": "cases", "text": "ssh ssh ssh login"},
+        {"source": "cases", "text": "ssh webshell"},
+    ]))
+    tf, df = asyncio.run(rag_store.token_stats())
+    assert tf["ssh"] == 4
+    assert df["ssh"] == 2
+    assert tf["webshell"] == df["webshell"] == 1
+
+
+def test_token_stats_empty_when_store_is_dormant():
+    assert asyncio.run(rag_store.token_stats()) == ({}, {})
+
+
+def test_token_stats_are_rebuilt_with_the_matrix_cache(tmp_path):
+    """A per-process cache that survived an ingest would blend against a corpus that
+    no longer exists."""
+    _setup(tmp_path)
+    asyncio.run(rag_store.add_documents([{"source": "cases", "text": "aaa ssh"}]))
+    assert "ssh" in asyncio.run(rag_store.token_stats())[0]
+    asyncio.run(rag_store.add_documents([{"source": "cases", "text": "bbb webshell"}]))
+    assert "webshell" in asyncio.run(rag_store.token_stats())[0]
 
 
 def test_vectors_are_unit_norm(tmp_path):
@@ -215,3 +245,10 @@ def test_config_rejects_malformed_sha256():
 
 def test_config_accepts_valid_defaults(tmp_path):
     RAGConfig(enabled=True, db_path=str(tmp_path / "rag.db")).validate()
+
+
+def test_config_rejects_out_of_range_vector_weight(tmp_path):
+    for weight in (-0.1, 1.1):
+        with pytest.raises(ConfigurationError):
+            RAGConfig(enabled=True, db_path=str(tmp_path / "rag.db"),
+                      vector_weight=weight).validate()

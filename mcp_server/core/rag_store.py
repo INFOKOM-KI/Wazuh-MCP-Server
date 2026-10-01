@@ -37,6 +37,7 @@ import sqlite3
 import threading
 import time
 from typing import Optional
+from mcp_server.core import term_sim
 from mcp_server.core.config import config
 from mcp_server.core.rerank import _sha256_file
 
@@ -71,6 +72,7 @@ _cache_lock = threading.Lock()
 _cache_key: Optional[tuple] = None
 _cache_rows: Optional[list[dict]] = None
 _cache_matrix: Optional[object] = None
+_cache_stats: Optional[tuple[dict[str, int], dict[str, int]]] = None
 
 
 def _db_path() -> str:
@@ -227,9 +229,26 @@ def _write_rows(rows: list[tuple]) -> tuple[int, int]:
     return len(kept), max(0, len(rows) - room)
 
 
+def _build_stats(rows: list[dict]) -> tuple[dict[str, int], dict[str, int]]:
+    """Corpus term-frequency and document-frequency tables for the lexical leg.
+    Tokenizing every chunk is the expensive part of the first hybrid query, so this
+    runs inside the same worker thread and cache generation as the matrix build.
+    """
+    tf: dict[str, int] = {}
+    df: dict[str, int] = {}
+    for row in rows:
+        seen: set[str] = set()
+        for token in term_sim.tokenize(row["text"]):
+            tf[token] = tf.get(token, 0) + 1
+            if token not in seen:
+                seen.add(token)
+                df[token] = df.get(token, 0) + 1
+    return tf, df
+
+
 def _load_matrix(model: str, sources: Optional[list[str]]):
     """Return ``(matrix, rows)`` for ``model``, cached across queries."""
-    global _cache_key, _cache_rows, _cache_matrix
+    global _cache_key, _cache_rows, _cache_matrix, _cache_stats
     import numpy as np
 
     path = _db_path()
@@ -262,6 +281,7 @@ def _load_matrix(model: str, sources: Optional[list[str]]):
             "meta": json.loads(row[4] or "{}"), "dim": row[5],
         } for row in fetched]
         _cache_key, _cache_rows, _cache_matrix = key, rows, matrix
+        _cache_stats = _build_stats(rows)
         return matrix, rows
 
 
@@ -341,6 +361,19 @@ async def query(text: str, top_k: Optional[int] = None,
     hits = await asyncio.to_thread(
         _search_sync, matrix[0].tobytes(), config.rag.model, k, sources)
     return (hits, None) if hits else ([], "no_corpus")
+
+
+async def token_stats(sources: Optional[list[str]] = None) -> tuple[dict[str, int], dict[str, int]]:
+    """``(tf, df)`` for the cached corpus, for the lexical leg of hybrid retrieval.
+    Empty tables when the store is disabled or holds nothing: the caller's term
+    similarity then scores on token shape alone instead of raising. Reads the cache
+    ``query()`` populates, so the pair is built at most once per corpus generation.
+    """
+    if not config.rag.enabled or not _db_path():
+        return {}, {}
+    await asyncio.to_thread(_load_matrix, config.rag.model, sources)
+    with _cache_lock:
+        return _cache_stats or ({}, {})
 
 
 async def delete_source(source: str) -> int:

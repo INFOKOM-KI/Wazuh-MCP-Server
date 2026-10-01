@@ -116,7 +116,7 @@ optional — tools degrade gracefully without them.
 | Inbound auth | `MCP_API_KEY`, `MCP_API_KEY_SCOPES` | pre-shared API key + scopes for `streamable_http` |
 | Inbound hardening | `BLUETEAM_HTTP_RATE_LIMIT`, `BLUETEAM_ALLOWED_ORIGINS` | per-IP sliding-window rate limit (req/min, `0`=off) + Origin allowlist (loopback always allowed) |
 | Audit & persistence | `BLUETEAM_AUDIT_LOG`, `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CMDB_FILE` | JSONL audit trail + stores (optional) |
-| Local case RAG | `BLUETEAM_RAG_ENABLED`, `BLUETEAM_RAG_DB`, `BLUETEAM_RAG_MODEL`, `BLUETEAM_RAG_CACHE_PATH`, `BLUETEAM_RAG_MAX_CANDIDATES`, `BLUETEAM_RAG_TOP_K`, `BLUETEAM_RAG_MAX_CHUNKS`, `BLUETEAM_RAG_CHUNK_CHARS`, `BLUETEAM_RAG_CHUNK_OVERLAP`, `BLUETEAM_RAG_ALLOW_DOWNLOAD`, `BLUETEAM_RAG_MODEL_SHA256` | SQLite retrieval corpus over cases / confirmed false positives / IR playbooks. `ENABLED=true` requires an absolute `DB` path or startup raises. `ALLOW_DOWNLOAD` defaults `false` (`local_files_only`). |
+| Local case RAG | `BLUETEAM_RAG_ENABLED`, `BLUETEAM_RAG_DB`, `BLUETEAM_RAG_MODEL`, `BLUETEAM_RAG_CACHE_PATH`, `BLUETEAM_RAG_MAX_CANDIDATES`, `BLUETEAM_RAG_TOP_K`, `BLUETEAM_RAG_MAX_CHUNKS`, `BLUETEAM_RAG_CHUNK_CHARS`, `BLUETEAM_RAG_CHUNK_OVERLAP`, `BLUETEAM_RAG_CHUNK_STRATEGY`, `BLUETEAM_RAG_VECTOR_WEIGHT`, `BLUETEAM_RAG_ALLOW_DOWNLOAD`, `BLUETEAM_RAG_MODEL_SHA256` | SQLite retrieval corpus over cases / confirmed false positives / IR playbooks. `ENABLED=true` requires an absolute `DB` path or startup raises. `ALLOW_DOWNLOAD` defaults `false` (`local_files_only`). `CHUNK_STRATEGY` defaults `sentences` (`length` restores the pre-chunker sliding window). `VECTOR_WEIGHT` defaults `1.0` = vector-only; below that blends the term-weighted lexical leg. |
 | Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
 | Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder — no torch, no second model resident. `BACKEND=laya` and `BACKEND=setfit` each require `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin, and the SetFit pin is verified before its pickled head is loaded). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya`/`setfit` (already-softmaxed distributions) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya\|setfit>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`; SetFit uses its trained truncation. `MAX_CONCURRENCY` defaults `1` |
 | CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
@@ -705,7 +705,7 @@ Reading the output:
 |---|---|
 | Full langgraph workflow | `blueteam_investigation_workflow(srcip or alert_text or dependency_manifest)` |
 | Rebuild the local case corpus | `blueteam_rag_ingest(source="cases"\|"false_positives"\|"pdf"\|"text", texts, label, path)` |
-| Search prior cases / playbooks | `blueteam_rag_query(query, sources, rerank)` |
+| Search prior cases / playbooks | `blueteam_rag_query(query, sources, rerank, vector_weight)` |
 | Comprehensive IP profile | `blueteam_investigate_ip(srcip)` |
 | Record verdict | `blueteam_mark_investigated(...)` |
 | Case lifecycle | `blueteam_case_create`, `blueteam_case_get`, `blueteam_case_list`, `blueteam_case_add_iocs`, `blueteam_case_add_verdict` |
@@ -746,6 +746,13 @@ source the tool reports; never upgrade an automated hit into "an analyst confirm
 Nothing here auto-closes an alert. Record the decision with `blueteam_mark_investigated`.
 Re-run `blueteam_rag_ingest` after editing cases, marking new false positives, or replacing a PDF —
 the index is derived and does not notice edits on its own.
+
+Ranking is a vector recall plus an optional term-weighted lexical blend, then an optional
+cross-encoder rerank. `vector_weight` defaults to `1.0` (vector only); set it to `0.3` when an exact
+indicator matters more than paraphrase, since the lexical leg scores bigrams and IOC-shaped tokens
+above surrounding prose. No stage applies a score threshold: a top-ranked hit means "ranked above
+the alternatives". Read `rerank_engine` to see which leg produced the order — `hybrid` means the
+lexical blend ran, `vector` means it did not.
 
 ### Email / breach / domain forensics
 | Want | Tool |

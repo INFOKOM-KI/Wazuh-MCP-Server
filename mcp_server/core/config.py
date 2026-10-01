@@ -627,6 +627,13 @@ class RAGConfig:
     max_chunks: int = 50000         # hard ceiling on corpus size
     chunk_chars: int = 1200
     chunk_overlap: int = 200
+    # "sentences" | "paragraphs" | "length". "length" is the pre-chunker.py sliding
+    # window, kept selectable so a deployment can revert without a code change.
+    chunk_strategy: str = "sentences"
+    # 1.0 is today's vector-only ranking. Below 1.0 blends in the term-weighted lexical
+    # leg from core/term_sim.py. RAGFlow's own default is 0.3; this ships at 1.0 so the
+    # blend is opt-in until it is measured on this corpus.
+    vector_weight: float = 1.0
     allow_download: bool = False    # False = local_files_only, no network
     sha256: str = ""                # supply chain pin: sha256 of the cached ONNX
 
@@ -642,6 +649,8 @@ class RAGConfig:
             max_chunks=int(os.environ.get("BLUETEAM_RAG_MAX_CHUNKS", "50000")),
             chunk_chars=int(os.environ.get("BLUETEAM_RAG_CHUNK_CHARS", "1200")),
             chunk_overlap=int(os.environ.get("BLUETEAM_RAG_CHUNK_OVERLAP", "200")),
+            chunk_strategy=os.environ.get("BLUETEAM_RAG_CHUNK_STRATEGY", "sentences").strip().lower(),
+            vector_weight=float(os.environ.get("BLUETEAM_RAG_VECTOR_WEIGHT", "1.0")),
             allow_download=_bool(os.environ.get("BLUETEAM_RAG_ALLOW_DOWNLOAD", "false")),
             sha256=os.environ.get("BLUETEAM_RAG_MODEL_SHA256", "").strip().lower(),
         )
@@ -676,6 +685,16 @@ class RAGConfig:
             raise ConfigurationError(
                 f"BLUETEAM_RAG_CHUNK_OVERLAP must be 0 <= overlap < chunk_chars "
                 f"(got {self.chunk_overlap} vs {self.chunk_chars})"
+            )
+        if self.chunk_strategy not in ("sentences", "paragraphs", "length"):
+            raise ConfigurationError(
+                "BLUETEAM_RAG_CHUNK_STRATEGY must be 'sentences', 'paragraphs' or "
+                f"'length' (got {self.chunk_strategy!r})"
+            )
+        if not 0.0 <= self.vector_weight <= 1.0:
+            raise ConfigurationError(
+                "BLUETEAM_RAG_VECTOR_WEIGHT must be 0.0 <= weight <= 1.0 "
+                f"(got {self.vector_weight})"
             )
         if self.sha256 and not re.fullmatch(r"[0-9a-f]{64}", self.sha256):
             raise ConfigurationError(

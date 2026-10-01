@@ -56,6 +56,7 @@ def _setup(tmp_path):
     rag_store._cache_key = None
     rag_store._cache_rows = None
     rag_store._cache_matrix = None
+    rag_store._cache_stats = None
 
 
 def _store_chunks() -> int:
@@ -72,6 +73,7 @@ def _reset(tmp_path):
     rag_store._cache_key = None
     rag_store._cache_rows = None
     rag_store._cache_matrix = None
+    rag_store._cache_stats = None
     _clear_registries()
     yield
     config.rag.enabled = False
@@ -273,6 +275,57 @@ def test_query_source_filter(tmp_path):
         query="aaa", sources=["cases"], response_format="json"))))
     assert payload["returned"] == 1
     assert payload["matches"][0]["source"] == "cases"
+
+
+def test_query_blends_term_and_vector_scores(tmp_path):
+    """The stub embedder has no idea what the words mean, so a lexical leg is the only
+    thing that can separate a doc carrying the query terms from one that does not."""
+    _setup(tmp_path)
+    _run(_ingest(rag_kb.RagIngestInput(source="text", label="cases", texts=[
+        "bbbbbbbbbbbbbbbb",
+        "aaa brute force ssh",
+    ])))
+    payload = json.loads(_run(_query(rag_kb.RagQueryInput(
+        query="aaa brute force ssh", vector_weight=0.3, rerank=False,
+        response_format="json"))))
+    assert payload["returned"] == 2
+    top = payload["matches"][0]
+    assert top["term_score"] > payload["matches"][1]["term_score"]
+    assert "hybrid_score" in top
+    assert payload["vector_weight"] == 0.3
+    assert payload["rerank_engine"] == "hybrid"
+
+
+def test_query_vector_weight_one_keeps_todays_behaviour(tmp_path):
+    """The blend ships off. No term_score key means the lexical leg never ran."""
+    _setup(tmp_path)
+    _run(_ingest(rag_kb.RagIngestInput(source="text", label="cases",
+                                       texts=["aaa brute force"])))
+    payload = json.loads(_run(_query(rag_kb.RagQueryInput(
+        query="aaa brute force", rerank=False, response_format="json"))))
+    assert "term_score" not in payload["matches"][0]
+    assert payload["rerank_engine"] == "vector"
+
+
+def test_query_ioc_outscores_prose_at_equal_vector_weight(tmp_path):
+    _setup(tmp_path)
+    _run(_ingest(rag_kb.RagIngestInput(source="text", label="cases", texts=[
+        "routine note about patching windows and maintenance",
+        "beacon to 117.247.110.24 observed",
+    ])))
+    payload = json.loads(_run(_query(rag_kb.RagQueryInput(
+        query="117.247.110.24", vector_weight=0.0, rerank=False,
+        response_format="json"))))
+    assert payload["matches"][0]["text"].startswith("beacon")
+
+
+def test_query_markdown_reports_the_blend(tmp_path):
+    _setup(tmp_path)
+    _run(_ingest(rag_kb.RagIngestInput(source="text", label="cases", texts=["aaa brute"])))
+    out = _run(_query(rag_kb.RagQueryInput(query="aaa brute", vector_weight=0.3,
+                                           rerank=False)))
+    assert "Hybrid" in out
+    assert "core/term_sim.py" in out
 
 
 def test_query_empty_corpus_reports_no_corpus(tmp_path):

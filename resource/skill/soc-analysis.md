@@ -257,7 +257,7 @@ Reading the output:
 |---|---|
 | Full langgraph workflow | `blueteam_investigation_workflow(srcip or alert_text or dependency_manifest)` |
 | Rebuild the local case corpus | `blueteam_rag_ingest(source="cases"\|"false_positives"\|"pdf"\|"text", texts, label, path)` |
-| Search prior cases / playbooks | `blueteam_rag_query(query, sources, rerank)` |
+| Search prior cases / playbooks | `blueteam_rag_query(query, sources, rerank, vector_weight)` |
 | Comprehensive IP profile | `blueteam_investigate_ip(srcip)` |
 | Record verdict | `blueteam_mark_investigated(...)` |
 | Case lifecycle | `blueteam_case_create`, `blueteam_case_get`, `blueteam_case_list`, `blueteam_case_add_iocs`, `blueteam_case_add_verdict` |
@@ -298,6 +298,13 @@ source the tool reports; never upgrade an automated hit into "an analyst confirm
 Nothing here auto-closes an alert. Record the decision with `blueteam_mark_investigated`.
 Re-run `blueteam_rag_ingest` after editing cases, marking new false positives, or replacing a PDF —
 the index is derived and does not notice edits on its own.
+
+Ranking is a vector recall plus an optional term-weighted lexical blend, then an optional
+cross-encoder rerank. `vector_weight` defaults to `1.0` (vector only); set it to `0.3` when an exact
+indicator matters more than paraphrase, since the lexical leg scores bigrams and IOC-shaped tokens
+above surrounding prose. No stage applies a score threshold: a top-ranked hit means "ranked above
+the alternatives". Read `rerank_engine` to see which leg produced the order — `hybrid` means the
+lexical blend ran, `vector` means it did not.
 
 ### Email / breach / domain forensics
 | Want | Tool |

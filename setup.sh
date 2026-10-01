@@ -678,8 +678,11 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_RAG_MAX_CANDIDATES="100"        # stage-1 recall (wide net)
 # export BLUETEAM_RAG_TOP_K="10"                  # stage-3 results after rerank (high precision)
 # export BLUETEAM_RAG_MAX_CHUNKS="50000"          # corpus ceiling; rejections are reported, not swallowed
-# export BLUETEAM_RAG_CHUNK_CHARS="1200"
-# export BLUETEAM_RAG_CHUNK_OVERLAP="200"
+# export BLUETEAM_RAG_CHUNK_CHARS="1200"           # chunk size in runes
+# export BLUETEAM_RAG_CHUNK_OVERLAP="200"         # carried-back runes; clamped to chunk_chars/2 at runtime
+# export BLUETEAM_RAG_CHUNK_STRATEGY="sentences"  # sentences | paragraphs | length (length = pre-chunker sliding window)
+# export BLUETEAM_RAG_VECTOR_WEIGHT="1.0"         # 1.0 = vector-only ranking. Below 1.0 blends the term-weighted
+#                                                 # lexical score (core/term_sim.py); RAGFlow's default is 0.3
 # export BLUETEAM_RAG_MODEL_SHA256=""             # optional: pin ONNX model SHA-256 (supply-chain integrity)
 
 # Forensic Mode (ADMIN GATE — off by default)
@@ -892,6 +895,8 @@ for _envf in "$CONFIG_FILE" "$ENV_FILE"; do
   _sync_env_key "$_envf" "BLUETEAM_RAG_MAX_CHUNKS" "${BLUETEAM_RAG_MAX_CHUNKS:-50000}"
   _sync_env_key "$_envf" "BLUETEAM_RAG_CHUNK_CHARS" "${BLUETEAM_RAG_CHUNK_CHARS:-1200}"
   _sync_env_key "$_envf" "BLUETEAM_RAG_CHUNK_OVERLAP" "${BLUETEAM_RAG_CHUNK_OVERLAP:-200}"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_CHUNK_STRATEGY" "${BLUETEAM_RAG_CHUNK_STRATEGY:-sentences}"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_VECTOR_WEIGHT" "${BLUETEAM_RAG_VECTOR_WEIGHT:-1.0}"
   _sync_env_key "$_envf" "BLUETEAM_RAG_MODEL_SHA256" "$RAG_SHA"
 done
 # Cluster + Laya blocks - synced with the effective values resolved above.

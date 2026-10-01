@@ -33,7 +33,7 @@ import json
 from pathlib import Path
 from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
-from mcp_server.core import rag_store
+from mcp_server.core import chunker, rag_store, term_sim
 from mcp_server.core.audit import _audit_log
 from mcp_server.core.case_store import list_cases
 from mcp_server.core.config import config
@@ -60,27 +60,13 @@ def _require_store() -> None:
 
 # Chunking + corpus rendering
 def _chunk_text(text: str, size: int, overlap: int) -> list[str]:
-    """Sliding-window split with overlap.
-    Overlap keeps a sentence straddling a boundary retrievable from either side.
-    Fixed character window, it can cut mid-sentence. Swap for a
-    paragraph/sentence-aware splitter if retrieval precision on long playbooks turns out too noisy.
+    """Chunk ``text`` for embedding via ``core/chunker.py``.
+    The active strategy is ``BLUETEAM_RAG_CHUNK_STRATEGY``. The default, ``sentences``,
+    keeps a clause whole where the previous fixed character window cut it in half.
+    ``strategy=length`` restores that exact window if the corpus measurably prefers it.
     """
-    body = (text or "").strip()
-    if not body:
-        return []
-    if len(body) <= size:
-        return [body]
-    chunks: list[str] = []
-    step = max(1, size - overlap)
-    start = 0
-    while start < len(body):
-        chunk = body[start:start + size].strip()
-        if chunk:
-            chunks.append(chunk)
-        if start + size >= len(body):
-            break
-        start += step
-    return chunks
+    return chunker.split(text, size=size, overlap=overlap,
+                         strategy=config.rag.chunk_strategy)
 
 
 def _case_text(case: dict) -> str:
@@ -128,6 +114,8 @@ def _docs_from_false_positives(size: int, overlap: int) -> list[dict]:
 async def _docs_from_pdf(path: str, corpus_label: str, size: int,
                          overlap: int) -> tuple[list[dict], dict]:
     """Extract a server-side PDF with pypdf and chunk it page by page.
+    ``chunker.normalize`` runs first: pypdf hard-wraps mid-sentence, so a line is not a
+    sentence and chunking raw page text splits the phrase a query would match.
     Chunking happens here rather than in the tool response, so a multi-hundred-page
     advisory never has to fit inside BLUETEAM_CHARACTER_LIMIT or the model's context
     window. ``pdf_extract._prepare`` enforces the same path allowlist, extension, and
@@ -144,7 +132,7 @@ async def _docs_from_pdf(path: str, corpus_label: str, size: int,
     seq = 0
     for page in payload["pages"]:
         meta = {"page": page["page"], "file": payload["file"]}
-        for chunk in _chunk_text(page["text"], size, overlap):
+        for chunk in _chunk_text(chunker.normalize(page["text"]), size, overlap):
             docs.append({"source": corpus_label, "seq": seq, "text": chunk, "meta": meta})
             seq += 1
     info = {
@@ -329,6 +317,11 @@ class RagQueryInput(BaseModel):
                     "(BAAI/bge-reranker-base). ON by default; falls back to vector "
                     "order when BLUETEAM_RERANK_ENABLED=false or the model is "
                     "unavailable, in which case rerank_status says why.")
+    vector_weight: Optional[float] = Field(default=None, ge=0.0, le=1.0,
+        description="Blend the term-weighted lexical score with the vector score before "
+                    "rerank: sim = vector_weight*vector + (1-vector_weight)*term. "
+                    "1.0 or None keeps vector-only order. Default comes from "
+                    "BLUETEAM_RAG_VECTOR_WEIGHT (shipped at 1.0, so the blend is opt-in).")
     response_format: Literal["markdown", "json"] = Field(default="markdown")
 
 
@@ -340,10 +333,11 @@ class RagQueryInput(BaseModel):
 )
 async def blueteam_rag_query(params: RagQueryInput) -> str:
     """Retrieve analyst knowledge: prior cases, confirmed false positives, IR playbooks.
-    Two stages. Vector recall pulls ``recall_k`` candidates (default 100) from the
-    local SQLite store; the optional cross-encoder rerank re-scores them and keeps
-    ``top_k``. Rerank is rank-based and applies NO score threshold, so a hit always
-    carries its raw scores rather than a pass/fail verdict.
+    Three optional stages. Vector recall pulls ``recall_k`` candidates (default 100)
+    from the local SQLite store; the term-weighted lexical leg re-scores them and
+    blends when ``vector_weight`` is below 1.0; the cross-encoder rerank re-scores
+    what is left and keeps ``top_k``. Both re-scoring stages are rank-based and apply
+    NO score threshold, so a hit always carries its raw scores rather than a pass/fail.
     Use this when the question is "have we seen this before / is this noise",
     not for searching live alerts (use ``blueteam_semantic_search`` for that) or
     live rule text (``blueteam_wazuh_get_rules``).
@@ -354,6 +348,7 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
         params.recall_k: Stage-1 candidate count.
         params.sources: Optional corpus label filter.
         params.rerank: Enable the cross-encoder second stage.
+        params.vector_weight: Below 1.0, blend in the lexical leg before rerank.
         params.response_format: 'markdown' (default) or 'json'.
 
     Returns:
@@ -369,9 +364,13 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
            rerank=True, recall_k=100)``
         4. IR guidance -> ``blueteam_rag_query(query="containment steps for ransomware",
            sources=["ir_playbooks"])``
+        5. Exact indicator buried in prose -> ``blueteam_rag_query(query="117.247.110.24 webshell",
+           vector_weight=0.3)`` (the lexical leg weights the IOC above the surrounding words)
 
     Permissions: read on BLUETEAM_RAG_DB. Rate limits: none; the first call loads
-    the embedder (one-off ONNX session build, a few seconds).
+    the embedder (one-off ONNX session build, a few seconds) and builds the corpus
+    term-frequency tables when blending is on (one pass over the corpus, a few
+    seconds at 50k chunks).
     """
     _require_store()
     recall = min(params.recall_k, config.rag.max_candidates)
@@ -397,8 +396,25 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
 
     reranked = False
     rerank_status: Optional[str] = None
+    blended = False
+    vector_weight = (params.vector_weight if params.vector_weight is not None
+                     else config.rag.vector_weight)
+
+    if vector_weight < 1.0 and hits:
+        tf, df = await rag_store.token_stats(params.sources)
+        term_scores = term_sim.score(params.query, [h["text"] for h in hits], tf=tf, df=df)
+        fused = term_sim.hybrid([float(h.get("vector_score", 0.0)) for h in hits],
+                                term_scores, vector_weight)
+        for hit, term_score, fused_score in zip(hits, term_scores, fused):
+            hit["term_score"] = round(term_score, 6)
+            hit["hybrid_score"] = round(fused_score, 6)
+        hits = [hit for _, hit in sorted(zip(fused, hits), key=lambda pair: -pair[0])]
+        blended = True
+
     if params.rerank and hits:
-        hits, reranked, rerank_status = await rerank_hits(params.query, hits, params.top_k)
+        hits, reranked, rerank_status = await rerank_hits(
+            params.query, hits, params.top_k,
+            score_field="hybrid_score" if blended else "vector_score")
     else:
         hits = hits[:params.top_k]
 
@@ -407,12 +423,12 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
         return json.dumps({
             "query": params.query, "matches": hits,
             **status_dict(rerank_status if params.rerank else "not_requested",
-                          fallback_engine="vector"),
-            "recall_k": recall, "returned": len(hits),
+                          fallback_engine="hybrid" if blended else "vector"),
+            "vector_weight": vector_weight, "recall_k": recall, "returned": len(hits),
             "store": store,
         }, indent=2, ensure_ascii=False)
 
-    score_col = "Rerank" if reranked else "Vector"
+    score_col = "Rerank" if reranked else ("Hybrid" if blended else "Vector")
     lines = [f"# 🔎 RAG Query - `{params.query}`", "",
              f"**Candidates**: {recall} | **Returned**: {len(hits)} | "
              f"**Corpus**: {sum(store['chunks_by_model'].values())} chunks "
@@ -420,7 +436,7 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
              f"| # | {score_col} | Source | Meta | Text |",
              "|---|--------|--------|------|------|"]
     for rank, hit in enumerate(hits, 1):
-        score = hit.get("rerank_score", hit.get("vector_score", 0.0))
+        score = hit.get("rerank_score", hit.get("hybrid_score", hit.get("vector_score", 0.0)))
         meta = json.dumps(hit.get("meta") or {}, ensure_ascii=False)[:40]
         raw = " ".join(str(hit.get("text", "")).split())
         text = raw[:120] + ("…" if len(raw) > 120 else "")
@@ -428,6 +444,11 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
     lines.append("")
     if params.rerank and rerank_status:
         lines.append(f"*Rerank fallback: {rerank_status} results are vector-order only.*")
+        lines.append("")
+    if blended:
+        lines.append(f"*Hybrid: {vector_weight:.2f} vector + {1.0 - vector_weight:.2f} term-weighted "
+                     "lexical (core/term_sim.py), blended before rerank. Per-chunk "
+                     "`term_score` and `vector_score` are in the JSON response.*")
         lines.append("")
     lines.append("*Text column is a 120 char preview (`…` marks the cut) - use "
                  "`response_format=\"json\"` for the full chunk text.*")
