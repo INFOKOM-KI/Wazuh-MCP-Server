@@ -81,26 +81,16 @@ def _shape(spec: dict) -> str:
 
 
 def _shape_is_agg_safe(shape: str) -> bool:
-    """True when the field's own name aggregates to that field's values.
-    A keyword sub-field does not count on its own, and fielddata alone is not
-    enough either: it aggregates, but to whatever the analyzer emits.
-    """
-    parts = shape.split("+")
-    return parts[0] in _AGG_SAFE_TYPES or ("fielddata" in parts[1:]
-                                           and not _shape_is_tokenized(shape))
+    """True when the field's own name is asserted to aggregate to its values.
 
-
-def _shape_is_tokenized(shape: str) -> bool:
-    """fielddata over text buckets whatever the analyzer emits.
-    A keyword analyzer emits the whole value, so an IP comes back as an IP. The
-    standard analyzer splits on dots and comes back as `203`, `0`, `113`, `7`,
-    and an undeclared analyzer is the standard one.
+    A keyword sub-field does not count on its own, and a text field with
+    fielddata is not asserted either. It aggregates, but whether the buckets are
+    values or analysed tokens depends on the analyser and on the value format:
+    the standard analyser keeps ``101.255.167.98`` whole while splitting
+    ``a.b.go.id``, so one mapping shape behaves differently per field. This
+    refuses rather than permits.
     """
-    parts = shape.split("+")
-    if parts[0] != "text" or "fielddata" not in parts[1:]:
-        return False
-    declared = [p for p in parts[1:] if p.startswith("analyzer=")]
-    return not declared or declared[0] != "analyzer=keyword"
+    return shape.split("+")[0] in _AGG_SAFE_TYPES
 
 
 def _shape_counts(by_shape: dict) -> dict:
@@ -213,8 +203,8 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
                    "agg_safe_field": _agg_safe_field(f, by_shape)}
             if spec.get("analyzer"):
                 row["analyzer"] = spec["analyzer"]
-            if any(_shape_is_tokenized(s) for s in by_shape):
-                row["tokenized"] = True
+            if any("fielddata" in s.split("+")[1:] for s in by_shape):
+                row["fielddata"] = True
             if len(by_shape) > 1:
                 row["mixed_mapping"] = _shape_counts(by_shape)
                 row["mixed_indices"] = _minority_indices(by_shape)
@@ -250,8 +240,8 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
             kw = "✅" if r["has_keyword_subfield"] else "—"
             if r["agg_safe"]:
                 agg = "✅"
-            elif r.get("tokenized"):
-                agg = "⚠️ fielddata buckets tokens, not values"
+            elif r.get("fielddata"):
+                agg = "⚠️ fielddata: analyser decides the buckets"
             elif r.get("agg_safe_field"):
                 agg = f"⚠️ use `{r['agg_safe_field']}`"
             else:
@@ -281,12 +271,13 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
                 more = " …" if len(r["mixed_indices"]) > 10 else ""
                 lines.append(f">   `{r['field']}`: {shown}{more}")
         lines.append("")
-    token_rows = [r for r in results if r.get("tokenized")]
-    if token_rows:
-        names = ", ".join(f"`{r['field']}`" for r in token_rows[:5])
-        lines.append(f"> ⚠️ {names} aggregates to analysed tokens on the fielddata indices and to "
-                     "whole values everywhere else, so one `terms` bucket mixes words with "
-                     "descriptions and no total across them is meaningful.")
+    fd_rows = [r for r in results if r.get("fielddata")]
+    if fd_rows:
+        names = ", ".join(f"`{r['field']}`" for r in fd_rows[:5])
+        lines.append(f"> ⚠️ {names} run with fielddata on a text field. The analyser and the "
+                     "value format decide the buckets, so one `terms` query can mix words with "
+                     "whole values across indices and no total across them is meaningful. "
+                     "Compare the bare name against `.keyword` before trusting either.")
     lines.append("_Tip: `agg_safe=✅` means the bare field name works in a `terms` "
                  "aggregation across every matched index; otherwise use `agg_safe_field`._")
     return _truncate_if_needed("\n".join(lines))

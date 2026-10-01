@@ -160,15 +160,18 @@ def test_markdown_warns_when_a_field_is_mixed(monkeypatch):
     assert "`rule.id`:" in rendered
 
 
-def test_fielddata_on_text_buckets_tokens_so_it_is_not_agg_safe(monkeypatch):
-    """The query runs, but the bucket keys are words rather than descriptions."""
+def test_fielddata_on_text_is_flagged_but_not_asserted_safe(monkeypatch):
+    """The analyser and the value format decide the buckets, so the mapping cannot
+    promise whole values. `data.srcip` returns whole IPs, `rule.description`
+    returns words, from the same shape."""
     mapping = {name: {"mappings": {"properties": {"rule": {"properties": {
                 "id": {"type": "text", "fielddata": True}}}}}}
             for name in ("old-a", "old-b")}
     row = _merged_schema(mapping, ["rule.id"], monkeypatch)["rule.id"]
     assert row["agg_safe"] is False
     assert row["agg_safe_field"] is None
-    assert row["tokenized"] is True
+    assert row["fielddata"] is True
+    assert "tokenized" not in row
 
 
 def test_fielddata_difference_between_two_text_indices_is_visible(monkeypatch):
@@ -185,10 +188,7 @@ def test_fielddata_difference_between_two_text_indices_is_visible(monkeypatch):
     row = _merged_schema(mapping, ["rule.description"], monkeypatch)["rule.description"]
     assert row["mixed_mapping"] == {"text+keyword+fielddata": 1, "text+keyword": 1}
     assert row["agg_safe"] is False
-    assert row["tokenized"] is True
-    # Every index in the mix carries .keyword, so that name spans the corpus
-    # even though the bare name does not.
-    assert row["agg_safe_field"] == "rule.description.keyword"
+    assert row["fielddata"] is True
 
 
 def test_a_truncated_template_is_reported(monkeypatch):
@@ -240,18 +240,19 @@ def test_the_markdown_names_the_truncated_indices(monkeypatch):
     assert "wazuh-alerts-4.x-2026.06.03 (40)" in rendered
 
 
-def test_fielddata_with_a_keyword_analyzer_returns_whole_values(monkeypatch):
-    """`data.srcip` on the drifted indices is text+fielddata yet buckets full IPs,
-    because its analyzer does not split them."""
+def test_a_declared_analyzer_is_reported(monkeypatch):
+    """The analyser is the property that decides tokens versus values, so it is
+    surfaced rather than inferred."""
     mapping = {name: {"mappings": {"properties": {"data": {"properties": {
                 "srcip": {"type": "text", "fielddata": True, "analyzer": "keyword",
                           "fields": {"keyword": {"type": "keyword"}}}}}}}}
             for name in ("old-a", "old-b")}
     row = _merged_schema(mapping, ["data.srcip"], monkeypatch)["data.srcip"]
-    assert row["agg_safe"] is True
-    assert row["agg_safe_field"] == "data.srcip"
     assert row["analyzer"] == "keyword"
-    assert "tokenized" not in row
+    assert row["fielddata"] is True
+    # A text field is never asserted safe on the bare name, whatever its analyser.
+    assert row["agg_safe"] is False
+    assert row["agg_safe_field"] == "data.srcip.keyword"
 
 
 if __name__ == "__main__":
