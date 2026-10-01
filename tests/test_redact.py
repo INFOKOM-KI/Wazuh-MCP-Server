@@ -143,6 +143,23 @@ class TestHostnameCandidate:
     def test_accepts_with_hyphen(self):
         assert _is_hostname_candidate("web-01") is True
 
+    def test_rejects_numeric_only(self):
+        """A terms agg on rule.id returns digits; masking them hides every top-rule table."""
+        assert _is_hostname_candidate("31151") is False
+        assert _is_hostname_candidate("3302") is False
+
+
+def test_numeric_bucket_keys_survive_protect_victim():
+    """Only hostname-shaped keys are masked, not rule ids standing in the same position."""
+    data = {"aggregations": {"by_rule": {"buckets": [
+        {"key": "31151", "doc_count": 124223},
+        {"key": "web-01", "doc_count": 3},
+    ]}}}
+    result = _redact_alert_data(data, policy="protect_victim")
+    keys = [b["key"] for b in result["aggregations"]["by_rule"]["buckets"]]
+    assert keys[0] == "31151"
+    assert keys[1] != "web-01"
+
 
 class TestRawPolicyGate:
 

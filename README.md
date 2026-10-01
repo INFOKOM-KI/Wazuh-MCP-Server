@@ -690,6 +690,10 @@ Reading the output:
   hostile host does. `truncated=true` means only the `max_buckets` highest-volume buckets were
   ranked, so a low-volume high-ratio location can be absent; raise `max_buckets` before treating
   the ranking as complete.
+- Indexer responses carry `_partial: true` and `_failed_shards: n` whenever a shard
+  rejected the query. A failed shard raises nothing and still returns HTTP 200, so the counts
+  look complete while covering fewer documents. Quote the counts as a subset whenever `_partial`
+  is present; never present them as the whole corpus.
 - Inside `blueteam_investigation_workflow`, the subject alert is labeled automatically after
   cluster assignment when `BLUETEAM_LAYA_ENABLED=true`; the verdict is returned as
   `incident_label` and appears in the report bullets. Disabled labeling records

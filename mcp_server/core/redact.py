@@ -84,6 +84,8 @@ def _is_hostname_candidate(v: str) -> bool:
         return False
     if v.isalpha():
         return False  # require a digit or hyphen - "web" / "admin" pass through
+    if v.isdigit():
+        return False
     return True
 
 # Layer 1: Credential stripping

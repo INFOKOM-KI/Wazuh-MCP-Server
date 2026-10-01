@@ -39,13 +39,22 @@ def _flatten_props(prefix: str, props: dict, out: dict) -> None:
 def _field_info(spec: dict) -> dict:
     """Extract type + keyword sub-field presence from a mapping spec."""
     ftype = spec.get("type", "object")
-    has_keyword = False
-    fields = spec.get("fields", {})
-    if "keyword" in fields:
-        has_keyword = True
+    has_keyword = "keyword" in spec.get("fields", {})
     return {"type": ftype, "has_keyword_subfield": has_keyword,
-            "agg_safe": (ftype in ("keyword", "long", "integer", "double", "date", "boolean", "ip")
-                         or has_keyword)}
+            "agg_safe": _shape_is_agg_safe(_shape(spec))}
+
+
+_AGG_SAFE_TYPES = ("keyword", "long", "integer", "double", "date", "boolean", "ip")
+
+
+def _shape(spec: dict) -> str:
+    """Mapping shape for one index, e.g. ``text+keyword`` or ``keyword``."""
+    return spec.get("type", "object") + ("+keyword" if "keyword" in spec.get("fields", {}) else "")
+
+
+def _shape_is_agg_safe(shape: str) -> bool:
+    base, _, keyword = shape.partition("+")
+    return keyword == "keyword" or base in _AGG_SAFE_TYPES
 
 
 class IndexSchemaInput(BaseModel):
@@ -94,11 +103,17 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
     if isinstance(raw, dict) and "error" in raw:
         return json.dumps(raw, indent=2)
 
-    # Merge all indices' mappings into one flattened dict
     all_fields: dict[str, dict] = {}
+    shapes: dict[str, dict[str, int]] = {}
     for index_name, index_body in raw.items():
         props = index_body.get("mappings", {}).get("properties", {})
-        _flatten_props("", props, all_fields)
+        per_index: dict[str, dict] = {}
+        _flatten_props("", props, per_index)
+        for field, spec in per_index.items():
+            all_fields[field] = spec
+            counts = shapes.setdefault(field, {})
+            shape = _shape(spec)
+            counts[shape] = counts.get(shape, 0) + 1
 
     # Determine target fields
     if params.fields:
@@ -115,7 +130,14 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
                             "agg_safe": False})
         else:
             info = _field_info(spec)
-            results.append({"field": f, "exists": True, **info})
+            field_shapes = shapes.get(f) or {}
+            mixed = len(field_shapes) > 1
+            if mixed:
+                info["agg_safe"] = all(_shape_is_agg_safe(s) for s in field_shapes)
+            row = {"field": f, "exists": True, **info}
+            if mixed:
+                row["mixed_mapping"] = field_shapes
+            results.append(row)
 
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps({
@@ -125,17 +147,28 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
             "results": results,
         }, indent=2))
 
-    lines = [f"# Index Schema — `{params.index}`", "",
+    lines = [f"# Index Schema - `{params.index}`", "",
              f"**Total fields in mapping**: {len(all_fields)}", ""]
     lines.append("| Field | Type | .keyword? | Agg-Safe |")
     lines.append("|-------|------|-----------|----------|")
     for r in results:
         if not r["exists"]:
-            lines.append(f"| `{r['field']}` | ❌ NOT FOUND | — | — |")
+            lines.append(f"| `{r['field']}` | ❌ NOT FOUND | - | - |")
+        elif r.get("mixed_mapping"):
+            variants = ", ".join(f"`{s}`×{n}" for s, n in sorted(r["mixed_mapping"].items()))
+            lines.append(f"| `{r['field']}` | {variants} | - | ⚠️ mixed across indices |")
         else:
-            kw = "✅" if r["has_keyword_subfield"] else "—"
+            kw = "✅" if r["has_keyword_subfield"] else "-"
             agg = "✅" if r["agg_safe"] else "⚠️ use .keyword or re-map"
             lines.append(f"| `{r['field']}` | `{r['type']}` | {kw} | {agg} |")
     lines.append("")
+    mixed_fields = [r["field"] for r in results if r.get("mixed_mapping")]
+    if mixed_fields:
+        lines.append(f"> ⚠️ {len(mixed_fields)} field(s) are mapped differently across the "
+                     "matched indices, so an aggregation on them covers only the shards "
+                     "whose mapping allows it and returns no error for the rest. Repair "
+                     "the index template and reindex the divergent indices before "
+                     "trusting a ranking built on them.")
+        lines.append("")
     lines.append("_Tip: `agg_safe=✅` means the field can be used directly in a `terms` aggregation._")
     return _truncate_if_needed("\n".join(lines))

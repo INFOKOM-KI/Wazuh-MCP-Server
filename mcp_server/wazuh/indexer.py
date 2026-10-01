@@ -69,6 +69,16 @@ async def _wazuh_indexer_mapping(index_pattern: Optional[str] = None) -> Dict:
         return {"error": str(e)}
 
 
+def _mark_partial(data: Dict) -> None:
+    """Flag a shard-partial response in place. A failed shard excludes its
+    documents from every aggregation without raising, so the counts still read
+    like a complete answer."""
+    failed = (data.get("_shards") or {}).get("failed") or 0
+    if failed:
+        data["_partial"] = True
+        data["_failed_shards"] = int(failed)
+
+
 async def _wazuh_indexer_post(body: dict, index_pattern: Optional[str] = None) -> Dict:
     if index_pattern is None:
         index_pattern = _WAZUH_INDEX_PATTERNS["alerts"]
@@ -85,6 +95,7 @@ async def _wazuh_indexer_post(body: dict, index_pattern: Optional[str] = None) -
                                 auth=(WAZUH_INDEXER_USER, WAZUH_INDEXER_PASSWORD),
                                 json=body, headers={"Content-Type": "application/json"})
         data = resp.json()
+        _mark_partial(data)
         if _INDEXER_CACHE_TTL > 0:
             _INDEXER_CACHE[cache_key] = (now + _INDEXER_CACHE_TTL, data)
             if len(_INDEXER_CACHE) > 1000:  # bound the cache
