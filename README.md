@@ -1,7 +1,6 @@
 # Blue Team MCP Server (Wazuh SIEM)
 
-<img width="1674" height="940" alt="image" src="https://github.com/user-attachments/assets/a4a70b45-9b79-41c6-a23a-5d0e6b38931a" />
-
+<img width="1673" height="940" alt="image" src="https://github.com/user-attachments/assets/c05c2d24-06e6-4a1b-9c40-75af7c5915e8" />
 
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/card.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
