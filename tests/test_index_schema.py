@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
 """Tests for index schema explorer."""
 from __future__ import annotations
-
 import os
 
-# mcp_server/__init__.py calls init_config() at import and hard-fails without
-# WAZUH_INDEXER_* (ConfigurationError). Seed them at module level so this file
-# passes in isolation, not only when a peer module happens to import first.
 os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
 os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
 
@@ -33,7 +29,7 @@ def test_field_info_keyword():
     info = _field_info({"type": "keyword"})
     assert info["type"] == "keyword"
     assert info["has_keyword_subfield"] is False
-    assert info["agg_safe"] is True  # plain keyword is aggregation-safe
+    assert info["agg_safe"] is True
 
 
 def test_field_info_text_with_keyword_subfield():
@@ -41,7 +37,9 @@ def test_field_info_text_with_keyword_subfield():
     info = _field_info({"type": "text", "fields": {"keyword": {"type": "keyword"}}})
     assert info["type"] == "text"
     assert info["has_keyword_subfield"] is True
-    assert info["agg_safe"] is True  # .keyword sub-field available
+    # The sub-field aggregates, but the bare name is text: a terms agg on
+    # `rule.id` fails on that index, which is what the shard failures showed.
+    assert info["agg_safe"] is False
 
 
 def test_field_info_text_no_keyword():
@@ -98,7 +96,9 @@ def test_uniform_mapping_reports_no_mix(monkeypatch):
     assert "mixed_mapping" not in row
 
 
-def test_mixed_text_shapes_stay_agg_safe_when_every_index_has_the_keyword_subfield(monkeypatch):
+def test_keyword_mixed_with_text_leaves_no_aggregatable_name(monkeypatch):
+    """Neither `rule.id` nor `rule.id.keyword` spans a corpus that mixes the two:
+    the bare name fails on the text indices, .keyword does not exist on the others."""
     mapping = {
         "newer": {"mappings": {"properties": {"rule": {"properties": {
             "id": {"type": "keyword"}}}}}},
@@ -106,8 +106,33 @@ def test_mixed_text_shapes_stay_agg_safe_when_every_index_has_the_keyword_subfie
             "id": {"type": "text", "fields": {"keyword": {"type": "keyword"}}}}}}}},
     }
     row = _merged_schema(mapping, ["rule.id"], monkeypatch)["rule.id"]
-    assert row["agg_safe"] is True
+    assert row["agg_safe"] is False
+    assert row["agg_safe_field"] is None
     assert row["mixed_mapping"] == {"keyword": 1, "text+keyword": 1}
+
+
+def test_uniform_text_with_keyword_names_the_subfield(monkeypatch):
+    mapping = {name: {"mappings": {"properties": {"rule": {"properties": {
+                "id": {"type": "text", "fields": {"keyword": {"type": "keyword"}}}}}}}}
+            for name in ("old-a", "old-b")}
+    row = _merged_schema(mapping, ["rule.id"], monkeypatch)["rule.id"]
+    assert row["agg_safe"] is False
+    assert row["agg_safe_field"] == "rule.id.keyword"
+
+
+def test_the_diverging_indices_are_named(monkeypatch):
+    mapping = {}
+    for day in (1, 2, 3):
+        mapping[f"wazuh-alerts-2026.10.0{day}"] = {"mappings": {"properties": {
+            "rule": {"properties": {"id": {"type": "keyword"}}}}}}
+    for day in (21, 22):
+        mapping[f"wazuh-alerts-2026.05.{day}"] = {"mappings": {"properties": {
+            "rule": {"properties": {"id": {
+                "type": "text", "fields": {"keyword": {"type": "keyword"}}}}}}}}
+    row = _merged_schema(mapping, ["rule.id"], monkeypatch)["rule.id"]
+    assert row["agg_safe"] is False
+    assert row["mixed_mapping"] == {"keyword": 3, "text+keyword": 2}
+    assert row["mixed_indices"] == ["wazuh-alerts-2026.05.21", "wazuh-alerts-2026.05.22"]
 
 
 def test_markdown_warns_when_a_field_is_mixed(monkeypatch):
@@ -122,8 +147,9 @@ def test_markdown_warns_when_a_field_is_mixed(monkeypatch):
     tool = getattr(index_schema.blueteam_index_schema, "__wrapped__",
                    index_schema.blueteam_index_schema)
     rendered = asyncio.run(tool(index_schema.IndexSchemaInput(fields=["rule.id"])))
-    assert "mixed across indices" in rendered
+    assert "no field name spans every index" in rendered
     assert "reindex the divergent indices" in rendered
+    assert "`rule.id`:" in rendered
 
 
 if __name__ == "__main__":
