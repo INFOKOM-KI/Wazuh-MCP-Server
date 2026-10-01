@@ -152,15 +152,15 @@ def test_markdown_warns_when_a_field_is_mixed(monkeypatch):
     assert "`rule.id`:" in rendered
 
 
-def test_fielddata_makes_a_text_field_aggregatable_on_its_bare_name(monkeypatch):
-    """Shards with fielddata accept the bare name; without it they refuse the query."""
+def test_fielddata_on_text_buckets_tokens_so_it_is_not_agg_safe(monkeypatch):
+    """The query runs, but the bucket keys are words rather than descriptions."""
     mapping = {name: {"mappings": {"properties": {"rule": {"properties": {
                 "id": {"type": "text", "fielddata": True}}}}}}
             for name in ("old-a", "old-b")}
     row = _merged_schema(mapping, ["rule.id"], monkeypatch)["rule.id"]
-    assert row["agg_safe"] is True
-    assert row["agg_safe_field"] == "rule.id"
-    assert "mixed_mapping" not in row
+    assert row["agg_safe"] is False
+    assert row["agg_safe_field"] is None
+    assert row["tokenized"] is True
 
 
 def test_fielddata_difference_between_two_text_indices_is_visible(monkeypatch):
@@ -177,6 +177,7 @@ def test_fielddata_difference_between_two_text_indices_is_visible(monkeypatch):
     row = _merged_schema(mapping, ["rule.description"], monkeypatch)["rule.description"]
     assert row["mixed_mapping"] == {"text+keyword+fielddata": 1, "text+keyword": 1}
     assert row["agg_safe"] is False
+    assert row["tokenized"] is True
     # Every index in the mix carries .keyword, so that name spans the corpus
     # even though the bare name does not.
     assert row["agg_safe_field"] == "rule.description.keyword"

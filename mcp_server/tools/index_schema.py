@@ -63,10 +63,19 @@ def _shape(spec: dict) -> str:
 
 
 def _shape_is_agg_safe(shape: str) -> bool:
-    """True when the field's own name aggregates in that index. A keyword
-    sub-field does not count on its own: the caller is not asking for it."""
+    """True when the field's own name aggregates to that field's values.
+
+    A keyword sub-field does not count on its own, and neither does fielddata:
+    a text field with fielddata does aggregate, but to analysed tokens.
+    """
+    return shape.split("+")[0] in _AGG_SAFE_TYPES
+
+
+def _shape_is_tokenized(shape: str) -> bool:
+    """fielddata over a text field buckets individual words, so the same
+    `terms` query reads "detected" where a keyword index reads the description."""
     parts = shape.split("+")
-    return parts[0] in _AGG_SAFE_TYPES or "fielddata" in parts[1:]
+    return parts[0] == "text" and "fielddata" in parts[1:]
 
 
 def _shape_counts(by_shape: dict) -> dict:
@@ -175,6 +184,8 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
                 info["agg_safe"] = all(_shape_is_agg_safe(s) for s in by_shape)
             row = {"field": f, "exists": True, **info,
                    "agg_safe_field": _agg_safe_field(f, by_shape)}
+            if any(_shape_is_tokenized(s) for s in by_shape):
+                row["tokenized"] = True
             if len(by_shape) > 1:
                 row["mixed_mapping"] = _shape_counts(by_shape)
                 row["mixed_indices"] = _minority_indices(by_shape)
@@ -204,6 +215,8 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
             kw = "✅" if r["has_keyword_subfield"] else "—"
             if r["agg_safe"]:
                 agg = "✅"
+            elif r.get("tokenized"):
+                agg = "⚠️ fielddata buckets tokens, not values"
             elif r.get("agg_safe_field"):
                 agg = f"⚠️ use `{r['agg_safe_field']}`"
             else:
@@ -223,6 +236,12 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
                 more = " …" if len(r["mixed_indices"]) > 10 else ""
                 lines.append(f">   `{r['field']}`: {shown}{more}")
         lines.append("")
+    token_rows = [r for r in results if r.get("tokenized")]
+    if token_rows:
+        names = ", ".join(f"`{r['field']}`" for r in token_rows[:5])
+        lines.append(f"> ⚠️ {names} aggregates to analysed tokens on the fielddata indices and to "
+                     "whole values everywhere else, so one `terms` bucket mixes words with "
+                     "descriptions and no total across them is meaningful.")
     lines.append("_Tip: `agg_safe=✅` means the bare field name works in a `terms` "
                  "aggregation across every matched index; otherwise use `agg_safe_field`._")
     return _truncate_if_needed("\n".join(lines))
