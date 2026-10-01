@@ -6,7 +6,7 @@ Prevents the most common silent false-negative: querying ``field.keyword``
 when the index stores ``field`` as a plain ``keyword`` type (or vice versa).
 """
 from __future__ import annotations
-import json, re
+import json, re, statistics
 from typing import Optional, Literal, Any
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import mcp
@@ -34,6 +34,23 @@ def _flatten_props(prefix: str, props: dict, out: dict) -> None:
             _flatten_props(path, spec["properties"], out)
             continue
         out[path] = spec
+
+
+def _truncated_templates(field_counts: dict, ratio: float = 0.5,
+                         gap: int = 20) -> tuple:
+    """Indices carrying far fewer fields than the median.
+    A truncated template drops fields outright rather than retyping them, so a
+    query on a missing field loses those shards without raising. A shortfall
+    under ``gap`` fields is not evidence of one. Returns (summary, outliers).
+    """
+    if len(field_counts) < 2:
+        return {}, []
+    median = int(statistics.median(list(field_counts.values())))
+    outliers = sorted(((name, n) for name, n in field_counts.items()
+                       if n < median * ratio and median - n >= gap),
+                      key=lambda item: item[1])
+    return {"indices": len(field_counts), "fields_median": median,
+            "fields_min": min(field_counts.values()), "outliers": len(outliers)}, outliers
 
 
 def _field_info(spec: dict) -> dict:
@@ -155,10 +172,12 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
 
     all_fields: dict[str, dict] = {}
     shape_indices: dict[str, dict[str, list[str]]] = {}
+    field_counts: dict[str, int] = {}
     for index_name, index_body in raw.items():
         props = index_body.get("mappings", {}).get("properties", {})
         per_index: dict[str, dict] = {}
         _flatten_props("", props, per_index)
+        field_counts[index_name] = len(per_index)
         for field, spec in per_index.items():
             all_fields[field] = spec
             by_shape = shape_indices.setdefault(field, {})
@@ -192,12 +211,18 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
             results.append(row)
 
     if params.response_format == "json":
-        return _truncate_if_needed(json.dumps({
+        payload = {
             "index": params.index,
             "total_fields_in_mapping": len(all_fields),
             "queried_fields": len(results),
             "results": results,
-        }, indent=2))
+        }
+        index_summary, truncated = _truncated_templates(field_counts)
+        if index_summary:
+            payload["indices"] = index_summary
+            payload["truncated_template_indices"] = [
+                {"index": name, "fields": count} for name, count in truncated[:20]]
+        return _truncate_if_needed(json.dumps(payload, indent=2))
 
     lines = [f"# Index Schema - `{params.index}`", "",
              f"**Total fields in mapping**: {len(all_fields)}", ""]
@@ -223,6 +248,16 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
                 agg = "⚠️ not aggregatable as named"
             lines.append(f"| `{r['field']}` | `{r['type']}` | {kw} | {agg} |")
     lines.append("")
+    index_summary, truncated = _truncated_templates(field_counts)
+    if truncated:
+        shown = ", ".join(f"{name} ({count})" for name, count in truncated[:5])
+        more = f" and {len(truncated) - 5} more" if len(truncated) > 5 else ""
+        lines.append(f"> ⚠️ {len(truncated)} of {index_summary['indices']} indices carry far fewer "
+                     f"fields than the median ({index_summary['fields_median']}). A truncated "
+                     "template drops fields from those shards entirely, so any query on a "
+                     "missing field loses them with no error. Reindex them from source.")
+        lines.append(f">   {shown}{more}")
+        lines.append("")
     mixed_rows = [r for r in results if r.get("mixed_mapping")]
     if mixed_rows:
         lines.append(f"> ⚠️ {len(mixed_rows)} field(s) are mapped differently across the "

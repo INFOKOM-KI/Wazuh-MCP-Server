@@ -58,7 +58,7 @@ def test_input_model():
     assert inp2.fields == []
 
 
-def _merged_schema(mapping, fields, monkeypatch):
+def _merged_payload(mapping, fields, monkeypatch):
     from mcp_server.tools import index_schema
 
     async def _fake_mapping(index_pattern=None):
@@ -69,7 +69,15 @@ def _merged_schema(mapping, fields, monkeypatch):
                    index_schema.blueteam_index_schema)
     payload = asyncio.run(tool(index_schema.IndexSchemaInput(
         fields=fields, response_format="json")))
-    return {r["field"]: r for r in json.loads(payload)["results"]}
+    return json.loads(payload)
+
+
+def _merged_schema(mapping, fields, monkeypatch):
+    return {r["field"]: r for r in _merged_payload(mapping, fields, monkeypatch)["results"]}
+
+
+def _index_with_fields(n):
+    return {"mappings": {"properties": {f"f{i}": {"type": "keyword"} for i in range(n)}}}
 
 
 def _mapping(**per_index_types):
@@ -181,6 +189,55 @@ def test_fielddata_difference_between_two_text_indices_is_visible(monkeypatch):
     # Every index in the mix carries .keyword, so that name spans the corpus
     # even though the bare name does not.
     assert row["agg_safe_field"] == "rule.description.keyword"
+
+
+def test_a_truncated_template_is_reported(monkeypatch):
+    """The wildcard merge unions every field, so a short index only shows up in
+    its own field count."""
+    mapping = {"healthy-a": _index_with_fields(200), "healthy-b": _index_with_fields(198),
+               "wazuh-alerts-4.x-2026.06.03": _index_with_fields(40)}
+    payload = _merged_payload(mapping, ["f1"], monkeypatch)
+    assert payload["indices"] == {"indices": 3, "fields_median": 198,
+                                  "fields_min": 40, "outliers": 1}
+    assert payload["truncated_template_indices"] == [
+        {"index": "wazuh-alerts-4.x-2026.06.03", "fields": 40}]
+
+
+def test_nearby_field_counts_are_not_reported(monkeypatch):
+    mapping = {"a": _index_with_fields(200), "b": _index_with_fields(180)}
+    payload = _merged_payload(mapping, ["f1"], monkeypatch)
+    assert payload["indices"]["outliers"] == 0
+    assert payload["truncated_template_indices"] == []
+
+
+def test_a_small_shortfall_is_not_a_truncated_template(monkeypatch):
+    """Five against sixteen is a big ratio but a 11-field gap, not a lost schema."""
+    mapping = {"a": _index_with_fields(36), "b": _index_with_fields(16),
+               "c": _index_with_fields(4)}
+    payload = _merged_payload(mapping, ["f1"], monkeypatch)
+    assert payload["truncated_template_indices"] == []
+
+
+def test_a_single_index_reports_no_distribution(monkeypatch):
+    payload = _merged_payload({"only": _index_with_fields(50)}, ["f1"], monkeypatch)
+    assert "indices" not in payload
+    assert "truncated_template_indices" not in payload
+
+
+def test_the_markdown_names_the_truncated_indices(monkeypatch):
+    mapping = {"healthy-a": _index_with_fields(200), "healthy-b": _index_with_fields(198),
+               "wazuh-alerts-4.x-2026.06.03": _index_with_fields(40)}
+    from mcp_server.tools import index_schema
+
+    async def _fake_mapping(index_pattern=None):
+        return mapping
+
+    monkeypatch.setattr(index_schema, "_wazuh_indexer_mapping", _fake_mapping)
+    tool = getattr(index_schema.blueteam_index_schema, "__wrapped__",
+                   index_schema.blueteam_index_schema)
+    rendered = asyncio.run(tool(index_schema.IndexSchemaInput(fields=["f1"])))
+    assert "far fewer" in rendered
+    assert "wazuh-alerts-4.x-2026.06.03 (40)" in rendered
 
 
 if __name__ == "__main__":
