@@ -153,3 +153,32 @@ def test_assign_not_observed_is_explicit():
 def test_assign_without_fit_raises():
     with pytest.raises(BlueTeamMCPError):
         _run(_assign(cluster.AlertClusterAssignInput(srcip="203.0.113.7")))
+
+
+def test_fit_stamps_the_window_it_scored_in():
+    payload = json.loads(_run(_fit(_fit_params(
+        time_window_minutes=1440, response_format="json"))))
+    window = load_fit(payload["fit_id"])["window"]
+    assert window["since"] and window["until"]
+
+
+def test_assign_refuses_a_window_the_fit_did_not_score_in():
+    payload = json.loads(_run(_fit(_fit_params(
+        time_window_minutes=1440, response_format="json"))))
+    with pytest.raises(BlueTeamMCPError):
+        _run(_assign(cluster.AlertClusterAssignInput(
+            srcip="203.0.113.7", fit_id=payload["fit_id"], time_window_minutes=10080)))
+
+
+def test_assign_refuses_a_window_mismatch_before_reading_the_cache():
+    """A cache hit must not bypass the guard: the stored label was computed in
+    the fit's space, so it is exactly as wrong as a fresh one.
+    """
+    payload = json.loads(_run(_fit(_fit_params(
+        time_window_minutes=1440, response_format="json"))))
+    _run(_assign(cluster.AlertClusterAssignInput(
+        srcip="203.0.113.7", fit_id=payload["fit_id"], time_window_minutes=1440)))
+    with pytest.raises(BlueTeamMCPError):
+        _run(_assign(cluster.AlertClusterAssignInput(
+            srcip="203.0.113.7", fit_id=payload["fit_id"], time_window_minutes=10080,
+            use_cached=True)))

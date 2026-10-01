@@ -1,31 +1,28 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Feature construction for alert-entity clustering (blueteam_alert_cluster).
-
+Feature construction for alert entity clustering (blueteam_alert_cluster).
 The vector reuses what the 3-Sum engine already scores per source IP rather
 than adding an embedding model:
 16 dims  sum of rule.level per MITRE tactic (``by_tactic`` buckets from the
            existing ``multi_terms`` aggregation)
 4 dims  ``score_a``, ``score_b``, ``score_c``, ``total`` (engine scores)
-
-Raw sums, no normalisation. HDBSCAN is density-based; z-scoring flattens the
-sparse tactic signal, because most entities populate one or two tactics.
-
+Raw sums scaled to a rate per day, no per-dimension normalisation. HDBSCAN is
+density-based; z-scoring flattens the sparse tactic signal, because most
+entities populate one or two tactics.
 ``FEATURE_VERSION`` is persisted with every fit. Bump it whenever
-``TACTIC_ORDER`` or the scalar block changes, so centroids written under one
-vector layout can never be read under another - the same refusal
-``rag_store`` applies to mixed vector dimensions.
+``TACTIC_ORDER``, the scalar block, or the window scaling changes, so centroids
+written under one vector layout can never be read under another - the same
+refusal ``rag_store`` applies to mixed vector dimensions.
 """
 from __future__ import annotations
 from typing import Any
 from mcp_server.core.constants import MITRE_TACTIC_WEIGHTS
 
-FEATURE_VERSION = "v1"
+FEATURE_VERSION = "v2"
 
-# Sorted so the layout is stable regardless of dict insertion order; a taxonomy
-# change that adds a tactic shifts every dimension, which is exactly why the
-# version stamp exists.
+REFERENCE_WINDOW_MINUTES = 1440
+
 TACTIC_ORDER: tuple[str, ...] = tuple(sorted(MITRE_TACTIC_WEIGHTS))
 SCALAR_KEYS: tuple[str, ...] = ("score_a", "score_b", "score_c", "total")
 FEATURE_DIM = len(TACTIC_ORDER) + len(SCALAR_KEYS)
@@ -63,11 +60,17 @@ def tactic_map(raw: Any) -> dict[str, float]:
     return out
 
 
-def build_vector(profile: dict) -> list[float]:
-    """Build one entity vector. Missing fields are zero, never an error: an
-    entity whose alerts carry no MITRE annotation is a legitimate zero-tactic
-    point, not a malformed one."""
+def build_vector(profile: dict, window_minutes: int) -> list[float]:
+    """Build one entity vector as a rate per day over ``window_minutes``. Missing
+    fields are zero, never an error: an entity whose alerts carry no MITRE
+    annotation is a legitimate zero-tactic point, not a malformed one.
+    ``window_minutes`` is required rather than defaulted: a vector scaled by the
+    wrong window sits at the wrong distance from every stored centroid.
+    """
+    if window_minutes <= 0:
+        raise ValueError("window_minutes must be positive")
+    scale = REFERENCE_WINDOW_MINUTES / float(window_minutes)
     tactics = tactic_map(profile.get("tactics") or {})
-    vector = [tactics.get(tactic, 0.0) for tactic in TACTIC_ORDER]
-    vector.extend(float(profile.get(key, 0) or 0) for key in SCALAR_KEYS)
+    vector = [tactics.get(tactic, 0.0) * scale for tactic in TACTIC_ORDER]
+    vector.extend(float(profile.get(key, 0) or 0) * scale for key in SCALAR_KEYS)
     return vector

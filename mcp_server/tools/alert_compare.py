@@ -411,10 +411,12 @@ def _build_curated_query(
         if len(parts) == 4:
             try:
                 lat1, lon1, lat2, lon2 = float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])
-                clauses.append({"bool": {"must": [
-                    {"range": {"GeoLocation.location.lat": {"gte": min(lat1, lat2), "lte": max(lat1, lat2)}}},
-                    {"range": {"GeoLocation.location.lon": {"gte": min(lon1, lon2), "lte": max(lon1, lon2)}}},
-                ]}})
+                # Range queries on a geo_point's .lat/.lon sub-fields match
+                # nothing; only a bounding box filters a geo_point.
+                clauses.append({"geo_bounding_box": {"GeoLocation.location": {
+                    "top_left": {"lat": max(lat1, lat2), "lon": min(lon1, lon2)},
+                    "bottom_right": {"lat": min(lat1, lat2), "lon": max(lon1, lon2)},
+                }}})
             except ValueError:
                 pass  # invalid bbox -> skip filter silently
 

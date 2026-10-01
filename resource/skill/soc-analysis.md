@@ -234,6 +234,15 @@ Reading the output:
 - Both tools stamp a version into every response (`feature_version` for the fit,
   `criteria_version` for the label). Two results with different stamps are not comparable;
   say so instead of comparing them.
+- Cluster entity vectors are **rates per day**, so a fit and an assignment are comparable only
+  over the same `time_window_minutes`; `blueteam_alert_cluster_assign` refuses a mismatched
+  window instead of returning a label. Quote the fit's window alongside any cluster result,
+  and refit rather than reassigning across windows.
+- Geo concentration is a **priority signal, not a verdict**. `alerts_per_ip` ranks how few source
+  IPs carry a location's alert volume, and a single noisy sensor concentrates the same way a
+  hostile host does. `truncated=true` means only the `max_buckets` highest-volume buckets were
+  ranked, so a low-volume high-ratio location can be absent; raise `max_buckets` before treating
+  the ranking as complete.
 - Inside `blueteam_investigation_workflow`, the subject alert is labeled automatically after
   cluster assignment when `BLUETEAM_LAYA_ENABLED=true`; the verdict is returned as
   `incident_label` and appears in the report bullets. Disabled labeling records
@@ -341,7 +350,7 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 
 | Want | Tool |
 |---|---|
-| Geo distribution / heatmap | `blueteam_wazuh_geo_distribution`, `blueteam_wazuh_geo_heatmap` |
+| Geo distribution / heatmap / concentration | `blueteam_wazuh_geo_distribution`, `blueteam_wazuh_geo_heatmap`, `blueteam_wazuh_geo_concentration` |
 | FIM / compliance / vulns | `blueteam_wazuh_syscheck`, `blueteam_wazuh_compliance`, `blueteam_wazuh_vulnerabilities` |
 | Webshell scan | `blueteam_check_webshell(url)` |
 | Fail2ban state | `blueteam_fail2ban_status`, `blueteam_fail2ban_jail_status`, `blueteam_fail2ban_unban` |

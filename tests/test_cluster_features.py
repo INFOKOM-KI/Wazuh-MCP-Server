@@ -6,6 +6,7 @@ Elasticsearch bucket flattening get explicit cases.
 """
 from __future__ import annotations
 import os
+import pytest
 
 os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
 os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
@@ -25,7 +26,7 @@ def test_vector_is_sixteen_tactics_plus_four_scalars():
     assert len(TACTIC_ORDER) == 16
     assert len(SCALAR_KEYS) == 4
     assert FEATURE_DIM == 20
-    assert FEATURE_VERSION == "v1"
+    assert FEATURE_VERSION == "v2"
 
 
 def test_tactic_map_flattens_es_buckets():
@@ -47,7 +48,7 @@ def test_build_vector_places_tactics_and_scalars():
         "tactics": [{"key": "Command and Control", "level_sum": {"value": 30}}],
         "score_a": 1, "score_b": 2, "score_c": 3, "total": 6,
     }
-    vector = build_vector(profile)
+    vector = build_vector(profile, window_minutes=1440)
     assert len(vector) == FEATURE_DIM
     idx = TACTIC_ORDER.index("Command and Control")
     assert vector[idx] == 30.0
@@ -55,7 +56,40 @@ def test_build_vector_places_tactics_and_scalars():
 
 
 def test_missing_fields_are_zero_not_an_error():
-    assert build_vector({}) == [0.0] * FEATURE_DIM
+    assert build_vector({}, window_minutes=1440) == [0.0] * FEATURE_DIM
+
+
+def test_build_vector_scales_by_window_to_a_rate_per_day():
+    profile = {"tactics": {"Discovery": 30.0}, "score_a": 3.0, "score_b": 0.0,
+               "score_c": 0.0, "total": 30.0}
+    vector = build_vector(profile, window_minutes=1440)
+    assert vector[TACTIC_ORDER.index("Discovery")] == 30.0
+    assert vector[-4:] == [3.0, 0.0, 0.0, 30.0]
+
+
+def test_build_vector_is_invariant_to_window_length():
+    """The same alert rate over 30 days must give the same vector as over one.
+    Without this, a centroid fitted at 14 days sits ~14x further from the origin
+    than a live one-day vector, so every assignment lands inside the radius.
+    """
+    one_day = {"tactics": {"Discovery": 30.0}, "score_a": 3.0,
+               "score_b": 0.0, "score_c": 0.0, "total": 30.0}
+    thirty_days = {"tactics": {"Discovery": 30.0 * 30}, "score_a": 3.0 * 30,
+                   "score_b": 0.0, "score_c": 0.0, "total": 30.0 * 30}
+    assert build_vector(thirty_days, window_minutes=43200) == pytest.approx(
+        build_vector(one_day, window_minutes=1440))
+
+
+def test_build_vector_requires_an_explicit_window():
+    """A defaulted window would let a caller score an entity in the wrong space."""
+    with pytest.raises(TypeError):
+        build_vector({})
+
+
+def test_build_vector_rejects_a_nonpositive_window():
+    for minutes in (0, -1440):
+        with pytest.raises(ValueError):
+            build_vector({}, window_minutes=minutes)
 
 
 def test_normalize_entity_key_trims_and_lowercases():

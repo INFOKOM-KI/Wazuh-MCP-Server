@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-Index schema explorer — discover field names/types before building aggregations.
-
+Index schema explorer discover field names/types before building aggregations.
 Prevents the most common silent false-negative: querying ``field.keyword``
 when the index stores ``field`` as a plain ``keyword`` type (or vice versa).
 """
@@ -10,12 +9,10 @@ from __future__ import annotations
 import json, re
 from typing import Optional, Literal, Any
 from pydantic import BaseModel, ConfigDict, Field
-
 from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.wazuh.indexer import _wazuh_indexer_mapping, _WAZUH_INDEX_PATTERNS
 
-# Common Wazuh fields the SOC workflow queries — pre-listed for convenience
 _COMMON_FIELDS = [
     "data.srcip", "data.srcip2", "data.src_ip", "data.client_ip", "data.remote_ip",
     "data.source_ip", "data.ip", "srcip",
@@ -24,6 +21,7 @@ _COMMON_FIELDS = [
     "rule.mitre.tactic", "rule.mitre.technique",
     "agent.name", "agent.id", "agent.ip",
     "GeoLocation.country_name", "GeoLocation.city_name", "GeoLocation.location",
+    "GeoLocation.region_name", "GeoLocation.real_region_name",
     "@timestamp", "full_log", "decoder.name", "location",
 ]
 
@@ -76,13 +74,11 @@ class IndexSchemaInput(BaseModel):
 )
 async def blueteam_index_schema(params: IndexSchemaInput) -> str:
     """Discover Wazuh Indexer field names and types before building queries.
-
     Returns each field's type and whether it has a ``.keyword`` sub-field.
     Use this BEFORE aggregation queries to avoid the silent false-negative
     where ``field.keyword`` doesn't exist (index stores plain ``keyword``).
 
     **Worked Examples**
-
     1. *Inspect specific fields for aggregation safety*:
        ``blueteam_index_schema(fields=["data.srcip", "rule.groups", "agent.name"])``
 

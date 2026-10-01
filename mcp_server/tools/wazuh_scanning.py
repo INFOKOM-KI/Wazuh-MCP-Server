@@ -277,13 +277,24 @@ class GeoHeatmapInput(BaseModel):
     forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
 
 
+def _centroid_coord(bucket: dict, axis: str, digits: int = 4) -> Optional[float]:
+    """City centroid axis from a ``geo_centroid`` bucket.
+    ``None`` when the bucket holds no valid point unmeasured, not zero. The
+    separate ``GeoLocation.latitude``/``longitude`` fields are mapped but
+    unpopulated in this deployment, and mapping an absent coordinate to 0 pins
+    every city in the Gulf of Guinea.
+    """
+    location = (bucket.get("centroid") or {}).get("location") or {}
+    value = location.get(axis)
+    return None if value is None else round(float(value), digits)
+
+
 @mcp.tool(name="blueteam_wazuh_geo_heatmap",
           annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False})
 async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
     """Generate attack coordinate and city-level geo heatmap data.
-
-    Aggregates alerts by GeoLocation.city_name with latitude/longitude
-    coordinates for external heatmap visualization (e.g. Leaflet, Kepler.gl).
+    Aggregates alerts by GeoLocation.city_name with the bucket's geo centroid
+    for external heatmap visualization (e.g. Leaflet, Kepler.gl).
     Returns top attacking cities with coordinates, alert counts, and IP counts.
 
     Args:
@@ -316,8 +327,7 @@ async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
     body = {"size": 0, "query": {"bool": {"filter": filters}},
             "aggs": {"by_city": {"terms": {"field": "GeoLocation.city_name", "size": params.top_n,
                                            "order": {"_count": "desc"}},
-                                 "aggs": {"lat": {"avg": {"field": "GeoLocation.latitude"}},
-                                          "lon": {"avg": {"field": "GeoLocation.longitude"}},
+                                 "aggs": {"centroid": {"geo_centroid": {"field": "GeoLocation.location"}},
                                           "unique_ips": {"cardinality": {"field": "data.srcip",
                                                                          "precision_threshold": 40000}}}}}}
     raw = await _wazuh_indexer_post(body)
@@ -329,8 +339,7 @@ async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
     if params.response_format == "json":
         return json.dumps({"total": total, "cities": [
             {"city": b["key"], "alerts": b["doc_count"],
-             "lat": round(b.get("lat", {}).get("value") or 0, 4),
-             "lon": round(b.get("lon", {}).get("value") or 0, 4),
+             "lat": _centroid_coord(b, "lat"), "lon": _centroid_coord(b, "lon"),
              "unique_ips": b.get("unique_ips", {}).get("value", 0)}
             for b in buckets
         ]}, indent=2, ensure_ascii=False)
@@ -341,8 +350,8 @@ async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
     lines.extend(["", "| City | Alerts | Lat | Lon | Unique IPs |",
                    "|------|--------|-----|-----|------------|"])
     for b in buckets[:25]:
-        lat = round(b.get("lat", {}).get("value") or 0, 2)
-        lon = round(b.get("lon", {}).get("value") or 0, 2)
+        lat = _centroid_coord(b, "lat", 2)
+        lon = _centroid_coord(b, "lon", 2)
         ips = b.get("unique_ips", {}).get("value", 0)
         lines.append(f"| {b['key']} | {b['doc_count']:,} | {lat} | {lon} | {ips:,} |")
     if total == 0:

@@ -63,10 +63,27 @@ def _require_enabled() -> None:
         )
 
 
+_WINDOW_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
+
 def _window(minutes: int) -> tuple[str, str]:
-    fmt = "%Y-%m-%dT%H:%M:%SZ"
     until = datetime.utcnow()
-    return (until - timedelta(minutes=minutes)).strftime(fmt), until.strftime(fmt)
+    return ((until - timedelta(minutes=minutes)).strftime(_WINDOW_FMT),
+            until.strftime(_WINDOW_FMT))
+
+
+def _window_minutes(window: dict) -> Optional[float]:
+    """Duration of a stored fit window. ``None`` when the fit carries no usable
+    stamp, which leaves the scale of its entity vectors unverifiable."""
+    since, until = (window or {}).get("since"), (window or {}).get("until")
+    if not since or not until:
+        return None
+    try:
+        span = (datetime.strptime(until, _WINDOW_FMT)
+                - datetime.strptime(since, _WINDOW_FMT))
+    except ValueError:
+        return None
+    return span.total_seconds() / 60.0
 
 
 def _categories(params) -> list[tuple[str, str, list[str]]]:
@@ -228,7 +245,8 @@ async def blueteam_alert_cluster(params: AlertClusterInput) -> str:
                            "category fallback groups."}
     else:
         entity_keys = sorted(profiles)
-        vectors = [build_vector(profiles[key]) for key in entity_keys]
+        vectors = [build_vector(profiles[key], params.time_window_minutes)
+                   for key in entity_keys]
         min_size = params.min_cluster_size or config.cluster.min_cluster_size
         min_samples = params.min_samples or config.cluster.min_samples
         result = await asyncio.to_thread(fit_clusters, vectors, min_size, min_samples)
@@ -271,7 +289,9 @@ class AlertClusterAssignInput(BaseModel):
         description="Return the stored assignment for this fit without re-querying.")
     assign_factor: Optional[float] = Field(default=None, gt=0, le=10,
         description="Radius multiplier for acceptance; default from config.")
-    time_window_minutes: int = Field(default=1440, ge=5, le=20160)
+    time_window_minutes: int = Field(default=1440, ge=5, le=20160,
+        description="Window used to rebuild the entity profile; must equal the "
+                    "window the fit was built over.")
     use_mitre: bool = True
     category_a_groups: list[str] = Field(default=_DEFAULT_A_GROUPS)
     category_b_groups: list[str] = Field(default=_DEFAULT_B_GROUPS)
@@ -296,7 +316,7 @@ async def blueteam_alert_cluster_assign(params: AlertClusterAssignInput) -> str:
         params.fit_id: Fit to use; newest when omitted.
         params.use_cached: Reuse an assignment already stored for this fit.
         params.assign_factor: Radius multiplier for acceptance.
-        params.time_window_minutes: Window used to rebuild the entity profile.
+        params.time_window_minutes: Window used to rebuild the entity profile; must match the fits window.
         params.use_mitre: MITRE-first classification with rule.groups fallback.
         params.category_*_groups: Fallback rule.groups tokens per category.
         params.response_format: 'markdown' (default), 'json', or 'toon'.
@@ -324,6 +344,19 @@ async def blueteam_alert_cluster_assign(params: AlertClusterAssignInput) -> str:
             "No stored cluster fit to assign against. Run blueteam_alert_cluster "
             "with mode='fit' first."
         )
+    fit_minutes = _window_minutes(fit.get("window") or {})
+    if fit_minutes is None:
+        raise BlueTeamMCPError(
+            f"Fit {fit['fit_id']} carries no window, so the scale of its entity "
+            "vectors cannot be verified. Re-run blueteam_alert_cluster mode='fit'."
+        )
+    if round(fit_minutes) != params.time_window_minutes:
+        raise BlueTeamMCPError(
+            f"Fit {fit['fit_id']} was built over {round(fit_minutes)} minutes; this "
+            f"assignment asks for {params.time_window_minutes}. Entity vectors are "
+            "rates per day, so scoring across windows measures the window, not the "
+            "entity. Refit with the same time_window_minutes, or pass the fit's."
+        )
     assignment = None
     if params.use_cached:
         assignment = await asyncio.to_thread(get_assignment, key, fit["fit_id"])
@@ -343,7 +376,8 @@ async def blueteam_alert_cluster_assign(params: AlertClusterAssignInput) -> str:
             return (f"# Cluster assignment\n\n**Status**: `not_observed` - no alert for "
                     f"`{key}` in `{since_iso}` -> `{until_iso}`.\n")
         factor = params.assign_factor or config.cluster.assign_factor
-        outcome = assign_vector(build_vector(profile), fit["clusters"], factor)
+        outcome = assign_vector(build_vector(profile, params.time_window_minutes),
+                                fit["clusters"], factor)
         await asyncio.to_thread(record_assignment, key, fit["fit_id"],
                                 outcome["label"], outcome["distance"], outcome["novelty"])
         assignment = {"label": outcome["label"], "distance": outcome["distance"],
@@ -353,6 +387,10 @@ async def blueteam_alert_cluster_assign(params: AlertClusterAssignInput) -> str:
         assignment = dict(assignment)
         assignment["limit"] = None
         assignment["cached"] = True
+        # The store keeps no nearest_label; a non-novel row's label is by
+        # definition the cluster it matched.
+        assignment["nearest_label"] = (assignment["label"]
+                                       if assignment["label"] >= 0 else None)
     pending = await asyncio.to_thread(pending_novelty_count, fit["fit_id"])
     payload = {"status": "ok", "fit_id": fit["fit_id"], "srcip": key,
                "feature_version": fit["feature_version"], "assignment": assignment,
