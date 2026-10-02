@@ -112,6 +112,7 @@ def register_all_tools() -> None:
         ("cluster",                 "cluster",                 False),  # 2 tools alert-entity clustering (fit/assign)
         ("cluster_lineage",         "cluster",                 False),  # 1 tool cluster lineage + behavior shifts (store read)
         ("forecast",                "forecast",                False),  # 1 tool tactic sequence forecasting (markov/hmm)
+        ("source_forecast",         "forecast",                False),  # 2 tools source-layer forecasting (candidate observed sources)
         ("label",                   "label",                   False),  # 1 tool incident labeling (ONNX prototype / Laya)
     ]
 

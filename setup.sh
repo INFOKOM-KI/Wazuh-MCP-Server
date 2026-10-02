@@ -791,7 +791,8 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_CLUSTER_ENABLED="false"         # true = register the fit/assign path
 # export BLUETEAM_CLUSTER_STORE="/var/log/blue-team-mcp/clusters.db"  # SQLite, written 0600
 # export BLUETEAM_CLUSTER_STORE_MAX="20000"       # entity rows kept before the oldest are evicted
-# export BLUETEAM_CLUSTER_TTL="86400"             # fit TTL in seconds; a fit past TTL is refit on demand
+# export BLUETEAM_CLUSTER_TTL="86400"             # reserved: fit age limit in seconds; purge is not wired
+# export BLUETEAM_CLUSTER_MAX_FITS="100"          # newest fits kept; capacity ceiling, not a retention guarantee
 # export BLUETEAM_CLUSTER_MIN_SIZE="5"            # HDBSCAN min_cluster_size
 # export BLUETEAM_CLUSTER_MIN_SAMPLES="3"         # HDBSCAN min_samples
 # export BLUETEAM_CLUSTER_ASSIGN_FACTOR="1.0"     # multiplier on a cluster's stored radius
@@ -820,6 +821,30 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_FORECAST_VOLUME_COMPONENTS="3"    # volume regimes: quiet/normal/burst
 # export BLUETEAM_FORECAST_VOLUME_HORIZON="24"      # buckets to forecast by default
 # export BLUETEAM_FORECAST_VOLUME_CONTEXT="24"      # recent buckets that filter the posterior
+# export BLUETEAM_FORECAST_FETCH_PAGE_SIZE="1000"     # hits per paged Indexer search (100-5000)
+# export BLUETEAM_FORECAST_MAX_HITS="100000"          # fetched-hit cap for one sweep (>= page size)
+# export BLUETEAM_FORECAST_REQUIRE_COMPLETE_CORPUS="false"  # true = refuse to fit a truncated corpus
+
+# Observed-source forecasting (blueteam_source_forecast) — disabled by default.
+# Forecasts candidate observed sources, never attacker attribution. The store is
+# PII-adjacent (source IPs); written 0600 and never committed.
+# export BLUETEAM_SOURCE_FORECAST_ENABLED="false"  # true = register the source tools
+# export BLUETEAM_SOURCE_STORE="/var/log/blue-team-mcp/source.db"
+# export BLUETEAM_SOURCE_HISTORY_DAYS="90"         # source-model training history (1-365)
+# export BLUETEAM_SOURCE_MAX_ROWS="200000"         # observation rows kept before oldest eviction
+# export BLUETEAM_SOURCE_RETENTION_DAYS="365"      # observation age limit
+# export BLUETEAM_SOURCE_MIN_OBSERVATIONS="20"     # history rows required before predicting
+# export BLUETEAM_SOURCE_MIN_TRANSITIONS="5"       # below this the transition weight is dropped
+# export BLUETEAM_SOURCE_HALF_LIFE_DAYS="14"       # exponential recency half-life
+# export BLUETEAM_SOURCE_MAX_CANDIDATES="10"       # candidate ceiling (1-50)
+# export BLUETEAM_SOURCE_NETBLOCK_V4="24"          # IPv4 netblock prefix
+# export BLUETEAM_SOURCE_NETBLOCK_V6="64"          # IPv6 netblock prefix
+# export BLUETEAM_SOURCE_INCLUDE_INTERNAL="false"  # include private/non-routable sources
+# export BLUETEAM_SOURCE_MIN_GEO_COVERAGE="0.2"    # withhold country candidates below this
+# export BLUETEAM_SOURCE_REQUIRE_COMPLETE_CORPUS="true"  # refuse unverified ingest
+# export BLUETEAM_SOURCE_EVAL_HORIZON_MINUTES="1440"
+# export BLUETEAM_SOURCE_EVAL_STEP_DAYS="1"
+# export BLUETEAM_SOURCE_EVAL_MIN_TRAIN_OBSERVATIONS="100"
 
 # Laya-Multilingual / SetFit labeling (blueteam_incident_label) — needs
 # BLUETEAM_INSTALL_LAYA=1 (laya) or BLUETEAM_INSTALL_SETFIT=1 (setfit), plus a
@@ -905,6 +930,7 @@ for _envf in "$CONFIG_FILE" "$ENV_FILE"; do
   _sync_env_key "$_envf" "BLUETEAM_CLUSTER_STORE" "${BLUETEAM_CLUSTER_STORE:-/var/log/blue-team-mcp/clusters.db}"
   _sync_env_key "$_envf" "BLUETEAM_CLUSTER_STORE_MAX" "${BLUETEAM_CLUSTER_STORE_MAX:-20000}"
   _sync_env_key "$_envf" "BLUETEAM_CLUSTER_TTL" "${BLUETEAM_CLUSTER_TTL:-86400}"
+  _sync_env_key "$_envf" "BLUETEAM_CLUSTER_MAX_FITS" "${BLUETEAM_CLUSTER_MAX_FITS:-100}"
   _sync_env_key "$_envf" "BLUETEAM_CLUSTER_MIN_SIZE" "${BLUETEAM_CLUSTER_MIN_SIZE:-5}"
   _sync_env_key "$_envf" "BLUETEAM_CLUSTER_MIN_SAMPLES" "${BLUETEAM_CLUSTER_MIN_SAMPLES:-3}"
   _sync_env_key "$_envf" "BLUETEAM_CLUSTER_ASSIGN_FACTOR" "${BLUETEAM_CLUSTER_ASSIGN_FACTOR:-1.0}"

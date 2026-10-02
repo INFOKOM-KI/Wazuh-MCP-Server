@@ -812,12 +812,15 @@ class ClusterConfig:
     scikit-learn dependency is absent on a plain install, so enabling it is an
     explicit operator decision. ``enabled`` with no ``store_path`` is fatal at
     startup an enabled cluster subsystem that cannot persist a fit can only
-    return noise.
+    return noise. ``max_fits`` is a capacity ceiling, not a retention
+    guarantee: the store keeps the newest fits by observation window, and
+    time-based retention is a separate policy.
     """
     enabled: bool = False
     store_path: str = ""
     store_max: int = 20000
     ttl_seconds: int = 86400
+    max_fits: int = 100
     min_cluster_size: int = 5
     min_samples: int = 3
     assign_factor: float = 1.0
@@ -834,6 +837,7 @@ class ClusterConfig:
             store_path=os.environ.get("BLUETEAM_CLUSTER_STORE", "").strip(),
             store_max=int(os.environ.get("BLUETEAM_CLUSTER_STORE_MAX", "20000")),
             ttl_seconds=int(os.environ.get("BLUETEAM_CLUSTER_TTL", "86400")),
+            max_fits=int(os.environ.get("BLUETEAM_CLUSTER_MAX_FITS", "100")),
             min_cluster_size=int(os.environ.get("BLUETEAM_CLUSTER_MIN_SIZE", "5")),
             min_samples=int(os.environ.get("BLUETEAM_CLUSTER_MIN_SAMPLES", "3")),
             assign_factor=float(os.environ.get("BLUETEAM_CLUSTER_ASSIGN_FACTOR", "1.0")),
@@ -860,6 +864,8 @@ class ClusterConfig:
             raise ConfigurationError("BLUETEAM_CLUSTER_STORE_MAX must be >= 1")
         if self.ttl_seconds < 0:
             raise ConfigurationError("BLUETEAM_CLUSTER_TTL must be >= 0 (0 disables expiry)")
+        if not 10 <= self.max_fits <= 1000:
+            raise ConfigurationError("BLUETEAM_CLUSTER_MAX_FITS must be 10-1000")
         if self.min_cluster_size < 2:
             raise ConfigurationError("BLUETEAM_CLUSTER_MIN_SIZE must be >= 2")
         if self.min_samples < 1:
@@ -887,11 +893,17 @@ class ForecastConfig:
     persist its corpus can only return noise. ``retention_days`` is deliberately
     long: the corpus is the evidence the next retrain learns from, so it must
     outlive the cluster store's 24h fit TTL.
+    ``max_hits`` bounds a paged fetch independently of ``store_max``: retrieval
+    and storage serve different purposes. ``require_complete_corpus`` refuses a
+    fit whenever the fetch or the store truncated the window.
     """
     enabled: bool = False
     store_path: str = ""
     store_max: int = 200000
     retention_days: int = 365
+    fetch_page_size: int = 1000
+    max_hits: int = 100000
+    require_complete_corpus: bool = False
     alpha: float = 1.0
     min_sequences: int = 5
     min_transitions: int = 20
@@ -912,6 +924,10 @@ class ForecastConfig:
             store_path=os.environ.get("BLUETEAM_FORECAST_STORE", "").strip(),
             store_max=int(os.environ.get("BLUETEAM_FORECAST_STORE_MAX", "200000")),
             retention_days=int(os.environ.get("BLUETEAM_FORECAST_RETENTION_DAYS", "365")),
+            fetch_page_size=int(os.environ.get("BLUETEAM_FORECAST_FETCH_PAGE_SIZE", "1000")),
+            max_hits=int(os.environ.get("BLUETEAM_FORECAST_MAX_HITS", "100000")),
+            require_complete_corpus=_bool(
+                os.environ.get("BLUETEAM_FORECAST_REQUIRE_COMPLETE_CORPUS", "false"), False),
             alpha=float(os.environ.get("BLUETEAM_FORECAST_ALPHA", "1.0")),
             min_sequences=int(os.environ.get("BLUETEAM_FORECAST_MIN_SEQUENCES", "5")),
             min_transitions=int(os.environ.get("BLUETEAM_FORECAST_MIN_TRANSITIONS", "20")),
@@ -940,6 +956,12 @@ class ForecastConfig:
             raise ConfigurationError("BLUETEAM_FORECAST_STORE_MAX must be >= 1")
         if self.retention_days < 1:
             raise ConfigurationError("BLUETEAM_FORECAST_RETENTION_DAYS must be >= 1")
+        if not 100 <= self.fetch_page_size <= 5000:
+            raise ConfigurationError("BLUETEAM_FORECAST_FETCH_PAGE_SIZE must be 100-5000")
+        if not self.fetch_page_size <= self.max_hits <= 1000000:
+            raise ConfigurationError(
+                "BLUETEAM_FORECAST_MAX_HITS must be >= BLUETEAM_FORECAST_FETCH_PAGE_SIZE "
+                "and <= 1000000")
         if self.alpha <= 0:
             raise ConfigurationError("BLUETEAM_FORECAST_ALPHA must be > 0")
         if self.min_sequences < 2:
@@ -962,6 +984,97 @@ class ForecastConfig:
             raise ConfigurationError("BLUETEAM_FORECAST_VOLUME_HORIZON must be 1-336 buckets")
         if not 1 <= self.volume_context_buckets <= 336:
             raise ConfigurationError("BLUETEAM_FORECAST_VOLUME_CONTEXT must be 1-336 buckets")
+
+
+@dataclass
+class SourceForecastConfig:
+    """Observed-source forecasting settings (blueteam_source_forecast).
+    Disabled by default; every output is a candidate observed-source estimate,
+    never attribution. The store is PII-adjacent (source IPs), written 0600.
+    ``history_days`` is independent of the tactic cap and must fit retention.
+    """
+    enabled: bool = False
+    store_path: str = ""
+    history_days: int = 90
+    max_rows: int = 200000
+    retention_days: int = 365
+    min_observations: int = 20
+    min_transitions: int = 5
+    half_life_days: float = 14.0
+    max_candidates: int = 10
+    netblock_v4_prefix: int = 24
+    netblock_v6_prefix: int = 64
+    include_internal: bool = False
+    min_geo_coverage: float = 0.2
+    require_complete_corpus: bool = True
+    eval_horizon_minutes: int = 1440
+    eval_step_days: int = 1
+    eval_min_train_observations: int = 100
+
+    @classmethod
+    def from_env(cls) -> "SourceForecastConfig":
+        return cls(
+            enabled=_bool(os.environ.get("BLUETEAM_SOURCE_FORECAST_ENABLED", "false"), False),
+            store_path=os.environ.get("BLUETEAM_SOURCE_STORE", "").strip(),
+            history_days=int(os.environ.get("BLUETEAM_SOURCE_HISTORY_DAYS", "90")),
+            max_rows=int(os.environ.get("BLUETEAM_SOURCE_MAX_ROWS", "200000")),
+            retention_days=int(os.environ.get("BLUETEAM_SOURCE_RETENTION_DAYS", "365")),
+            min_observations=int(os.environ.get("BLUETEAM_SOURCE_MIN_OBSERVATIONS", "20")),
+            min_transitions=int(os.environ.get("BLUETEAM_SOURCE_MIN_TRANSITIONS", "5")),
+            half_life_days=float(os.environ.get("BLUETEAM_SOURCE_HALF_LIFE_DAYS", "14")),
+            max_candidates=int(os.environ.get("BLUETEAM_SOURCE_MAX_CANDIDATES", "10")),
+            netblock_v4_prefix=int(os.environ.get("BLUETEAM_SOURCE_NETBLOCK_V4", "24")),
+            netblock_v6_prefix=int(os.environ.get("BLUETEAM_SOURCE_NETBLOCK_V6", "64")),
+            include_internal=_bool(os.environ.get("BLUETEAM_SOURCE_INCLUDE_INTERNAL", "false"), False),
+            min_geo_coverage=float(os.environ.get("BLUETEAM_SOURCE_MIN_GEO_COVERAGE", "0.2")),
+            require_complete_corpus=_bool(
+                os.environ.get("BLUETEAM_SOURCE_REQUIRE_COMPLETE_CORPUS", "true"), True),
+            eval_horizon_minutes=int(os.environ.get("BLUETEAM_SOURCE_EVAL_HORIZON_MINUTES", "1440")),
+            eval_step_days=int(os.environ.get("BLUETEAM_SOURCE_EVAL_STEP_DAYS", "1")),
+            eval_min_train_observations=int(
+                os.environ.get("BLUETEAM_SOURCE_EVAL_MIN_TRAIN_OBSERVATIONS", "100")),
+        )
+
+    def validate(self) -> None:
+        if self.enabled and not self.store_path:
+            raise ConfigurationError(
+                "BLUETEAM_SOURCE_FORECAST_ENABLED=true requires BLUETEAM_SOURCE_STORE "
+                "(an absolute path); a source model that cannot persist its history "
+                "cannot be evaluated."
+            )
+        if self.store_path and not os.path.isabs(self.store_path):
+            raise ConfigurationError(
+                f"BLUETEAM_SOURCE_STORE must be an absolute path (got {self.store_path!r})")
+        if not 1 <= self.history_days <= 365:
+            raise ConfigurationError("BLUETEAM_SOURCE_HISTORY_DAYS must be 1-365")
+        if self.history_days > self.retention_days:
+            raise ConfigurationError(
+                "BLUETEAM_SOURCE_HISTORY_DAYS must not exceed BLUETEAM_SOURCE_RETENTION_DAYS")
+        if self.max_rows < 1:
+            raise ConfigurationError("BLUETEAM_SOURCE_MAX_ROWS must be >= 1")
+        if self.retention_days < 1:
+            raise ConfigurationError("BLUETEAM_SOURCE_RETENTION_DAYS must be >= 1")
+        if self.min_observations < 2:
+            raise ConfigurationError("BLUETEAM_SOURCE_MIN_OBSERVATIONS must be >= 2")
+        if self.min_transitions < 1:
+            raise ConfigurationError("BLUETEAM_SOURCE_MIN_TRANSITIONS must be >= 1")
+        if self.half_life_days <= 0:
+            raise ConfigurationError("BLUETEAM_SOURCE_HALF_LIFE_DAYS must be > 0")
+        if not 1 <= self.max_candidates <= 50:
+            raise ConfigurationError("BLUETEAM_SOURCE_MAX_CANDIDATES must be 1-50")
+        if not 1 <= self.netblock_v4_prefix <= 32:
+            raise ConfigurationError("BLUETEAM_SOURCE_NETBLOCK_V4 must be 1-32")
+        if not 1 <= self.netblock_v6_prefix <= 128:
+            raise ConfigurationError("BLUETEAM_SOURCE_NETBLOCK_V6 must be 1-128")
+        if not 0.0 <= self.min_geo_coverage <= 1.0:
+            raise ConfigurationError("BLUETEAM_SOURCE_MIN_GEO_COVERAGE must be 0-1")
+        if not 1 <= self.eval_horizon_minutes <= 10080:
+            raise ConfigurationError("BLUETEAM_SOURCE_EVAL_HORIZON_MINUTES must be 1-10080")
+        if not 1 <= self.eval_step_days <= 90:
+            raise ConfigurationError("BLUETEAM_SOURCE_EVAL_STEP_DAYS must be 1-90")
+        if self.eval_min_train_observations < 1:
+            raise ConfigurationError(
+                "BLUETEAM_SOURCE_EVAL_MIN_TRAIN_OBSERVATIONS must be >= 1")
 
 
 @dataclass
@@ -1078,6 +1191,7 @@ class Config:
     sigma: SigmaConfig = field(default_factory=SigmaConfig)
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
     forecast: ForecastConfig = field(default_factory=ForecastConfig)
+    source: SourceForecastConfig = field(default_factory=SourceForecastConfig)
     label: LabelConfig = field(default_factory=LabelConfig)
 
     @classmethod
@@ -1104,6 +1218,7 @@ class Config:
             sigma=SigmaConfig.from_env(),
             cluster=ClusterConfig.from_env(),
             forecast=ForecastConfig.from_env(),
+            source=SourceForecastConfig.from_env(),
             label=LabelConfig.from_env(),
         )
 
@@ -1129,6 +1244,15 @@ class Config:
         self.sigma.validate()
         self.cluster.validate()
         self.forecast.validate()
+        self.source.validate()
+        if self.source.store_path:
+            source_path = os.path.abspath(self.source.store_path)
+            for label, other in (("forecast", self.forecast.store_path),
+                                 ("cluster", self.cluster.store_path)):
+                if other and os.path.abspath(other) == source_path:
+                    raise ConfigurationError(
+                        f"BLUETEAM_SOURCE_STORE must be a separate file from the {label} "
+                        "store; sharing a file breaks store isolation and mixed backups.")
         self.label.validate()
 
     def emit_warnings(self) -> None:

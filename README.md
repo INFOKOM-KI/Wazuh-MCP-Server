@@ -403,6 +403,7 @@ from cron and the exit code is the failure signal.
   `blueteam_mark_investigated`, `blueteam_wazuh_export`, `blueteam_export_report`,
   `blueteam_stix_export`, `blueteam_rag_ingest`, `blueteam_capture_traffic`,
   `blueteam_alert_cluster`, `blueteam_alert_cluster_assign`, `blueteam_tactic_forecast`,
+  `blueteam_source_forecast`, `blueteam_attack_forecast`,
   `blueteam_volume_forecast`, `blueteam_yara_rule_save`, `blueteam_sigma_rule_save`).
   Fail-closed: no scope ⇒ read-only. The set is derived at request time from the live FastMCP
   annotations (`readOnlyHint is not True` or `destructiveHint is True`), not a hardcoded
@@ -621,6 +622,10 @@ that an entity is malicious.
 | Predict the next tactic for one entity | `blueteam_tactic_forecast(mode="predict", srcip="X")` |
 | Forecast next-bucket alert volume | `blueteam_volume_forecast(mode="predict", horizon_buckets=24)` |
 | Train / inspect the volume series | `blueteam_volume_forecast(mode="train"\|"status")` |
+| Rank candidate next-observed sources | `blueteam_source_forecast(mode="predict", history_days=90)` |
+| Ingest verified source history | `blueteam_source_forecast(mode="ingest", since=..., until=...)` |
+| Rolling-origin source evaluation | `blueteam_source_forecast(mode="evaluate", since="30d")` |
+| Behavioral + source layers in one call | `blueteam_attack_forecast(srcip="X")` |
 | Track a cluster lineage across fits | `blueteam_cluster_lineage(mode="behavior")` |
 | Name the ATT&CK phase of an alert or text | `blueteam_incident_label(mode="alert"\|"text")` |
 
@@ -675,6 +680,17 @@ Reading the output:
   max-lambda regime is active in the horizon, not the chance an attack happens.
   `posterior_fallback=true` means the observed context fitted no regime and the prior was rolled
   forward; report that instead of quoting the numbers as fitted.
+- **A source forecast ranks observed-source candidates, not attribution.** `candidate_source_ip`
+  and `observed_source_country` are what the stored history suggests may be seen next; every
+  response carries `attribution_status="not_established"`; never call a candidate the attacker.
+  `model_score` is an uncalibrated ranking heuristic; only `transition_probability` is a smoothed
+  empirical estimate, and it always comes with `transition_support`. ASN is unavailable in v1.
+  Country coverage depends on `GeoLocation.country_name`; below
+  `BLUETEAM_SOURCE_MIN_GEO_COVERAGE` country candidates are withheld with
+  `country_status="insufficient_geo"`. `corpus_unverified` or `degraded` means the training
+  history has no complete ingest stamp; say so instead of quoting candidates. Accuracy is
+  unknown until `mode="evaluate"` runs on operational history, and it must report the
+  persistence baseline alongside the model.
 - **A lineage is a stable match, not a confirmed campaign.** `insufficient_history` means fewer
   steps than `min_points`, not stability. A `None` z-score is unmeasured, not zero. `elevated` is
   an advisory level from crossed thresholds, never a probability.
@@ -872,6 +888,8 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_alert_cluster_assign(srcip, fit_id, assign_factor, use_cached)` | nearest-centroid assignment against the stored fit. `label=-1` + `novelty=true` = outside every cluster radius. `pending_novelty`/`pending_refit` flag when a refit is justified |
 | `blueteam_tactic_forecast(mode="train"\|"predict"\|"status", kind="markov"\|"hmm", srcip, current_tactic, model_id, top_k)` | fit or query a tactic-transition model over per-entity `rule.mitre.tactic` sequences: top-k next tactics, escalation probability, and the chain's mean log-likelihood against the corpus (Markov models; an HMM reports `not_applicable`). `uniform_fallback`/`low_support` flag a ranking the corpus does not back and `prediction.reason` names the missing anchor; `unavailable` means hmmlearn is absent for `kind="hmm"` |
 | `blueteam_volume_forecast(mode="train"\|"predict"\|"status", horizon_buckets, context_buckets, n_components, min_buckets)` | fit or query a PoissonHMM over per-bucket alert counts (empty buckets included). Returns per-bucket expected counts, expected total, mean per bucket and `peak_probability`; `insufficient_data` on a thin/all-zero/constant series, `posterior_fallback` when the context fits no regime |
+| `blueteam_source_forecast(mode="predict"\|"ingest"\|"evaluate"\|"status", as_of, since, until, history_days, max_candidates)` | ranks candidate next-**observed** source IPs/netblocks/observed countries from stored source history. `attribution_status="not_established"` always; `model_score` is an uncalibrated ranking heuristic, `transition_probability` carries `transition_support`; ASN is `unavailable` in v1; country is withheld below the geo-coverage floor; an incomplete ingest is refused (strict) or marked `degraded`. `insufficient_history`/`corpus_unverified` are results, not failures |
+| `blueteam_attack_forecast(srcip, current_tactic, as_of, history_days)` | composes the behavioral tactic forecast and the source forecast in one response; the layers stay separate and the source candidates keep `attribution_status="not_established"` |
 | `blueteam_cluster_lineage(mode="lineage"\|"behavior"\|"status", match_factor, min_points, shift_z)` | read-only lineage over stored cluster fits: matches each cluster to the previous fit inside its radius, then reports size trend, novelty z, tactic L1 shift, signals and an advisory `behavior_risk`. `insufficient_data` below two fits, `insufficient_history` below the point floor; no entity keys in output |
 | `blueteam_incident_label(mode="alert"\|"text", alert, text, include_probabilities, top_k)` | label one alert or text with one of the 16 ATT&CK tactics, plus the A/B/C category derived from it. `status` is `ok` / `uncertain` / `unavailable`, and `unavailable` carries the reason |
 

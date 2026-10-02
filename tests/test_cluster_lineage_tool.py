@@ -18,9 +18,10 @@ import time
 
 import pytest
 from mcp_server.core.cluster_features import TACTIC_ORDER
-from mcp_server.core.cluster_store import save_fit
+from mcp_server.core.cluster_store import load_fit_history, save_fit
 from mcp_server.core.config import config
 from mcp_server.core.exceptions import BlueTeamMCPError
+from mcp_server.correlation.lineage_core import build_lineages
 from mcp_server.tools import cluster_lineage
 
 _run = asyncio.run
@@ -35,9 +36,10 @@ def _centroid(weight: float) -> list[float]:
     return vector
 
 
-def _save(fit_id: str, weight: float, size: int = 3, radius: float = 5.0) -> None:
+def _save(fit_id: str, weight: float, size: int = 3, radius: float = 5.0,
+          params=None) -> None:
     centroid = _centroid(weight)
-    save_fit(fit_id, {"min_cluster_size": 2},
+    save_fit(fit_id, params or {"min_cluster_size": 2},
              [{"label": 0, "centroid": centroid, "medoid": centroid,
                "size": size, "radius": radius}],
              entity_count=10, noise_count=1)
@@ -144,3 +146,34 @@ def test_status_reports_fit_depth():
     assert payload["status"] == "ok"
     assert payload["fits"] == 2
     assert payload["hint"] is None
+
+
+def test_history_respects_configured_max_fits(monkeypatch):
+    monkeypatch.setattr(config.cluster, "max_fits", 2)
+    _seed_drift()
+    time.sleep(0.02)
+    _save("f3", 14.0)
+    payload = json.loads(_run(_lineage(_params(mode="status"))))
+    assert payload["fits"] == 2
+
+
+def test_backfill_fits_have_no_novelty_rate(monkeypatch):
+    monkeypatch.setattr(config.cluster, "max_fits", 5)
+    _save("live-1", 10.0)
+    _save("bf-novel", 12.0, params={"min_cluster_size": 2, "origin": "backfill"})
+    _save("live-2", 14.0)
+    payload = json.loads(_run(_lineage(_params(mode="behavior"))))
+    series = {row["fit_id"]: row for row in payload["lineages"][0]["series"]}
+    assert series["bf-novel"]["novelty_rate"] is None
+    assert series["live-1"]["novelty_rate"] == 0.0
+
+
+def test_backfill_origin_surfaces_in_lineage_steps(monkeypatch):
+    monkeypatch.setattr(config.cluster, "max_fits", 5)
+    _save("live-1", 10.0)
+    _save("bf-origin", 12.0, params={"min_cluster_size": 2, "origin": "backfill"})
+    result = build_lineages(load_fit_history())
+    origins = {step["fit_id"]: step["origin"]
+               for lineage in result["lineages"] for step in lineage["steps"]}
+    assert origins["bf-origin"] == "backfill"
+    assert origins["live-1"] == "live"

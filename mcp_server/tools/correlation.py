@@ -182,32 +182,48 @@ def _score_category_bucket(bucket: dict, category: str, use_mitre: bool,
 
 
 async def _srcip_buckets(query: dict, extra_aggs: dict,
-                         label: str) -> tuple[list[dict], list[str], bool]:
+                         label: str, srcip_paths: Optional[list[str]] = None,
+                         ) -> tuple[list[dict], list[str], bool, dict]:
     """Entity buckets for one category query, keyed on a srcip path the index maps.
     multi_terms over every candidate path looked portable, but it drops any
     document missing a single key component, and an alert populates exactly one
     path - every bucket came back empty. Resolve the mapped paths with
     ``_field_caps`` and query each with a plain terms agg. Returns
-    ``(buckets, warnings, failed)``; ``failed`` is True only when every query
-    errored.
+    ``(buckets, warnings, failed, meta)``; ``failed`` is True only when every
+    query errored. ``meta`` carries the completeness counters a historical fit
+    must gate on: per-path errors, failed shards and mapping fallbacks.
+    ``srcip_paths`` skips the field-caps probe when the caller already resolved
+    the mapped paths (a backfill run probes once, not once per day).
     """
-    caps = await _wazuh_indexer_field_caps(_SRCIP_FIELD_PATHS)
-    live = [f for f in _SRCIP_FIELD_PATHS if f in caps]
-    warnings: list[str] = []
-    if not live:
-        probe = "field_caps probe returned nothing" if not caps else "no known srcip path is mapped"
-        live = ["data.srcip"]
-        warnings.append(f"{probe} - queried data.srcip for '{label}'")
+    if srcip_paths:
+        live = list(srcip_paths)
+        warnings: list[str] = []
+        fallback_paths = 0
+    else:
+        caps = await _wazuh_indexer_field_caps(_SRCIP_FIELD_PATHS)
+        live = [f for f in _SRCIP_FIELD_PATHS if f in caps]
+        warnings = []
+        fallback_paths = 0
+        if not live:
+            probe = "field_caps probe returned nothing" if not caps else "no known srcip path is mapped"
+            live = ["data.srcip"]
+            warnings.append(f"{probe} - queried data.srcip for '{label}'")
+            fallback_paths = 1
     raw_results = await asyncio.gather(*[
         _wazuh_indexer_post({"size": 0, "query": query, "aggs": {"unique_srcips": {
             "terms": {"field": field, "size": 10000}, "aggs": extra_aggs}}})
         for field in live])
     merged: dict[str, dict] = {}
     failed = True
+    path_errors = 0
+    partial_shards = 0
     for raw in raw_results:
         if "error" in raw:
+            path_errors += 1
             warnings.append(f"srcip agg failed for '{label}': {raw.get('error')}")
             continue
+        if raw.get("_partial"):
+            partial_shards += int(raw.get("_failed_shards") or 0)
         failed = False
         for bucket in raw.get("aggregations", {}).get("unique_srcips", {}).get("buckets", []):
             key = bucket.get("key")
@@ -217,14 +233,17 @@ async def _srcip_buckets(query: dict, extra_aggs: dict,
             current = merged.get(str(key))
             if current is None or int(bucket.get("doc_count", 0)) > int(current.get("doc_count", 0)):
                 merged[str(key)] = bucket
-    return list(merged.values()), warnings, failed
+    meta = {"path_errors": path_errors, "partial_shards": partial_shards,
+            "fallback_paths": fallback_paths, "paths_queried": len(live)}
+    return list(merged.values()), warnings, failed, meta
 
 
 async def fetch_srcip_profiles(categories: list[tuple[str, str, list[str]]], since_iso: str,
                                until_iso: str, use_mitre: bool = True,
                                technique_tactics: Optional[dict] = None,
                                category_techniques: Optional[dict] = None,
-                               srcip: Optional[str] = None) -> dict:
+                               srcip: Optional[str] = None,
+                               srcip_paths: Optional[list[str]] = None) -> dict:
     """Full per-srcip feature profiles for the clustering population.
     3-Sum keeps only threshold-crossing triggers; a density clusterer needs the
     untriggered population too. That population (and the per-IP ``by_tactic``
@@ -233,8 +252,11 @@ async def fetch_srcip_profiles(categories: list[tuple[str, str, list[str]]], sin
     would drift from the engine's scoring. This helper reuses the shared filter,
     aggregation and scoring functions instead.
     ``srcip`` scopes the aggregation to one entity for real-time assignment.
+    ``srcip_paths`` skips the field-caps probe when the caller already resolved
+    the mapped paths.
     Returns ``{"profiles": {ip: {"tactics", "score_a", "score_b", "score_c",
-    "total", "alert_count"}}, "warnings": [...], "failures": n}``. Score merge is
+    "total", "alert_count"}}, "warnings": [...], "failures": n, "path_errors": n,
+    "partial_shards": n, "fallback_paths": n}``. Score merge is
     max-per-category, matching ``evaluate_engine_a``; tactic level sums are added
     across buckets because one entity can appear under several categories.
     """
@@ -254,16 +276,22 @@ async def fetch_srcip_profiles(categories: list[tuple[str, str, list[str]]], sin
     async def _one(category: str, label: str, groups: list[str]) -> tuple:
         query = _scoped(_category_filter(category, groups, since_iso, until_iso,
                                          use_mitre, category_techniques or {}))
-        buckets, agg_warnings, failed = await _srcip_buckets(
-            query, _category_agg(use_mitre), label)
-        return category, label, buckets, agg_warnings, failed
+        buckets, agg_warnings, failed, meta = await _srcip_buckets(
+            query, _category_agg(use_mitre), label, srcip_paths)
+        return category, label, buckets, agg_warnings, failed, meta
 
     results = await asyncio.gather(*[_one(c, label, groups) for c, label, groups in categories])
     profiles: dict[str, dict] = {}
     warnings: list[str] = []
     failures = 0
-    for category, _label, buckets, agg_warnings, failed in results:
+    path_errors = 0
+    partial_shards = 0
+    fallback_paths = 0
+    for category, _label, buckets, agg_warnings, failed, meta in results:
         warnings.extend(agg_warnings)
+        path_errors += int(meta.get("path_errors") or 0)
+        partial_shards += int(meta.get("partial_shards") or 0)
+        fallback_paths += int(meta.get("fallback_paths") or 0)
         if failed:
             failures += 1
             continue
@@ -291,7 +319,9 @@ async def fetch_srcip_profiles(categories: list[tuple[str, str, list[str]]], sin
     for profile in profiles.values():
         profile["total"] = round(profile["score_a"] + profile["score_b"] * 1.5
                                  + profile["score_c"] * 2.0, 2)
-    return {"profiles": profiles, "warnings": warnings, "failures": failures}
+    return {"profiles": profiles, "warnings": warnings, "failures": failures,
+            "path_errors": path_errors, "partial_shards": partial_shards,
+            "fallback_paths": fallback_paths}
 
 
 # Wazuh Indexer index patterns (OpenSearch)
@@ -606,7 +636,7 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
 
         async def _fetch_srcips(category, label, groups):
             """Engine A srcips per category with dynamic rule.level x tactic-weight scoring."""
-            buckets, w, failed = await _srcip_buckets(
+            buckets, w, failed, _meta = await _srcip_buckets(
                 _build_filter(category, groups), _agg(), label)
             entries = []
             for b in buckets:
@@ -788,7 +818,7 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
             tier_a_results = None
             if params.engine_a_enabled:
                 async def _tier_fetch(category, label, groups):
-                    buckets, w, _failed = await _srcip_buckets(
+                    buckets, w, _failed, _meta = await _srcip_buckets(
                         _tier_filter(category, groups), _agg(), label)
                     entries = []
                     for b in buckets:

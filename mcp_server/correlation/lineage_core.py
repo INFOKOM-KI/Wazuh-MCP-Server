@@ -137,6 +137,7 @@ def build_lineages(fits: list[dict], match_factor: float = DEFAULT_MATCH_FACTOR)
             shares = tactic_shares(cluster["centroid"])
             step = {
                 "fit_id": fit["fit_id"], "created_at": fit.get("created_at"),
+                "origin": (fit.get("params") or {}).get("origin", "live"),
                 "label": int(cluster.get("label", -1)), "size": int(cluster["size"]),
                 "radius": round(float(cluster["radius"]), 3),
                 "distance_from_previous": distance,

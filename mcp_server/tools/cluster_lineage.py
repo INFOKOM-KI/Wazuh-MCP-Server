@@ -33,15 +33,17 @@ from mcp_server.tools.cluster import _require_enabled
 
 logger = logging.getLogger("blue_team_mcp.cluster_lineage")
 
-_HISTORY_LIMIT = 50
 
 def _novelty_by_fit(fits: list[dict]) -> dict:
     """Assignment novelty rate per fit: novel entities / entity_count.
-    A fit with no assignment rows yet has a true zero, which is a real reading
-    (the fit is new), not missing data.
+    A live fit with no assignments is a true zero; a backfilled fit has no
+    assignment history, so its rate is None rather than a synthetic zero.
     """
-    rates: dict[str, float] = {}
+    rates: dict[str, Optional[float]] = {}
     for fit in fits:
+        if (fit.get("params") or {}).get("origin") == "backfill":
+            rates[fit["fit_id"]] = None
+            continue
         novel = pending_novelty_count(fit["fit_id"])
         rates[fit["fit_id"]] = round(novel / max(1, int(fit["entity_count"])), 4)
     return rates
@@ -148,12 +150,13 @@ async def blueteam_cluster_lineage(params: ClusterLineageInput) -> str:
            match_factor=2.0)``
 
     Permissions: read on BLUETEAM_CLUSTER_STORE only; no Indexer query, no write.
-    Rate limits: one SQLite read per stored fit (max 50); no external calls.
+    Rate limits: one SQLite read per stored fit (max BLUETEAM_CLUSTER_MAX_FITS,
+    default 100); no external calls.
     """
     _require_enabled()
 
     if params.mode == "status":
-        fits = await asyncio.to_thread(load_fit_history, _HISTORY_LIMIT)
+        fits = await asyncio.to_thread(load_fit_history, config.cluster.max_fits)
         payload = {"status": "ok", "fits": len(fits),
                    "store": await asyncio.to_thread(store_stats),
                    "hint": None if len(fits) >= 2 else
@@ -164,7 +167,7 @@ async def blueteam_cluster_lineage(params: ClusterLineageInput) -> str:
         return (f"# Cluster lineage status\n\n**Stored fits**: {payload['fits']}\n\n"
                 f"{payload['hint'] or ''}")
 
-    fits = await asyncio.to_thread(load_fit_history, _HISTORY_LIMIT)
+    fits = await asyncio.to_thread(load_fit_history, config.cluster.max_fits)
     floor_fits = params.min_fits or config.cluster.lineage_min_fits
     if len(fits) < floor_fits:
         payload = {"status": "insufficient_data", "fit_count": len(fits),

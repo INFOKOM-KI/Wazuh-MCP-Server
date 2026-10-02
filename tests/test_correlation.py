@@ -44,7 +44,7 @@ def test_terms_on_the_mapped_field_not_multi_terms(monkeypatch):
     posted = _patch(monkeypatch, {"data.srcip": "keyword"}, lambda body: {
         "aggregations": {"unique_srcips": {"buckets": [_bucket()]}}})
 
-    buckets, warnings, failed = _run(correlation._srcip_buckets(
+    buckets, warnings, failed, _meta = _run(correlation._srcip_buckets(
         {"match_all": {}}, {"level_sum": {"sum": {"field": "rule.level"}}}, "A"))
 
     assert failed is False
@@ -63,7 +63,7 @@ def test_same_ip_on_two_fields_is_not_double_counted(monkeypatch):
 
     posted = _patch(monkeypatch, {"data.srcip": "keyword", "srcip.keyword": "keyword"}, _response)
 
-    buckets, warnings, failed = _run(correlation._srcip_buckets({"match_all": {}}, {}, "A"))
+    buckets, warnings, failed, _meta = _run(correlation._srcip_buckets({"match_all": {}}, {}, "A"))
 
     assert failed is False
     assert len(posted) == 2
@@ -73,7 +73,7 @@ def test_same_ip_on_two_fields_is_not_double_counted(monkeypatch):
 def test_probe_failure_assumes_data_srcip_and_warns(monkeypatch):
     posted = _patch(monkeypatch, {}, {"aggregations": {"unique_srcips": {"buckets": [_bucket()]}}})
 
-    buckets, warnings, failed = _run(correlation._srcip_buckets({"match_all": {}}, {}, "B"))
+    buckets, warnings, failed, _meta = _run(correlation._srcip_buckets({"match_all": {}}, {}, "B"))
 
     assert failed is False
     assert len(buckets) == 1
@@ -85,7 +85,7 @@ def test_no_mapped_srcip_path_warns(monkeypatch):
     _patch(monkeypatch, {"data.other": "keyword"},
            {"aggregations": {"unique_srcips": {"buckets": []}}})
 
-    buckets, warnings, failed = _run(correlation._srcip_buckets({"match_all": {}}, {}, "C"))
+    buckets, warnings, failed, _meta = _run(correlation._srcip_buckets({"match_all": {}}, {}, "C"))
 
     assert buckets == []
     assert failed is False
@@ -95,7 +95,7 @@ def test_no_mapped_srcip_path_warns(monkeypatch):
 def test_all_queries_failing_is_reported(monkeypatch):
     _patch(monkeypatch, {"data.srcip": "keyword"}, {"error": "Indexer API error: 503"})
 
-    buckets, warnings, failed = _run(correlation._srcip_buckets({"match_all": {}}, {}, "A"))
+    buckets, warnings, failed, _meta = _run(correlation._srcip_buckets({"match_all": {}}, {}, "A"))
 
     assert buckets == []
     assert failed is True

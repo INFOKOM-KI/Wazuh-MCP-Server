@@ -100,6 +100,19 @@ def test_train_persists_a_markov_model():
     assert load_model(payload["model_id"])["model_id"] == payload["model_id"]
 
 
+def test_train_legacy_fetch_shape_reports_complete_corpus():
+    payload = json.loads(_run(_forecast(_train_params())))
+    assert payload["corpus"]["fetch"]["window_complete"] is True
+    assert payload["corpus"]["fetch"]["fetched_hits"] == 22
+    assert payload["corpus"]["fit"]["complete"] is True
+    assert payload["corpus"]["fit"]["incomplete_reasons"] == []
+
+
+def test_train_markdown_omits_incomplete_banner_for_complete_corpus():
+    result = _run(_forecast(forecast.TacticForecastInput(mode="train")))
+    assert "Corpus incomplete" not in result
+
+
 def test_train_output_carries_no_entity_keys():
     result = _run(_forecast(forecast.TacticForecastInput(mode="train")))
     assert "203.0.113.7" not in result

@@ -53,6 +53,7 @@ _ID_EN_ALIASES: dict[str, str] = {
     "menyerangnya": "attack",
     "serang": "attack",
     "penyerang": "attacker",
+    "pernah": "threat intel reputation history",
     "bocor": "breach leak credentials",
     "kebocoran": "breach leak",
     "kredensial": "credentials password",

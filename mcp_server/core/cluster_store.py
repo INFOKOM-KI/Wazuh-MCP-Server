@@ -27,7 +27,10 @@ from mcp_server.core.cluster_features import FEATURE_VERSION
 
 logger = logging.getLogger("blue_team_mcp.cluster_store")
 
-_MAX_FITS = 50
+
+def _max_fits() -> int:
+    """Configured fit ceiling (BLUETEAM_CLUSTER_MAX_FITS)."""
+    return max(1, int(getattr(config.cluster, "max_fits", 100) or 100))
 
 
 class ClusterStoreError(BlueTeamMCPError):
@@ -108,21 +111,41 @@ def _store() -> Iterator[sqlite3.Connection]:
 
 def save_fit(fit_id: str, params: dict, clusters: list[dict],
              entity_count: int, noise_count: int,
-             window: Optional[dict] = None) -> None:
+             window: Optional[dict] = None,
+             enforce_capacity: bool = False) -> None:
     """Persist one fit and its clusters, replacing any fit with the same id.
     ``clusters`` items: ``{"label", "centroid", "medoid", "size", "radius"}``.
     Vectors are stored as JSON lists - the layout is pinned by
     ``feature_version``, so a binary blob buys nothing.
+    Replacing an id clears its centroids and entity assignments in the same
+    transaction, so a deterministic backfill id cannot leave stale labels.
+    A replacement keeps the original ``created_at``: it is the row's storage
+    timestamp for retention, not a recompute time.
+    ``enforce_capacity`` refuses a net-new row at ``BLUETEAM_CLUSTER_MAX_FITS``.
+    The deletes below open the write transaction, so the count runs inside it and
+    a concurrent writer cannot slip a fit between the count and the insert.
+    Replacements are always allowed.
     """
     window = window or {}
     with _store() as conn:
+        existing = conn.execute(
+            "SELECT created_at FROM fits WHERE fit_id = ?", (fit_id,)).fetchone()
         conn.execute("DELETE FROM centroids WHERE fit_id = ?", (fit_id,))
+        conn.execute("DELETE FROM entities WHERE fit_id = ?", (fit_id,))
+        if enforce_capacity and existing is None:
+            cap = _max_fits()
+            current = conn.execute("SELECT COUNT(*) FROM fits").fetchone()[0]
+            if int(current) >= cap:
+                raise ClusterStoreError(
+                    f"Store holds {int(current)} fits and BLUETEAM_CLUSTER_MAX_FITS="
+                    f"{cap} leaves no capacity for a new fit; no row was written.")
+        created_at = float(existing[0]) if existing else time.time()
         conn.execute(
             "INSERT OR REPLACE INTO fits (fit_id, feature_version, params, window_since,"
             " window_until, entity_count, noise_count, created_at) VALUES (?,?,?,?,?,?,?,?)",
             (fit_id, FEATURE_VERSION, json.dumps(params, sort_keys=True),
              window.get("since"), window.get("until"),
-             int(entity_count), int(noise_count), time.time()),
+             int(entity_count), int(noise_count), created_at),
         )
         conn.executemany(
             "INSERT OR REPLACE INTO centroids (fit_id, label, centroid, medoid, size, radius)"
@@ -133,7 +156,7 @@ def save_fit(fit_id: str, params: dict, clusters: list[dict],
         )
         stale = [row[0] for row in conn.execute(
             "SELECT fit_id FROM fits ORDER BY created_at DESC LIMIT -1 OFFSET ?",
-            (_MAX_FITS,),
+            (_max_fits(),),
         ).fetchall()]
         for old in stale:
             conn.execute("DELETE FROM fits WHERE fit_id = ?", (old,))
@@ -155,9 +178,13 @@ def load_fit(fit_id: Optional[str] = None) -> Optional[dict]:
                 (fit_id,),
             ).fetchone()
         else:
+            # Newest by observation window, not save time: a backfilled historical
+            # fit inserted later must not become the assignment target.
             row = conn.execute(
                 "SELECT fit_id, feature_version, params, window_since, window_until,"
-                " entity_count, noise_count, created_at FROM fits ORDER BY created_at DESC LIMIT 1"
+                " entity_count, noise_count, created_at FROM fits"
+                " ORDER BY COALESCE(window_until, strftime('%Y-%m-%dT%H:%M:%SZ',"
+                " created_at, 'unixepoch')) DESC, created_at DESC LIMIT 1"
             ).fetchone()
         if row is None:
             return None
@@ -184,16 +211,18 @@ def load_fit(fit_id: Optional[str] = None) -> Optional[dict]:
 
 
 def load_fit_history(limit: int = 20) -> list[dict]:
-    """Newest fits ordered oldest-first, each with its clusters.
-    Lineage is a read over history, so there is no second table: a fit row and
-    its centroids already carry everything the matcher needs. ``limit`` bounds
-    the read; the store caps fits at ``_MAX_FITS`` anyway. A fit under a
-    different ``FEATURE_VERSION`` refuses through ``load_fit``, because lineage
-    cannot compare vector layouts either.
+    """Newest fits ordered oldest-first by observation window, each with its
+    clusters. Fits without a window fall back to their creation time, so legacy
+    rows keep a stable position. ``limit`` bounds the read; the store caps fits
+    at ``BLUETEAM_CLUSTER_MAX_FITS`` anyway. A fit under a different
+    ``FEATURE_VERSION`` refuses through ``load_fit``, because lineage cannot
+    compare vector layouts either.
     """
     with _store() as conn:
         rows = conn.execute(
-            "SELECT fit_id FROM fits ORDER BY created_at DESC LIMIT ?",
+            "SELECT fit_id FROM fits"
+            " ORDER BY COALESCE(window_until, strftime('%Y-%m-%dT%H:%M:%SZ',"
+            " created_at, 'unixepoch')) DESC, created_at DESC LIMIT ?",
             (max(1, int(limit)),)).fetchall()
     fits: list[dict] = []
     for (fit_id,) in reversed(rows):

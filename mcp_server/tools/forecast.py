@@ -26,10 +26,11 @@ import hashlib
 import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
-from mcp_server import WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_URL
+from mcp_server import (WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_URL,
+                        _WAZUH_INDEXER_MAX_SIZE)
 from mcp_server.core.cluster_features import normalize_entity_key
 from mcp_server.core.config import config
 from mcp_server.core.exceptions import BlueTeamMCPError
@@ -62,7 +63,10 @@ from mcp_server.wazuh.time_utils import _auto_bucket_interval
 
 logger = logging.getLogger("blue_team_mcp.forecast")
 
-_HIT_CAP = 5000
+# Newest-first: when the hit cap bites, the oldest events are dropped, matching
+# the store's trim direction (append_observations keeps the newest rows).
+_SORT_FIELDS = [{"@timestamp": {"order": "desc"}}, {"_id": {"order": "desc"}}]
+_SORT_FIELDS_NO_TIEBREAKER = [{"@timestamp": {"order": "desc"}}]
 _OBSERVATION_FIELDS = ["@timestamp", "rule.mitre.tactic"] + _SRCIP_FIELD_PATHS
 
 
@@ -104,17 +108,37 @@ def _source_value(source: dict, path: str):
     return value
 
 
+def _iso_utc(epoch: Optional[float]) -> Optional[str]:
+    """ISO-8601 UTC rendering of a stored epoch timestamp."""
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(float(epoch), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 async def _fetch_tactic_observations(srcip: Optional[str], since_iso: str,
-                                     until_iso: str) -> dict:
+                                     until_iso: str,
+                                     include_geo: bool = False) -> dict:
     """Pull MITRE annotated alerts and flatten them to observation rows.
-    One search, capped at ``_HIT_CAP`` hits sorted oldest-first. There is no
-    pagination: ``truncated`` in the result tells the caller the window was
-    clipped, and repeating the call for a shorter window is the honest remedy.
-    Alerts with no source IP are counted but cannot join a per-entity sequence.
+    Pages newest-first with ``search_after`` on ``@timestamp`` plus ``_id``, so a
+    hit cap drops the oldest events and same-timestamp boundary documents are not
+    skipped; a timestamp-only fallback reports incomplete. ``window_complete``
+    follows the termination cause, never a full page. One exact count query after
+    an exhausted or capped sweep catches documents indexed or removed mid-sweep;
+    mid-pagination errors keep the pages already fetched and mark the corpus
+    incomplete. ``include_geo`` adds ``GeoLocation.country_name`` per row. Alerts
+    with no source IP are counted but cannot join a per-entity sequence.
     """
+    page_size_configured = int(getattr(config.forecast, "fetch_page_size", 1000) or 1000)
+    max_hits_configured = int(getattr(config.forecast, "max_hits", 100000) or 100000)
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
         return {"rows": [], "warnings": ["WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."],
-                "truncated": False, "skipped_no_entity": 0}
+                "truncated": True, "skipped_no_entity": 0, "pages": 0, "fetched_hits": 0,
+                "window_complete": False, "stop_reason": "error",
+                "sort_mode": "timestamp_id", "missing_portion": "unknown",
+                "partial_shards": 0,
+                "page_size": page_size_configured, "max_hits": max_hits_configured}
+    page_size = max(1, min(page_size_configured, _WAZUH_INDEXER_MAX_SIZE))
+    max_hits = max(page_size, max_hits_configured)
     filters: list[dict] = [
         {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                   "format": "strict_date_optional_time"}}},
@@ -124,42 +148,237 @@ async def _fetch_tactic_observations(srcip: Optional[str], since_iso: str,
         should = [{"match": {path: srcip}} for path in _SRCIP_FIELD_PATHS]
         should.append({"match_phrase": {"full_log": srcip}})
         filters.append({"bool": {"should": should, "minimum_should_match": 1}})
-    body = {
-        "size": _HIT_CAP,
-        "sort": [{"@timestamp": {"order": "asc"}}],
-        "query": {"bool": {"filter": filters}},
-        "_source": _OBSERVATION_FIELDS,
-    }
-    raw = await _wazuh_indexer_post(body)
-    if "error" in raw:
-        return {"rows": [], "warnings": [f"Indexer query failed: {raw['error']}"],
-                "truncated": False, "skipped_no_entity": 0}
-    hits = raw.get("hits", {}).get("hits", [])
+
+    sort_mode = "timestamp_id"
+    sort_fields = list(_SORT_FIELDS)
+    search_after: Optional[list] = None
+    seen_ids: set[str] = set()
     rows: list[dict] = []
-    skipped_no_entity = 0
-    for hit in hits:
-        source = hit.get("_source", hit)
-        key = ""
-        for path in _SRCIP_FIELD_PATHS:
-            value = _source_value(source, path)
-            if value:
-                key = str(value)
-                break
-        observed_at = _epoch(source.get("@timestamp"))
-        if not key or observed_at is None:
-            skipped_no_entity += 1
-            continue
-        rows.append({"entity_key": normalize_entity_key(key),
-                     "tactic": _source_value(source, "rule.mitre.tactic"),
-                     "observed_at": observed_at})
     warnings: list[str] = []
-    truncated = len(hits) >= _HIT_CAP
-    if truncated:
+    pages = 0
+    fetched = 0
+    skipped_no_entity = 0
+    partial_shards = 0
+    duplicates = 0
+    verified_count: Optional[int] = None
+    stop_reason = "exhausted"
+    window_complete = True
+    missing_portion: Optional[str] = None
+
+    while True:
+        page_request = min(page_size, max_hits - fetched)
+        body = {
+            "size": page_request,
+            "sort": sort_fields,
+            "query": {"bool": {"filter": filters}},
+            "_source": _OBSERVATION_FIELDS + (["GeoLocation.country_name"]
+                                              if include_geo else []),
+        }
+        if search_after:
+            body["search_after"] = search_after
+        raw = await _wazuh_indexer_post(body)
+        if not isinstance(raw, dict) or raw.get("error"):
+            detail = str(raw.get("detail") or "").lower() if isinstance(raw, dict) else ""
+            if (isinstance(raw, dict) and raw.get("error") and sort_mode == "timestamp_id"
+                    and pages == 0 and "_id" in detail
+                    and any(token in detail for token in ("fielddata", "sort", "disallow"))):
+                sort_mode = "timestamp_only"
+                sort_fields = list(_SORT_FIELDS_NO_TIEBREAKER)
+                warnings.append(
+                    "Indexer rejected sorting on _id; falling back to @timestamp-only "
+                    "pagination. Same-timestamp documents at a page boundary may be "
+                    "skipped, so the corpus is reported incomplete.")
+                continue
+            stop_reason, window_complete, missing_portion = "error", False, "unknown"
+            message = raw.get("error") if isinstance(raw, dict) else "unreadable response"
+            warnings.append(f"Indexer query failed on page {pages + 1}: {message}")
+            break
+        if raw.get("_partial"):
+            partial_shards += int(raw.get("_failed_shards") or 0)
+            stop_reason, window_complete, missing_portion = "shard_partial", False, "unknown"
+            warnings.append(
+                f"Indexer returned partial results ({partial_shards} failed shards); "
+                "documents held by those shards are missing from the corpus.")
+        hits = raw.get("hits", {}).get("hits", [])
+        pages += 1
+        fetched += len(hits)
+        for hit in hits:
+            hit_id = str(hit.get("_id") or "")
+            if hit_id and hit_id in seen_ids:
+                duplicates += 1
+                continue
+            if hit_id:
+                seen_ids.add(hit_id)
+            source = hit.get("_source", hit)
+            key = ""
+            for path in _SRCIP_FIELD_PATHS:
+                value = _source_value(source, path)
+                if value:
+                    key = str(value)
+                    break
+            observed_at = _epoch(source.get("@timestamp"))
+            if not key or observed_at is None:
+                skipped_no_entity += 1
+                continue
+            row = {"entity_key": normalize_entity_key(key),
+                   "tactic": _source_value(source, "rule.mitre.tactic"),
+                   "observed_at": observed_at}
+            if include_geo:
+                row["country"] = _source_value(source, "GeoLocation.country_name")
+            rows.append(row)
+        if not hits:
+            break
+        last_sort = hits[-1].get("sort")
+        if not last_sort:
+            stop_reason, window_complete, missing_portion = "no_sort_key", False, "unknown"
+            warnings.append("Indexer response carried no sort key; pagination stopped early.")
+            break
+        search_after = last_sort
+        if len(hits) < page_request:
+            break
+        if fetched >= max_hits:
+            stop_reason, window_complete, missing_portion = "max_hits", False, "oldest"
+            warnings.append(
+                f"Hit cap reached ({max_hits} alerts); the oldest part of the window is "
+                "missing. Raise BLUETEAM_FORECAST_MAX_HITS or narrow time_window_minutes.")
+            break
+    if duplicates:
         warnings.append(
-            f"Hit cap reached ({_HIT_CAP} alerts); the oldest part of the window is "
-            "missing. Narrow time_window_minutes for an untruncated fit.")
-    return {"rows": rows, "warnings": warnings, "truncated": truncated,
-            "skipped_no_entity": skipped_no_entity}
+            f"Pagination returned {duplicates} duplicate documents; ordering was not "
+            "deterministic, so the corpus is reported incomplete.")
+        if window_complete:
+            stop_reason, window_complete, missing_portion = "duplicate_hits", False, "unknown"
+    if (not duplicates and stop_reason in ("exhausted", "max_hits")
+            and sort_mode == "timestamp_id" and partial_shards == 0):
+        verified_count = await _count_tactic_observations(filters)
+        if verified_count is None:
+            if stop_reason == "exhausted":
+                stop_reason, window_complete, missing_portion = (
+                    "verification_failed", False, "unknown")
+            warnings.append(
+                "Count verification failed; completeness cannot be confirmed, so the "
+                "corpus is reported incomplete.")
+        elif verified_count == fetched:
+            window_complete = True
+            missing_portion = None
+        else:
+            if stop_reason == "exhausted":
+                stop_reason = "count_mismatch"
+                missing_portion = "unknown"
+            window_complete = False
+            warnings.append(
+                f"Count verification found {verified_count} matching alerts but the sweep "
+                f"retrieved {fetched}; documents changed during the sweep, so the corpus "
+                "is incomplete.")
+    if sort_mode == "timestamp_only" and window_complete:
+        stop_reason, window_complete, missing_portion = (
+            "tiebreaker_unavailable", False, "unknown")
+    return {
+        "rows": rows, "warnings": warnings, "truncated": not window_complete,
+        "skipped_no_entity": skipped_no_entity, "pages": pages,
+        "fetched_hits": fetched, "window_complete": window_complete,
+        "verified_count": verified_count,
+        "snapshot_consistent": bool(window_complete and verified_count == fetched),
+        "stop_reason": stop_reason, "sort_mode": sort_mode,
+        "missing_portion": missing_portion, "partial_shards": partial_shards,
+        "duplicates_dropped": duplicates,
+        "page_size": page_size, "max_hits": max_hits,
+    }
+
+
+async def _count_tactic_observations(filters: list[dict]) -> Optional[int]:
+    """Exact matching-document count for a completed sweep. ``None`` on any
+    error: an unverifiable corpus is reported incomplete, never assumed whole.
+    ``track_total_hits: true`` is required because the default caps the count
+    at 10000 with relation 'gte', which cannot prove equality.
+    """
+    raw = await _wazuh_indexer_post({
+        "size": 0, "track_total_hits": True,
+        "query": {"bool": {"filter": filters}},
+    })
+    if not isinstance(raw, dict) or raw.get("error") or raw.get("_partial"):
+        return None
+    total = (raw.get("hits") or {}).get("total")
+    if isinstance(total, dict):
+        if total.get("relation") not in (None, "eq"):
+            return None
+        total = total.get("value")
+    try:
+        return int(total)
+    except (TypeError, ValueError):
+        return None
+
+
+def _corpus_block(fetched: dict, stored: list[dict], built: dict, fit: dict,
+                  since_iso: str, until_iso: str) -> dict:
+    """Completeness metadata for one corpus, at three layers: ``fetch`` (Indexer),
+    ``store`` (rows retained for the window), ``fit`` (the trained dataset).
+    ``fit.complete`` needs a complete fetch, a verified count and a store below its
+    row cap; anything less carries ``fit.incomplete_reasons``. A legacy fetch result
+    without ``snapshot_consistent`` falls back to its ``window_complete`` value.
+    """
+    store_max = int(getattr(config.forecast, "store_max", 200000) or 200000)
+    store_at_cap = len(stored) >= store_max
+    window_complete = bool(fetched.get("window_complete",
+                                       not fetched.get("truncated", False)))
+    snapshot_consistent = bool(fetched.get("snapshot_consistent", window_complete))
+    stop_reason = fetched.get("stop_reason") or ("exhausted" if window_complete else "error")
+    reasons: list[str] = []
+    if not window_complete:
+        reasons.append({"max_hits": "fetch_max_hits",
+                        "shard_partial": "shard_partial",
+                        "tiebreaker_unavailable": "tiebreaker_unavailable",
+                        "count_mismatch": "count_mismatch",
+                        "duplicate_hits": "duplicate_hits",
+                        "verification_failed": "verification_failed"}.get(
+                            stop_reason, f"fetch_{stop_reason}"))
+    if window_complete and not snapshot_consistent:
+        reasons.append("snapshot_unverified")
+    if int(fetched.get("duplicates_dropped") or 0) > 0 and "duplicate_hits" not in reasons:
+        reasons.append("duplicate_hits")
+    if store_at_cap:
+        reasons.append("store_row_cap")
+    first = float(stored[0]["observed_at"]) if stored else None
+    last = float(stored[-1]["observed_at"]) if stored else None
+    fetched_hits = fetched.get("fetched_hits")
+    if fetched_hits is None:
+        fetched_hits = len(fetched.get("rows") or [])
+    return {
+        "requested_window": {"since": since_iso, "until": until_iso},
+        "fetch": {
+            "page_size": fetched.get("page_size"),
+            "max_hits": fetched.get("max_hits"),
+            "pages": int(fetched.get("pages") or 0),
+            "fetched_hits": int(fetched_hits),
+            "usable_rows": len(fetched.get("rows") or []),
+            "skipped_no_entity": int(fetched.get("skipped_no_entity") or 0),
+            "window_complete": window_complete,
+            "verified_count": fetched.get("verified_count"),
+            "snapshot_consistent": snapshot_consistent,
+            "stop_reason": stop_reason,
+            "sort_mode": fetched.get("sort_mode") or "timestamp_id",
+            "missing_portion": fetched.get("missing_portion"),
+            "partial_shards": int(fetched.get("partial_shards") or 0),
+            "duplicates_dropped": int(fetched.get("duplicates_dropped") or 0),
+        },
+        "store": {
+            "observations": len(stored),
+            "entities": int(built.get("entities") or 0),
+            "first_observed_at": _iso_utc(first),
+            "last_observed_at": _iso_utc(last),
+            "at_row_cap": store_at_cap,
+        },
+        "fit": {
+            "observations": len(stored),
+            "entities": int(built.get("entities") or 0),
+            "sequences": len(built.get("sequences") or []),
+            "transitions": int(fit.get("n_transitions") or 0),
+            "first_observed_at": _iso_utc(first),
+            "last_observed_at": _iso_utc(last),
+            "complete": window_complete and snapshot_consistent and not store_at_cap,
+            "incomplete_reasons": reasons,
+        },
+    }
 
 
 def _model_id(fit: dict) -> str:
@@ -184,10 +403,14 @@ def _top_transitions(fit: dict, limit: int = 8) -> list[dict]:
 
 
 def _fit_params_summary(model: dict) -> dict:
+    """Model metadata for a response. ``corpus`` reproduces the completeness
+    stamp written at train time, so a prediction cannot read as complete when
+    its model was fitted on a partial corpus."""
     return {"model_id": model["model_id"], "kind": model["kind"],
             "taxonomy_version": model["taxonomy_version"],
             "n_sequences": model["n_sequences"], "n_transitions": model["n_transitions"],
-            "created_at": model["created_at"]}
+            "created_at": model["created_at"],
+            "corpus": (model.get("params") or {}).get("corpus")}
 
 
 def _train_markdown(payload: dict) -> str:
@@ -204,6 +427,18 @@ def _train_markdown(payload: dict) -> str:
         f"{payload['dropped_no_entity']} without entity",
         "",
     ]
+    corpus = payload.get("corpus") or {}
+    fetch_layer = corpus.get("fetch") or {}
+    fit_layer = corpus.get("fit") or {}
+    if corpus:
+        lines.append(
+            f"**Corpus**: {fit_layer.get('observations', 0)} observations fitted | "
+            f"fetch {fetch_layer.get('fetched_hits', 0)} hits over "
+            f"{fetch_layer.get('pages', 0)} pages | complete: {fit_layer.get('complete')}")
+    if fit_layer.get("complete") is False:
+        reasons = ", ".join(fit_layer.get("incomplete_reasons") or []) or "unknown"
+        lines += ["", f"**Corpus incomplete** ({reasons}): this model was fitted on a "
+                      "partial window. Do not read its support counts as full-corpus coverage."]
     if payload.get("top_transitions"):
         lines += ["| From | To | Count |", "|------|----|-------|"]
         lines += [f"| {item['from']} | {item['to']} | {item['count']} |"
@@ -230,6 +465,13 @@ def _predict_markdown(payload: dict) -> str:
     ]
     lines += [f"| {item['tactic']} | {item['probability']:.1%} |"
               for item in prediction["predictions"]]
+    corpus = model.get("corpus") or {}
+    fit_layer = corpus.get("fit") or {}
+    if fit_layer.get("complete") is False:
+        reasons = ", ".join(fit_layer.get("incomplete_reasons") or []) or "unknown"
+        lines.insert(2, f"> Model fitted on a partial corpus ({reasons}) - "
+                        "support figures are a lower bound.")
+        lines.insert(3, "")
     if prediction.get("uniform_fallback"):
         lines += ["", f"**Uniform fallback**: {prediction.get('reason') or 'no anchor in the corpus'}."]
     if prediction.get("low_support"):
@@ -251,6 +493,12 @@ def _status_markdown(payload: dict) -> str:
         model = payload["model"]
         lines += ["", f"**Newest model**: `{model['model_id']}` (`{model['kind']}`, "
                       f"{model['n_sequences']} sequences / {model['n_transitions']} transitions)"]
+        corpus = model.get("corpus") or {}
+        fit_layer = corpus.get("fit") or {}
+        if fit_layer.get("complete") is False:
+            lines.append(
+                "**Corpus incomplete**: the newest model was fitted on a partial window; "
+                "retrain after widening the window or raising BLUETEAM_FORECAST_MAX_HITS.")
     if payload.get("hint"):
         lines += ["", payload["hint"]]
     return "\n".join(lines)
@@ -315,8 +563,9 @@ async def blueteam_tactic_forecast(params: TacticForecastInput) -> str:
         params.response_format: 'markdown' (default) or 'json'.
 
     Returns:
-        markdown or json. Train: model id, corpus counts, truncated-window
-        warnings, and (Markov) the strongest observed transitions. Predict: the
+        markdown or json. Train: model id, corpus counts, a ``corpus``
+        completeness block (fetch/store/fit layers), and (Markov) the strongest
+        observed transitions. Predict: the
         top-k next tactics with probabilities, the escalation probability, a
         ``low_support``/``uniform_fallback`` flag where applicable, and the
         chains mean log-likelihood against the training corpus (Markov models;
@@ -331,8 +580,10 @@ async def blueteam_tactic_forecast(params: TacticForecastInput) -> str:
            srcip="203.0.113.7", top_k=5, response_format="json")``
 
     Permissions: read on the Wazuh Indexer; read/write on BLUETEAM_FORECAST_STORE.
-    Rate limits: one Indexer search per train or entity predict, capped at 5000
-    alerts (the response flags truncation); no external network calls.
+    Rate limits: paged Indexer searches (``search_after``, newest first) bounded
+    by BLUETEAM_FORECAST_MAX_HITS (default 100000), plus one exact count query
+    per completed sweep; every response carries a ``corpus`` block stating
+    whether the fitted window was complete. No external network calls.
     """
     _require_enabled()
     since_iso, until_iso = _window(params.time_window_minutes)
@@ -441,23 +692,41 @@ async def blueteam_tactic_forecast(params: TacticForecastInput) -> str:
         fit = fit_markov_chain(built["sequences"], alpha=config.forecast.alpha,
                                min_sequences=min_sequences, min_transitions=min_transitions)
 
+    corpus = _corpus_block(fetched, stored, built, fit, since_iso, until_iso)
     if fit["status"] != "ok":
         payload = {"status": fit["status"], "reason": fit.get("reason"),
                    "entity_count": built["entities"],
                    "n_sequences": fit.get("n_sequences"), "n_transitions": fit.get("n_transitions"),
                    "window": {"since": since_iso, "until": until_iso},
+                   "corpus": corpus,
                    "warnings": fetched["warnings"]}
         if params.response_format == "json":
             return json.dumps(payload, indent=2, ensure_ascii=False)
         return (f"# Tactic Forecast\n\n**Status**: `{fit['status']}`\n\n{fit.get('reason') or ''}")
 
+    if config.forecast.require_complete_corpus and not corpus["fit"]["complete"]:
+        payload = {
+            "status": "corpus_incomplete",
+            "reason": "the requested corpus is incomplete and "
+                      "BLUETEAM_FORECAST_REQUIRE_COMPLETE_CORPUS=true refuses to fit "
+                      "a partial window",
+            "incomplete_reasons": corpus["fit"]["incomplete_reasons"],
+            "window": {"since": since_iso, "until": until_iso},
+            "corpus": corpus, "warnings": fetched["warnings"],
+        }
+        if params.response_format == "json":
+            return json.dumps(payload, indent=2, ensure_ascii=False)
+        return (f"# Tactic Forecast\n\n**Status**: `corpus_incomplete`\n\n"
+                f"{payload['reason']}: {', '.join(payload['incomplete_reasons']) or 'unknown'}")
+
     model_id = _model_id(fit)
     fit_params = (
         {"n_components": fit["n_components"], "seed": fit["seed"], "n_iter": fit["n_iter"],
-         "min_sequences": max(min_sequences, config.forecast.hmm_min_sequences)}
+         "min_sequences": max(min_sequences, config.forecast.hmm_min_sequences),
+         "corpus": corpus}
         if params.kind == "hmm" else
         {"alpha": fit["alpha"], "min_sequences": min_sequences,
-         "min_transitions": min_transitions})
+         "min_transitions": min_transitions, "corpus": corpus})
     await asyncio.to_thread(
         save_model, model_id, fit["kind"], fit_params, fit["startprob"],
         fit["transmat"], fit.get("emissionprob"), fit.get("row_support"),
@@ -467,6 +736,7 @@ async def blueteam_tactic_forecast(params: TacticForecastInput) -> str:
         "status": "ok", "model_id": model_id, "kind": fit["kind"],
         "taxonomy_version": fit["taxonomy_version"],
         "window": {"since": since_iso, "until": until_iso},
+        "corpus": corpus,
         "entity_count": built["entities"], "n_sequences": fit["n_sequences"],
         "n_transitions": fit["n_transitions"],
         "observations_appended": appended, "observations_in_window": len(stored),
