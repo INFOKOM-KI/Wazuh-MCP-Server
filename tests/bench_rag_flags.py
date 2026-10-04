@@ -2,8 +2,9 @@
 """Retrieval flag benchmark: BLUETEAM_RERANK_NORMALIZE, BLUETEAM_RAG_PARENT_CHILD,
 BLUETEAM_RAG_QUERY_NORMALIZE, measured against the all-off baseline.
 
-Implements the design in EVAL_PLAN_RAG_PHASE1_3.md. Read that first: the acceptance gates,
-the control matrix and the invariants live there, and this file is only the instrument.
+Implements the design in EVAL_PLAN_RAG_PHASE1_3.md. That document is project documentation
+and lives in the project documentation directory, not in this repository; read it there.
+This file is only the instrument.
 
     python3 tests/bench_rag_flags.py --preflight
     python3 tests/bench_rag_flags.py --combo false,false,false --json /tmp/base.json

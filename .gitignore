@@ -44,6 +44,9 @@ config.env
 # Logs
 *.log
 *.jsonl
+# The benchmark's label fixture is not a log and is not corpus data. It is the schema and
+# load target tests/bench_rag_flags.py reads, and a fresh clone needs it.
+!tests/fixtures/rag_eval_queries.jsonl
 
 # RapidAPI state (response cache + month-to-date budget counter). Holds attacker IPs
 # and vendor verdicts, and the atomic-rewrite temp file lands beside it.

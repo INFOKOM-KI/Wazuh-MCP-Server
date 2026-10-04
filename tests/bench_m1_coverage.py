@@ -11,8 +11,19 @@ What it answers: for a real long document, what fraction of its child positions 
 the first `config.rag.chunk_chars` runes, which is the only text the cross-encoder receives
 when BLUETEAM_RAG_PARENT_CHILD is on.
 
-    python3 tests/bench_m1_coverage.py
-    python3 tests/bench_m1_coverage.py --overlap 200
+Documentation input
+-------------------
+The documents measured here are project documentation, which is kept in the project
+documentation directory and not in this repository. The directory is therefore an explicit
+input: pass `--docs-dir` or set `BENCH_DOCS_DIR`. There is no default and no path inside this
+repository is assumed.
+
+The probe prints the directory it resolved, and exits 2 when that directory is missing, when
+it holds no Markdown, or when nothing in it produces a parent. It does not report a ratio
+computed over a thinner sample than the header claims.
+
+    python3 tests/bench_m1_coverage.py --docs-dir /path/to/project-docs
+    BENCH_DOCS_DIR=/path/to/project-docs python3 tests/bench_m1_coverage.py --overlap 200
 """
 from __future__ import annotations
 import argparse
@@ -27,29 +38,13 @@ os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "bench")
 from mcp_server.core.config import config
 from mcp_server.tools import rag_kb
 
-REPO = pathlib.Path(__file__).resolve().parent.parent
 
-# Every document below lives at its canonical repository path. A fresh clone has all of
-# them; no path outside this repository is consulted.
-# Real repository documents. Stand-ins for the playbook layer, which needs pypdf.
-# No repository file is 1200 runes or shorter, so the `short` band has no samples here:
-# it is covered analytically instead, a document at or below the bound is one chunk and
-# has no parent, so the reranker sees all of it.
-DOCS = [
-    ("README.md", REPO / "README.md"),
-    ("SOC_3SUM_RUNBOOK.md", REPO / "SOC_3SUM_RUNBOOK.md"),
-    ("SKILLS.md", REPO / "SKILLS.md"),
-    ("SECURITY.md", REPO / "SECURITY.md"),
-    ("PRD.md", REPO / "PRD.md"),
-    ("MAESTRO.md", REPO / "MAESTRO.md"),
-    ("PROMPT.md", REPO / "PROMPT.md"),
-    ("AGENTS.md", REPO / "AGENTS.md"),
-    ("CLAUDE.md", REPO / "CLAUDE.md"),
-    # Medium band (1201 to 3600 runes). The audit records are the only prose files that
-    # size, so they carry the band; both are versioned under anti-slop/.
-    ("audit-002-...md", REPO / "anti-slop" / "audit-002-2026-10-04-copywriting.md"),
-    ("audit-005-...md", REPO / "anti-slop" / "audit-005-2026-10-04-copywriting.md"),
-]
+def collect_docs(docs_dir: pathlib.Path) -> list[tuple[str, pathlib.Path]]:
+    """Every Markdown file under ``docs_dir``, sorted, as ``(label, path)``.
+    Sorting keeps the table stable between runs, so two invocations compare line by line.
+    """
+    return [(p.relative_to(docs_dir).as_posix(), p)
+            for p in sorted(docs_dir.rglob("*.md")) if p.is_file()]
 
 
 def band(index: int, count: int) -> str:
@@ -62,13 +57,41 @@ def band(index: int, count: int) -> str:
     return "middle"
 
 
+def size_band(child_count: int) -> str:
+    """Which length band a document falls in, by the chunks it splits into."""
+    if child_count == 0:
+        return "empty"
+    if child_count == 1:
+        return "single"
+    return "medium" if child_count <= 3 else "long"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--docs-dir", default=os.environ.get("BENCH_DOCS_DIR", ""),
+                    help="project documentation directory to measure. No default; "
+                         "BENCH_DOCS_DIR is the environment equivalent.")
     ap.add_argument("--chunk-chars", type=int, default=1200,
                     help="the shipped BLUETEAM_RAG_CHUNK_CHARS default")
     ap.add_argument("--overlap", type=int, default=0,
                     help="0 gives the clean positional mapping the plan pins")
     args = ap.parse_args()
+
+    if not args.docs_dir:
+        print("documentation input is required and none was supplied.\n"
+              "  pass --docs-dir PATH, or set BENCH_DOCS_DIR.\n"
+              "  the documents measured here are project documentation, which is kept in\n"
+              "  the project documentation directory and is not part of this repository.",
+              file=sys.stderr)
+        return 2
+    docs_dir = pathlib.Path(args.docs_dir).expanduser().resolve()
+    if not docs_dir.is_dir():
+        print(f"--docs-dir is not a directory: {docs_dir}", file=sys.stderr)
+        return 2
+    docs = collect_docs(docs_dir)
+    if not docs:
+        print(f"--docs-dir holds no Markdown: {docs_dir}", file=sys.stderr)
+        return 2
 
     config.rag.chunk_chars = args.chunk_chars
     config.rag.chunk_overlap = args.overlap
@@ -76,31 +99,31 @@ def main() -> int:
 
     bound = config.rag.chunk_chars
     print("M1 coverage geometry: how much of a parent reaches the cross-encoder")
+    print(f"  docs dir       : {docs_dir}")
+    print(f"  documents      : {len(docs)} Markdown files found")
     print(f"  chunk_chars    : {bound} runes (frozen for the evaluation)")
     print(f"  chunk_overlap  : {args.overlap}")
     print(f"  parent_child   : on (so parents exist to be measured)")
-    print(f"  documents      : {len(DOCS)} real repository documents")
     print()
-    print(f"{'document':<22} {'runes':>7} {'kids':>5} {'parent':>7} {'cover':>7} "
+    print(f"{'document':<34} {'runes':>7} {'kids':>5} {'parent':>7} {'cover':>7} "
           f"{'in view':>8} {'head':>6} {'mid':>6} {'tail':>6}")
 
     totals = {"kids": 0, "in_view": 0}
     by_band: dict[str, list[int]] = {"head": [0, 0], "middle": [0, 0], "tail": [0, 0],
                                      "single": [0, 0]}
+    band_docs = {"single": 0, "medium": 0, "long": 0, "empty": 0}
     rows = []
 
-    for name, path in DOCS:
-        if not path.is_file():
-            print(f"  {name:<22} MISSING {path}")
-            continue
+    for name, path in docs:
         text = path.read_text(encoding="utf-8", errors="replace")
-        docs, _ = rag_kb._document_docs("pdf:eval", name, text, bound, args.overlap, {}, 0)
-        children = [d for d in docs if not d.get("is_parent")]
-        parent = next((d for d in docs if d.get("is_parent")), None)
+        doc_rows, _ = rag_kb._document_docs("pdf:eval", name, text, bound, args.overlap, {}, 0)
+        children = [d for d in doc_rows if not d.get("is_parent")]
+        parent = next((d for d in doc_rows if d.get("is_parent")), None)
+        band_docs[size_band(len(children))] += 1
 
         if parent is None:
             # A single-chunk document: no parent row, nothing to bound, the child IS the
-            # document. This is the `short` band and it must behave identically either way.
+            # document. Nothing to measure, so it is listed and skipped.
             by_band["single"][1] += 1
             by_band["single"][0] += 1
             rows.append((name, len(text), len(children), len(text), 1.0, len(children),
@@ -111,8 +134,8 @@ def main() -> int:
         # packer drops roughly 1% of the runes when it strips and rejoins sentences, so
         # the join is shorter than the parent and the computed offsets under-state the
         # true ones. The conclusion is unaffected: child 0 is under the bound either way,
-        # and any later child starts after it, so past the bound. Measured deltas:
-        # README 1011 of 105587 runes, CLAUDE.md 1194 of 38838, SOC_3SUM 102 of 6425.
+        # and any later child starts after it, so past the bound. Measured deltas on the
+        # previous document set: README 1011 of 105587 runes, CLAUDE.md 1194 of 38838.
         cumulative = 0
         in_view = 0
         per_band = {"head": [0, 0], "middle": [0, 0], "tail": [0, 0]}
@@ -137,10 +160,21 @@ def main() -> int:
         rows.append((name, len(text), len(children), len(parent["text"]), coverage,
                      in_view, rate("head"), rate("middle"), rate("tail")))
 
+    if not totals["kids"]:
+        print(f"\nno document in {docs_dir} produced a parent, so there is nothing to "
+              f"measure. Point --docs-dir at a directory holding documents longer than "
+              f"{bound} runes.", file=sys.stderr)
+        return 2
+
     for name, runes, kids, plen, cov, iv, h, m, t in rows:
-        print(f"{name:<22} {runes:>7} {kids:>5} {plen:>7} {cov:>6.1%} "
+        print(f"{name:<34} {runes:>7} {kids:>5} {plen:>7} {cov:>6.1%} "
               f"{iv:>8} {h:>6} {m:>6} {t:>6}")
 
+    print()
+    print("documents measured, by length band:")
+    print(f"  single chunk (no parent)   {band_docs['single']}")
+    print(f"  2 to 3 chunks              {band_docs['medium']}")
+    print(f"  4 or more chunks           {band_docs['long']}")
     print()
     print("aggregate by evidence position (any document):")
     for b in ("head", "middle", "tail", "single"):
@@ -155,6 +189,8 @@ def main() -> int:
     print("  head  in view means the reranker scores the text that holds the evidence.")
     print("  middle and tail out of view means the reranker scores the document head")
     print("  and the labelled evidence is not part of what it scored.")
+    print("  A document at or below chunk_chars is one chunk and gets no parent, so the")
+    print("  cross-encoder sees all of it; that band is covered analytically, not sampled.")
     print("  This is geometry, not a quality result. It bounds the M1 exposure; it does")
     print("  not measure it. The quality gate needs the cross-encoder.")
     return 0

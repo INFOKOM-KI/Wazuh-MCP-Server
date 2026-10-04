@@ -1,0 +1,57 @@
+# Label fixture for tests/bench_rag_flags.py
+#
+# One JSON object per line. Blank lines and lines starting with # are ignored, so this
+# file doubles as the schema and as the load target.
+#
+# STATUS: EMPTY, awaiting the corpus. No row is present because a label must name a
+# document that exists in the corpus, and both corpus layers are unavailable right now:
+# the playbook layer needs pypdf, and the case layer needs the redacted production
+# export. A hand-written label for a document that does not exist would produce a
+# guaranteed miss and a meaningless Recall of zero, which is worse than no number.
+#
+# Fields, per plan section 2.1:
+#
+#   query_id     stable key. The full-width twin shares it, distinguished by `variant`.
+#   query        the exact string sent. The harness never rewrites it.
+#   lang         "en" or "id".
+#   variant      "ascii" or "fullwidth". The harness derives the full-width twin with
+#                str.translate, so the pair differs only in encoding.
+#   target_text  "ascii" or "fullwidth", whether the TARGET DOCUMENT's own text contains
+#                full-width characters. Drives the case A / case B split in plan 5.5.
+#   source       the corpus label the target was ingested under, e.g. "cases",
+#                "pdf:NIST.SP.800-61r3", or "text".
+#   doc_key      the document identity used for the parent id derivation, WITHOUT the
+#                source prefix:
+#                  cases          -> the case_id
+#                  pdf:<stem>     -> "<file basename>#p<page>"
+#                  text           -> the caller-chosen key, e.g. "text0"
+#                The harness resolves doc_id via rag_store._parent_id(source, doc_key),
+#                which is deterministic. A single-chunk document has no parent, so such
+#                a row supplies `chunk_id` instead.
+#   child_seqs   which children carry the evidence. Drives child attribution and the
+#                head / middle / tail classification.
+#   band         "short" (<=1200 runes), "medium" (1201-3600), "long" (>3600).
+#   position     "head" (child 0), "middle", "tail", or "n/a" for a single-chunk doc.
+#   top_k        optional, default config.rag.top_k.
+#   recall_k     optional, default config.rag.max_candidates.
+#
+# Example shape, for a multi-chunk case document. Values are placeholders, not labels:
+#
+# {"query_id":"case-0001","query":"ssh brute force on the mail relay",
+#  "lang":"en","variant":"ascii","target_text":"ascii","band":"long","position":"middle",
+#  "relevant":[{"source":"cases","doc_key":"<case_id>","child_seqs":[3],
+#               "note":"the verdict line that answers this"}]}
+#
+# Minimum set, per plan section 1.3: 9 band-by-position cells with at least 5 rows each,
+# plus at least 12 full-width pairs whose query_id matches an ascii row.
+#
+# To build the corpus first, on a host with pypdf and the model cache:
+#   BLUETEAM_RAG_ENABLED=true BLUETEAM_RAG_DB=/tmp/bench/rag.db \
+#   BLUETEAM_RAG_ALLOW_DOWNLOAD=false \
+#   python3 -c "import asyncio,sys; sys.path.insert(0,'.'); \
+#   from mcp_server.tools import rag_kb; \
+#   print(asyncio.run(rag_kb.blueteam_rag_ingest.__wrapped__( \
+#   rag_kb.RagIngestInput(source='pdf', path='resource/ir_playbooks/NIST.SP.800-61r3.pdf'))))"
+#
+# Then read parent ids and child seqs back out of the store to fill `doc_key` and
+# `child_seqs` before hand-labelling position.
