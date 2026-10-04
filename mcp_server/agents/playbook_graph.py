@@ -9,13 +9,14 @@ the hunt once with the generic (c2_beacon) template when the targeted hunt
 finds no source IPs, and records every degraded step.
 """
 from __future__ import annotations
-import asyncio, json, logging, os, uuid
+import asyncio, json, logging, os
 from typing import Annotated, Optional, TypedDict
 from operator import add
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 from mcp_server.tools.threat_hunt import _THREAT_HUNT_TEMPLATES
-from mcp_server.agents.investigation_graph import run_investigation, _ensure_aiosqlite_is_alive
+from mcp_server.agents.investigation_graph import (
+    _ensure_aiosqlite_is_alive, run_investigation, thread_id_for)
 
 logger = logging.getLogger("blue_team_mcp.playbook_graph")
 
@@ -280,7 +281,8 @@ async def run_playbook(alert_text: str | None = None, rule_id: str | None = None
         "steps": [],
         "errors": [],
     }
-    config = {"configurable": {"thread_id": uuid.uuid4().hex}}
+    # A hunt is not a subject: no stable id, so each run starts a new thread.
+    config = {"configurable": {"thread_id": thread_id_for(_DB_PATH, None)}}
     if _DB_PATH:
         # context-managed AsyncSqliteSaver (see investigation_graph.py).
         _ensure_aiosqlite_is_alive()

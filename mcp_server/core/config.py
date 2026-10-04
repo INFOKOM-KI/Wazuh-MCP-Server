@@ -717,6 +717,37 @@ class RAGConfig:
 
 
 @dataclass
+class MemoryConfig:
+    """Typed investigation memory store (core/memory_store.py).
+    Off by default with no default path: the store holds subject-linked
+    investigation text, so enabling it is an explicit operator decision, and an
+    enabled store with no path is a startup error rather than a silent no-op.
+    Retention and capacity settings land with the pruning code that enforces them.
+    """
+    enabled: bool = False
+    # No default path: memory written to a guessed location is invisible state.
+    db_path: str = ""
+
+    @classmethod
+    def from_env(cls) -> "MemoryConfig":
+        return cls(
+            enabled=_bool(os.environ.get("BLUETEAM_MEM_ENABLED", "false")),
+            db_path=os.environ.get("BLUETEAM_MEM_DB", "").strip(),
+        )
+
+    def validate(self) -> None:
+        if self.enabled and not self.db_path:
+            raise ConfigurationError(
+                "BLUETEAM_MEM_ENABLED=true requires BLUETEAM_MEM_DB to be set "
+                "(an enabled memory store with no path can only return empty results)."
+            )
+        if self.db_path and not os.path.isabs(self.db_path):
+            raise ConfigurationError(
+                f"BLUETEAM_MEM_DB must be an absolute path (got {self.db_path!r})"
+            )
+
+
+@dataclass
 class SSRFConfig:
     """Outbound URL / SSRF guard configuration.
     ``allowed_internal_domains`` is a comma separated allowlist of internal
@@ -1199,6 +1230,7 @@ class Config:
     tool_gating: ToolGatingConfig = field(default_factory=ToolGatingConfig)
     rerank: RerankConfig = field(default_factory=RerankConfig)
     rag: RAGConfig = field(default_factory=RAGConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     ssrf: SSRFConfig = field(default_factory=SSRFConfig)
     yara: YaraConfig = field(default_factory=YaraConfig)
     sigma: SigmaConfig = field(default_factory=SigmaConfig)
@@ -1226,6 +1258,7 @@ class Config:
             tool_gating=ToolGatingConfig.from_env(),
             rerank=RerankConfig.from_env(),
             rag=RAGConfig.from_env(),
+            memory=MemoryConfig.from_env(),
             ssrf=SSRFConfig.from_env(),
             yara=YaraConfig.from_env(),
             sigma=SigmaConfig.from_env(),
@@ -1252,6 +1285,7 @@ class Config:
         self.tool_gating.validate()
         self.rerank.validate()
         self.rag.validate()
+        self.memory.validate()
         self.ssrf.validate()
         self.yara.validate()
         self.sigma.validate()

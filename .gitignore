@@ -88,6 +88,13 @@ rag.db-shm
 *.rag.db-wal
 *.rag.db-shm
 
+# LangGraph checkpoint store (BLUETEAM_LANGGRAPH_DB): per-subject investigation
+# state, including srcips, IOC lists and verdicts. setup.sh defaults this outside
+# the repo; a relative path would otherwise drop it in the tree.
+langgraph.db
+langgraph.db-wal
+langgraph.db-shm
+
 # Alert-cluster store (blueteam_alert_cluster). Holds srcip entity keys, their cluster
 # assignments and the fitted centroids: attacker indicators plus the shape of the
 # monitored estate. Written 0600 by cluster_store; never commit it. BLUETEAM_CLUSTER_STORE

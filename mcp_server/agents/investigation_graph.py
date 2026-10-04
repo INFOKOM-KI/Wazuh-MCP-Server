@@ -13,7 +13,7 @@ Every node degrades gracefully: steps without required credentials (indexer,
 API keys) are recorded in `errors` and the workflow continues.
 """
 from __future__ import annotations
-import asyncio, json, logging, os, uuid
+import asyncio, hashlib, json, logging, os, uuid
 from typing import Annotated, Optional, TypedDict
 from operator import add
 from langgraph.graph import StateGraph, START, END
@@ -32,6 +32,38 @@ _NODE_TIMEOUT = float(os.environ.get("BLUETEAM_LANGGRAPH_NODE_TIMEOUT", "120"))
 # run_investigation) aiosqlite connections are bound to the loop that created
 # them, so a module-level checkpointer would die on the first asyncio.run().
 _DB_PATH = os.environ.get("BLUETEAM_LANGGRAPH_DB", "").strip()
+
+# Cap on the checkpointed step/error log. A durable thread appends across runs,
+# so an uncapped log grows the checkpoint row on every repeat investigation.
+_STEP_LOG_CAP = 200
+
+# First entry of every run on a durable thread. The cap trims from the front, so
+# an index into the log cannot survive it; the last marker delimits this run.
+_RUN_MARKER = "run: start"
+
+
+def _capped_add(prev: list[str], new: list[str]) -> list[str]:
+    return (prev + new)[-_STEP_LOG_CAP:]
+
+
+def _this_run(log: list[str]) -> list[str]:
+    """Entries written since this run's marker."""
+    if _RUN_MARKER not in log:
+        return log
+    return log[len(log) - 1 - log[::-1].index(_RUN_MARKER) + 1:]
+
+
+def thread_id_for(db_path: str, subject: Optional[str]) -> str:
+    """Thread id for a run. Subject-keyed only when the SQLite checkpointer is
+    configured; without it a stable id would pin every subject in this process's
+    InMemorySaver for the process lifetime.
+    """
+    return subject if (db_path and subject) else uuid.uuid4().hex
+
+
+def subject_key(prefix: str, value: str) -> str:
+    """Case-insensitive key for a thread subject (IPs, indicators)."""
+    return f"{prefix}:{(value or '').strip().lower()}"
 
 
 def _ensure_aiosqlite_is_alive() -> None:
@@ -79,8 +111,10 @@ class InvestigationState(TypedDict, total=False):
     report_path: Optional[str]
     verdict: Optional[dict]
     # execution log
-    steps: Annotated[list[str], add]
-    errors: Annotated[list[str], add]
+    steps: Annotated[list[str], _capped_add]
+    errors: Annotated[list[str], _capped_add]
+    # One input write per invocation, no node writes: counts runs on the thread.
+    runs: Annotated[int, add]
 
 
 # Per-node timeout wrapper, catches TimeoutError and degrades gracefully.
@@ -593,7 +627,10 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
                             report_dir: str = "/tmp",
                             dependency_manifest: str | None = None,
                             check_false_positive: bool = False) -> dict:
-    """Run the investigation workflow end-to-end and return the final state summary."""
+    """Run the investigation workflow end-to-end and return the final state summary.
+    With BLUETEAM_LANGGRAPH_DB set the thread is subject-keyed, so `prior_runs` and
+    `prior_verdict` report what earlier runs of the same subject recorded.
+    """
     initial: InvestigationState = {
         "alert_text": alert_text or "",
         "srcip": srcip,
@@ -605,10 +642,35 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
         "record_verdict": record_verdict,
         "verdict_label": verdict_label,
         "report_dir": report_dir,
+        # Reset output channels: on a durable thread a step this run skips would
+        # otherwise report the previous run's value, and three routing predicates
+        # read fp_validation / correlation / extract_iocs.
+        "extract_iocs": None,
+        "fp_validation": None,
+        "enrichment": None,
+        "vulnerabilities": None,
+        "correlation": None,
+        "clusters": None,
+        "incident_label": None,
+        "attack_graph": None,
+        "killchain": None,
+        "baseline": None,
+        "report_path": None,
+        "verdict": None,
         "steps": [],
         "errors": [],
+        "runs": 1,
     }
-    config = {"configurable": {"thread_id": uuid.uuid4().hex}}
+    if srcip:
+        subject = subject_key("srcip", srcip)
+    elif alert_text:
+        # No entity to key on, so the alert body is the identity: the same alert
+        # repeats into the same thread.
+        subject = "alert:" + hashlib.sha256(alert_text.encode("utf-8")).hexdigest()[:16]
+    else:
+        subject = None
+    config = {"configurable": {"thread_id": thread_id_for(_DB_PATH, subject)}}
+    before = None
     if _DB_PATH:
         # context-managed AsyncSqliteSaver: the aiosqlite connection is
         # opened and closed on THIS running loop, avoiding the stale-loop deadlock
@@ -620,16 +682,26 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
             os.makedirs(parent, exist_ok=True)
         async with AsyncSqliteSaver.from_conn_string(_DB_PATH) as cp:
             graph = build_investigation_graph(cp)
+            # Read the subject's prior runs before this run's input write lands.
+            before = await graph.aget_state(config)
+            initial["steps"] = [_RUN_MARKER]
+            initial["errors"] = [_RUN_MARKER]
             with full_payload():
                 final = await graph.ainvoke(initial, config=config)
     else:
         with full_payload():
             final = await _investigation_graph.ainvoke(initial, config=config)
+    prior = (before.values or {}) if before is not None else {}
+    # Without a durable thread there is no marker, and the log is already this run's.
+    steps = _this_run(final.get("steps") or [])
+    errors = _this_run(final.get("errors") or [])
     return {
-        "status": "degraded" if final.get("errors") else "complete",
+        "status": "degraded" if errors else "complete",
         "srcip": srcip,
-        "steps": final.get("steps", []),
-        "errors": final.get("errors", []),
+        "prior_runs": int(prior.get("runs") or 0),
+        "prior_verdict": prior.get("verdict"),
+        "steps": steps,
+        "errors": errors,
         "extract_iocs": (final.get("extract_iocs") or {}).get("ips", [])[:10],
         "fp_validation": final.get("fp_validation"),
         "enrichment": final.get("enrichment"),

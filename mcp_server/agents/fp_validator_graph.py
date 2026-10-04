@@ -34,9 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import uuid
 from typing import Annotated, Optional, TypedDict
-from operator import add
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 from mcp_server.core.attacker_registry import ANALYST_SOURCES, attacker_ioc_source
@@ -51,8 +49,13 @@ from mcp_server.core import rag_store
 from mcp_server.agents.investigation_graph import (
     _DB_PATH,
     _NODE_TIMEOUT,
+    _RUN_MARKER,
+    _capped_add,
     _ensure_aiosqlite_is_alive,
+    _this_run,
     _with_timeout,
+    subject_key,
+    thread_id_for,
 )
 
 logger = logging.getLogger("blue_team_mcp.fp_validator_graph")
@@ -82,8 +85,8 @@ class FPValidatorState(TypedDict, total=False):
     degraded: bool
     reranked: bool
     # execution log
-    steps: Annotated[list[str], add]
-    errors: Annotated[list[str], add]
+    steps: Annotated[list[str], _capped_add]
+    errors: Annotated[list[str], _capped_add]
 
 
 def _empty_evidence(min_matches: int, floor: Optional[float]) -> dict:
@@ -260,7 +263,7 @@ def decide_degraded(state: FPValidatorState) -> dict:
     Returning ``insufficient_evidence`` here would read as "we checked and found
     nothing", which is a different and much more confident claim.
     """
-    errors = state.get("errors") or []
+    errors = _this_run(state.get("errors") or [])
     return {
         "verdict": "validation_incomplete",
         "rationale": (
@@ -318,11 +321,21 @@ async def run_fp_validation(indicator: str, description: str = "",
         "min_rerank_score": min_rerank_score,
         "top_k": top_k,
         "rerank": rerank,
+        # Reset output channels: the two routing predicates read `degraded` and
+        # `authority_signal`, and only some of the four nodes write them.
         "hits": [],
+        "evidence": None,
+        "authority_signal": None,
+        "corpus_status": None,
+        "degraded": None,
+        "verdict": None,
+        "rationale": None,
+        "reranked": None,
         "steps": [],
         "errors": [],
     }
-    run_config = {"configurable": {"thread_id": uuid.uuid4().hex}}
+    subject = subject_key("indicator", indicator) if indicator else None
+    run_config = {"configurable": {"thread_id": thread_id_for(_DB_PATH, subject)}}
     if _DB_PATH:
         _ensure_aiosqlite_is_alive()
         from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -330,7 +343,10 @@ async def run_fp_validation(indicator: str, description: str = "",
         if parent:
             os.makedirs(parent, exist_ok=True)
         async with AsyncSqliteSaver.from_conn_string(_DB_PATH) as cp:
-            final = await build_fp_validator_graph(cp).ainvoke(initial, config=run_config)
+            graph = build_fp_validator_graph(cp)
+            initial["steps"] = [_RUN_MARKER]
+            initial["errors"] = [_RUN_MARKER]
+            final = await graph.ainvoke(initial, config=run_config)
     else:
         final = await _fp_validator_graph.ainvoke(initial, config=run_config)
 
@@ -340,7 +356,7 @@ async def run_fp_validation(indicator: str, description: str = "",
         "rationale": final.get("rationale", ""),
         "evidence": final.get("evidence") or _empty_evidence(min_matches, min_rerank_score),
         "matches": final.get("hits") or [],
-        "steps": final.get("steps", []),
-        "errors": final.get("errors", []),
+        "steps": _this_run(final.get("steps") or []),
+        "errors": _this_run(final.get("errors") or []),
         "reranked": bool(final.get("reranked")),
     }

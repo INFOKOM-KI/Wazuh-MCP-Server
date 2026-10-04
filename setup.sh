@@ -763,8 +763,8 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_CAMPAIGN_SNAPSHOTS="/var/log/blue-team-mcp/campaign_snapshots.jsonl"  # attack_graph diffs between runs
 # export BLUETEAM_AUTO_PROMOTE_IPS="false"            # true = auto-register high-confidence cluster IPs; off by default (human review)
 
-# LangGraph workflow persistence
-# export BLUETEAM_LANGGRAPH_DB="/var/log/blue-team-mcp/langgraph.db"  # SQLite state; unset = InMemorySaver (lost on restart)
+# LangGraph workflow persistence (opt-in)
+# export BLUETEAM_LANGGRAPH_DB="/var/log/blue-team-mcp/langgraph.db"  # unset (default) = per-run threads held in memory; set = durable subject-keyed threads
 # export BLUETEAM_LANGGRAPH_NODE_TIMEOUT="120"  # seconds — per-node timeout
 
 # Beacon detection exclusions (comma-separated IPs — known health-check/monitoring infra)
@@ -1072,7 +1072,8 @@ export BLUETEAM_FALSE_POSITIVE_MAX="${BLUETEAM_FALSE_POSITIVE_MAX:-5000}"
 export BLUETEAM_IOC_STORE="${BLUETEAM_IOC_STORE:-/var/log/blue-team-mcp/ioc_store.jsonl}"
 export BLUETEAM_IOC_STORE_MAX="${BLUETEAM_IOC_STORE_MAX:-50000}"
 export BLUETEAM_IOC_STORE_TTL="${BLUETEAM_IOC_STORE_TTL:-7776000}"
-export BLUETEAM_LANGGRAPH_DB="${BLUETEAM_LANGGRAPH_DB:-/var/log/blue-team-mcp/langgraph.db}"
+# Deliberately not defaulted: persistent subject-scoped checkpoint continuity is
+# opt-in, so an existing install stays stateless until an admin sets the path above.
 export BLUETEAM_LANGGRAPH_NODE_TIMEOUT="${BLUETEAM_LANGGRAPH_NODE_TIMEOUT:-120}"
 export BLUETEAM_FORENSIC_TOKEN="${BLUETEAM_FORENSIC_TOKEN:-}"
 export BLUETEAM_EXPORT_RETENTION_DAYS="${BLUETEAM_EXPORT_RETENTION_DAYS:-0}"
