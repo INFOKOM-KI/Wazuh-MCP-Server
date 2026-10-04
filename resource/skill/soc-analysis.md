@@ -310,6 +310,7 @@ Any other verdict is recorded in `fp_validation` and the investigation continues
 | Is this alert noise? | `blueteam_rag_fp_validate(srcip="8.8.8.8", description="ssh auth failure")` |
 | Refresh the index | `blueteam_rag_ingest(source="cases")` |
 | Ingest a full advisory PDF | `blueteam_rag_ingest(source="pdf", path="/opt/advisories/cisa-aa24.pdf", label="cisa_aa24")` |
+| Indicator pasted with full-width characters | `blueteam_rag_query(query=...)` with `BLUETEAM_RAG_QUERY_NORMALIZE=true`; the response echoes `query_normalized` when it fired |
 
 Read the `verdict` before acting on it. `suppressed_exact`, `conflicting_state` and
 `likely_true_positive` are authoritative (registry lookups, no model). `likely_false_positive` is
@@ -333,6 +334,20 @@ indicator matters more than paraphrase, since the lexical leg scores bigrams and
 above surrounding prose. No stage applies a score threshold: a top-ranked hit means "ranked above
 the alternatives". Read `rerank_engine` to see which leg produced the order — `hybrid` means the
 lexical blend ran, `vector` means it did not.
+
+Three opt-in flags change this ranking, all off by default. `BLUETEAM_RERANK_NORMALIZE` rescales the
+cross-encoder output onto [0,1] and moves the lexical blend after the reranker, which is what makes
+`vector_weight` change the final order; with it off the blend runs first and the raw logit overrides
+it. It applies to the fusion path only. `min_rerank_score` on `blueteam_rag_fp_validate` stays a
+raw-logit floor at either setting, and `blueteam_rag_query` takes no score floor at any setting.
+
+`BLUETEAM_RAG_QUERY_NORMALIZE` folds full-width characters to ASCII before retrieval so an indicator
+pasted from a document matches, and leaves an ASCII query untouched. `BLUETEAM_RAG_PARENT_CHILD` stores
+a parent row for a document spanning several chunks and returns it in place of the chunks that matched,
+adding `child_count` and `matched_seq` to the hit. The cross-encoder then scores only the first
+`BLUETEAM_RAG_CHUNK_CHARS` runes of that parent, so a match whose evidence sits later in the document
+is ranked on the document head. Read `blend_stage` to see which order ran, and `query_normalized` to
+see whether the query was rewritten.
 
 ### Email / breach / domain forensics
 | Want | Tool |

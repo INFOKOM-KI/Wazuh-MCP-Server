@@ -3,8 +3,12 @@
 © NAuliajati - TangerangKota-CSIRT
 Local case knowledge retrieval store: ONNX embeddings (fastembed) + SQLite.
 Stage 1 of the retrieval pipeline. Holds analyst-authored cases, confirmed
-false positives and converted IR playbooks as embedded chunks, and returns the
-high-recall candidate set that ``core/rerank.py`` then re-scores.
+false positives and converted IR playbooks, and returns the high-recall
+candidate set that ``core/rerank.py`` then re-scores.
+A row is one of two kinds. A chunk is matchable. A parent, written only when
+``config.rag.parent_child`` is set and a document spans more than one chunk,
+holds the whole document text, is excluded from the matchable matrix, and is
+returned in place of the children that matched it.
 Design constraints (each one is a deliberate choice, not a default):
 - **No torch.** Embeddings come from fastembed's ONNX runtime, the same library
   ``rerank.py`` uses. ``sentence-transformers`` was rejected because it pulls
@@ -39,6 +43,7 @@ import time
 from typing import Optional
 from mcp_server.core import term_sim
 from mcp_server.core.config import config
+from mcp_server.core.exceptions import MigrationError
 from mcp_server.core.rerank import _sha256_file
 
 logger = logging.getLogger("blue_team_mcp.rag_store")
@@ -53,21 +58,33 @@ CREATE TABLE IF NOT EXISTS chunks (
     model      TEXT NOT NULL,
     dim        INTEGER NOT NULL,
     vec        BLOB NOT NULL,
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    parent_id  TEXT NOT NULL DEFAULT '',
+    is_parent  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_model  ON chunks(model);
 CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source);
 """
+
+# Created after the column migrations: on a store that predates parent_id, an index on
+# that column fails until the ALTER has run.
+_PARENT_INDEX = "CREATE INDEX IF NOT EXISTS idx_chunks_parent ON chunks(parent_id)"
+
+
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS says nothing about
+# a store that already has the table, so each one is applied by _ensure_schema.
+_COLUMN_MIGRATIONS = (
+    ("parent_id", "TEXT NOT NULL DEFAULT ''"),
+    ("is_parent", "INTEGER NOT NULL DEFAULT 0"),
+)
 
 # Module level singleton, mirrors rerank.py's encoder pattern.
 _embedder: Optional[object] = None
 _reason: str = "not loaded"
 _load_lock = threading.Lock()
 
-# Matrix cache: streaming the whole table per query is O(n) disk reads, and a
-# query is the hot path. Keyed on (path, mtime, count, model, sources) so an
-# ingest in this process OR another one invalidates it. Whole corpus
-# in-memory cache, swap to an ANN index only past ~500k chunks.
+# Matrix cache: a query would otherwise stream the whole table. Keyed on
+# (path, mtime, model, sources), so any ingest invalidates it. ANN index past ~500k rows.
 _cache_lock = threading.Lock()
 _cache_key: Optional[tuple] = None
 _cache_rows: Optional[list[dict]] = None
@@ -195,7 +212,32 @@ def _connect() -> sqlite3.Connection:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Create the table when absent, then add any column the store predates.
+    Idempotent: the PRAGMA read decides. A failure raises rather than continuing.
+    """
     conn.executescript(_SCHEMA)
+    present = {row[1] for row in conn.execute("PRAGMA table_info(chunks)")}
+    for column, decl in _COLUMN_MIGRATIONS:
+        if column in present:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE chunks ADD COLUMN {column} {decl}")
+        except sqlite3.Error as exc:
+            raise MigrationError(
+                f"cannot add column {column!r} to {_db_path()}: {exc}. The store is "
+                "older than this build and the migration failed, so every query "
+                "would fail on the missing column. Restore write access to the "
+                "file, or point BLUETEAM_RAG_DB at a fresh path and re-ingest."
+            ) from exc
+    try:
+        conn.execute(_PARENT_INDEX)
+    except sqlite3.Error as exc:
+        raise MigrationError(
+            f"cannot create the parent index on {_db_path()}: {exc}. Restore write "
+            "access to the file, or point BLUETEAM_RAG_DB at a fresh path and "
+            "re-ingest."
+        ) from exc
+    conn.commit()
 
 
 def _chunk_id(source: str, seq: int, text: str) -> str:
@@ -203,30 +245,50 @@ def _chunk_id(source: str, seq: int, text: str) -> str:
     return hashlib.sha256(f"{source}\x00{seq}\x00{text}".encode("utf-8")).hexdigest()[:32]
 
 
+def _parent_id(source: str, doc_key: str) -> str:
+    """Parent row id derived from the document key, never from seq.
+    seq shifts when a document is added or removed, and the literal "parent" cannot
+    collide with the integer a chunk id puts in the same slot.
+    """
+    return hashlib.sha256(
+        f"{source}\x00parent\x00{doc_key}".encode("utf-8")).hexdigest()[:32]
+
+
 def _write_rows(rows: list[tuple]) -> tuple[int, int]:
     """Persist embedded rows. Returns ``(inserted, rejected)``.
-    ``rejected`` counts rows dropped by the corpus cap surfaced rather than
-    swallowed, because a silently truncated corpus looks like a retrieval bug.
+    The cap truncates whole document groups, so no parent is persisted without its
+    children and no child without its parent. ``rejected`` counts what it dropped.
     """
     cap = config.rag.max_chunks
     path = _db_path()
+    groups: list[list[tuple]] = []
+    for row in rows:
+        # A group starts at every row with no parent_id.
+        if not groups or row[9] == "":
+            groups.append([row])
+        else:
+            groups[-1].append(row)
     with contextlib.closing(_connect()) as conn:
         _ensure_schema(conn)
         used = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         room = max(0, cap - used)
-        kept = rows[:room]
+        kept: list[tuple] = []
+        for group in groups:
+            if len(kept) + len(group) > room:
+                break
+            kept.extend(group)
         if kept:
             conn.executemany(
                 "INSERT OR REPLACE INTO chunks "
-                "(id, source, seq, text, meta, model, dim, vec, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, source, seq, text, meta, model, dim, vec, created_at, parent_id, is_parent) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 kept,
             )
             conn.commit()
     # Owner only: the corpus holds attacker IOC and internal hostnames.
     with contextlib.suppress(OSError):
         os.chmod(path, 0o600)
-    return len(kept), max(0, len(rows) - room)
+    return len(kept), max(0, len(rows) - len(kept))
 
 
 def _build_stats(rows: list[dict]) -> tuple[dict[str, int], dict[str, int]]:
@@ -259,12 +321,15 @@ def _load_matrix(model: str, sources: Optional[list[str]]):
         if _cache_key == key and _cache_matrix is not None:
             return _cache_matrix, _cache_rows
 
-        sql = "SELECT id, source, seq, text, meta, dim, vec FROM chunks WHERE model = ?"
+        sql = ("SELECT id, source, seq, text, meta, dim, vec, parent_id FROM chunks "
+               "WHERE model = ? AND is_parent = 0")
         args: list = [model]
         if sources:
             sql += f" AND source IN ({','.join('?' * len(sources))})"
             args.extend(sources)
         with contextlib.closing(_connect()) as conn:
+            # A read migrates too: this SELECT depends on parent_id.
+            _ensure_schema(conn)
             fetched = conn.execute(sql, args).fetchall()
         if not fetched:
             return None, []
@@ -279,6 +344,7 @@ def _load_matrix(model: str, sources: Optional[list[str]]):
         rows = [{
             "id": row[0], "source": row[1], "seq": row[2], "text": row[3],
             "meta": json.loads(row[4] or "{}"), "dim": row[5],
+            "parent_id": row[7] or "",
         } for row in fetched]
         _cache_key, _cache_rows, _cache_matrix = key, rows, matrix
         _cache_stats = _build_stats(rows)
@@ -313,13 +379,19 @@ def _search_sync(query_vec_bytes: bytes, model: str, k: int,
 
 async def add_documents(docs: list[dict]) -> tuple[int, Optional[str]]:
     """Embed and persist ``docs``. Each doc: ``{source, text, seq?, meta?}``.
-    Returns ``(inserted, status)``. Idempotent: the chunk id is a content hash,
-    so ingesting the same corpus twice does not duplicate rows.
+    Under ``config.rag.parent_child`` a doc may also carry ``doc_key`` and
+    ``is_parent``; with the flag off the parent rows are dropped before the embed
+    batch, so every row is a plain matchable chunk. Returns ``(inserted, status)``.
     """
     if not docs:
         return 0, "empty"
     if not config.rag.enabled or not _db_path():
         return 0, "disabled"
+    grouped = config.rag.parent_child
+    if not grouped:
+        docs = [d for d in docs if not d.get("is_parent")]
+        if not docs:
+            return 0, "empty"
     matrix, status = await embed_texts([d["text"] for d in docs])
     if matrix is None:
         return 0, status
@@ -329,10 +401,20 @@ async def add_documents(docs: list[dict]) -> tuple[int, Optional[str]]:
         source = str(doc.get("source", ""))
         seq = int(doc.get("seq", i))
         text = doc["text"]
+        # A parent with no doc_key has no stable id and would collide with any other
+        # parent that is also missing one, so it is written as an ordinary chunk row instead.
+        doc_key = str(doc.get("doc_key") or "") if grouped else ""
+        is_parent = 1 if (grouped and doc.get("is_parent") and doc_key) else 0
+        if is_parent:
+            row_id, parent_id = _parent_id(source, doc_key), ""
+        else:
+            row_id = _chunk_id(source, seq, text)
+            parent_id = _parent_id(source, doc_key) if doc_key else ""
         rows.append((
-            _chunk_id(source, seq, text), source, seq, text,
+            row_id, source, seq, text,
             json.dumps(doc.get("meta") or {}, ensure_ascii=False),
             config.rag.model, int(matrix.shape[1]), matrix[i].tobytes(), now,
+            parent_id, is_parent,
         ))
     inserted, dropped = await asyncio.to_thread(_write_rows, rows)
     if dropped:
@@ -343,6 +425,44 @@ async def add_documents(docs: list[dict]) -> tuple[int, Optional[str]]:
     return inserted, None
 
 
+def _group_sync(hits: list[dict]) -> list[dict]:
+    """Fold matched children into their parent document.
+    A group scores as its best child, so one strongly matching chunk is not diluted by
+    its siblings. A hit with no parent_id is already a whole document.
+    """
+    groups: dict[str, list[dict]] = {}
+    out: list[dict] = []
+    for hit in hits:
+        parent_id = hit.get("parent_id") or ""
+        if parent_id:
+            groups.setdefault(parent_id, []).append(hit)
+        else:
+            out.append(hit)
+    if not groups:
+        return out
+    with contextlib.closing(_connect()) as conn:
+        for parent_id, children in groups.items():
+            row = conn.execute(
+                "SELECT id, source, seq, text, meta FROM chunks "
+                "WHERE id = ? AND is_parent = 1",
+                (parent_id,),
+            ).fetchone()
+            if row is None:
+                # Defensive: an incomplete group still holds the child that matched.
+                out.extend(children)
+                continue
+            best = max(children, key=lambda c: c.get("vector_score") or 0.0)
+            out.append({
+                "id": row[0], "source": row[1], "seq": row[2], "text": row[3],
+                "meta": json.loads(row[4] or "{}"),
+                "vector_score": best.get("vector_score"),
+                "child_count": len(children),
+                "matched_seq": sorted(c.get("seq") for c in children),
+            })
+    out.sort(key=lambda h: h.get("vector_score") or 0.0, reverse=True)
+    return out
+
+
 async def query(text: str, top_k: Optional[int] = None,
                 sources: Optional[list[str]] = None) -> tuple[list[dict], Optional[str]]:
     """Stage 1 retrieval: high-recall candidate set for the reranker.
@@ -351,6 +471,9 @@ async def query(text: str, top_k: Optional[int] = None,
     / ``"no_corpus"``. Callers pass hits to ``core/rerank.py`` and truncate;
     this function applies NO score threshold, because raw cosine values are not
     calibrated across corpora.
+    With ``config.rag.parent_child`` matched children fold into their parent, so a hit
+    is a document rather than a chunk. Folding cannot drop a parent whose child was
+    recalled, but it can return fewer than ``k`` hits, which triggers one wider pass.
     """
     if not (text or "").strip():
         return [], "empty"
@@ -358,8 +481,16 @@ async def query(text: str, top_k: Optional[int] = None,
     matrix, status = await embed_texts([text])
     if matrix is None:
         return [], status
-    hits = await asyncio.to_thread(
-        _search_sync, matrix[0].tobytes(), config.rag.model, k, sources)
+    vec = matrix[0].tobytes()
+    hits = await asyncio.to_thread(_search_sync, vec, config.rag.model, k, sources)
+    if hits and config.rag.parent_child:
+        grouped = await asyncio.to_thread(_group_sync, hits)
+        ceiling = config.rag.max_candidates
+        if len(grouped) < k < ceiling:
+            wider = await asyncio.to_thread(
+                _search_sync, vec, config.rag.model, ceiling, sources)
+            grouped = await asyncio.to_thread(_group_sync, wider)
+        return (grouped, None) if grouped else ([], "no_corpus")
     return (hits, None) if hits else ([], "no_corpus")
 
 
@@ -399,15 +530,26 @@ def _delete_source_sync(source: str) -> int:
 
 
 def stats() -> dict:
-    """Operator-facing store status. No model load, safe to call anywhere."""
+    """Operator-facing store status. No model load, safe to call anywhere.
+    ``chunks_by_model`` counts every stored row; ``matchable_by_model`` counts the rows a
+    query can match, which excludes parent rows.
+    """
     path = _db_path()
     counts: dict = {}
+    matchable: dict = {}
+    parents: dict = {}
     sources: list = []
     if path and os.path.exists(path):
         with contextlib.closing(_connect()) as conn:
             _ensure_schema(conn)
             counts = {row[0]: row[1] for row in
                       conn.execute("SELECT model, COUNT(*) FROM chunks GROUP BY model")}
+            matchable = {row[0]: row[1] for row in
+                         conn.execute("SELECT model, COUNT(*) FROM chunks "
+                                      "WHERE is_parent = 0 GROUP BY model")}
+            parents = {row[0]: row[1] for row in
+                       conn.execute("SELECT model, COUNT(*) FROM chunks "
+                                    "WHERE is_parent = 1 GROUP BY model")}
             sources = [row[0] for row in
                        conn.execute("SELECT DISTINCT source FROM chunks ORDER BY source")]
     return {
@@ -418,6 +560,9 @@ def stats() -> dict:
         "embedder": _reason,
         "download_allowed": config.rag.allow_download,
         "chunks_by_model": counts,
+        "matchable_by_model": matchable,
+        "parents_by_model": parents,
+        "parent_child": config.rag.parent_child,
         "sources": sources,
         "max_chunks": config.rag.max_chunks,
         "max_candidates": config.rag.max_candidates,

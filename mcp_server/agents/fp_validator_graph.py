@@ -42,6 +42,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from mcp_server.core.attacker_registry import ANALYST_SOURCES, attacker_ioc_source
 from mcp_server.core.config import config
 from mcp_server.core.false_positive_kb import is_false_positive
+from mcp_server.core.query_norm import query_for_retrieval
 from mcp_server.core.rerank import rerank_hits
 from mcp_server.core import rag_store
 # Shared with the investigation graph rather than duplicated: the aiosqlite
@@ -149,7 +150,7 @@ async def assemble_evidence(state: FPValidatorState) -> dict:
                 "errors": ["evidence: RAG store not configured"],
                 "steps": ["evidence: corpus skipped, store disabled"]}
 
-    text = state.get("description") or indicator
+    text = query_for_retrieval(state.get("description") or indicator)
     top_k = state.get("top_k", 10)
     ok, result = await _timed(rag_store.query(text, top_k=top_k), "fp_retrieve")
     if not ok:

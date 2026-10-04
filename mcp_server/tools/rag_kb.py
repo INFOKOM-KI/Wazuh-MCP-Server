@@ -39,6 +39,7 @@ from mcp_server.core.case_store import list_cases
 from mcp_server.core.config import config
 from mcp_server.core.exceptions import BlueTeamMCPError
 from mcp_server.core.false_positive_kb import false_positive_entries
+from mcp_server.core.query_norm import query_for_retrieval
 from mcp_server.core.rerank import rerank_hits, status_dict
 from mcp_server.core.tool_decorator import blueteam_tool
 from mcp_server.agents.fp_validator_graph import run_fp_validation
@@ -86,14 +87,34 @@ def _case_text(case: dict) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def _document_docs(source: str, doc_key: str, text: str, size: int, overlap: int,
+                   meta: dict, seq: int) -> tuple[list[dict], int]:
+    """Chunk one document into its rows, returning ``(docs, next_seq)``.
+    A multi-chunk document also gets a parent row carrying the full text and sharing
+    its first child's seq, so every child keeps the id it had before parents existed.
+    """
+    chunks = _chunk_text(text, size, overlap)
+    if len(chunks) < 2:
+        # A single-chunk document is already the whole document, like every older row.
+        return ([{"source": source, "seq": seq, "text": chunk, "meta": meta}
+                 for chunk in chunks], seq + len(chunks))
+    docs = [{"source": source, "seq": seq, "text": text, "meta": meta,
+             "doc_key": doc_key, "is_parent": True}]
+    for chunk in chunks:
+        docs.append({"source": source, "seq": seq, "text": chunk, "meta": meta,
+                     "doc_key": doc_key})
+        seq += 1
+    return docs, seq
+
+
 def _docs_from_cases(size: int, overlap: int) -> list[dict]:
     docs: list[dict] = []
     seq = 0
     for case in list_cases():
         meta = {"case_id": case.get("case_id"), "created_at": case.get("created_at")}
-        for chunk in _chunk_text(_case_text(case), size, overlap):
-            docs.append({"source": "cases", "seq": seq, "text": chunk, "meta": meta})
-            seq += 1
+        added, seq = _document_docs("cases", str(case.get("case_id") or ""),
+                                    _case_text(case), size, overlap, meta, seq)
+        docs.extend(added)
     return docs
 
 
@@ -104,10 +125,9 @@ def _docs_from_false_positives(size: int, overlap: int) -> list[dict]:
         body = (f"Confirmed false positive {entry['ioc']} "
                 f"(marked by {entry['source']}): {entry['reason']}")
         meta = {"ioc": entry["ioc"], "ts": entry["ts"]}
-        for chunk in _chunk_text(body, size, overlap):
-            docs.append({"source": "false_positives", "seq": seq, "text": chunk,
-                         "meta": meta})
-            seq += 1
+        added, seq = _document_docs("false_positives", str(entry["ioc"]),
+                                    body, size, overlap, meta, seq)
+        docs.extend(added)
     return docs
 
 
@@ -132,9 +152,11 @@ async def _docs_from_pdf(path: str, corpus_label: str, size: int,
     seq = 0
     for page in payload["pages"]:
         meta = {"page": page["page"], "file": payload["file"]}
-        for chunk in _chunk_text(chunker.normalize(page["text"]), size, overlap):
-            docs.append({"source": corpus_label, "seq": seq, "text": chunk, "meta": meta})
-            seq += 1
+        body = chunker.normalize(page["text"])
+        added, seq = _document_docs(corpus_label,
+                                    f"{payload['file']}#p{page['page']}",
+                                    body, size, overlap, meta, seq)
+        docs.extend(added)
     info = {
         "file": payload["file"],
         "page_count": payload["page_count"],
@@ -236,16 +258,14 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
     elif params.source == "pdf":
         docs, pdf_info = await _docs_from_pdf(params.path, corpus_label, size, overlap)
     else:
-        # seq is unique across the whole label, not per document: the chunk id is
-        # (source, seq, text), so two identical documents sharing seq=0 would
-        # collapse into a single chunk on upsert.
+        # seq is unique per label and the chunk id is (source, seq, text), so identical
+        # documents sharing seq=0 collapse on upsert. A parent reuses its first child's.
         docs = []
         seq = 0
         for doc_index, raw in enumerate(params.texts):
-            for chunk in _chunk_text(raw, size, overlap):
-                docs.append({"source": corpus_label, "seq": seq, "text": chunk,
-                             "meta": {"doc_index": doc_index}})
-                seq += 1
+            added, seq = _document_docs(corpus_label, f"text{doc_index}", raw, size,
+                                        overlap, {"doc_index": doc_index}, seq)
+            docs.extend(added)
 
     # Derived labels rebuild; a content-hash index cannot notice edits on its own.
     # source="text" is NOT derived, the DB holds the only copy, so it upserts and
@@ -256,7 +276,11 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
         deleted = await rag_store.delete_source(corpus_label)
 
     inserted, status = await rag_store.add_documents(docs)
-    _audit_log("blueteam_rag_ingest", {"source": corpus_label, "documents": len(docs),
+    parent_docs = sum(1 for d in docs if d.get("is_parent"))
+    parents = parent_docs if config.rag.parent_child else 0
+    chunks = len(docs) - parent_docs
+    _audit_log("blueteam_rag_ingest", {"source": corpus_label, "documents": chunks,
+                                       "parents": parents,
                                        "chunks_inserted": inserted, "chunks_deleted": deleted})
     store = rag_store.stats()
 
@@ -270,7 +294,7 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
         )
 
     if params.response_format == "json":
-        result = {"source": corpus_label, "documents": len(docs),
+        result = {"source": corpus_label, "chunks": chunks, "parents": parents,
                   "chunks_inserted": inserted, "chunks_deleted": deleted,
                   "status": status, "store": store}
         if pdf_info:
@@ -278,7 +302,8 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     lines = [f"# 📚 RAG Ingest - `{corpus_label}`", "",
-             f"**Chunks**: {len(docs)} | **Stored**: {inserted} | "
+             f"**Chunks**: {chunks} | **Parents**: {parents} | "
+             f"**Stored**: {inserted} | "
              f"**Replaced**: {deleted}",
              f"**Model**: `{store['model']}` | **Corpus size**: "
              f"{sum(store['chunks_by_model'].values())} chunks", ""]
@@ -318,10 +343,12 @@ class RagQueryInput(BaseModel):
                     "order when BLUETEAM_RERANK_ENABLED=false or the model is "
                     "unavailable, in which case rerank_status says why.")
     vector_weight: Optional[float] = Field(default=None, ge=0.0, le=1.0,
-        description="Blend the term-weighted lexical score with the vector score before "
-                    "rerank: sim = vector_weight*vector + (1-vector_weight)*term. "
-                    "1.0 or None keeps vector-only order. Default comes from "
-                    "BLUETEAM_RAG_VECTOR_WEIGHT (shipped at 1.0, so the blend is opt-in).")
+        description="Blend the term-weighted lexical score with the dense score: "
+                    "sim = vector_weight*dense + (1-vector_weight)*term. 1.0 or None "
+                    "keeps dense-only order. Default comes from "
+                    "BLUETEAM_RAG_VECTOR_WEIGHT (shipped at 1.0, so the blend is opt-in). "
+                    "With BLUETEAM_RERANK_NORMALIZE=true it applies to the normalized "
+                    "rerank score.")
     response_format: Literal["markdown", "json"] = Field(default="markdown")
 
 
@@ -334,10 +361,13 @@ class RagQueryInput(BaseModel):
 async def blueteam_rag_query(params: RagQueryInput) -> str:
     """Retrieve analyst knowledge: prior cases, confirmed false positives, IR playbooks.
     Three optional stages. Vector recall pulls ``recall_k`` candidates (default 100)
-    from the local SQLite store; the term-weighted lexical leg re-scores them and
-    blends when ``vector_weight`` is below 1.0; the cross-encoder rerank re-scores
-    what is left and keeps ``top_k``. Both re-scoring stages are rank-based and apply
-    NO score threshold, so a hit always carries its raw scores rather than a pass/fail.
+    from the local SQLite store; the term-weighted lexical leg re-scores them when
+    ``vector_weight`` is below 1.0; the cross-encoder rerank re-scores what is left and
+    keeps ``top_k``. Both re-scoring stages are rank-based and apply NO score threshold,
+    so a hit always carries its raw scores rather than a pass/fail.
+    Where the lexical blend lands depends on ``BLUETEAM_RERANK_NORMALIZE``: off (default)
+    it runs before rerank and the logits override it, on it runs after, against the
+    normalized rerank score. The response names which, in ``blend_stage``.
     Use this when the question is "have we seen this before / is this noise",
     not for searching live alerts (use ``blueteam_semantic_search`` for that) or
     live rule text (``blueteam_wazuh_get_rules``).
@@ -348,7 +378,8 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
         params.recall_k: Stage-1 candidate count.
         params.sources: Optional corpus label filter.
         params.rerank: Enable the cross-encoder second stage.
-        params.vector_weight: Below 1.0, blend in the lexical leg before rerank.
+        params.vector_weight: Below 1.0, blend in the lexical leg (see the class field for
+            where the blend lands relative to rerank).
         params.response_format: 'markdown' (default) or 'json'.
 
     Returns:
@@ -374,8 +405,9 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
     """
     _require_store()
     recall = min(params.recall_k, config.rag.max_candidates)
+    query_text = query_for_retrieval(params.query)
 
-    hits, status = await rag_store.query(params.query, top_k=recall, sources=params.sources)
+    hits, status = await rag_store.query(query_text, top_k=recall, sources=params.sources)
     # A dead embedder cannot answer a vector query at all. Empty results would read
     # as "no similar cases exist", which is the opposite of the truth.
     if status and status.startswith("unavailable:"):
@@ -396,47 +428,76 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
 
     reranked = False
     rerank_status: Optional[str] = None
-    blended = False
+    blend_stage: Optional[str] = None
     vector_weight = (params.vector_weight if params.vector_weight is not None
                      else config.rag.vector_weight)
 
-    if vector_weight < 1.0 and hits:
+    # Normalization is what makes the blend survive: raw logits outrank any
+    # cosine-scale term score they are added to. Requires the reranker, since
+    # without it there is no normalized score to fuse.
+    post_rerank_fusion = params.rerank and config.rerank.normalize and vector_weight < 1.0
+
+    # Pre-rerank blend, kept as the default path. It is the whole ranking when the
+    # reranker is off, and is overridden by the logits when it is on.
+    if vector_weight < 1.0 and hits and not post_rerank_fusion:
         tf, df = await rag_store.token_stats(params.sources)
-        term_scores = term_sim.score(params.query, [h["text"] for h in hits], tf=tf, df=df)
+        term_scores = term_sim.score(query_text, [h["text"] for h in hits], tf=tf, df=df)
         fused = term_sim.hybrid([float(h.get("vector_score", 0.0)) for h in hits],
                                 term_scores, vector_weight)
         for hit, term_score, fused_score in zip(hits, term_scores, fused):
             hit["term_score"] = round(term_score, 6)
             hit["hybrid_score"] = round(fused_score, 6)
         hits = [hit for _, hit in sorted(zip(fused, hits), key=lambda pair: -pair[0])]
-        blended = True
+        blend_stage = "pre-rerank"
 
     if params.rerank and hits:
+        term_scores = None
+        if post_rerank_fusion:
+            tf, df = await rag_store.token_stats(params.sources)
+            term_scores = term_sim.score(query_text, [h["text"] for h in hits], tf=tf, df=df)
         hits, reranked, rerank_status = await rerank_hits(
-            params.query, hits, params.top_k,
-            score_field="hybrid_score" if blended else "vector_score")
+            query_text, hits, params.top_k,
+            score_field="hybrid_score" if blend_stage else "vector_score",
+            term_scores=term_scores, vector_weight=vector_weight)
+        if reranked and term_scores is not None:
+            blend_stage = "post-rerank"
     else:
         hits = hits[:params.top_k]
 
     store = rag_store.stats()
     if params.response_format == "json":
-        return json.dumps({
+        payload = {
             "query": params.query, "matches": hits,
             **status_dict(rerank_status if params.rerank else "not_requested",
-                          fallback_engine="hybrid" if blended else "vector"),
-            "vector_weight": vector_weight, "recall_k": recall, "returned": len(hits),
+                          fallback_engine="hybrid" if blend_stage == "pre-rerank" else "vector"),
+            "vector_weight": vector_weight, "blend_stage": blend_stage,
+            "rerank_normalized": blend_stage == "post-rerank",
+            "recall_k": recall, "returned": len(hits),
             "store": store,
-        }, indent=2, ensure_ascii=False)
+        }
+        if query_text != params.query:
+            payload["query_normalized"] = query_text
+        return json.dumps(payload, indent=2, ensure_ascii=False)
 
-    score_col = "Rerank" if reranked else ("Hybrid" if blended else "Vector")
-    lines = [f"# 🔎 RAG Query - `{params.query}`", "",
-             f"**Candidates**: {recall} | **Returned**: {len(hits)} | "
-             f"**Corpus**: {sum(store['chunks_by_model'].values())} chunks "
-             f"(`{store['model']}`)", "",
-             f"| # | {score_col} | Source | Meta | Text |",
-             "|---|--------|--------|------|------|"]
+    score_col = "Hybrid" if blend_stage else ("Rerank" if reranked else "Vector")
+    matchable = sum(store["matchable_by_model"].values())
+    parents = sum(store["parents_by_model"].values())
+    corpus = f"{matchable} matchable"
+    if parents:
+        corpus += f" + {parents} parent ({matchable + parents} stored)"
+    lines = [f"# 🔎 RAG Query - `{params.query}`", ""]
+    if query_text != params.query:
+        lines += [f"*Normalized to `{query_text}` before retrieval.*", ""]
+    lines += [f"**Candidates**: {recall} | **Returned**: {len(hits)} | "
+              f"**Corpus**: {corpus} (`{store['model']}`)", "",
+              f"| # | {score_col} | Source | Meta | Text |",
+              "|---|--------|--------|------|------|"]
     for rank, hit in enumerate(hits, 1):
-        score = hit.get("rerank_score", hit.get("hybrid_score", hit.get("vector_score", 0.0)))
+        if blend_stage == "post-rerank":
+            score = hit.get("hybrid_score", 0.0)
+        else:
+            score = hit.get("rerank_score",
+                            hit.get("hybrid_score", hit.get("vector_score", 0.0)))
         meta = json.dumps(hit.get("meta") or {}, ensure_ascii=False)[:40]
         raw = " ".join(str(hit.get("text", "")).split())
         text = raw[:120] + ("…" if len(raw) > 120 else "")
@@ -445,10 +506,16 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
     if params.rerank and rerank_status:
         lines.append(f"*Rerank fallback: {rerank_status} results are vector-order only.*")
         lines.append("")
-    if blended:
+    if blend_stage == "pre-rerank":
         lines.append(f"*Hybrid: {vector_weight:.2f} vector + {1.0 - vector_weight:.2f} term-weighted "
                      "lexical (core/term_sim.py), blended before rerank. Per-chunk "
                      "`term_score` and `vector_score` are in the JSON response.*")
+        lines.append("")
+    elif blend_stage == "post-rerank":
+        lines.append(f"*Hybrid: {vector_weight:.2f} normalized rerank + "
+                     f"{1.0 - vector_weight:.2f} term-weighted lexical (core/term_sim.py), "
+                     "fused after rerank. Per-chunk `term_score`, `rerank_score` and the "
+                     "pre-normalization `rerank_raw` are in the JSON response.*")
         lines.append("")
     lines.append("*Text column is a 120 char preview (`…` marks the cut) - use "
                  "`response_format=\"json\"` for the full chunk text.*")

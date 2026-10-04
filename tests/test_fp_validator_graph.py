@@ -208,3 +208,40 @@ def test_fp_gate_is_opt_out_by_default():
     result = asyncio.run(run_investigation(srcip="8.8.8.8"))
     assert result["fp_validation"] is None
     assert any("fp_check: skipped" in s for s in result["steps"])
+
+
+class _StubReranker:
+    """Logits above 1.0, the shape a real cross-encoder emits."""
+
+    def rerank(self, query, docs):
+        return [3.0 - 0.5 * i for i in range(len(docs))]
+
+
+def test_normalize_flag_does_not_move_the_floor_or_the_verdict(tmp_path):
+    """BLUETEAM_RERANK_NORMALIZE scopes to the fusion path and this caller does not
+    fuse. A [0,1] score can never reach a logit floor of 1.5, so a leak into this path
+    would make the floor unreachable and drop the verdict to insufficient_evidence."""
+    from mcp_server.core import rerank as rerank_mod
+    _setup_store(tmp_path)
+    _ingest("cases", ["Confirmed false positive aaa aaa"] * 3)
+    config.rerank.enabled = True
+    rerank_mod._encoder = _StubReranker()
+    try:
+        seen = []
+        for normalize in (False, True):
+            config.rerank.normalize = normalize
+            result = asyncio.run(fpv.run_fp_validation(
+                "198.51.100.5", "aaa false positive",
+                min_matches=1, min_rerank_score=1.5, rerank=True))
+            evidence = result["evidence"]
+            seen.append((evidence["top_rerank_score"], evidence["score_floor_met"],
+                         result["verdict"]))
+        assert seen[0] == seen[1], seen
+        top_rerank, floor_met, verdict = seen[0]
+        assert top_rerank > 1.0, "a [0,1] value reached the logit floor"
+        assert floor_met is True
+        assert verdict == "likely_false_positive"
+    finally:
+        config.rerank.enabled = False
+        config.rerank.normalize = False
+        rerank_mod._encoder = None

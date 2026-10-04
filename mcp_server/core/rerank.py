@@ -16,6 +16,7 @@ import logging
 import os
 import threading
 from typing import Optional
+from mcp_server.core import term_sim
 from mcp_server.core.config import config
 
 logger = logging.getLogger("blue_team_mcp.rerank")
@@ -222,22 +223,90 @@ async def rerank(query: str, docs: list[str]) -> tuple[list[float], Optional[str
     return list(scores), None
 
 
+def normalize_rerank_scores(scores: list[float]) -> list[float]:
+    """Rescale cross-encoder output onto [0,1]. Ported from RAGFlow's
+    ``NormalizeRerankScores``.
+    - Empty: unchanged.
+    - Already inside [0,1]: unchanged, so a calibrated provider's magnitudes survive.
+    - Spread under 1e-3 (all-identical, or one candidate): clamp per element, never
+      min-max, so a lone high score is not zeroed.
+    - Otherwise min-max onto [0,1], which stops a negative logit dragging a hit below a
+      keyword match.
+    Returns a new list; the input is never mutated.
+    """
+    if not scores:
+        return list(scores)
+    low = min(scores)
+    high = max(scores)
+    if low >= 0.0 and high <= 1.0:
+        return list(scores)
+    if high - low < 1e-3:
+        return [0.0 if s < 0.0 else (1.0 if s > 1.0 else s) for s in scores]
+    span = 1.0 / (high - low)
+    return [(s - low) * span for s in scores]
+
+
 async def rerank_hits(query: str, hits: list[dict], top_k: int,
-                      score_field: str = "vector_score") -> tuple[list[dict], bool, Optional[str]]:
+                      score_field: str = "vector_score", *,
+                      term_scores: Optional[list[float]] = None,
+                      vector_weight: Optional[float] = None
+                      ) -> tuple[list[dict], bool, Optional[str]]:
     """Re-score retrieval ``hits`` (dicts carrying a ``text`` key) against ``query``.
     This is the second stage for every retrieval caller, so the ordering rule
-    lives in exactly one place. Rank-based truncation only: raw cross-encoder
-    logits are not comparable across query distributions, so no score threshold
-    is applied. Candidates are clamped by ``config.rerank.max_candidates`` so the rerank fan out is bounded identically for every caller.
-    Returns ``(hits, reranked, status)``. When ``status`` is not ``None`` the
-    original ordering is returned truncated and the caller should surface why.
+    lives in exactly one place. Candidates are clamped by
+    ``config.rerank.max_candidates`` so the rerank fan out is bounded identically
+    for every caller. Returns ``(hits, reranked, status)``. When ``status`` is not
+    ``None`` the original ordering is returned truncated and the caller should
+    surface why.
+    Each text is bounded to ``config.rag.chunk_chars``, since a parent hit carries the
+    whole document while a child chunk is already within that bound.
+
+    ``config.rerank.normalize`` rescales the cross-encoder output onto [0,1] with
+    :func:`normalize_rerank_scores`, but only on the fusion path, which needs
+    ``term_scores`` and a ``vector_weight`` below 1.0. Every other caller receives the
+    raw logit in ``rerank_score``, so a logit threshold keeps its units.
+
+    Fusion is ``sim = vector_weight*rerank + (1-vector_weight)*term``; ``term_scores``
+    aligns to ``hits`` and the caller computes it over the corpus term tables.
+    ``vector_weight=1.0`` omits the term leg, so it neither fuses nor normalizes. On the
+    fused path ``rerank_score`` is the normalized value, ``rerank_raw`` keeps the logit,
+    and ``term_score``/``hybrid_score`` carry the blend.
     """
     candidates = hits[:config.rerank.max_candidates]
-    scores, status = await rerank(query, [hit["text"] for hit in candidates])
+    # A parent holds the whole document and can run several chunks long. Bound each
+    # text to one retrieval unit; a child chunk is already at or below it.
+    bound = config.rag.chunk_chars
+    scores, status = await rerank(query, [hit["text"][:bound] for hit in candidates])
     if status is not None:
         return hits[:top_k], False, status
-    order = sorted(range(len(candidates)),
-                   key=lambda i: (-scores[i], -candidates[i].get(score_field, 0.0)))
-    ranked = [{**candidates[i], "rerank_score": round(float(scores[i]), 6)}
-              for i in order[:top_k]]
+
+    # Fusion is the only consumer that needs a common scale; other callers keep the logit.
+    normalizing = (config.rerank.normalize and term_scores is not None
+                   and vector_weight is not None and vector_weight < 1.0)
+
+    raw_scores: Optional[list[float]] = None
+    fused: Optional[list[float]] = None
+    if normalizing:
+        raw_scores = list(scores)
+        scores = normalize_rerank_scores(scores)
+        if len(term_scores) < len(candidates):
+            raise ValueError(
+                f"term_scores has {len(term_scores)} entries for {len(candidates)} "
+                "rerank candidates; they must align by chunk index"
+            )
+        fused = term_sim.hybrid(scores, term_scores[:len(candidates)], vector_weight)
+        order = sorted(range(len(candidates)), key=lambda i: (-fused[i], -scores[i]))
+    else:
+        order = sorted(range(len(candidates)),
+                       key=lambda i: (-scores[i], -candidates[i].get(score_field, 0.0)))
+
+    ranked: list[dict] = []
+    for i in order[:top_k]:
+        hit = {**candidates[i], "rerank_score": round(float(scores[i]), 6)}
+        if raw_scores is not None:
+            hit["rerank_raw"] = round(float(raw_scores[i]), 6)
+        if fused is not None:
+            hit["term_score"] = round(float(term_scores[i]), 6)
+            hit["hybrid_score"] = round(float(fused[i]), 6)
+        ranked.append(hit)
     return ranked, True, None

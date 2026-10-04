@@ -116,6 +116,7 @@ optional — tools degrade gracefully without them.
 | Inbound hardening | `BLUETEAM_HTTP_RATE_LIMIT`, `BLUETEAM_ALLOWED_ORIGINS` | per-IP sliding-window rate limit (req/min, `0`=off) + Origin allowlist (loopback always allowed) |
 | Audit & persistence | `BLUETEAM_AUDIT_LOG`, `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CMDB_FILE` | JSONL audit trail + stores (optional) |
 | Local case RAG | `BLUETEAM_RAG_ENABLED`, `BLUETEAM_RAG_DB`, `BLUETEAM_RAG_MODEL`, `BLUETEAM_RAG_CACHE_PATH`, `BLUETEAM_RAG_MAX_CANDIDATES`, `BLUETEAM_RAG_TOP_K`, `BLUETEAM_RAG_MAX_CHUNKS`, `BLUETEAM_RAG_CHUNK_CHARS`, `BLUETEAM_RAG_CHUNK_OVERLAP`, `BLUETEAM_RAG_CHUNK_STRATEGY`, `BLUETEAM_RAG_VECTOR_WEIGHT`, `BLUETEAM_RAG_ALLOW_DOWNLOAD`, `BLUETEAM_RAG_MODEL_SHA256` | SQLite retrieval corpus over cases / confirmed false positives / IR playbooks. `ENABLED=true` requires an absolute `DB` path or startup raises. `ALLOW_DOWNLOAD` defaults `false` (`local_files_only`). `CHUNK_STRATEGY` defaults `sentences` (`length` restores the pre-chunker sliding window). `VECTOR_WEIGHT` defaults `1.0` = vector-only; below that blends the term-weighted lexical leg. |
+| RAG retrieval flags (all opt-in, all off) | `BLUETEAM_RERANK_NORMALIZE`, `BLUETEAM_RAG_PARENT_CHILD`, `BLUETEAM_RAG_QUERY_NORMALIZE` | `RERANK_NORMALIZE` rescales cross-encoder output onto `[0,1]` and moves the lexical blend after the reranker, which is what lets `VECTOR_WEIGHT` reorder the result; scope is the fusion path only, so `min_rerank_score` on `blueteam_rag_fp_validate` stays a **logit floor** at either setting. `PARENT_CHILD` returns a whole-document parent in place of the chunks that matched, adding `child_count` and `matched_seq`; the reranker then sees only the first `CHUNK_CHARS` runes of that parent. `QUERY_NORMALIZE` folds full-width characters to ASCII before retrieval and is a no-op on ASCII. Implemented and unit-tested; **not quality-evaluated**, so enabling one is an evaluation decision, not a default. |
 | Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
 | Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder — no torch, no second model resident. `BACKEND=laya` and `BACKEND=setfit` each require `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin, and the SetFit pin is verified before its pickled head is loaded). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya`/`setfit` (already-softmaxed distributions) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya\|setfit>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`; SetFit uses its trained truncation. `MAX_CONCURRENCY` defaults `1` |
 | CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
@@ -758,6 +759,7 @@ Any other verdict is recorded in `fp_validation` and the investigation continues
 | Is this alert noise? | `blueteam_rag_fp_validate(srcip="8.8.8.8", description="ssh auth failure")` |
 | Refresh the index | `blueteam_rag_ingest(source="cases")` |
 | Ingest a full advisory PDF | `blueteam_rag_ingest(source="pdf", path="/opt/advisories/cisa-aa24.pdf", label="cisa_aa24")` |
+| Indicator pasted with full-width characters | `blueteam_rag_query(query=...)` with `BLUETEAM_RAG_QUERY_NORMALIZE=true`; the response echoes `query_normalized` when it fired |
 
 Read the `verdict` before acting on it. `suppressed_exact`, `conflicting_state` and
 `likely_true_positive` are authoritative (registry lookups, no model). `likely_false_positive` is
@@ -781,6 +783,20 @@ indicator matters more than paraphrase, since the lexical leg scores bigrams and
 above surrounding prose. No stage applies a score threshold: a top-ranked hit means "ranked above
 the alternatives". Read `rerank_engine` to see which leg produced the order — `hybrid` means the
 lexical blend ran, `vector` means it did not.
+
+Three opt-in flags change this ranking, all off by default. `BLUETEAM_RERANK_NORMALIZE` rescales the
+cross-encoder output onto [0,1] and moves the lexical blend after the reranker, which is what makes
+`vector_weight` change the final order; with it off the blend runs first and the raw logit overrides
+it. It applies to the fusion path only. `min_rerank_score` on `blueteam_rag_fp_validate` stays a
+raw-logit floor at either setting, and `blueteam_rag_query` takes no score floor at any setting.
+
+`BLUETEAM_RAG_QUERY_NORMALIZE` folds full-width characters to ASCII before retrieval so an indicator
+pasted from a document matches, and leaves an ASCII query untouched. `BLUETEAM_RAG_PARENT_CHILD` stores
+a parent row for a document spanning several chunks and returns it in place of the chunks that matched,
+adding `child_count` and `matched_seq` to the hit. The cross-encoder then scores only the first
+`BLUETEAM_RAG_CHUNK_CHARS` runes of that parent, so a match whose evidence sits later in the document
+is ranked on the document head. Read `blend_stage` to see which order ran, and `query_normalized` to
+see whether the query was rewritten.
 
 ### Email / breach / domain forensics
 | Want | Tool |

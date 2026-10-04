@@ -323,6 +323,7 @@ RERANK_MODEL="${BLUETEAM_RERANK_MODEL:-BAAI/bge-reranker-base}"
 RERANK_CACHE="${BLUETEAM_RERANK_CACHE_PATH:-$INSTALL_DIR/rerank-cache}"
 RERANK_MODEL_PATH="${BLUETEAM_RERANK_MODEL_PATH:-}"
 RERANK_SHA="${BLUETEAM_RERANK_MODEL_SHA256:-}"
+RERANK_NORMALIZE="${BLUETEAM_RERANK_NORMALIZE:-false}"
 RERANK_VENDORED=""
 
 # Vendored model: verify the layout and pin the ONNX. No download is attempted and
@@ -667,6 +668,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_RERANK_MAX_CANDIDATES="100"     # hard cap for rerank candidate fan-out (all retrieval callers)
 # export BLUETEAM_RERANK_MODEL_SHA256=""          # optional: pin ONNX model SHA-256 (supply-chain integrity)
 # export BLUETEAM_RERANK_ALLOW_DOWNLOAD="false"   # false = runtime load is local_files_only; setup.sh is the bootstrap path
+# export BLUETEAM_RERANK_NORMALIZE="false"        # false = the raw logit is the sort key. true = rescale to [0,1] then fuse with the lexical leg,
+#   which lets blueteam_rag_query's vector_weight reorder the result. Fusion path only: a caller that does not
+#   fuse, such as blueteam_rag_fp_validate, keeps raw logits and its min_rerank_score floor keeps its units. Measure before flipping.
 
 # Local case RAG (opt-in; retrieval over cases / confirmed false positives / IR playbooks)
 # Enabling this REQUIRES an absolute BLUETEAM_RAG_DB - the server refuses to start without one.
@@ -684,6 +688,10 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_RAG_VECTOR_WEIGHT="1.0"         # 1.0 = vector-only ranking. Below 1.0 blends the term-weighted
 #                                                 # lexical score (core/term_sim.py); RAGFlow's default is 0.3
 # export BLUETEAM_RAG_MODEL_SHA256=""             # optional: pin ONNX model SHA-256 (supply-chain integrity)
+# export BLUETEAM_RAG_PARENT_CHILD="false"        # false = every row is a matchable chunk. true = a chunked document gets a parent
+#                                                 # row holding its whole text; children are matched, the parent is returned. Needs a re-ingest.
+# export BLUETEAM_RAG_QUERY_NORMALIZE="false"     # true = NFKC the query before retrieval, so a pasted full-width indicator can match.
+#                                                 # NFKC is a no-op for ASCII, so false is byte-identical to the raw-query path.
 
 # Forensic Mode (ADMIN GATE — off by default)
 # export BLUETEAM_ALLOW_UNTRUNCATED="false"
@@ -902,12 +910,14 @@ _sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_CACHE_PATH" "$RERANK_CACHE"
 _sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_MAX_CANDIDATES" "${BLUETEAM_RERANK_MAX_CANDIDATES:-100}"
 _sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_MODEL_SHA256" "$RERANK_SHA"
 _sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_ALLOW_DOWNLOAD" "${BLUETEAM_RERANK_ALLOW_DOWNLOAD:-false}"
+_sync_env_key "$CONFIG_FILE" "BLUETEAM_RERANK_NORMALIZE" "$RERANK_NORMALIZE"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_ENABLED" "$RERANK_ENABLED"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MODEL" "$RERANK_MODEL"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_CACHE_PATH" "$RERANK_CACHE"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MAX_CANDIDATES" "${BLUETEAM_RERANK_MAX_CANDIDATES:-100}"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MODEL_SHA256" "$RERANK_SHA"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_ALLOW_DOWNLOAD" "${BLUETEAM_RERANK_ALLOW_DOWNLOAD:-false}"
+_sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_NORMALIZE" "$RERANK_NORMALIZE"
 # RAG block - synced with the same effective values the bootstrap resolved.
 for _envf in "$CONFIG_FILE" "$ENV_FILE"; do
   _sync_env_key "$_envf" "BLUETEAM_RAG_ENABLED" "$RAG_ENABLED"
@@ -923,6 +933,8 @@ for _envf in "$CONFIG_FILE" "$ENV_FILE"; do
   _sync_env_key "$_envf" "BLUETEAM_RAG_CHUNK_STRATEGY" "${BLUETEAM_RAG_CHUNK_STRATEGY:-sentences}"
   _sync_env_key "$_envf" "BLUETEAM_RAG_VECTOR_WEIGHT" "${BLUETEAM_RAG_VECTOR_WEIGHT:-1.0}"
   _sync_env_key "$_envf" "BLUETEAM_RAG_MODEL_SHA256" "$RAG_SHA"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_PARENT_CHILD" "${BLUETEAM_RAG_PARENT_CHILD:-false}"
+  _sync_env_key "$_envf" "BLUETEAM_RAG_QUERY_NORMALIZE" "${BLUETEAM_RAG_QUERY_NORMALIZE:-false}"
 done
 # Cluster + Laya blocks - synced with the effective values resolved above.
 for _envf in "$CONFIG_FILE" "$ENV_FILE"; do

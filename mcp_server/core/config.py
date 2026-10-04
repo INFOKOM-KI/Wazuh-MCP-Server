@@ -528,6 +528,9 @@ class RerankConfig:
     ``specific_model_path``, so the weights are read from that path and no download path
     is reachable at all, pinned or not. Combine with ``sha256`` for a vendor-and-pin
     deployment: the pin proves the file has not changed since it was hashed.
+    ``normalize`` (default false) rescales cross-encoder output onto [0,1] before the
+    lexical blend, which is what lets ``vector_weight`` reorder the result. It applies to
+    the RAG fusion path only: a caller that does not fuse still receives the raw logit.
     """
     enabled: bool = True
     model: str = "BAAI/bge-reranker-base"
@@ -536,6 +539,7 @@ class RerankConfig:
     max_candidates: int = 100       # hard ceiling for the rerank_candidates tool param
     sha256: str = ""                # supply chain pin: sha256 of the cached ONNX fastembed loads
     allow_download: bool = False    # False = local_files_only; setup.sh is the bootstrap path
+    normalize: bool = False         # True = [0,1] scores on the fusion path; raw logits elsewhere
 
     @classmethod
     def from_env(cls) -> "RerankConfig":
@@ -547,6 +551,7 @@ class RerankConfig:
             max_candidates=int(os.environ.get("BLUETEAM_RERANK_MAX_CANDIDATES", "100")),
             sha256=os.environ.get("BLUETEAM_RERANK_MODEL_SHA256", "").strip().lower(),
             allow_download=_bool(os.environ.get("BLUETEAM_RERANK_ALLOW_DOWNLOAD", "false")),
+            normalize=_bool(os.environ.get("BLUETEAM_RERANK_NORMALIZE", "false")),
         )
 
     def validate(self) -> None:
@@ -635,6 +640,12 @@ class RAGConfig:
     # blend is opt-in until it is measured on this corpus.
     vector_weight: float = 1.0
     allow_download: bool = False    # False = local_files_only, no network
+    # True = a document spanning several chunks also gets a parent row holding the whole
+    # text; children are matched, the parent is returned. Off keeps every row a chunk.
+    parent_child: bool = False
+    # True = NFKC the caller's query before retrieval, so a pasted full-width indicator
+    # can match. NFKC is a no-op for ASCII, so false is the byte-identical raw path.
+    query_normalize: bool = False
     sha256: str = ""                # supply chain pin: sha256 of the cached ONNX
 
     @classmethod
@@ -652,6 +663,8 @@ class RAGConfig:
             chunk_strategy=os.environ.get("BLUETEAM_RAG_CHUNK_STRATEGY", "sentences").strip().lower(),
             vector_weight=float(os.environ.get("BLUETEAM_RAG_VECTOR_WEIGHT", "1.0")),
             allow_download=_bool(os.environ.get("BLUETEAM_RAG_ALLOW_DOWNLOAD", "false")),
+            parent_child=_bool(os.environ.get("BLUETEAM_RAG_PARENT_CHILD", "false")),
+            query_normalize=_bool(os.environ.get("BLUETEAM_RAG_QUERY_NORMALIZE", "false")),
             sha256=os.environ.get("BLUETEAM_RAG_MODEL_SHA256", "").strip().lower(),
         )
 

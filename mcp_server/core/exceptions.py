@@ -20,6 +20,13 @@ class ConfigurationError(BlueTeamMCPError):
     """
 
 
+class MigrationError(BlueTeamMCPError):
+    """Raised when an on-disk store cannot be brought up to the current schema.
+    Surfaces at the migration point instead of deferring to the query that needs the
+    missing column.
+    """
+
+
 class WazuhAuthError(BlueTeamMCPError):
     """Raised when JWT authentication with the Wazuh Manager API fails.
 
