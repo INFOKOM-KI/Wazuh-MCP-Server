@@ -29,7 +29,7 @@ _STORE_TTL = int(os.environ.get("BLUETEAM_IOC_STORE_TTL", "7776000"))  # 90 days
 _BATCH_CAP = 10  # max co-occurrence batches remembered per IOC
 _STORE_MIN_DECAY_EVICT = 0.01  # only TTL-evict entries with negligible decay
 
-# {ioc: {"kind", "first_ts", "last_ts", "count", "source"}} — normalized keys
+# {ioc: {"kind", "first_ts", "last_ts", "count", "source"}} with normalized keys
 _ENTRIES: dict[str, dict] = {}
 
 _HASH_RE = re.compile(r"^[a-fA-F0-9]{32}(?:[a-fA-F0-9]{8}|[a-fA-F0-9]{24})?$")  # md5/sha1/sha256

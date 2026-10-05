@@ -722,17 +722,26 @@ class MemoryConfig:
     Off by default with no default path: the store holds subject-linked
     investigation text, so enabling it is an explicit operator decision, and an
     enabled store with no path is a startup error rather than a silent no-op.
-    Retention and capacity settings land with the pruning code that enforces them.
+    Capacity is enforced at write time; TTL and consolidation land with the code
+    that enforces them.
     """
     enabled: bool = False
     # No default path: memory written to a guessed location is invisible state.
     db_path: str = ""
+    # Per-subject write-time bound. Until consolidation exists, this is what stops
+    # one subject's repeated verdicts from growing without limit.
+    max_units_per_subject: int = 50
+    # Retention window, from the last confirmation. 0 keeps units forever, the same
+    # convention as BLUETEAM_IOC_STORE_TTL and BLUETEAM_FALSE_POSITIVE_TTL.
+    ttl_seconds: int = 7776000
 
     @classmethod
     def from_env(cls) -> "MemoryConfig":
         return cls(
             enabled=_bool(os.environ.get("BLUETEAM_MEM_ENABLED", "false")),
             db_path=os.environ.get("BLUETEAM_MEM_DB", "").strip(),
+            max_units_per_subject=int(os.environ.get("BLUETEAM_MEM_MAX_UNITS_PER_SUBJECT", "50")),
+            ttl_seconds=int(os.environ.get("BLUETEAM_MEM_TTL", "7776000")),
         )
 
     def validate(self) -> None:
@@ -745,6 +754,10 @@ class MemoryConfig:
             raise ConfigurationError(
                 f"BLUETEAM_MEM_DB must be an absolute path (got {self.db_path!r})"
             )
+        if self.max_units_per_subject < 1:
+            raise ConfigurationError("BLUETEAM_MEM_MAX_UNITS_PER_SUBJECT must be >= 1")
+        if self.ttl_seconds < 0:
+            raise ConfigurationError("BLUETEAM_MEM_TTL must be >= 0 (0 keeps units forever)")
 
 
 @dataclass

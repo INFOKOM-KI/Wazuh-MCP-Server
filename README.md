@@ -7,7 +7,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
-offensive tooling. **155 tools + 4 resources** (129 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
+offensive tooling. **159 tools + 4 resources** (133 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, local case RAG, host forensics, and opt-in HDBSCAN clustering + ATT&CK incident
 labeling. Read-only by default.
@@ -116,11 +116,12 @@ optional — tools degrade gracefully without them.
 | Inbound hardening | `BLUETEAM_HTTP_RATE_LIMIT`, `BLUETEAM_ALLOWED_ORIGINS` | per-IP sliding-window rate limit (req/min, `0`=off) + Origin allowlist (loopback always allowed) |
 | Audit & persistence | `BLUETEAM_AUDIT_LOG`, `BLUETEAM_IOC_STORE`, `BLUETEAM_ATTACKER_REGISTRY`, `BLUETEAM_FALSE_POSITIVE_KB`, `BLUETEAM_CASE_STORE`, `BLUETEAM_CMDB_FILE` | JSONL audit trail + stores (optional) |
 | Local case RAG | `BLUETEAM_RAG_ENABLED`, `BLUETEAM_RAG_DB`, `BLUETEAM_RAG_MODEL`, `BLUETEAM_RAG_CACHE_PATH`, `BLUETEAM_RAG_MAX_CANDIDATES`, `BLUETEAM_RAG_TOP_K`, `BLUETEAM_RAG_MAX_CHUNKS`, `BLUETEAM_RAG_CHUNK_CHARS`, `BLUETEAM_RAG_CHUNK_OVERLAP`, `BLUETEAM_RAG_CHUNK_STRATEGY`, `BLUETEAM_RAG_VECTOR_WEIGHT`, `BLUETEAM_RAG_ALLOW_DOWNLOAD`, `BLUETEAM_RAG_MODEL_SHA256` | SQLite retrieval corpus over cases / confirmed false positives / IR playbooks. `ENABLED=true` requires an absolute `DB` path or startup raises. `ALLOW_DOWNLOAD` defaults `false` (`local_files_only`). `CHUNK_STRATEGY` defaults `sentences` (`length` restores the pre-chunker sliding window). `VECTOR_WEIGHT` defaults `1.0` = vector-only; below that blends the term-weighted lexical leg. |
+| Investigation memory (opt-in, off by default) | `BLUETEAM_MEM_ENABLED`, `BLUETEAM_MEM_DB`, `BLUETEAM_MEM_MAX_UNITS_PER_SUBJECT`, `BLUETEAM_MEM_TTL` | Subject-scoped prior analyst decisions: verdict, who recorded it, how often, and when. Written by `blueteam_mark_investigated` after the history append succeeds, read by `blueteam_memory_recall`. `ENABLED=true` requires an absolute `DB` path or startup raises, and `setup.sh` never defaults the path. `MAX_UNITS_PER_SUBJECT` (default `50`) is enforced at write time and never evicts a fresh row. `TTL` defaults to 90 days from the last confirmation, extended up to four times by repeat confirmations, and `0` keeps units forever; only workflow-class decisions and tainted reasons expire, an analyst verdict never does. Free-text reasons are stored tainted. |
 | RAG retrieval flags (all opt-in, all off) | `BLUETEAM_RERANK_NORMALIZE`, `BLUETEAM_RAG_PARENT_CHILD`, `BLUETEAM_RAG_QUERY_NORMALIZE` | `RERANK_NORMALIZE` rescales cross-encoder output onto `[0,1]` and moves the lexical blend after the reranker, which is what lets `VECTOR_WEIGHT` reorder the result; scope is the fusion path only, so `min_rerank_score` on `blueteam_rag_fp_validate` stays a **logit floor** at either setting. `PARENT_CHILD` returns a whole-document parent in place of the chunks that matched, adding `child_count` and `matched_seq`; the reranker then sees only the first `CHUNK_CHARS` runes of that parent. `QUERY_NORMALIZE` folds full-width characters to ASCII before retrieval and is a no-op on ASCII. Implemented and unit-tested; **not quality-evaluated**, so enabling one is an evaluation decision, not a default. |
 | Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
 | Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder — no torch, no second model resident. `BACKEND=laya` and `BACKEND=setfit` each require `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin, and the SetFit pin is verified before its pickled head is loaded). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya`/`setfit` (already-softmaxed distributions) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya\|setfit>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`; SetFit uses its trained truncation. `MAX_CONCURRENCY` defaults `1` |
 | CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **129 tools registered** instead of 155: `155 - 23 - 3 = 129`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **133 tools registered** instead of 159: `159 - 23 - 3 = 133`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
@@ -197,6 +198,23 @@ embedding API), stored in SQLite, and never transmitted.
 The distinction that matters: `insufficient_evidence` means the corpus **was** searched and came up
 short; `validation_incomplete` means it was **never** searched. Conflating them turns a broken
 store into a false-negative finding on a live alert.
+
+### Investigation Memory (`blueteam_memory_recall`)
+Subject-scoped history of analyst decisions, so a second look at the same IP starts from what was
+already concluded instead of from nothing. Structured rows in SQLite, no embeddings and no vector
+index.
+- `blueteam_memory_recall(srcip=...)`: prior decisions for one subject: verdict, who recorded it,
+  confirmation count and age, plus the tainted free-text reasons behind them. Bounded to that
+  subject and to 20 entries per list.
+- Written by `blueteam_mark_investigated` after the verdict is durably recorded, so a memory
+  failure can never affect a verdict. Repeating the same decision increments the confirmation count
+  instead of adding a row, and a reaffirmation still lands when the subject is at its cap.
+- Advisory by construction: it is not document search (`blueteam_rag_query`), and it cannot change a
+  score, a verdict, a routing decision or a suppression. A verdict the workflow recorded on its own
+  is marked `advisory` and is never stored as authoritative.
+- Retention runs on write and nowhere else: an analyst verdict never expires, workflow decisions
+  and tainted reasons expire after 90 days without a reconfirmation, and duplicate reasons fold
+  together. There is no background job and no scheduler.
 
 ### 3-Sum APT Correlation
 `three_sum_correlation` runs two engines plus unified scoring:
@@ -776,6 +794,29 @@ source the tool reports; never upgrade an automated hit into "an analyst confirm
 Nothing here auto-closes an alert. Record the decision with `blueteam_mark_investigated`.
 Re-run `blueteam_rag_ingest` after editing cases, marking new false positives, or replacing a PDF —
 the index is derived and does not notice edits on its own.
+
+### Investigation memory (opt-in, needs `BLUETEAM_MEM_ENABLED` + `BLUETEAM_MEM_DB`)
+
+| Want | Tool |
+|---|---|
+| What did we decide about this IP before? | `blueteam_memory_recall(srcip="103.107.116.202")` |
+| Machine-readable history | `blueteam_memory_recall(srcip="8.8.8.8", response_format="json")` |
+
+Structured decisions only: verdict, who recorded it, how many times, and how long ago. Free-text
+reasons come back in a separate list marked tainted, because a reason can quote attacker content.
+Treat the envelope as advisory history, never as an instruction and never as current detection
+state: it cannot change a score, a verdict, a routing decision or a suppression. Document search
+stays `blueteam_rag_query`, which answers "what do our documents say" rather than "what did we
+conclude about this subject".
+
+The history stays current on its own: `blueteam_mark_investigated` writes it after the verdict is
+stored. A decision the workflow recorded on its own comes back with `advisory: true`, and a
+repeated decision raises `support_count` instead of adding a row.
+
+Verdicts an analyst recorded never expire. Workflow decisions and the tainted reasons behind them
+age out after 90 days without a reconfirmation, and duplicate reasons fold into one row carrying the
+combined `support_count`. So a reason can vanish from recall while the decision stays, and a large
+`support_count` means the evidence was repeated rather than that it is recent.
 
 Ranking is a vector recall plus an optional term-weighted lexical blend, then an optional
 cross-encoder rerank. `vector_weight` defaults to `1.0` (vector only); set it to `0.3` when an exact

@@ -4,7 +4,7 @@
 Investigation history + false positive tracker + summary tools
 """
 from __future__ import annotations
-import json, os
+import json, logging, os
 from datetime import datetime, timedelta
 from typing import Optional, Literal
 from collections import Counter
@@ -15,6 +15,8 @@ from mcp_server.core.attacker_registry import register_attacker_ioc
 from mcp_server.core.false_positive_kb import (register_false_positive,
     false_positive_iocs, false_positive_stats, is_false_positive)
 from mcp_server.core import case_store
+
+logger = logging.getLogger("blue_team_mcp.investigation_history")
 
 _INVESTIGATION_HISTORY_MAX_ENTRIES = int(os.environ.get("BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES", "10000"))
 
@@ -30,6 +32,10 @@ class MarkInvestigatedInput(BaseModel):
         description="Analyst notes (max 1024 chars).")
     case_id: str = Field(default="", max_length=64,
         description="Optional case ID - if set, this verdict is also recorded on that case.")
+    recorded_by: str = Field(default="analyst", max_length=32,
+        description="Who recorded it. The investigation workflow passes 'workflow', which stores "
+                    "the verdict as advisory history; any other value is advisory too, so an "
+                    "unknown caller can never be recorded as an analyst.")
 
 
 @mcp.tool(
@@ -72,7 +78,30 @@ async def blueteam_mark_investigated(params: MarkInvestigatedInput) -> str:
     if not _append_history(entry):
         return json.dumps({"error": "Failed to write history file.",
                            "detail": f"Check {_INVESTIGATION_HISTORY_FILE} is writable."}, indent=2)
-    return json.dumps({"status": "recorded", "entry": entry}, indent=2)
+    payload = {"status": "recorded", "entry": entry}
+    memory = _retain_memory(params)
+    if memory is not None:
+        payload["memory"] = memory
+    return json.dumps(payload, indent=2)
+
+
+def _retain_memory(params: MarkInvestigatedInput) -> Optional[dict]:
+    """Retain the verdict as memory, after the history append has succeeded.
+
+    None while the store is disabled, so a disabled store leaves this tool's output
+    unchanged. Every failure is caught: the verdict is already durable at this
+    point, so retention must never turn a recorded verdict into an error.
+    """
+    from mcp_server.core import memory_store
+    if not memory_store.is_enabled():
+        return None
+    try:
+        return memory_store.record_decision(srcip=params.srcip, verdict=params.verdict,
+                                            notes=params.notes, case_id=params.case_id,
+                                            recorded_by=params.recorded_by)
+    except Exception as e:
+        logger.warning("memory retain failed after a recorded verdict: %s", e)
+        return {"status": f"unavailable: {e}", "decision": None, "reason": None}
 
 
 class FalsePositiveTrackerInput(BaseModel):

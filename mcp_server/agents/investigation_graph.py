@@ -37,6 +37,9 @@ _DB_PATH = os.environ.get("BLUETEAM_LANGGRAPH_DB", "").strip()
 # so an uncapped log grows the checkpoint row on every repeat investigation.
 _STEP_LOG_CAP = 200
 
+# Prior decisions shown per subject. Historical context, not a transcript.
+_RECALL_LIMIT = 5
+
 # First entry of every run on a durable thread. The cap trims from the front, so
 # an index into the log cannot survive it; the last marker delimits this run.
 _RUN_MARKER = "run: start"
@@ -64,6 +67,16 @@ def thread_id_for(db_path: str, subject: Optional[str]) -> str:
 def subject_key(prefix: str, value: str) -> str:
     """Case-insensitive key for a thread subject (IPs, indicators)."""
     return f"{prefix}:{(value or '').strip().lower()}"
+
+
+def _subject_for_run(srcip: Optional[str], alert_text: Optional[str]) -> Optional[str]:
+    """Thread and memory subject for a run: the entity when there is one, else a
+    fingerprint of the alert body, so the same alert repeats into the same thread."""
+    if srcip:
+        return subject_key("srcip", srcip)
+    if alert_text:
+        return "alert:" + hashlib.sha256(alert_text.encode("utf-8")).hexdigest()[:16]
+    return None
 
 
 def _ensure_aiosqlite_is_alive() -> None:
@@ -110,6 +123,7 @@ class InvestigationState(TypedDict, total=False):
     baseline: Optional[dict]
     report_path: Optional[str]
     verdict: Optional[dict]
+    recalled_memory: Optional[dict]
     # execution log
     steps: Annotated[list[str], _capped_add]
     errors: Annotated[list[str], _capped_add]
@@ -127,6 +141,34 @@ async def _with_timeout(coro, label: str) -> dict:
 
 
 # Node adapters - call existing tool handlers in-process
+async def recall_step(state: InvestigationState) -> dict:
+    """Subject-scoped historical context, read before anything else runs.
+
+    Advisory by construction: the envelope carries prior decisions and their tainted
+    reasons, and no node reads it as an input. It writes only its own channel, so it
+    cannot reach a score, a verdict or a routing predicate.
+    """
+    from mcp_server.core import memory_store
+    if not memory_store.is_enabled():
+        return {"recalled_memory": None, "steps": ["recall: disabled"]}
+    subject = _subject_for_run(state.get("srcip"), state.get("alert_text"))
+    if not subject:
+        return {"recalled_memory": None, "steps": ["recall: skipped (no subject)"]}
+    try:
+        envelope = memory_store.recall_subject(subject, limit=_RECALL_LIMIT)
+    except Exception as e:
+        return {"recalled_memory": None, "errors": [f"recall: {e}"],
+                "steps": ["recall: degraded"]}
+    update: dict = {
+        "recalled_memory": envelope,
+        "steps": [f"recall: {len(envelope['decisions'])} decisions, "
+                  f"{len(envelope['recent_reasons'])} reasons ({envelope['status']})"],
+    }
+    if str(envelope.get("status") or "").startswith("unavailable"):
+        update["errors"] = [f"recall: {envelope['status']}"]
+    return update
+
+
 async def extract_step(state: InvestigationState) -> dict:
     text = state.get("alert_text")
     if not text:
@@ -431,6 +473,18 @@ async def baseline_step(state: InvestigationState) -> dict:
         return {"errors": [f"baseline: {e}"], "steps": ["baseline: degraded"]}
 
 
+def _format_decision(decision: dict) -> str:
+    """One report line per prior decision. The heading carries the advisory status,
+    so each line only has to name the decision, its origin and its age."""
+    age = decision.get("age_days")
+    when = f"last confirmed {age:g}d ago" if isinstance(age, (int, float)) else "age unknown"
+    origin = decision.get("recorded_by") or "unknown"
+    if decision.get("advisory"):
+        origin += ", machine-recorded"
+    return (f"{decision.get('verdict') or 'unknown'} via {origin}, {when}, "
+            f"support {int(decision.get('support_count') or 1)}")
+
+
 async def _advisory_paragraphs(cve_ids: list[str]) -> list[str]:
     """Flatten vendor advisories for the top CVEs into report paragraphs.
     One line per CVE, best-effort: a failed/timed-out lookup degrades to a note."""
@@ -496,6 +550,21 @@ async def report_step(state: InvestigationState) -> dict:
             sections[0]["bullets"].append(
                 f"label: {label.get('label') or label.get('status')} "
                 f"(confidence={label.get('confidence')}, status={label.get('status')})")
+        recalled = state.get("recalled_memory") or {}
+        prior = [_format_decision(unit) for unit in recalled.get("decisions") or []]
+        reasons = [f"reason (tainted): {(unit.get('text') or '')[:200]}"
+                   for unit in recalled.get("recent_reasons") or []]
+        if prior or reasons:
+            paragraphs = [str(recalled.get("boundary") or "")]
+            if reasons:
+                paragraphs.append(
+                    "The evidence entries below are subject-scoped history, not the reason "
+                    "for any single decision above.")
+            sections.append({
+                "heading": "Prior decisions (historical memory, advisory)",
+                "paragraphs": paragraphs,
+                "bullets": prior + reasons,
+            })
         if cve_ids:
             advisory = await _advisory_paragraphs(cve_ids)
             sections.append({
@@ -527,7 +596,7 @@ async def verdict_step(state: InvestigationState) -> dict:
     try:
         out = await blueteam_mark_investigated(MarkInvestigatedInput(
             srcip=srcip, verdict=state.get("verdict_label", "suspicious"),
-            notes="auto investigation workflow"))
+            notes="auto investigation workflow", recorded_by="workflow"))
         payload = _as_json(out)
         if payload.get("error"):
             return {"errors": [f"verdict: {payload['error']}"], "steps": ["verdict: degraded"]}
@@ -587,6 +656,7 @@ def build_investigation_graph(checkpointer=None):
     analytics runs graph (networkx) and killchain (STIX) concurrently.
     """
     g = StateGraph(InvestigationState)
+    g.add_node("recall", recall_step)
     g.add_node("extract", extract_step)
     g.add_node("fp_check", fp_check_step)
     g.add_node("enrich", enrich_step)
@@ -598,7 +668,8 @@ def build_investigation_graph(checkpointer=None):
     g.add_node("baseline", baseline_step)
     g.add_node("report", report_step)
     g.add_node("verdict", verdict_step)
-    g.add_edge(START, "extract")
+    g.add_edge(START, "recall")
+    g.add_edge("recall", "extract")
     g.add_edge("extract", "fp_check")
     g.add_conditional_edges("fp_check", _after_fp_check, {
         "suppressed": "verdict", "enrich": "enrich", "analytics": "analytics"})
@@ -657,18 +728,12 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
         "baseline": None,
         "report_path": None,
         "verdict": None,
+        "recalled_memory": None,
         "steps": [],
         "errors": [],
         "runs": 1,
     }
-    if srcip:
-        subject = subject_key("srcip", srcip)
-    elif alert_text:
-        # No entity to key on, so the alert body is the identity: the same alert
-        # repeats into the same thread.
-        subject = "alert:" + hashlib.sha256(alert_text.encode("utf-8")).hexdigest()[:16]
-    else:
-        subject = None
+    subject = _subject_for_run(srcip, alert_text)
     config = {"configurable": {"thread_id": thread_id_for(_DB_PATH, subject)}}
     before = None
     if _DB_PATH:
@@ -695,7 +760,7 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
     # Without a durable thread there is no marker, and the log is already this run's.
     steps = _this_run(final.get("steps") or [])
     errors = _this_run(final.get("errors") or [])
-    return {
+    summary = {
         "status": "degraded" if errors else "complete",
         "srcip": srcip,
         "prior_runs": int(prior.get("runs") or 0),
@@ -714,3 +779,7 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
         "report_path": final.get("report_path"),
         "verdict": final.get("verdict"),
     }
+    # Only when memory produced something, so a disabled store leaves this summary
+    # identical to the pre-memory behaviour.
+    recalled = final.get("recalled_memory")
+    return summary if recalled is None else {**summary, "recalled_memory": recalled}

@@ -166,7 +166,6 @@ async def blueteam_attack_chain(params: AttackChainInput) -> str:
     chain_matches: list[dict[str, Any]] = []
     for chain in _KNOWN_ATTACK_CHAINS:
         chain_ids = [rid for rid, _ in transitions]
-        # Check if the compressed sequence contains the ordered pattern
         # Use a subsequence match: each phase must appear in order, not necessarily consecutive
         pattern = chain["pattern"]
         seq_idx = 0

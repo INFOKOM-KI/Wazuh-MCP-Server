@@ -767,6 +767,12 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_LANGGRAPH_DB="/var/log/blue-team-mcp/langgraph.db"  # unset (default) = per-run threads held in memory; set = durable subject-keyed threads
 # export BLUETEAM_LANGGRAPH_NODE_TIMEOUT="120"  # seconds — per-node timeout
 
+# Investigation memory (opt-in): subject-scoped prior analyst decisions
+# export BLUETEAM_MEM_ENABLED="true"                        # no effect until a path is set
+# export BLUETEAM_MEM_DB="/var/log/blue-team-mcp/memory.db"  # absolute path; deliberately not defaulted
+# export BLUETEAM_MEM_MAX_UNITS_PER_SUBJECT="50"            # write-time cap, no eviction
+# export BLUETEAM_MEM_TTL="7776000"                        # 90 days from the last confirmation; 0 = never expire
+
 # Beacon detection exclusions (comma-separated IPs — known health-check/monitoring infra)
 # export BLUETEAM_BEACON_EXCLUDE_IPS="10.0.0.1,10.0.0.2"
 

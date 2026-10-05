@@ -1,0 +1,32 @@
+# Repeat-subject fixture for tests/bench_memory_recall.py
+#
+# One JSON object per line:
+#   {"run", "srcip", "label", "verdict", "notes", "expect_prior", "expect_verdict"}
+#
+# expect_prior says whether a prior decision must ALREADY be visible before this
+# run's verdict is retained, and expect_verdict is the verdict that must be among
+# those visible decisions. Replaying the file in order is the whole test.
+# Blank lines and lines starting with # are ignored.
+#
+# Labels, one per behaviour the benchmark separates:
+#   repeat-analyst-note : repeated subject with an analyst reason (later runs: decision + tainted reason)
+#   repeat-auto-note    : repeated subject, workflow marker only (decision, never a reason)
+#   control-single      : one run, so no prior decision may appear
+#
+# STATUS: FIXTURE, synthetic. Subjects are in 203.0.113.0/24 (RFC 5737
+# documentation range) and every note was written for this file. No production
+# data, no real indicator, no claim about live repeat rates.
+{"run": 1, "srcip": "203.0.113.10", "label": "repeat-analyst-note", "verdict": "false_positive", "notes": "CrowdSec: scanner noise from a hosting range", "expect_prior": false, "expect_verdict": ""}
+{"run": 2, "srcip": "203.0.113.10", "label": "repeat-analyst-note", "verdict": "false_positive", "notes": "CrowdSec: scanner noise from a hosting range", "expect_prior": true, "expect_verdict": "false_positive"}
+{"run": 3, "srcip": "203.0.113.10", "label": "repeat-analyst-note", "verdict": "true_positive", "notes": "same host now beaconing to 198.51.100.7", "expect_prior": true, "expect_verdict": "false_positive"}
+{"run": 1, "srcip": "203.0.113.11", "label": "repeat-analyst-note", "verdict": "suspicious", "notes": "single failed login, cannot conclude", "expect_prior": false, "expect_verdict": ""}
+{"run": 2, "srcip": "203.0.113.11", "label": "repeat-analyst-note", "verdict": "false_positive", "notes": "follow-up: known vulnerability scanner, ticket 4412", "expect_prior": true, "expect_verdict": "suspicious"}
+{"run": 3, "srcip": "203.0.113.11", "label": "repeat-analyst-note", "verdict": "false_positive", "notes": "follow-up: known vulnerability scanner, ticket 4412", "expect_prior": true, "expect_verdict": "suspicious"}
+{"run": 1, "srcip": "203.0.113.20", "label": "repeat-auto-note", "verdict": "suspicious", "notes": "auto investigation workflow", "expect_prior": false, "expect_verdict": ""}
+{"run": 2, "srcip": "203.0.113.20", "label": "repeat-auto-note", "verdict": "suspicious", "notes": "auto investigation workflow", "expect_prior": true, "expect_verdict": "suspicious"}
+{"run": 3, "srcip": "203.0.113.20", "label": "repeat-auto-note", "verdict": "suspicious", "notes": "auto investigation workflow", "expect_prior": true, "expect_verdict": "suspicious"}
+{"run": 1, "srcip": "203.0.113.21", "label": "repeat-auto-note", "verdict": "clean", "notes": "auto investigation workflow", "expect_prior": false, "expect_verdict": ""}
+{"run": 2, "srcip": "203.0.113.21", "label": "repeat-auto-note", "verdict": "clean", "notes": "auto investigation workflow", "expect_prior": true, "expect_verdict": "clean"}
+{"run": 3, "srcip": "203.0.113.21", "label": "repeat-auto-note", "verdict": "clean", "notes": "auto investigation workflow", "expect_prior": true, "expect_verdict": "clean"}
+{"run": 1, "srcip": "203.0.113.30", "label": "control-single", "verdict": "true_positive", "notes": "confirmed C2 callback", "expect_prior": false, "expect_verdict": ""}
+{"run": 1, "srcip": "203.0.113.31", "label": "control-single", "verdict": "unknown", "notes": "", "expect_prior": false, "expect_verdict": ""}

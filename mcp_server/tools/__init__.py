@@ -114,6 +114,7 @@ def register_all_tools() -> None:
         ("forecast",                "forecast",                False),  # 1 tool tactic sequence forecasting (markov/hmm)
         ("source_forecast",         "forecast",                False),  # 2 tools source-layer forecasting (candidate observed sources)
         ("label",                   "label",                   False),  # 1 tool incident labeling (ONNX prototype / Laya)
+        ("memory",                  "memory",                  False),  # 1 tool subject-scoped prior decisions (structured, no retrieval)
     ]
 
     for attr, category, skip_ro in _MODULES:

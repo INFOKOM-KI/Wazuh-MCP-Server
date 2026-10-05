@@ -178,7 +178,7 @@ class BypassRedactionInput(BaseModel):
     bypass_redaction: bool = Field(default=False, description="When true, skip PII/credential redaction for audit investigations")
 
 
-# NETWORK MONITORING
+# Network monitoring
 @mcp.tool(
     name="blueteam_list_listening_ports",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
@@ -430,7 +430,7 @@ async def blueteam_rootkit_scan(params: RootkitInput) -> str:
     return _redact_alert_data(r["stdout"] or r["stderr"], params=params)
 
 
-# SYSTEM HARDENING
+# System hardening
 @mcp.tool(
     name="blueteam_lynis_audit",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
@@ -506,7 +506,7 @@ async def blueteam_check_open_firewall(params: BypassRedactionInput) -> str:
 
 
 
-# USER & SESSION MONITORING
+# User & session monitoring
 @mcp.tool(
     name="blueteam_who_is_logged_in",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
@@ -672,7 +672,7 @@ async def blueteam_check_ssh_authorized_keys(params: BypassRedactionInput) -> st
     return _redact_alert_data(json.dumps(result, indent=2) if result else json.dumps({"result": "No authorized_keys files found"}), bypass=params.bypass_redaction)
 
 
-# PROCESS & CRON ANALYSIS
+# Process & cron analysis
 @mcp.tool(
     name="blueteam_list_processes",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
@@ -732,7 +732,7 @@ async def blueteam_list_cron_jobs(params: BypassRedactionInput) -> str:
     return _redact_alert_data("\n\n".join(output) if output else "No cron jobs found (or insufficient permissions)", bypass=params.bypass_redaction)
 
 
-# SYSTEM HEALTH
+# System health
 @mcp.tool(
     name="blueteam_system_health",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}

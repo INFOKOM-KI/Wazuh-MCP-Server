@@ -761,7 +761,7 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
         b_stats["account_lockouts_observed"] = lockouts  # advisory, not a scoring input
         engine_b_results = (anomalies, b_stats)
 
-    # UNIFIED SCORING
+    # Unified scoring
     result = format_evaluation_dict(
         since_iso, until_iso,
         engine_a_results=engine_a_results,

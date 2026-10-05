@@ -48,6 +48,15 @@ config.env
 # load target tests/bench_rag_flags.py reads, and a fresh clone needs it.
 !tests/fixtures/rag_eval_queries.jsonl
 
+# The memory benchmark's replay fixture, same reason: tests/bench_memory_recall.py reads
+# it, and a fresh clone must have it.
+!tests/fixtures/repeat_subjects.jsonl
+
+# The Phase 4 evaluation fixture, same reason: tests/bench_memory_digest.py reads it,
+# and the evaluation is not reproducible without it.
+!tests/fixtures/mental_digest_eval.jsonl
+!tests/fixtures/mental_digest_longnote.jsonl
+
 # RapidAPI state (response cache + month-to-date budget counter). Holds attacker IPs
 # and vendor verdicts, and the atomic-rewrite temp file lands beside it.
 rapidapi_state.jsonl*

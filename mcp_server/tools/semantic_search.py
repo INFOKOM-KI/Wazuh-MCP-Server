@@ -326,7 +326,7 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
             {"match": {"srcip": params.srcip.strip()}},
         ], "minimum_should_match": 1}})
 
-    # Step 1: Get total count (size:0, instant)
+    # Count first: size 0 asks for the total only, which is instant
     count_body = {"size": 0, "query": {"bool": {"must": must}}}
     raw_count = await _wazuh_indexer_post(count_body)
     total_val = raw_count.get("hits", {}).get("total", {}).get("value", 0) if isinstance(
@@ -338,7 +338,7 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
     else:
         max_scan = _MAX_SCAN
 
-    # Step 2: Fetch documents
+    # Page the matching documents with search_after
     page_size = min(1000, max_scan)
     all_docs: list[dict] = []
     total_val = 0

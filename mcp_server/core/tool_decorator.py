@@ -160,7 +160,7 @@ def blueteam_tool(
         # func_metadata() can resolve Pydantic input-model types via the tool
         # module's import namespace (rather than this decorator module's).
         # functools.wraps already copies __annotations__, __module__, __name__,
-        # __doc__, and __wrapped__ — but under `from __future__ import annotations`
+        # __doc__, and __wrapped__, but under `from __future__ import annotations`
         # those are deferred strings, and FastMCP resolves via __globals__ (which is
         # read-only on Python 3.12+). Resolve the strings into real types here.
         def _resolve_annotations(anns, globalns):
