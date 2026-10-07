@@ -875,7 +875,7 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | Want | Tool |
 |---|---|
 | Geo distribution / heatmap / concentration | `blueteam_wazuh_geo_distribution`, `blueteam_wazuh_geo_heatmap`, `blueteam_wazuh_geo_concentration` |
-| FIM / compliance / vulns | `blueteam_wazuh_syscheck`, `blueteam_wazuh_compliance`, `blueteam_wazuh_vulnerabilities` |
+| FIM / compliance / vulns | `blueteam_wazuh_syscheck` (add `syscheck_field` + `syscheck_value` to filter any template FIM leaf, `changed_attribute` for a specific hash or permission change, `by_field` to group by a leaf, `include_diff` for sampled diffs), `blueteam_wazuh_compliance`, `blueteam_wazuh_vulnerabilities` |
 | Webshell scan | `blueteam_check_webshell(url)` |
 | Fail2ban state | `blueteam_fail2ban_status`, `blueteam_fail2ban_jail_status`, `blueteam_fail2ban_unban` |
 | Process / connection / user inventory | `blueteam_list_processes`, `blueteam_list_connections`, `blueteam_list_listening_ports`, `blueteam_list_users`, `blueteam_list_cron_jobs`, `blueteam_who_is_logged_in`, `blueteam_last_logins` |
@@ -1039,7 +1039,9 @@ Four things to check, in this order:
    means nothing usable was harvested: the detection block holds a placeholder and the
    rule matches nothing. Never deploy it.
 2. `unmapped_fields` (finding `SG9`) — the index does not know those fields, so the
-   query can never match. Fix the field names before converting.
+   query can never match. Fix the field names before converting. The built-in map covers
+   Windows Security and Sysmon eventdata (`SubjectUserName`, `ProcessName`, `IpAddress`,
+   `Channel`, and similar); a Windows field outside that set still lands in this list.
 3. `field_coverage` all zero — the deployment's decoders do not populate the harvested
    fields, so the draft was built from nothing.
 4. `existing_rules` — Manager rules that already cover this description. Decide whether
