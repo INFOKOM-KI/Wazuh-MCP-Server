@@ -452,7 +452,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_ioc_search_bulk(ips=[...], detail_level="summary"\|"forensic")` | 1-25 IPs, one metered RapidAPI request each, sequential and spaced by `BLUETEAM_RAPIDAPI_MIN_INTERVAL`. Same IOC Search product as `blueteam_ioc_search`, so it needs only that subscription; use it when `blueteam_ip_intel_bulk` is not subscribed or the plan requires paced single lookups. No `raw` level. One failing IP is reported per IP and never hides the rest |
 | `wazuh_alert_focused_crawl` | surgical alert deep-dive (`rule_id`/`src_ip`/`sample_size`) |
 | `wazuh_alert_aggregate_analysis` | zero-doc full-index statistical summary |
-| `wazuh_alert_dsl_query` | raw OpenSearch DSL (script-injection guarded) |
+| `wazuh_alert_dsl_query` | raw OpenSearch DSL (script-injection guarded); nested MS Graph families need explicit `nested`/`reverse_nested` (see the tool docstring examples) |
 | `threatfox_ioc_search`, `threatfox_ioc_search_bulk` | direct ThreatFox search (vs the 6-provider aggregate) |
 | `crowdsec_ip_reputation_bulk` / `otx_lookup_bulk` / `urlhaus_lookup_bulk` | bulk enrich up to N IOCs |
 | `blueteam_index_schema` | discover index field mappings |
@@ -681,11 +681,12 @@ lexical fallback for a cluster or a label.
 
 ## 3. Redaction & the forensic token (read before touching PII)
 
-The server masks PII/credentials in 6 layers plus a `protect_victim` extension
-(bare hostname/agent-name masking). Layer 1 (credentials) is **never
-bypassable**. Policies:
+The server masks PII/credentials in layers (credentials, emails, private IPs,
+domains, paths, identities) plus a `protect_victim` extension (bare
+hostname/agent-name masking). Layer 1 (credentials) is **never
+bypassable**. No field is length-truncated by the output layer. Policies:
 
-- `full` (default): mask emails, private IPs, all domains, paths, UAs.
+- `full` (default): mask emails, private IPs, all domains, paths, identities.
 - `protect_victim`: mask **only** victim-owned indicators (owned domains), keep
   attacker IOCs/payload intact. **Requires `BLUETEAM_OWNED_DOMAINS` set** —
   otherwise the server silently falls back to `full`.

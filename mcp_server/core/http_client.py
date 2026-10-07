@@ -228,7 +228,6 @@ async def _api_call(method: str, url: str, *, client_name: str | None = None, ve
     raise last_exc  # type: ignore[misc]
 
 
-# Error handling
 # Statuses worth explaining in the error text itself rather than as a bare code.
 _STATUS_HINTS: dict[int, str] = {
     400: "Bad request (400) - the API rejected the parameters. Try a smaller limit.",

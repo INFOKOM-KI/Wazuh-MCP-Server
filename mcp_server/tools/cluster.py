@@ -46,7 +46,7 @@ from mcp_server.core.tool_decorator import blueteam_tool
 from mcp_server.correlation.cluster_core import assign_vector, fit_clusters
 from mcp_server.correlation.three_sum_core import build_category_techniques
 from mcp_server.tools.correlation import _load_mitre_technique_map, fetch_srcip_profiles
-from mcp_server.wazuh.indexer import _SRCIP_FIELD_PATHS, _wazuh_indexer_field_caps
+from mcp_server.wazuh.indexer import _SRCIP_FIELD_PATHS, _agg_safe_paths, _wazuh_indexer_field_caps
 
 logger = logging.getLogger("blue_team_mcp.cluster")
 
@@ -282,8 +282,9 @@ async def _run_backfill(params) -> str:
             return json.dumps(payload, indent=2, ensure_ascii=False)
         return _backfill_markdown(payload)
 
-    caps = await _wazuh_indexer_field_caps(_SRCIP_FIELD_PATHS)
-    live_paths = [path for path in _SRCIP_FIELD_PATHS if path in caps]
+    candidates = [f"{path}.keyword" for path in _SRCIP_FIELD_PATHS]
+    caps = await _wazuh_indexer_field_caps(_SRCIP_FIELD_PATHS + candidates)
+    live_paths = [name for path in _SRCIP_FIELD_PATHS for name in _agg_safe_paths(path, caps)]
     if not live_paths:
         payload = {"status": "srcip_mapping_degraded", "mode": "backfill",
                    "window": {"since": since_iso, "until": until_iso},

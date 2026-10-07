@@ -20,7 +20,7 @@ from mcp_server.core.http_client import ValidPublicIp
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call, _get_client
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _srcip_should_clauses
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 
@@ -84,7 +84,7 @@ async def blueteam_beacon_detect(params: BeaconDetectInput) -> str:
     Fetches ``@timestamp`` for all alerts from a given source IP, computes
     inter-arrival gaps, and calculates the coefficient of variation (CV =
     σ/μ). A low CV with consistent intervals is the statistical signature
-    of periodic beaconing — a hallmark of C2 callbacks.
+    of periodic beaconing, a hallmark of C2 callbacks.
 
     Returns beacon score (0.0-1.0), estimated period, gap statistics,
     and a timeline summary.
@@ -124,13 +124,7 @@ async def blueteam_beacon_detect(params: BeaconDetectInput) -> str:
                 "must": [
                     {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                              "format": "strict_date_optional_time"}}},
-                    {"bool": {
-                        "should": [
-                            {"match": {"data.srcip": params.srcip.strip()}},
-                            {"match_phrase": {"full_log": params.srcip.strip()}},
-                        ],
-                        "minimum_should_match": 1,
-                    }},
+                    _srcip_should_clauses(params.srcip),
                 ]
             }
         },

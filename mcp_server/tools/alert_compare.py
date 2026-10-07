@@ -20,7 +20,7 @@ from mcp_server.core.http_client import ValidPublicIp
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call, _get_client
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups, ValidAgentId
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _srcip_should_clauses
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 
@@ -102,13 +102,7 @@ async def blueteam_wazuh_alert_compare(params: AlertCompareInput) -> str:
                     "must": [
                         {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                                  "format": "strict_date_optional_time"}}},
-                        {"bool": {
-                            "should": [
-                                {"match": {"data.srcip": ip.strip()}},
-                                {"match_phrase": {"full_log": ip.strip()}},
-                            ],
-                            "minimum_should_match": 1,
-                        }},
+                        _srcip_should_clauses(ip),
                     ]
                 }
             },
@@ -232,7 +226,7 @@ _DEDUP_PATTERNS: list[tuple[str, str]] = [
 # Maps directly to OpenSearch bool.must/filter clauses inside _build_curated_query().
 class CuratedReportFilters(BaseModel):
     """Filter specification for blueteam_curated_threat_report. Every field is
-    optional — only specified filters are applied. All filters are AND'd together.
+    optional; only specified filters are applied. All filters are AND'd together.
     """
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
@@ -322,13 +316,52 @@ class CuratedReportFilters(BaseModel):
                     "Requires CROWDSEC_API_KEY and adds per-IP API calls.")
 
 
+def _filter_field_bases(f: CuratedReportFilters) -> list[str]:
+    """Filter fields whose exact keyword name depends on the index mapping."""
+    bases = []
+    if f.domain_pattern or f.domain_contains:
+        bases.append("data.domain")
+    if f.rule_ids:
+        bases.append("rule.id")
+    if f.url_pattern:
+        bases.append("data.url")
+    if f.user_agent_contains:
+        bases.append("data.user_agent")
+    if f.referrer_pattern:
+        bases.append("data.referrer")
+    if f.rule_desc_contains:
+        bases.append("rule.description")
+    if f.log_source_pattern:
+        bases.append("location")
+    return bases
+
+
+def _named_clause(kind: str, field: str, value, resolved: Optional[dict]) -> dict:
+    """One clause for a field whose mapped name may be plain or `.keyword`.
+    ``resolved`` missing means the caller did not probe, so the plain name is
+    assumed. A resolved value of None means a mixed mapping where either name may
+    match, so both alternatives go into a should.
+    """
+    if resolved is None:
+        names = [field]
+    else:
+        name = resolved.get(field)
+        names = [name] if name else [field, f"{field}.keyword"]
+    if len(names) == 1:
+        return {kind: {names[0]: value}}
+    return {"bool": {"should": [{kind: {name: value}} for name in names],
+                     "minimum_should_match": 1}}
+
+
 def _build_curated_query(
     since_iso: str, until_iso: str, f: CuratedReportFilters,
+    resolved: Optional[dict] = None,
 ) -> list[dict]:
     """Translate CuratedReportFilters into OpenSearch bool.must clauses.
 
-    Each non-None filter field becomes an AND clause. Returns a list of
-    OpenSearch query/filter dicts ready for a bool.must array.
+    Each non-None filter field becomes an AND clause. ``resolved`` carries the
+    mapping-aware field-name choice per base field from _resolve_agg_fields;
+    omit it only when the caller has not probed (plain names are assumed).
     """
     clauses: list[dict] = [
         {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
@@ -344,13 +377,13 @@ def _build_curated_query(
     if f.domain:
         clauses.append({"match": {"data.domain": f.domain.strip()}})
     if f.domain_pattern:
-        clauses.append({"wildcard": {"data.domain.keyword": f.domain_pattern.strip()}})
+        clauses.append(_named_clause("wildcard", "data.domain", f.domain_pattern.strip(), resolved))
     if f.domain_contains:
-        clauses.append({"wildcard": {"data.domain.keyword": f"*{f.domain_contains.strip()}*"}})
+        clauses.append(_named_clause("wildcard", "data.domain", f"*{f.domain_contains.strip()}*", resolved))
 
     # Rule
     if f.rule_ids:
-        clauses.append({"terms": {"rule.id.keyword": [r.strip() for r in f.rule_ids]}})
+        clauses.append(_named_clause("terms", "rule.id", [r.strip() for r in f.rule_ids], resolved))
     if f.rule_level_min is not None:
         clauses.append({"bool": {"should": [
             {"range": {"rule.level": {"gte": f.rule_level_min}}},
@@ -360,10 +393,7 @@ def _build_curated_query(
             {"range": {"rule.level": {"lte": f.rule_level_max}}},
         ], "minimum_should_match": 1}})
     if f.rule_groups:
-        clauses.append({"bool": {"should": [
-            {"terms": {"rule.groups": f.rule_groups}},
-            {"terms": {"rule.groups.keyword": f.rule_groups}},
-        ], "minimum_should_match": 1}})
+        clauses.append({"terms": {"rule.groups": f.rule_groups}})
     if f.mitre_tactics:
         clauses.append({"terms": {"rule.mitre.tactic": f.mitre_tactics}})
     if f.mitre_techniques:
@@ -381,16 +411,16 @@ def _build_curated_query(
 
     # HTTP
     if f.url_pattern:
-        clauses.append({"wildcard": {"data.url.keyword": f.url_pattern.strip()}})
+        clauses.append(_named_clause("wildcard", "data.url", f.url_pattern.strip(), resolved))
     if f.response_codes:
         clauses.append({"terms": {"data.response_code": f.response_codes}})
     if f.http_methods:
         clauses.append({"terms": {"data.method": f.http_methods}})
     if f.user_agent_contains:
-        clauses.append({"wildcard": {"data.user_agent.keyword":
-                                     f"*{f.user_agent_contains.strip()}*"}})
+        clauses.append(_named_clause("wildcard", "data.user_agent",
+                                     f"*{f.user_agent_contains.strip()}*", resolved))
     if f.referrer_pattern:
-        clauses.append({"wildcard": {"data.referrer.keyword": f.referrer_pattern.strip()}})
+        clauses.append(_named_clause("wildcard", "data.referrer", f.referrer_pattern.strip(), resolved))
     if f.response_size_min is not None:
         clauses.append({"range": {"data.response_size": {"gte": f.response_size_min}}})
     if f.response_size_max is not None:
@@ -398,12 +428,12 @@ def _build_curated_query(
 
     # Rule description free-text
     if f.rule_desc_contains:
-        clauses.append({"wildcard": {"rule.description.keyword":
-                                     f"*{f.rule_desc_contains.strip()}*"}})
+        clauses.append(_named_clause("wildcard", "rule.description",
+                                     f"*{f.rule_desc_contains.strip()}*", resolved))
     if f.rule_firedtimes_min is not None:
         clauses.append({"range": {"rule.firedtimes": {"gte": f.rule_firedtimes_min}}})
     if f.log_source_pattern:
-        clauses.append({"wildcard": {"location.keyword": f.log_source_pattern.strip()}})
+        clauses.append(_named_clause("wildcard", "location", f.log_source_pattern.strip(), resolved))
 
     # Geo bounding box
     if f.geo_bbox:
@@ -426,16 +456,13 @@ def _build_curated_query(
         for ip in f.srcips:
             ip = ip.strip()
             if ip:
-                ip_clauses.append({"bool": {"should": [
-                    {"match": {"data.srcip": ip}},
-                    {"match_phrase": {"full_log": ip}},
-                ], "minimum_should_match": 1}})
+                ip_clauses.append(_srcip_should_clauses(ip, full_log=False))
         clauses.extend(ip_clauses)
     if f.exclude_srcips:
         for ip in f.exclude_srcips:
             ip = ip.strip()
             if ip:
-                clauses.append({"bool": {"must_not": {"match": {"data.srcip": ip}}}})
+                clauses.append({"bool": {"must_not": _srcip_should_clauses(ip, full_log=False)}})
 
     return clauses
 

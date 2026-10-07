@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-PII redaction pipeline 6 layers. Layer 1 (credentials) Never bypassable.
+PII redaction value-shape layers: emails, private IPs, domains, paths.
+Layer 1 (credentials) lives in redact.py and is never bypassable.
 
 Three redaction policies (BLUETEAM_REDACTION_POLICY env / per-call param):
   - "full" (default):   shape-based masking - emails, private IPs, ALL domains,
-                        paths, UAs. Registered attacker IOCs are exempt.
+                        paths. Registered attacker IOCs are exempt.
   - "protect_victim":   mask ONLY victim-owned indicators - emails/domains at
                         owned domains (BLUETEAM_OWNED_DOMAINS), private IPs,
                         paths, identity fields, agent names. Attacker domains,
@@ -101,10 +102,4 @@ def _apply_location_layer(data: str, _pol: str, _reveal: bool) -> str:
         path_hash = hashlib.sha256(f"{_REDACT_SALT}:{path}".encode()).hexdigest()[:6]
         return f".../{leaf} [h:{path_hash}]"
     return _LOCATION_RE.sub(_redact_log_path, data)
-
-
-def _apply_ua_layer(data: str, _pol: str, _reveal: bool) -> str:
-    if len(data) > 80 and re.search(r"Mozilla|Chrome|Safari|Firefox|curl|wget|python", data):
-        return data[:80] + "..."
-    return data
 

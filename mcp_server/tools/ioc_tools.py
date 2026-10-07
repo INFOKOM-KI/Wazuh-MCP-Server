@@ -98,7 +98,7 @@ async def blueteam_extract_iocs(params: IocExtractInput) -> str:
     **Filters noise**: skips private IPs (10.x, 192.168.x, 172.16-31.x),
     loopback, broadcast, and common DNS resolvers.
 
-    Use this BEFORE calling threat intel tools — extract IOCs from alerts, then
+    Use this BEFORE calling threat intel tools: extract IOCs from alerts, then
     feed the results to CrowdSec, ThreatFox, VirusTotal, or WHOIS.
 
     **Worked Examples**

@@ -77,9 +77,10 @@ _WAZUH_LEVEL_BANDS: list[tuple[int, str]] = [
 ]
 
 # Field -> Sigma modifier. ``|contains`` for free-text attacker values (URLs,
-# command lines) because Wazuh decoders truncate and decorate them. Domain and
-# file name are exact because the decoder emits them whole. This table is the one
-# place a new harvestable field needs a modifier decision.
+# command lines) because Wazuh decoders truncate and decorate them. Domain is
+# exact because the decoder emits it whole; file values use endswith so a path
+# or a bare name both match. This table is the one place a new harvestable
+# field needs a modifier decision.
 # KNOWN CEILING, agreed 2026-09-11 and deferred: ``data.url`` as ``|contains``
 # emits ``data.url:*\/shell.php*``. A leading wildcard is a per-document scan on
 # that field, and a URL carrying a query string (``shell.php?id=1``) matches when
@@ -91,16 +92,14 @@ _FIELD_MODIFIERS: dict[str, str] = {
     "data.command": "contains",
     "data.user_agent": "contains",
     "data.domain": "exact",
-    "data.file.name": "exact",
-    "data.file.path": "endswith",
+    "data.file": "endswith",
     "data.srcip": "exact",
 }
 
 # Harvest order. Earlier fields are more specific to the attacker, so they win
 # when the field cap is reached.
 _HARVEST_ORDER: list[str] = [
-    "data.url", "data.domain", "data.command", "data.file.name",
-    "data.file.path", "data.srcip",
+    "data.url", "data.domain", "data.command", "data.file", "data.srcip",
 ]
 
 # Wazuh decoder / rule group -> Sigma logsource category. First match wins.

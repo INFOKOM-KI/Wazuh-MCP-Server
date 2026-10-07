@@ -11,7 +11,7 @@ Exposes Wazuh Manager SCA endpoints for agent compliance scanning:
 All tools use @blueteam_tool for automatic audit logging, exception handling,
 and response truncation.
 
-NOTE: No ``from __future__ import annotations`` — required for @blueteam_tool
+NOTE: No ``from __future__ import annotations``; required for @blueteam_tool
       type resolution (see wazuh_siem.py for rationale).
 """
 
@@ -49,7 +49,7 @@ class AgentSCAInput(BaseModel):
 async def blueteam_wazuh_get_agent_sca(params: AgentSCAInput) -> str:
     """Get SCA (Security Configuration Assessment) scan results for a Wazuh agent.
 
-    Returns policy-level scan summaries — pass, fail, score per policy.
+    Returns policy-level scan summaries: pass, fail, score per policy.
     Use ``blueteam_wazuh_get_sca_policy_checks`` for per-check details.
     """
     api: dict[str, str] = {

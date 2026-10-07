@@ -21,7 +21,7 @@ from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call, _get_client
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
 from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _srcip_should_clauses
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 
@@ -90,7 +90,7 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
     with counts, computes first_seen / last_seen per rule, and flags
     unusual user-agent strings (old browsers, scripted clients).
 
-    Returns a markdown report or JSON with the structured digest — the LLM
+    Returns a markdown report or JSON with the structured digest. The LLM
     can reason about attack patterns from the summary without scanning
     raw alert documents.
 
@@ -124,13 +124,7 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
     must_clauses: list[dict] = [
         {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                      "format": "strict_date_optional_time"}}},
-        {"bool": {
-            "should": [
-                {"match": {"data.srcip": params.srcip.strip()}},
-                {"match_phrase": {"full_log": params.srcip.strip()}},
-            ],
-            "minimum_should_match": 1,
-        }},
+        _srcip_should_clauses(params.srcip),
     ]
     if params.agent_name:
         must_clauses.append({"match": {"agent.name": params.agent_name.strip()}})
@@ -207,7 +201,7 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
     for ua, _ in uas.most_common(20):
         for pat, label in _UA_SIGNALS:
             if pat.search(ua):
-                unusual_uas.append(f"{label}: `{ua[:120]}`")
+                unusual_uas.append(f"{label}: `{ua}`")
                 break
 
     # Build response
@@ -252,7 +246,7 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
         "|---------|-------|-------------|--------------|",
     ]
     for rid, cnt in rule_counts.most_common():
-        desc = _escape_md_table(rule_descriptions.get(rid, ""))[:80]
+        desc = _escape_md_table(rule_descriptions.get(rid, ""))
         fst = rule_timestamps[rid][0][:19] if rule_timestamps[rid] else "-"
         lst = rule_timestamps[rid][-1][:19] if rule_timestamps[rid] else "-"
         lines.append(f"| {rid} | {cnt} | {desc} | {fst} → {lst} |")
@@ -268,7 +262,7 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
         lines.append(f"## URLs Accessed ({len(urls)} total, showing first 15)")
         for u in urls[:15]:
             ts_short = u["ts"][:19] if len(u["ts"]) > 19 else u["ts"]
-            lines.append(f"- `[{ts_short}]` `{u['url'][:100]}`")
+            lines.append(f"- `[{ts_short}]` `{u['url']}`")
         if len(urls) > 15:
             lines.append(f"- ... and {len(urls) - 15} more")
 
@@ -289,7 +283,7 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
         lines.append("")
         lines.append("## Top User-Agents")
         for ua, n in uas.most_common(3):
-            lines.append(f"- ({n}×) `{ua[:100]}`")
+            lines.append(f"- ({n}×) `{ua}`")
 
     return _truncate_if_needed("\n".join(lines))
 

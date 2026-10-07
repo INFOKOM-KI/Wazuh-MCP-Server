@@ -233,7 +233,8 @@ def test_fetch_alert_docs_builds_multifield_srcip_query(monkeypatch):
     must = captured["body"]["query"]["bool"]["must"]
     srcip_clause = [c for c in must if "bool" in c and "should" in c["bool"]]
     assert srcip_clause, "srcip filter missing"
-    assert any("data.srcip.keyword" in json.dumps(s) for s in srcip_clause)
+    assert any('"data.srcip"' in json.dumps(s) for s in srcip_clause)
+    assert ".keyword" not in json.dumps(srcip_clause)
     assert "full_log" not in captured["body"]["_source"]
 
 
@@ -276,3 +277,21 @@ def test_save_rejects_invalid_rule(tmp_path, monkeypatch):
         _run(yr.blueteam_yara_rule_save(yr.YaraRuleSaveInput(
             rule_source="rule broken { condition: ", response_format="json")))
     assert list(tmp_path.iterdir()) == []
+
+
+def test_attacker_fields_use_flat_data_file_only():
+    from mcp_server.wazuh.indexer import _ATTACKER_FIELDS
+    assert "data.file" in _ATTACKER_FIELDS
+    assert "data.file.path" not in _ATTACKER_FIELDS
+    assert "data.file.name" not in _ATTACKER_FIELDS
+
+
+def test_flat_file_field_feeds_coverage_and_atoms():
+    yr = _module()
+    docs = [{"data": {"file": "evilstager_payload_7788.bin",
+                      "url": "http://c2.example/payload"}}]
+    coverage = yr._alert_field_coverage(docs)
+    assert coverage["data.file"] == 1
+    assert "data.file.path" not in coverage and "data.file.name" not in coverage
+    atoms, _prese = yr._extract_from_docs(docs)
+    assert atoms

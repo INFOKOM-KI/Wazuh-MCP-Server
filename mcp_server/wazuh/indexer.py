@@ -4,7 +4,7 @@
 Wazuh Indexer (OpenSearch) query helpers (_search, _msearch, cursor pagination)
 """
 from __future__ import annotations
-import base64, json, logging, os, time
+import asyncio, base64, json, logging, os, time
 from typing import Dict, Optional, List
 import httpx
 
@@ -23,17 +23,73 @@ _KEYWORD_SEARCH_FIELDS: list[tuple[str, int]] = [
     ("rule.cve", 2), ("data.command", 1), ("data.protocol", 1),
     ("data.url", 0), ("data.domain", 0), ("data.user_agent", 0), ("data.referrer", 0),
 ]
+# Base source-IP paths, matched with `match`. The pinned template has no
+# `.keyword` sub-field for these. Template-valid families first, then aliases.
 _SRCIP_FIELD_PATHS: list[str] = [
-    "data.srcip.keyword", "data.srcip", "data.src_ip.keyword", "data.client_ip.keyword",
-    "data.remote_ip.keyword", "data.source_ip.keyword", "data.ip.keyword", "srcip.keyword",
+    "data.srcip", "data.src_ip", "data.audit.srcip",
+    "data.aws.sourceIPAddress", "data.aws.source_ip_address",
+    "data.office365.ClientIP", "data.ms-graph.actor.ipAddress",
+    "data.ms-graph.ipAddress", "data.win.eventdata.ipAddress",
+    "data.osquery.columns.src_ip", "GeoLocation.ip",
+    "data.client_ip", "data.remote_ip", "data.source_ip", "data.ip", "srcip",
 ]
+
+# Template-derived syscheck (FIM) leaves; tests pin this list to the fixture so
+# tools validate requested fields without duplicating hard-coded lists.
+_SYSCHECK_FIELD_PATHS: frozenset[str] = frozenset({
+    "syscheck.arch",
+    "syscheck.audit.effective_user.id",
+    "syscheck.audit.effective_user.name",
+    "syscheck.audit.group.id",
+    "syscheck.audit.group.name",
+    "syscheck.audit.login_group.id",
+    "syscheck.audit.login_group.name",
+    "syscheck.audit.login_user.id",
+    "syscheck.audit.login_user.name",
+    "syscheck.audit.process.id",
+    "syscheck.audit.process.name",
+    "syscheck.audit.process.ppid",
+    "syscheck.audit.user.id",
+    "syscheck.audit.user.name",
+    "syscheck.changed_attributes",
+    "syscheck.diff",
+    "syscheck.event",
+    "syscheck.gid_after",
+    "syscheck.gid_before",
+    "syscheck.gname_after",
+    "syscheck.gname_before",
+    "syscheck.hard_links",
+    "syscheck.inode_after",
+    "syscheck.inode_before",
+    "syscheck.md5_after",
+    "syscheck.md5_before",
+    "syscheck.mode",
+    "syscheck.mtime_after",
+    "syscheck.mtime_before",
+    "syscheck.path",
+    "syscheck.perm_after",
+    "syscheck.perm_before",
+    "syscheck.sha1_after",
+    "syscheck.sha1_before",
+    "syscheck.sha256_after",
+    "syscheck.sha256_before",
+    "syscheck.size_after",
+    "syscheck.size_before",
+    "syscheck.tags",
+    "syscheck.uid_after",
+    "syscheck.uid_before",
+    "syscheck.uname_after",
+    "syscheck.uname_before",
+    "syscheck.value_name",
+    "syscheck.value_type",
+})
+
 _MSEARCH_FALLBACK_ERROR: dict = {"error": "_msearch_failed"}
 
-# Attacker side alert fields only. ``full_log`` is deliberately absent: it carries
-# victim usernames and paths, which must never become a rule atom or a Sigma
-# detection value. Shared by the YARA and Sigma synthesizers.
+# Attacker side fields only, never full_log (victim usernames/paths). ``data.file``
+# is flat because the template maps it as keyword; dotted children cannot index.
 _ATTACKER_FIELDS: list[str] = [
-    "data.url", "data.domain", "data.command", "data.file.path", "data.file.name",
+    "data.url", "data.domain", "data.command", "data.file",
 ]
 _ATTACKER_CONTEXT_FIELDS: list[str] = [
     "rule.id", "rule.description", "rule.groups", "rule.level", "rule.mitre.id",
@@ -147,6 +203,261 @@ async def _wazuh_indexer_field_caps(fields: list[str],
     return out
 
 
+_AGG_SAFE_TYPES = ("keyword", "long", "integer", "double", "date", "boolean", "ip")
+
+
+def _flatten_props(prefix: str, props: dict, out: dict) -> None:
+    """Flatten nested mapping ``properties`` into dotted field paths."""
+    for name, spec in props.items():
+        path = f"{prefix}.{name}" if prefix else name
+        if isinstance(spec, dict) and "properties" in spec:
+            _flatten_props(path, spec["properties"], out)
+            continue
+        out[path] = spec
+
+
+def _shape(spec: dict) -> str:
+    """Mapping shape for one index, e.g. ``text+fielddata+analyzer=keyword``."""
+    parts = [spec.get("type", "object")]
+    if "keyword" in spec.get("fields", {}):
+        parts.append("keyword")
+    if spec.get("fielddata"):
+        parts.append("fielddata")
+    if spec.get("analyzer"):
+        parts.append(f"analyzer={spec['analyzer']}")
+    return "+".join(parts)
+
+
+def _shape_is_agg_safe(shape: str) -> bool:
+    """True when the field name aggregates to values, not analysed tokens.
+
+    A text field with fielddata does aggregate, but the analyser decides whether
+    the buckets are values or tokens (the standard analyser keeps
+    ``101.255.167.98`` whole while splitting ``a.b.go.id``), so this refuses
+    rather than permits.
+    """
+    return shape.split("+")[0] in _AGG_SAFE_TYPES
+
+
+def _agg_safe_field(field: str, by_shape: dict) -> Optional[str]:
+    """Field name that aggregates in every matched index, or None when mixed."""
+    if not by_shape:
+        return None
+    if all(_shape_is_agg_safe(shape) for shape in by_shape):
+        return field
+    if all("keyword" in shape.split("+")[1:] for shape in by_shape):
+        return f"{field}.keyword"
+    return None
+
+
+def _agg_safe_paths(path: str, caps: dict) -> list[str]:
+    """Terms-aggregatable names for one base path from a ``_field_caps`` probe.
+    Both names are returned when both are mapped (dual-mapping phases); the plain
+    name only when its type aggregates; ``.keyword`` only when the mapping has one.
+    """
+    names = []
+    if caps.get(path) in _AGG_SAFE_TYPES:
+        names.append(path)
+    keyword_path = f"{path}.keyword"
+    if caps.get(keyword_path) in _AGG_SAFE_TYPES:
+        names.append(keyword_path)
+    return names
+
+
+async def _resolve_agg_fields(fields: list[str],
+                              index_pattern: Optional[str] = None) -> Dict[str, Optional[str]]:
+    """Resolve each field to a name that aggregates across every matched index.
+    None means the mapping is mixed with no single name spanning it; the caller
+    decides the fallback. Uses the full mapping because ``_field_caps`` cannot
+    say which index carries which type.
+    """
+    if index_pattern is None:
+        index_pattern = _WAZUH_INDEX_PATTERNS["alerts"]
+    raw = await _wazuh_indexer_mapping(index_pattern)
+    if not isinstance(raw, dict) or "error" in raw:
+        return {field: None for field in fields}
+    shapes: Dict[str, Dict[str, List[str]]] = {field: {} for field in fields}
+    for index_name, body in raw.items():
+        props = ((body or {}).get("mappings") or {}).get("properties") or {}
+        flat: dict = {}
+        _flatten_props("", props, flat)
+        for field in fields:
+            spec = flat.get(field)
+            if spec is not None:
+                shapes[field].setdefault(_shape(spec), []).append(index_name)
+    return {field: _agg_safe_field(field, shapes[field]) for field in fields}
+
+
+def _srcip_should_clauses(srcip: str, *, full_log: bool = True,
+                          extra_paths: tuple = ()) -> dict:
+    """``bool.should`` matching one source IP across every candidate path.
+    Unmapped paths simply do not match, so the clause is safe on any mapping.
+    """
+    should = [{"match": {path: srcip.strip()}} for path in _SRCIP_FIELD_PATHS]
+    should += [{"match": {path: srcip.strip()}} for path in extra_paths]
+    if full_log:
+        should.append({"match_phrase": {"full_log": srcip.strip()}})
+    return {"bool": {"should": should, "minimum_should_match": 1}}
+
+
+async def _exact_srcip_counts(query: dict, candidates: list[str],
+                              index_pattern: Optional[str] = None) -> Dict[str, int]:
+    """Exact distinct-alert count per candidate IP, batched into one _msearch.
+
+    Each body counts documents matching the OR of every source-IP path for that
+    address, so a document is counted once however many paths carry it (exact for
+    overlapping and independent documents alike). ``full_log`` is excluded so the
+    count stays comparable with the terms buckets.
+    """
+    if not candidates:
+        return {}
+    bodies = []
+    for ip in candidates:
+        should = _srcip_should_clauses(ip, full_log=False)["bool"]["should"]
+        bodies.append({
+            "size": 0,
+            "track_total_hits": True,
+            "query": {"bool": {"filter": [
+                query,
+                {"bool": {"should": should, "minimum_should_match": 1}},
+            ]}},
+        })
+    responses = await _wazuh_indexer_msearch(bodies, index_pattern)
+    counts: Dict[str, int] = {}
+    for ip, raw in zip(candidates, responses):
+        total = ((raw or {}).get("hits") or {}).get("total")
+        counts[ip] = int(total.get("value", 0)) if isinstance(total, dict) else int(total or 0)
+    return counts
+
+
+async def _correct_srcip_counts(buckets: list, query: dict,
+                                index_pattern: Optional[str] = None) -> list:
+    """Replace merged bucket ``doc_count`` values with exact distinct-alert counts.
+    Only the buckets returned to the caller are corrected, which bounds the batch
+    to the displayed top list.
+    """
+    keys = [str(b.get("key")) for b in buckets if b.get("key") is not None]
+    counts = await _exact_srcip_counts(query, keys[:200], index_pattern)
+    for bucket in buckets:
+        key = str(bucket.get("key"))
+        if key in counts:
+            bucket["doc_count"] = counts[key]
+    return buckets
+
+
+def _srcip_from_doc(doc: dict):
+    """First source-IP value in an alert doc, in ``_SRCIP_FIELD_PATHS`` order.
+    Reads nested objects and flat literal dotted keys.
+    """
+    for path in _SRCIP_FIELD_PATHS:
+        node = doc
+        for part in path.split("."):
+            node = node.get(part) if isinstance(node, dict) else None
+        if node:
+            return node
+        if isinstance(doc, dict) and doc.get(path):
+            return doc[path]
+    return None
+
+
+def _merge_bucket_lists(target: list, incoming: list) -> list:
+    """Merge bucket lists by key; the larger ``doc_count`` wins per key and
+    matching buckets merge their sub-aggregations recursively.
+
+    The merged ``doc_count`` is a **lower bound** on distinct alerts: per-path
+    counts cannot tell an alert carrying the address in two fields from two
+    alerts using different fields. Callers that display a count must correct it
+    with :func:`_correct_srcip_counts`, which counts documents server-side.
+    """
+    by_key = {str(b.get("key")): b for b in target}
+    for bucket in incoming:
+        key = str(bucket.get("key"))
+        current = by_key.get(key)
+        if current is None:
+            by_key[key] = bucket
+            continue
+        current["doc_count"] = max(int(current.get("doc_count", 0)),
+                                   int(bucket.get("doc_count", 0)))
+        for name, node in bucket.items():
+            if name in ("key", "doc_count"):
+                continue
+            if name not in current:
+                current[name] = node
+            elif isinstance(current[name], dict) and isinstance(node, dict):
+                _merge_agg_nodes(current[name], node)
+    return list(by_key.values())
+
+
+def _merge_agg_nodes(target: dict, incoming: dict) -> None:
+    for name, node in incoming.items():
+        if name not in target:
+            target[name] = node
+            continue
+        current = target[name]
+        if isinstance(current, list) and isinstance(node, list):
+            target[name] = _merge_bucket_lists(current, node)
+        elif isinstance(current, dict) and isinstance(node, dict):
+            if isinstance(current.get("buckets"), list) and isinstance(node.get("buckets"), list):
+                current["buckets"] = _merge_bucket_lists(current["buckets"], node["buckets"])
+                for extra in ("doc_count_error_upper_bound", "sum_other_doc_count"):
+                    current[extra] = max(int(current.get(extra, 0)), int(node.get(extra, 0)))
+            else:
+                _merge_agg_nodes(current, node)
+        else:
+            target[name] = node
+
+
+def _merge_agg_trees(target: dict, incoming: dict) -> dict:
+    """Merge aggregation trees by bucket key, richer bucket wins per key.
+    Merged ``doc_count`` values are lower bounds, not exact distinct-alert
+    counts; see :func:`_merge_bucket_lists`.
+    """
+    _merge_agg_nodes(target, incoming)
+    return target
+
+
+def _with_srcip_field(node, field_name: str):
+    """Deep-copy an agg spec with every source-IP leaf swapped for ``field_name``.
+    Non-srcip leaves (``rule.id``, ``data.url``) are untouched.
+    """
+    if isinstance(node, dict):
+        if node.get("field") in _SRCIP_FIELD_PATHS:
+            node = {**node, "field": field_name}
+        return {key: _with_srcip_field(value, field_name) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_with_srcip_field(value, field_name) for value in node]
+    return node
+
+
+async def _srcip_aggs_merged(query: dict, aggs: dict,
+                             index_pattern: Optional[str] = None) -> tuple:
+    """Run one aggregation tree per mapped source-IP path and merge the results.
+
+    The spec's ``data.srcip`` leaf is swapped for each live path, so callers keep
+    one agg spec. Returns ``(aggregations, live_paths, errors)``. Absent paths are
+    never queried; when the probe finds none, the ``data.srcip`` fallback is used.
+    Bucket ``doc_count`` values from the merge are lower bounds; callers that
+    display a count must correct it with :func:`_correct_srcip_counts`.
+    """
+    candidates = [f"{path}.keyword" for path in _SRCIP_FIELD_PATHS]
+    caps = await _wazuh_indexer_field_caps(_SRCIP_FIELD_PATHS + candidates, index_pattern)
+    live = [name for path in _SRCIP_FIELD_PATHS for name in _agg_safe_paths(path, caps)]
+    if not live:
+        live = ["data.srcip"]
+    raw_results = await asyncio.gather(*[
+        _wazuh_indexer_post({"size": 0, "query": query,
+                             "aggs": _with_srcip_field(aggs, name)}, index_pattern)
+        for name in live])
+    merged: dict = {}
+    errors: list[str] = []
+    for raw in raw_results:
+        if isinstance(raw, dict) and "error" not in raw:
+            _merge_agg_trees(merged, raw.get("aggregations") or {})
+        else:
+            errors.append(str((raw or {}).get("error", "unreadable response")))
+    return merged, live, errors
+
+
 def field_coverage(docs: list[dict], fields: list[str]) -> dict:
     """Count how many of ``docs`` populate each dotted ``fields`` path.
     A run with 0 coverage on every field means the deployment's decoders do not
@@ -189,11 +500,7 @@ async def _fetch_attacker_alert_docs(srcip: Optional[str], rule_id: Optional[str
         should.append({"match_phrase": {"full_log": srcip}})
         must.append({"bool": {"should": should, "minimum_should_match": 1}})
     if rule_id:
-        # Plain + .keyword to tolerate Wazuh dual-index mapping phases.
-        must.append({"bool": {"should": [
-            {"match_phrase": {"rule.id": rule_id}},
-            {"match_phrase": {"rule.id.keyword": rule_id}},
-        ], "minimum_should_match": 1}})
+        must.append({"match_phrase": {"rule.id": rule_id}})
 
     body = {
         "size": min(limit, 1000),

@@ -20,11 +20,14 @@ from mcp_server.core.http_client import ValidPublicIp
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call, _get_client
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _resolve_agg_fields,
+                                      _srcip_aggs_merged, _srcip_should_clauses,
+                                      _correct_srcip_counts)
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 from mcp_server.threat_intel._cache import get_limiter
-from mcp_server.tools.alert_compare import CuratedReportFilters, _build_curated_query
+from mcp_server.tools.alert_compare import (CuratedReportFilters, _build_curated_query,
+                                            _filter_field_bases)
 
 # Shared with argus_ip_lookup via the global limiter registry (same namespace).
 _argus_limiter = get_limiter("argus", max_concurrent=1, min_interval=ARGUS_MIN_INTERVAL)
@@ -124,7 +127,10 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
     f = params.filters
 
     # 1: Aggregation query (size: 0, no documents fetched)
-    clauses = _build_curated_query(since_iso, until_iso, f)
+    group_base = {"srcip": "data.srcip", "domain": "data.domain",
+                  "rule.id": "rule.id", "agent": "agent.name"}[params.group_by]
+    resolved = await _resolve_agg_fields(sorted(set(_filter_field_bases(f)) | {group_base}))
+    clauses = _build_curated_query(since_iso, until_iso, f, resolved)
 
     # Time-decay weighting via function_score gauss decay on @timestamp
     query_wrapper: dict = {"bool": {"must": clauses}}
@@ -140,31 +146,25 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             }
         }
 
-    # Select primary aggregation axis based on group_by
-    group_config: dict[str, tuple[str, str]] = {
-        "srcip": ("data.srcip.keyword", "top_entities"),
-        "domain": ("data.domain.keyword", "top_entities"),
-        "rule.id": ("rule.id.keyword", "top_entities"),
-        "agent": ("agent.name.keyword", "top_entities"),
+    agg_field = resolved.get(group_base) or group_base
+    agg_name = "top_entities"
+    entity_agg = {
+        "terms": {"field": agg_field, "size": params.max_entities,
+                  "order": {"_count": "desc"}},
+        "aggs": {
+            "first_seen": {"min": {"field": "@timestamp"}},
+            "last_seen": {"max": {"field": "@timestamp"}},
+            "max_level": {"max": {"field": "rule.level"}},
+            "top_rules": {"terms": {"field": "rule.id", "size": 5}},
+            "top_urls": {"terms": {"field": "data.url", "size": 5}},
+            "sample_geo": {"top_hits": {"size": 1, "_source": {"includes": ["GeoLocation"]}}},
+        },
     }
-    agg_field, agg_name = group_config.get(params.group_by, group_config["srcip"])
 
     body = {
         "size": 0,
         "query": query_wrapper,
         "aggs": {
-            agg_name: {
-                "terms": {"field": agg_field, "size": params.max_entities,
-                          "order": {"_count": "desc"}},
-                "aggs": {
-                    "first_seen": {"min": {"field": "@timestamp"}},
-                    "last_seen": {"max": {"field": "@timestamp"}},
-                    "max_level": {"max": {"field": "rule.level"}},
-                    "top_rules": {"terms": {"field": "rule.id", "size": 5}},
-                    "top_urls": {"terms": {"field": "data.url", "size": 5}},
-                    "sample_geo": {"top_hits": {"size": 1, "_source": {"includes": ["GeoLocation"]}}},
-                },
-            },
             "total_alerts": {"value_count": {"field": "_id"}},
             "total_with_geo": {"value_count": {"field": "GeoLocation.country_name"}},
             "top_rules": {"terms": {"field": "rule.id", "size": 10}},
@@ -178,7 +178,17 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             },
         },
     }
-    raw = await _wazuh_indexer_post(body)
+    if params.group_by == "srcip":
+        raw, (merged, _paths, _errors) = await asyncio.gather(
+            _wazuh_indexer_post(body),
+            _srcip_aggs_merged(body["query"], {agg_name: entity_agg}))
+        if "error" not in raw:
+            raw.setdefault("aggregations", {}).update(merged)
+            entity_rows = (raw["aggregations"].get(agg_name) or {}).get("buckets", [])
+            await _correct_srcip_counts(entity_rows, {"bool": {"must": clauses}})
+    else:
+        body["aggs"][agg_name] = entity_agg
+        raw = await _wazuh_indexer_post(body)
     if "error" in raw:
         return json.dumps(raw, indent=2)
 
@@ -222,12 +232,11 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             comp_since_iso = (comp_since_dt - timedelta(minutes=window_mins)).strftime("%Y-%m-%dT%H:%M:%SZ")
             comp_until_iso = since_iso
 
-            comp_clauses = _build_curated_query(comp_since_iso, comp_until_iso, f)
+            comp_clauses = _build_curated_query(comp_since_iso, comp_until_iso, f, resolved)
             comp_body = {
                 "size": 0,
                 "query": {"bool": {"must": comp_clauses}},
                 "aggs": {
-                    agg_name: {"terms": {"field": agg_field, "size": params.max_entities}},
                     "total_alerts": {"value_count": {"field": "_id"}},
                     "severity_bands": {"range": {"field": "rule.level",
                         "ranges": [{"key": "low", "to": 5},
@@ -235,7 +244,18 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
                                    {"key": "high", "from": 10}]}},
                 },
             }
-            comp_raw = await _wazuh_indexer_post(comp_body)
+            comp_entity = {"terms": {"field": agg_field, "size": params.max_entities}}
+            if params.group_by == "srcip":
+                comp_raw, (comp_merged, _cp, _ce) = await asyncio.gather(
+                    _wazuh_indexer_post(comp_body),
+                    _srcip_aggs_merged(comp_body["query"], {agg_name: comp_entity}))
+                if "error" not in comp_raw:
+                    comp_raw.setdefault("aggregations", {}).update(comp_merged)
+                    comp_rows = (comp_raw["aggregations"].get(agg_name) or {}).get("buckets", [])
+                    await _correct_srcip_counts(comp_rows, {"bool": {"must": comp_clauses}})
+            else:
+                comp_body["aggs"][agg_name] = comp_entity
+                comp_raw = await _wazuh_indexer_post(comp_body)
             if "error" not in comp_raw:
                 c_aggs = comp_raw.get("aggregations", {})
                 compare_data = {
@@ -553,9 +573,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
                     "query": {"bool": {"must": [
                         {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                                  "format": "strict_date_optional_time"}}},
-                        {"bool": {"should": [{"match": {"data.srcip": ip}},
-                                            {"match_phrase": {"full_log": ip}}],
-                                  "minimum_should_match": 1}},
+                        _srcip_should_clauses(ip),
                     ]}},
                     "_source": ["@timestamp", "rule.id", "rule.description"]}
                 cr = await _wazuh_indexer_post(cbody)

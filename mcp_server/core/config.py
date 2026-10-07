@@ -18,7 +18,6 @@ from mcp_server.core.exceptions import ConfigurationError
 logger = logging.getLogger("blue_team_mcp.config")
 
 
-# Helper
 def _bool(v: str, default: bool = False) -> bool:
     """Parse an env-var string as a boolean."""
     if not v:
@@ -310,7 +309,7 @@ class RedactionConfig:
     redact_emails: bool = True
     redact_domains: bool = True
     redact_locations: bool = True
-    redact_uas: bool = True
+    redact_identities: bool = True
     owned_domains: str = ""
     allow_runtime_domains: bool = False   # gate for blueteam_set_owned_domains
     allow_forensic_bypass: bool = False
@@ -326,7 +325,7 @@ class RedactionConfig:
             redact_emails=_bool(os.environ.get("BLUETEAM_REDACT_EMAILS", "true"), True),
             redact_domains=_bool(os.environ.get("BLUETEAM_REDACT_DOMAINS", "true"), True),
             redact_locations=_bool(os.environ.get("BLUETEAM_REDACT_LOCATIONS", "true"), True),
-            redact_uas=_bool(os.environ.get("BLUETEAM_REDACT_UAS", "true"), True),
+            redact_identities=_bool(os.environ.get("BLUETEAM_REDACT_IDENTITIES", "true"), True),
             owned_domains=os.environ.get("BLUETEAM_OWNED_DOMAINS", ""),
             allow_runtime_domains=_bool(os.environ.get("BLUETEAM_ALLOW_RUNTIME_DOMAINS", "false")),
             allow_forensic_bypass=_bool(os.environ.get("BLUETEAM_ALLOW_FORENSIC_BYPASS", "false")),

@@ -1,0 +1,430 @@
+{
+  "schema_version": 1,
+  "description": "Curated facts the template cannot derive: specialized analysis, documented exclusions, privacy sets, and executable-test evidence.",
+  "specialized": {
+    "@timestamp": {
+      "tool": "cross-tool",
+      "role": "Time-window filters, sorting, and date histograms in every alert query."
+    },
+    "GeoLocation.city_name": {
+      "tool": "blueteam_wazuh_geo_heatmap",
+      "role": "City terms aggregation and geo centroid map."
+    },
+    "GeoLocation.country_name": {
+      "tool": "correlation / blueteam_alert_compare / geo / timeline",
+      "role": "Country filters and terms aggregations."
+    },
+    "GeoLocation.location": {
+      "tool": "blueteam_wazuh_geo_heatmap / blueteam_alert_compare",
+      "role": "geo_centroid aggregation and geo_bounding_box filter."
+    },
+    "agent.id": {
+      "tool": "blueteam_alert_compare",
+      "role": "Agent-id match filter."
+    },
+    "agent.ip": {
+      "tool": "blueteam_alert_compare",
+      "role": "Agent-IP match filter."
+    },
+    "agent.name": {
+      "tool": "cross-tool",
+      "role": "Agent filter and top-agent terms aggregation."
+    },
+    "rule.id": {
+      "tool": "cross-tool",
+      "role": "Rule filter, top-rule terms, curated report group-by axis."
+    },
+    "rule.level": {
+      "tool": "cross-tool",
+      "role": "Severity range filters and max/level aggregations."
+    },
+    "rule.description": {
+      "tool": "cross-tool",
+      "role": "Keyword-search field and report context."
+    },
+    "rule.groups": {
+      "tool": "correlation / baseline / velocity / timeline",
+      "role": "Category fallback terms filter."
+    },
+    "rule.info": {
+      "tool": "blueteam_wazuh_indexer_search",
+      "role": "Keyword-search boost field."
+    },
+    "rule.cve": {
+      "tool": "blueteam_wazuh_indexer_search",
+      "role": "Keyword-search boost field."
+    },
+    "rule.firedtimes": {
+      "tool": "blueteam_alert_compare",
+      "role": "Repeat-fire range filter."
+    },
+    "rule.cis": {
+      "tool": "blueteam_wazuh_compliance",
+      "role": "Compliance exists filter and framework terms aggregation."
+    },
+    "rule.pci_dss": {
+      "tool": "blueteam_wazuh_compliance",
+      "role": "Compliance exists filter and framework terms aggregation."
+    },
+    "rule.gdpr": {
+      "tool": "blueteam_wazuh_compliance",
+      "role": "Compliance exists filter and framework terms aggregation."
+    },
+    "rule.hipaa": {
+      "tool": "blueteam_wazuh_compliance",
+      "role": "Compliance exists filter and framework terms aggregation."
+    },
+    "rule.nist_800_53": {
+      "tool": "blueteam_wazuh_compliance",
+      "role": "Compliance exists filter and framework terms aggregation."
+    },
+    "rule.mitre.id": {
+      "tool": "correlation / labeler / blueteam_alert_compare",
+      "role": "Technique terms filter and labeler feature."
+    },
+    "rule.mitre.tactic": {
+      "tool": "correlation / labeler / forecast / blueteam_alert_compare",
+      "role": "Tactic classification (3-Sum category) and forecast input."
+    },
+    "data.srcip": {
+      "tool": "cross-tool + correlation engine",
+      "role": "Source filter, srcip aggregation, 3-Sum entity key."
+    },
+    "data.dstip": {
+      "tool": "blueteam_threat_hunt",
+      "role": "Destination terms aggregation."
+    },
+    "data.url": {
+      "tool": "cross-tool",
+      "role": "Keyword search, URL wildcard, YARA/Sigma atom harvest."
+    },
+    "data.protocol": {
+      "tool": "blueteam_wazuh_indexer_search",
+      "role": "Keyword-search boost field."
+    },
+    "data.command": {
+      "tool": "sigma_rules / yara_rules / keyword search",
+      "role": "Sigma CommandLine mapping and atom harvest."
+    },
+    "data.win.eventdata.image": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Image mapping."
+    },
+    "data.win.eventdata.parentImage": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma ParentImage mapping."
+    },
+    "data.win.system.eventID": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma EventID mapping."
+    },
+    "decoder.name": {
+      "tool": "blueteam_alert_compare / sigma_rules",
+      "role": "Decoder term filter and rule-context check."
+    },
+    "full_log": {
+      "tool": "cross-tool",
+      "role": "Phrase match for IOC pivots and keyword search."
+    },
+    "location": {
+      "tool": "blueteam_wazuh_alert_focused_crawl + redaction",
+      "role": "Log-source selection and path masking key."
+    },
+    "predecoder.hostname": {
+      "tool": "blueteam_wazuh_alert_focused_crawl",
+      "role": "Log-source hostname selection."
+    },
+    "data.srcuser": {
+      "tool": "blueteam_wazuh_email / blueteam_wazuh_compromised",
+      "role": "Account search field."
+    },
+    "data.dstuser": {
+      "tool": "blueteam_wazuh_email / blueteam_wazuh_compromised",
+      "role": "Account search field."
+    },
+    "data.audit.srcip": {
+      "tool": "correlation / cluster / forecast",
+      "role": "Source-IP visibility for 3-Sum profiles, cluster population, and tactic forecasts."
+    },
+    "data.aws.sourceIPAddress": {
+      "tool": "correlation / cluster / forecast",
+      "role": "Source-IP visibility for 3-Sum profiles, cluster population, and tactic forecasts."
+    },
+    "data.aws.source_ip_address": {
+      "tool": "correlation / cluster / forecast",
+      "role": "Source-IP visibility for 3-Sum profiles, cluster population, and tactic forecasts."
+    },
+    "data.office365.ClientIP": {
+      "tool": "correlation / cluster / forecast",
+      "role": "Source-IP visibility for 3-Sum profiles, cluster population, and tactic forecasts."
+    },
+    "data.ms-graph.actor.ipAddress": {
+      "tool": "correlation / cluster / forecast",
+      "role": "Source-IP visibility for 3-Sum profiles, cluster population, and tactic forecasts."
+    },
+    "data.ms-graph.ipAddress": {
+      "tool": "correlation / cluster / forecast",
+      "role": "Source-IP visibility for 3-Sum profiles, cluster population, and tactic forecasts."
+    },
+    "data.win.eventdata.ipAddress": {
+      "tool": "correlation / cluster / forecast",
+      "role": "Source-IP visibility for 3-Sum profiles, cluster population, and tactic forecasts."
+    },
+    "data.osquery.columns.src_ip": {
+      "tool": "correlation / cluster / forecast",
+      "role": "Source-IP visibility for 3-Sum profiles, cluster population, and tactic forecasts."
+    },
+    "GeoLocation.ip": {
+      "tool": "correlation / cluster / forecast",
+      "role": "Source-IP visibility for 3-Sum profiles, cluster population, and tactic forecasts."
+    },
+    "data.win.eventdata.logonGuid": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.subjectLogonId": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.targetLogonId": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.subjectUserName": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.subjectUserSid": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.subjectDomainName": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.targetUserName": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.targetUserSid": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.targetDomainName": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.workstationName": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.processId": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.processName": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.logonProcessName": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.status": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.service": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.eventdata.operation": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.system.channel": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.system.computer": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.system.providerName": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.system.level": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "data.win.system.opcode": {
+      "tool": "blueteam_sigma_rule_convert",
+      "role": "Sigma Windows field mapping."
+    },
+    "syscheck.diff": {
+      "tool": "blueteam_wazuh_syscheck",
+      "role": "Sampled FIM diff retrieval (include_diff)."
+    },
+    "syscheck.changed_attributes": {
+      "tool": "blueteam_wazuh_syscheck",
+      "role": "Changed-attribute wildcard filter."
+    },
+    "syscheck.event": {
+      "tool": "blueteam_wazuh_syscheck",
+      "role": "FIM event-type filter and event breakdown."
+    },
+    "syscheck.path": {
+      "tool": "blueteam_wazuh_syscheck",
+      "role": "Modified-path wildcard filter and top-path aggregation."
+    }
+  },
+  "intentionally_unsupported": {
+    "@version": "Template version marker; no incident signal.",
+    "input.type": "Wazuh input-type marker; not an analysis field.",
+    "offset": "Log-file byte offset; ingestion bookkeeping.",
+    "previous_output": "Decoder dedup marker; not an incident field.",
+    "id": "Alert document id; retrieval key only.",
+    "timestamp": "Event timestamp; @timestamp is the canonical analysis clock.",
+    "data.id": "Per-alert id inside data; retrieval key only.",
+    "decoder.fts": "Decoder first-time-seen counter; internal state.",
+    "decoder.ftscomment": "Decoder FTS comment; internal state.",
+    "decoder.accumulate": "Decoder accumulation counter; internal state."
+  },
+  "field_selection": {
+    "syscheck": {
+      "tool": "blueteam_wazuh_syscheck",
+      "param": "syscheck_field"
+    }
+  },
+  "privacy_restricted": {
+    "data.aws.requestParameters.masterUserPassword": "Credential; must never be surfaced or analyzed.",
+    "data.aws.requestParameters.masterUsername": "Login name inside a credential parameter; privacy-only, no analysis path.",
+    "data.ms-graph.activationLockBypassCode": "Device unlock credential; must never be surfaced.",
+    "data.ms-graph.deviceHealthAttestationState.attestationIdentityKey": "TPM identity key material; no analysis path.",
+    "data.pwd": "Ambiguous across decoders; treated as credential-shaped and excluded from analysis."
+  },
+  "verified": {
+    "generic_mechanism": [
+      "tests/test_field_handling_paths.py::test_alerts_fallback_returns_full_source",
+      "tests/test_field_handling_paths.py::test_indexer_search_returns_full_source",
+      "tests/test_field_handling_paths.py::test_dsl_query_forwards_query_and_nested_aggregation",
+      "tests/test_field_handling_paths.py::test_dsl_query_rejects_document_retrieval",
+      "tests/test_field_handling_paths.py::test_focused_crawl_selects_arbitrary_nested_fields"
+    ],
+    "specialized": {
+      "GeoLocation.location": [
+        "tests/test_geo_heatmap_centroid.py",
+        "tests/test_alert_compare_geo_bbox.py"
+      ],
+      "data.command": [
+        "tests/test_sigma_rules.py"
+      ],
+      "data.win.eventdata.image": [
+        "tests/test_sigma_rules.py"
+      ]
+    }
+  },
+  "privacy": {
+    "identity_key_masked": [
+      "data.srcuser",
+      "data.dstuser",
+      "data.osquery.columns.user",
+      "data.osquery.columns.username"
+    ],
+    "identity_path_masked": [
+      "data.audit.acct",
+      "data.audit.auid",
+      "data.audit.uid",
+      "data.audit.euid",
+      "data.audit.suid",
+      "data.audit.fsuid",
+      "data.audit.gid",
+      "data.audit.egid",
+      "data.audit.sgid",
+      "data.audit.fsgid",
+      "data.audit.old-auid",
+      "data.aws.userIdentity.userName",
+      "data.aws.userIdentity.accountId",
+      "data.aws.userIdentity.accessKeyId",
+      "data.aws.resource.accessKeyDetails.userName",
+      "data.aws.resource.accessKeyDetails.principalId",
+      "data.aws.responseElements.loginProfile.userName",
+      "data.aws.responseElements.user.userName",
+      "data.aws.responseElements.user.userId",
+      "data.aws.responseElements.ownerId",
+      "data.ms-graph.userPrincipalName",
+      "data.ms-graph.userId",
+      "data.ms-graph.userDisplayName",
+      "data.ms-graph.actor.userPrincipalName",
+      "data.ms-graph.actor.userId",
+      "data.ms-graph.actor.servicePrincipalName",
+      "data.office365.UserId",
+      "data.office365.Actor.ID",
+      "data.osquery.columns.gid",
+      "data.process.euser",
+      "data.process.ruser",
+      "data.process.suser",
+      "data.process.egroup",
+      "data.process.sgroup",
+      "data.process.fgroup",
+      "data.process.rgroup",
+      "data.win.eventdata.subjectUserName",
+      "data.win.eventdata.subjectUserSid",
+      "data.win.eventdata.targetUserName",
+      "data.win.eventdata.targetUserSid",
+      "data.win.system.userID",
+      "data.win.system.securityUserID",
+      "syscheck.uid_before",
+      "syscheck.uid_after",
+      "syscheck.uname_before",
+      "syscheck.uname_after",
+      "syscheck.gid_before",
+      "syscheck.gid_after",
+      "syscheck.gname_before",
+      "syscheck.gname_after",
+      "syscheck.audit.user.id",
+      "syscheck.audit.user.name",
+      "syscheck.audit.login_user.id",
+      "syscheck.audit.login_user.name",
+      "syscheck.audit.effective_user.id",
+      "syscheck.audit.effective_user.name",
+      "syscheck.audit.group.id",
+      "syscheck.audit.group.name",
+      "syscheck.audit.login_group.id",
+      "syscheck.audit.login_group.name"
+    ],
+    "credential_fields": [
+      "data.aws.requestParameters.masterUserPassword",
+      "data.aws.requestParameters.masterUsername",
+      "data.aws.requestParameters.accessKeyId",
+      "data.aws.userIdentity.accessKeyId",
+      "data.aws.resource.accessKeyDetails.accessKeyId",
+      "data.aws.resource.accessKeyDetails.principalId",
+      "data.ms-graph.activationLockBypassCode",
+      "data.ms-graph.deviceHealthAttestationState.attestationIdentityKey",
+      "data.pwd"
+    ],
+    "non_secret_key_allowlist": [
+      "data.audit.key",
+      "data.win.eventdata.keyName",
+      "data.win.system.keywords",
+      "data.YARA.reference",
+      "data.YARA.api_customer"
+    ],
+    "ioc_exempt": [
+      "GeoLocation.ip",
+      "GeoLocation.location",
+      "GeoLocation.latitude",
+      "GeoLocation.longitude",
+      "GeoLocation.coordinates",
+      "data.srcip",
+      "data.dstip",
+      "data.win.eventdata.ipAddress",
+      "data.office365.ClientIP",
+      "data.ms-graph.actor.ipAddress",
+      "data.aws.sourceIPAddress",
+      "data.aws.source_ip_address"
+    ]
+  }
+}

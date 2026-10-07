@@ -89,7 +89,7 @@ class AssetContextInput(BaseModel):
 async def blueteam_asset_context(params: AssetContextInput) -> str:
     """Look up internal asset context for a hostname/subdomain.
 
-    Answers "what is this asset, how critical is it, who owns it" — essential
+    Answers "what is this asset, how critical is it, who owns it", essential
     context when an attacker is targeting a subdomain. Reads from
     ``BLUETEAM_CMDB_FILE`` (a JSON inventory you maintain).
 

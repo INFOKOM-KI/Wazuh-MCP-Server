@@ -337,7 +337,7 @@ async def wazuh_domain_lookup(params: WazuhDomainLookupInput) -> str:
         params.since: ISO 8601 start in UTC (default: 365 days ago)
         params.until: ISO 8601 end in UTC (default: now)
         params.limit: Max alerts per page in single-page mode (1-10000, default 500)
-        params.include_full_log: Include raw log lines (default false — forced false in full-scan mode)
+        params.include_full_log: Include raw log lines (default false; forced false in full-scan mode)
         params.cursor: Pagination params.cursor from previous response
         params.response_format: 'markdown' or 'json'
         params.max_scanned: When set, run full-scan auto-pagination (see above)
@@ -352,7 +352,7 @@ async def wazuh_domain_lookup(params: WazuhDomainLookupInput) -> str:
 
     Example usage:
         - "Search for all alerts involving tangerangkota.go.id"
-        - "Get the complete picture for this params.domain over the past 12h — use full-scan"
+        - "Get the complete picture for this params.domain over the past 12h; use full-scan"
         - "Show me who's hitting the mail server params.domain"
     """
     _audit_log("wazuh_domain_lookup", {"domain": params.domain, "since": params.since})
@@ -689,7 +689,7 @@ async def blueteam_crtsh_lookup(params: CrtshLookupInput) -> str:
        ``blueteam_crtsh_lookup(domain="phish-target.com", response_format="json")``
 
     3. *Pivot from one domain to attacker infrastructure*:
-       ``blueteam_crtsh_lookup(domain="malware-drop.xyz")`` — check sibling names
+       ``blueteam_crtsh_lookup(domain="malware-drop.xyz")``: check sibling names
     """
     _audit_log("blueteam_crtsh_lookup", {"domain": params.domain})
     domain = params.domain.strip().lower().rstrip(".")

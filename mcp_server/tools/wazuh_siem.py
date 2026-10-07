@@ -7,7 +7,7 @@ Indexer alerts/search, MITRE resources, and local alerts fallback.
 Manager API tools use @blueteam_tool for automatic audit logging, error handling (catching WazuhAuthError / WazuhAPIError),
 and response truncation. Agent filtering now passes through Wazuh's native q/sort/select/search/status/distinct parameters.
 
-NOTE: No ``from __future__ import annotations`` — deferred annotation
+NOTE: No ``from __future__ import annotations``. Deferred annotation
       evaluation (PEP 563) breaks the @blueteam_tool decorator's type
       resolution because the wrapper's __globals__ is tool_decorator.py.
 """
@@ -29,8 +29,17 @@ from mcp_server.core.tool_decorator import blueteam_tool
 
 from mcp_server.wazuh.auth import _wazuh_api_get
 from mcp_server.wazuh.indexer import (
-    _WAZUH_INDEX_PATTERNS, _encode_cursor, _decode_cursor,
+    _SRCIP_FIELD_PATHS, _WAZUH_INDEX_PATTERNS, _encode_cursor, _decode_cursor,
 )
+
+
+def _dig(doc: dict, path: str):
+    node = doc
+    for part in path.split("."):
+        node = node.get(part) if isinstance(node, dict) else None
+        if node is None:
+            return None
+    return node
 
 # Manager API tools - all benefit from @blueteam_tool (audit + error + trunc)
 # blueteam_wazuh_get_rules
@@ -95,10 +104,9 @@ async def blueteam_wazuh_alerts(params: WazuhAlertsInput) -> str:
         if params.agent_name:
             must.append({"match": {"agent.name": params.agent_name}})
         if params.srcip:
-            must.append({"bool": {"should": [
-                {"match": {"data.srcip": params.srcip}},
-                {"match_phrase": {"full_log": params.srcip}},
-            ], "minimum_should_match": 1}})
+            should = [{"match": {path: params.srcip}} for path in _SRCIP_FIELD_PATHS]
+            should.append({"match_phrase": {"full_log": params.srcip}})
+            must.append({"bool": {"should": should, "minimum_should_match": 1}})
         body = {
             "size": min(params.limit, 2000),
             "sort": [{"@timestamp": {"order": "asc"}}],
@@ -160,11 +168,9 @@ async def blueteam_wazuh_alerts(params: WazuhAlertsInput) -> str:
                 if af.lower() not in (n or "").lower():
                     continue
             if ipf:
-                ds = str(a.get("data", {}).get("srcip", ""))
-                ds2 = str(a.get("data", {}).get("srcip2", ""))
-                ts = str(a.get("srcip", ""))
+                values = [str(_dig(a, path) or "") for path in _SRCIP_FIELD_PATHS + ["data.srcip2"]]
                 fl = str(a.get("full_log", ""))
-                if ipf not in (ds, ds2, ts) and ipf not in fl:
+                if ipf not in values and ipf not in fl:
                     continue
             alerts.append(a)
         except json.JSONDecodeError:
@@ -239,12 +245,10 @@ async def blueteam_wazuh_indexer_search(params: WazuhIndexerSearchInput) -> str:
     if params.agent_name:
         must.append({"match": {"agent.name": params.agent_name}})
     if params.srcip:
-        must.append({"bool": {"should": [
-            {"match": {"data.srcip": params.srcip}},
-            {"match": {"data.srcip2": params.srcip}},
-            {"match": {"srcip": params.srcip}},
-            {"match_phrase": {"full_log": params.srcip}},
-        ], "minimum_should_match": 1}})
+        should = [{"match": {path: params.srcip}} for path in _SRCIP_FIELD_PATHS]
+        should.append({"match": {"data.srcip2": params.srcip}})
+        should.append({"match_phrase": {"full_log": params.srcip}})
+        must.append({"bool": {"should": should, "minimum_should_match": 1}})
     must.append({"range": {"@timestamp": {
         "format": "strict_date_optional_time", "gte": since_iso, "lt": until_iso,
     }}})

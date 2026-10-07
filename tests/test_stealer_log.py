@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for stealer_log_check — parse helper + input validation (no network)."""
+"""Tests for stealer_log_check: parse helper and input validation (no network)."""
 from __future__ import annotations
 import os
 os.environ.setdefault("WAZUH_INDEXER_URL", "https://idx:9200")

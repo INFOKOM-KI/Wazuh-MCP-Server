@@ -16,14 +16,13 @@ os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
 def test_layer_functions_exist_and_are_callable():
     from mcp_server.core.redact_layers import (
         _apply_email_layer, _apply_ip_layer, _apply_domain_layer,
-        _apply_location_layer, _apply_ua_layer,
+        _apply_location_layer,
     )
     # Smoke test: each layer is callable and returns a string
     assert callable(_apply_email_layer)
     assert callable(_apply_ip_layer)
     assert callable(_apply_domain_layer)
     assert callable(_apply_location_layer)
-    assert callable(_apply_ua_layer)
 
 
 def test_email_layer_masks_email():
@@ -52,13 +51,6 @@ def test_domain_layer_masks_under_full_policy():
     from mcp_server.core.redact_layers import _apply_domain_layer
     result = _apply_domain_layer("c2.evil-c2.net", "full", False)
     assert "c2.evil-c2.net" not in result  # subdomain masked
-
-
-def test_ua_layer_truncates_long_ua():
-    from mcp_server.core.redact_layers import _apply_ua_layer
-    long_ua = "Mozilla/5.0 " + "x" * 200
-    result = _apply_ua_layer(long_ua, "full", False)
-    assert len(result) <= 83  # 80 + "..."
 
 
 def test_location_layer_hashes_path():

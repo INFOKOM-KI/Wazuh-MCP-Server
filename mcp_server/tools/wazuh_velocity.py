@@ -14,7 +14,8 @@ from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _handle_api_error
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _WAZUH_INDEX_PATTERNS,
+                                      _srcip_aggs_merged, _exact_srcip_counts)
 from mcp_server.wazuh.time_utils import (_parse_time_window, _auto_bucket_interval,
                                           _duration_minutes, _RELATIVE_TIME_RE, _relative_delta)
 from mcp_server.core.validators import ValidAgentName, ValidRuleGroups, ValidKeyword
@@ -140,7 +141,7 @@ async def wazuh_attack_velocity(params: WazuhAttackVelocityInput = WazuhAttackVe
     dur_minutes = window_delta.total_seconds() / 60.0
     bucket_interval = params.bucket if params.bucket != "auto" else _auto_bucket_interval(dur_minutes)
 
-    def _build_query(since: str, until: str) -> dict:
+    def _build_query(since: str, until: str) -> tuple[dict, dict]:
         must: list[dict] = [
             {"range": {"@timestamp": {"gte": since, "lt": until,
                                         "format": "strict_date_optional_time"}}},
@@ -154,36 +155,54 @@ async def wazuh_attack_velocity(params: WazuhAttackVelocityInput = WazuhAttackVe
         if params.keyword:
             kw = params.keyword.strip()
             must.append({"query_string": {"query": f"full_log: ({kw})", "lenient": True}})
-        return {
-            "size": 0,
-            "query": {"bool": {"filter": must}},
-            "aggs": {
-                "over_time": {
-                    "date_histogram": {
-                        "field": "@timestamp",
-                        "fixed_interval": bucket_interval,
-                        "min_doc_count": 0,
-                    },
-                    "aggs": {
-                        "top_rules": {"terms": {"field": "rule.id", "size": 5}},
-                        "top_srcips": {"terms": {"field": "data.srcip", "size": 5}},
-                    },
-                }
-            },
+        query = {"bool": {"filter": must}}
+        aggs = {
+            "over_time": {
+                "date_histogram": {
+                    "field": "@timestamp",
+                    "fixed_interval": bucket_interval,
+                    "min_doc_count": 0,
+                },
+                "aggs": {
+                    "top_rules": {"terms": {"field": "rule.id", "size": 5}},
+                    "top_srcips": {"terms": {"field": "data.srcip", "size": 5}},
+                },
+            }
         }
+        return query, aggs
 
     try:
-        current_raw, previous_raw = await asyncio.gather(
-            _wazuh_indexer_post(_build_query(current_since, current_until)),
-            _wazuh_indexer_post(_build_query(previous_since, previous_until)),
-        )
+        current_query, current_aggs = _build_query(current_since, current_until)
+        previous_query, previous_aggs = _build_query(previous_since, previous_until)
+        (current_merged, _cur_paths, current_errors), \
+            (previous_merged, _prev_paths, previous_errors) = await asyncio.gather(
+                _srcip_aggs_merged(current_query, current_aggs),
+                _srcip_aggs_merged(previous_query, previous_aggs),
+            )
     except Exception as e:
         _handle_api_error(e, context="wazuh_attack_velocity")
 
-    if "error" in current_raw:
-        return json.dumps(current_raw, indent=2)
-    if "error" in previous_raw:
-        return json.dumps(previous_raw, indent=2)
+    if current_errors and not current_merged:
+        return json.dumps({"error": current_errors[0]}, indent=2)
+    if previous_errors and not previous_merged:
+        return json.dumps({"error": previous_errors[0]}, indent=2)
+    current_raw = {"aggregations": current_merged}
+    previous_raw = {"aggregations": previous_merged}
+
+    async def _correct_window(query: dict, buckets: list) -> None:
+        """Replace merged per-IP counts with exact distinct-alert counts."""
+        candidates = sorted({str(item.get("key"))
+                             for b in buckets
+                             for item in (b.get("top_srcips") or {}).get("buckets", [])})
+        counts = await _exact_srcip_counts(query, candidates[:200])
+        for b in buckets:
+            for item in (b.get("top_srcips") or {}).get("buckets", []):
+                key = str(item.get("key"))
+                if key in counts:
+                    item["doc_count"] = counts[key]
+
+    await _correct_window(current_query, current_merged.get("over_time", {}).get("buckets", []))
+    await _correct_window(previous_query, previous_merged.get("over_time", {}).get("buckets", []))
 
     current_buckets = current_raw.get("aggregations", {}).get("over_time", {}).get("buckets", [])
     previous_buckets = previous_raw.get("aggregations", {}).get("over_time", {}).get("buckets", [])

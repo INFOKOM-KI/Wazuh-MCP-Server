@@ -14,7 +14,9 @@ from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.http_client import _handle_api_error
 from mcp_server.core.redact import _redact_alert_data
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _encode_cursor, _decode_cursor
+from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _srcip_should_clauses,
+                                      _srcip_from_doc, _SRCIP_FIELD_PATHS,
+                                      _KEYWORD_SEARCH_FIELDS, _encode_cursor, _decode_cursor)
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.core.validators import ValidAgentName
 
@@ -180,7 +182,7 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
         "rule.id",
         "rule.level",
         "rule.description",
-        "data.srcip",
+        *_SRCIP_FIELD_PATHS,
         "data.url",
         "predecoder.hostname",
         "location",
@@ -207,10 +209,7 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
         if params.agent_name:
             body["query"]["bool"]["filter"].append({"match": {"agent.name": params.agent_name}})
         if params.src_ip:
-            body["query"]["bool"]["filter"].append({"bool": {"should": [
-                {"match": {"data.srcip": params.src_ip}},
-                {"match_phrase": {"full_log": params.src_ip}},
-            ], "minimum_should_match": 1}})
+            body["query"]["bool"]["filter"].append(_srcip_should_clauses(params.src_ip))
         if params.keyword:
             parts = [f'{f}: ({params.keyword})^{b}' if b else f'{f}: ({params.keyword})'
                      for f, b in _KEYWORD_SEARCH_FIELDS]
@@ -242,7 +241,7 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
     unique_rules = set()
     level_counts: dict[str, int] = {}
     for d in docs:
-        src = d.get("data", {}).get("srcip") if isinstance(d.get("data"), dict) else d.get("data.srcip")
+        src = _srcip_from_doc(d)
         if src:
             unique_ips.add(str(src))
         rid = d.get("rule", {}).get("id") if isinstance(d.get("rule"), dict) else d.get("rule.id")
@@ -308,13 +307,13 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
             rid = rule.get("id", d.get("rule.id", "?"))
             desc = rule.get("description", d.get("rule.description", "?"))
             lvl = rule.get("level", d.get("rule.level", "?"))
-            src = d.get("data", {}).get("srcip") if isinstance(d.get("data"), dict) else d.get("data.srcip", "?")
+            src = _srcip_from_doc(d) or "?"
             agent = d.get("agent", {}).get("name") if isinstance(d.get("agent"), dict) else d.get("agent.name", "?")
             lines.append(f"**{i}.** `{ts}` | Level {lvl} | Rule {rid} - {desc}")
             lines.append(f"- Source: `{src}` | Agent: `{agent}`")
             full = d.get("full_log", "")
             if full:
-                lines.append(f"- Log: `{str(full)[:200]}{'...' if len(str(full)) > 200 else ''}`")
+                lines.append(f"- Log: `{full}`")
             lines.append("")
         if len(docs) > 20:
             lines.append(f"_... and {len(docs) - 20} more alerts (use next_cursor for next page)_")

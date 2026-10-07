@@ -118,3 +118,11 @@ def test_fetch_srcip_profiles_populates_entity(monkeypatch):
     assert profile["alert_count"] == 334
     assert profile["score_a"] > 0
     assert profile["total"] == profile["score_a"]
+
+
+def test_lockout_filter_drops_unmapped_dotted_child():
+    """data.data is a keyword leaf, so data.data.error could never match."""
+    text = repr(correlation._lockout_should_clauses())
+    assert "data.data.error" not in text
+    assert "data.error" in text
+    assert "data.zimbra_error" in text

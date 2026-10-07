@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-F-3: Attack chain analysis — rule-to-rule transition graphs, kill-chain pattern matching
+F-3: Attack chain analysis: rule-to-rule transition graphs, kill-chain pattern matching
 """
 from __future__ import annotations
 import json, re, math, asyncio, os
@@ -21,7 +21,7 @@ from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call, _get_client
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
 from mcp_server.core.constants import _KNOWN_ATTACK_CHAINS
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _srcip_should_clauses
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 
@@ -107,13 +107,7 @@ async def blueteam_attack_chain(params: AttackChainInput) -> str:
                 "must": [
                     {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                              "format": "strict_date_optional_time"}}},
-                    {"bool": {
-                        "should": [
-                            {"match": {"data.srcip": params.srcip.strip()}},
-                            {"match_phrase": {"full_log": params.srcip.strip()}},
-                        ],
-                        "minimum_should_match": 1,
-                    }},
+                    _srcip_should_clauses(params.srcip),
                 ]
             }
         },

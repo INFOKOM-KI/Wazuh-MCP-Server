@@ -5,7 +5,7 @@ Offline network arithmetic: split a CIDR block into equal sub-blocks, or merge
 an IP/block list into the smallest covering CIDR set.
 Answers "what does this block look like as /28s" and "what is the smallest
 ruleset that covers these 400 hosts". No Wazuh API, no threat-intel provider, no
-filesystem — the result is computed locally from the input.
+filesystem: the result is computed locally from the input.
 
 Redaction: ``@blueteam_tool(redact=False)`` is deliberate. Layer 3 rewrites RFC1918
 network and broadcast addresses (``10.0.0.0/24`` -> ``10.***.***.0/24``), which

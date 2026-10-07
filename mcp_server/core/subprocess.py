@@ -34,7 +34,7 @@ def _run(cmd: List[str], timeout: int = TIMEOUT) -> Dict[str, Any]:
 
 
 async def _run_async(cmd: List[str], timeout: int = TIMEOUT) -> Dict[str, Any]:
-    """Non-blocking wrapper around _run() — offloads subprocess to a thread pool."""
+    """Non-blocking wrapper around _run() that offloads the subprocess to a thread pool."""
     return await asyncio.to_thread(_run, cmd, timeout)
 
 

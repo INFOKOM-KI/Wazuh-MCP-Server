@@ -186,6 +186,18 @@ def test_backfill_persists_days_oldest_first_with_provenance():
         for fit in fits]
 
 
+def test_backfill_uses_new_template_srcip_path(monkeypatch):
+    async def _only_office365(fields, index_pattern=None):
+        return {"data.office365.ClientIP": "keyword"}
+
+    monkeypatch.setattr(cluster, "_wazuh_indexer_field_caps", _only_office365)
+
+    payload = json.loads(_run(_tool(_params(since="2026-09-01", until="2026-09-02"))))
+    assert payload["status"] == "ok"
+    assert _fake_fetch.calls
+    assert _fake_fetch.calls[0]["srcip_paths"] == ["data.office365.ClientIP"]
+
+
 def test_rerun_is_idempotent_and_preserves_created_at():
     _run(_tool(_params(since="2026-09-01", until="2026-09-03")))
     before = load_fit_history()

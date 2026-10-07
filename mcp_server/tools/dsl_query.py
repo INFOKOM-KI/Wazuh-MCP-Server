@@ -222,6 +222,16 @@ async def wazuh_alert_dsl_query(params: DslQueryInput) -> str:
     Example usage (deprecated raw path):
         - query_json='{"size":0,"aggs":{"by_agent":{"terms":{"field":"agent.name"}}}}'
 
+    Nested fields (MS Graph) need explicit nested syntax; a plain terms query on a
+    nested leaf returns zero buckets, not an error:
+        - Filter: wrap the term in ``{"nested": {"path": <nested-object>,
+          "query": {"term": <leaf>}}}}``.
+        - Group values: nest `data.ms-graph.evidence`, then terms on
+          `data.ms-graph.evidence._comment`.
+        - Parent alerts once: add ``{"reverse_nested": {}}`` under a grouped value.
+        - Depth-2: nest `data.ms-graph.resources`, then
+          `data.ms-graph.resources.modifiedProperties` inside it.
+
     Error Handling:
         - Invalid JSON → rejected at Pydantic validation
         - ``size`` > 0 → rejected with guidance to use wazuh_alert_focused_crawl

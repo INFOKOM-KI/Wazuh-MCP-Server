@@ -24,7 +24,7 @@ Silent false negative. Instead:
     never the rule body (Layer-1 credential stripping would otherwise have to
     run on text we cannot safely mutate).
   * generate() embeds attacker-side fields only (data.url / data.domain /
-    data.command / data.file.*). ``full_log`` is never used as an atom source -
+    data.command / data.file). ``full_log`` is never used as an atom source -
     it carries victim usernames and paths.
   * file mode embeds a sha256 + basename-derived descriptor, never the full
     local path.
@@ -281,10 +281,11 @@ def _extract_from_bytes(data: bytes, cap: int = _MAX_ATOMS) -> tuple[list[bytes]
 
 def _extract_from_docs(docs: list[dict], cap: int = _MAX_ATOMS) -> tuple[list[bytes], list[bytes]]:
     """Harvest attacker-side fields from Wazuh alert docs. Never full_log."""
-    fields = ("data.url", "data.domain", "data.command", "data.file.path", "data.file.name")
+    from mcp_server.wazuh.indexer import _ATTACKER_FIELDS
+
     chunks: list[bytes] = []
     for doc in docs:
-        for path in fields:
+        for path in _ATTACKER_FIELDS:
             node: Any = doc
             for part in path.split("."):
                 node = node.get(part) if isinstance(node, dict) else None

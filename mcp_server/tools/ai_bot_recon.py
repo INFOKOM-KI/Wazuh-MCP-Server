@@ -8,7 +8,7 @@ import re
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _BYPASS_REDACTION_DESC
-from mcp_server.wazuh.indexer import _wazuh_indexer_post
+from mcp_server.wazuh.indexer import _wazuh_indexer_post, _srcip_aggs_merged, _correct_srcip_counts
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.core.tool_decorator import blueteam_tool
 
@@ -81,29 +81,27 @@ async def blueteam_ai_bot_recon(params: AiBotReconInput) -> str:
 
     since_iso, until_iso = _parse_time_window(params.since, params.until)
 
-    body = {
-        "size": 0,
-        "query": {"bool": {"must": [
-            {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
-                                       "format": "strict_date_optional_time"}}},
-            {"query_string": {"query": _AI_UA_QUERY,
-                              "default_field": "full_log", "lenient": True}},
-        ]}},
-        "aggs": {
-            "by_srcip": {
-                "terms": {"field": "data.srcip", "size": params.top_n,
-                          "order": {"_count": "desc"}},
-                "aggs": {
-                    "paths": {"terms": {"field": "data.url", "size": 25}},
-                },
+    query = {"bool": {"must": [
+        {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
+                                   "format": "strict_date_optional_time"}}},
+        {"query_string": {"query": _AI_UA_QUERY,
+                          "default_field": "full_log", "lenient": True}},
+    ]}}
+    aggs = {
+        "by_srcip": {
+            "terms": {"field": "data.srcip", "size": params.top_n,
+                      "order": {"_count": "desc"}},
+            "aggs": {
+                "paths": {"terms": {"field": "data.url", "size": 25}},
             },
         },
     }
-    raw = await _wazuh_indexer_post(body)
-    if "error" in raw:
-        return json.dumps(raw, indent=2)
+    merged, _paths, errors = await _srcip_aggs_merged(query, aggs)
+    if errors and not merged:
+        return json.dumps({"error": errors[0]}, indent=2)
 
-    buckets = raw.get("aggregations", {}).get("by_srcip", {}).get("buckets", [])
+    buckets = merged.get("by_srcip", {}).get("buckets", [])
+    await _correct_srcip_counts(buckets, query)
 
     sources = []
     for b in buckets:

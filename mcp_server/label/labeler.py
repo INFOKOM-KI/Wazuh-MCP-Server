@@ -23,6 +23,7 @@ from typing import Any, List, Optional, Tuple
 
 from mcp_server.core.config import config
 from mcp_server.core.exceptions import BlueTeamMCPError
+from mcp_server.wazuh.indexer import _srcip_from_doc
 from mcp_server.label.backends import (
     LabelVerdict,
     LayaLabeler,
@@ -164,7 +165,12 @@ def build_state_text(alert: Any) -> Tuple[str, List[str]]:
     used: List[str] = []
     total = 0
     for path in STATE_FIELDS:
-        value = _scalar(_lookup(alert, path))
+        if path == "data.srcip":
+            # Canonical feature name stays data.srcip; the value comes from whichever
+            # source-IP path the alert populates.
+            value = _scalar(_srcip_from_doc(alert))
+        else:
+            value = _scalar(_lookup(alert, path))
         if not value:
             continue
         parts.append(f"{path}={value}")

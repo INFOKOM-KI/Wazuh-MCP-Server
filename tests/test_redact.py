@@ -106,7 +106,7 @@ class TestDomainMasking:
         assert "example.com" in _mask_domain("admin.example.com")  # TLD visible
 
     def test_preserves_two_part_domain(self):
-        """2-part domains (evil.cn) are NOT masked — only subdomains are."""
+        """2-part domains (evil.cn) are NOT masked; only subdomains are."""
         assert _mask_domain("evil.cn") == "evil.cn"
 
     def test_full_policy_masks_subdomain_in_text(self):
@@ -191,3 +191,220 @@ class TestOwnedDomainDetection:
     def test_unrelated_not_owned(self):
         with patch.object(_redact_mod, "_OWNED_DOMAINS", {"tangerangkota.go.id"}):
             assert _is_owned_domain("evil.cn") is False
+
+
+def _nested(path: str, value):
+    node = value
+    for part in reversed(path.split(".")):
+        node = {part: node}
+    return node
+
+
+def _dig(doc, path: str):
+    node = doc
+    for part in path.split("."):
+        node = node[part]
+    return node
+
+
+IDENTITY_PATHS = (
+    "data.win.eventdata.subjectUserName",
+    "data.win.eventdata.targetUserName",
+    "data.win.eventdata.subjectUserSid",
+    "data.win.eventdata.targetUserSid",
+    "data.win.system.userID",
+    "data.win.system.securityUserID",
+    "data.audit.acct",
+    "data.audit.uid",
+    "data.audit.euid",
+    "data.aws.userIdentity.userName",
+    "data.aws.userIdentity.accountId",
+    "data.office365.UserId",
+    "data.office365.Actor.ID",
+    "data.ms-graph.userPrincipalName",
+    "data.ms-graph.userId",
+    "data.ms-graph.actor.userPrincipalName",
+    "data.ms-graph.actor.userId",
+    "syscheck.audit.user.name",
+    "syscheck.uid_before",
+    "syscheck.uname_before",
+    "data.process.euser",
+    "data.process.ruser",
+    "data.process.suser",
+    "data.srcuser",
+    "data.dstuser",
+)
+
+
+class TestIdentityPathMasking:
+
+    @pytest.mark.parametrize("policy", ["full", "protect_victim"])
+    def test_identity_paths_masked_under_both_policies(self, policy):
+        for path in IDENTITY_PATHS:
+            out = _redact_alert_data(_nested(path, "jdoe.smith"), policy=policy)
+            value = _dig(out, path)
+            assert value != "jdoe.smith", f"{path} under {policy}"
+            assert "***" in value, f"{path} under {policy}"
+
+    def test_sid_values_are_masked(self):
+        doc = _nested("data.win.eventdata.subjectUserSid", "S-1-5-21-111-222-333-1001")
+        out = _redact_alert_data(doc, policy="full")
+        value = _dig(out, "data.win.eventdata.subjectUserSid")
+        assert "S-1-5-21" not in value
+        assert "[h:" in value
+
+    def test_identity_masking_disabled_by_env_flag(self):
+        doc = _nested("data.win.eventdata.subjectUserName", "jdoe")
+        with patch.object(_redact_mod, "BLUETEAM_REDACT_IDENTITIES", False):
+            out = _redact_alert_data(doc, policy="full")
+        assert _dig(out, "data.win.eventdata.subjectUserName") == "jdoe"
+
+    def test_credential_protection_survives_identity_flag_off(self):
+        doc = _nested("data.aws.requestParameters.masterUserPassword", "hunter2")
+        with patch.object(_redact_mod, "BLUETEAM_REDACT_IDENTITIES", False):
+            out = _redact_alert_data(doc, policy="full")
+        assert _dig(out, "data.aws.requestParameters.masterUserPassword") == "<CREDENTIAL_REDACTED>"
+
+    def test_non_identity_fields_preserved(self):
+        doc = {"rule": {"id": "5710", "description": "sshd: attempted login"},
+               "data": {"process": {"name": "nginx", "state": "running"},
+                        "win": {"system": {"providerName": "Microsoft-Windows-Security-Auditing"}}}}
+        out = _redact_alert_data(doc, policy="full")
+        assert out["rule"]["id"] == "5710"
+        assert out["rule"]["description"] == "sshd: attempted login"
+        assert out["data"]["process"]["name"] == "nginx"
+        assert out["data"]["process"]["state"] == "running"
+        assert out["data"]["win"]["system"]["providerName"] == "Microsoft-Windows-Security-Auditing"
+
+
+class TestCredentialKeyLayer:
+
+    def test_master_user_password_is_masked(self):
+        out = _redact_alert_data(_nested("data.aws.requestParameters.masterUserPassword", "hunter2"),
+                                 policy="full")
+        assert _dig(out, "data.aws.requestParameters.masterUserPassword") == "<CREDENTIAL_REDACTED>"
+
+    def test_secret_bearing_paths_are_masked(self):
+        paths = ("data.aws.requestParameters.masterUsername",
+                 "data.ms-graph.activationLockBypassCode",
+                 "data.ms-graph.deviceHealthAttestationState.attestationIdentityKey")
+        for path in paths:
+            out = _redact_alert_data(_nested(path, "secret-value"), policy="full")
+            assert _dig(out, path) == "<CREDENTIAL_REDACTED>", path
+
+    def test_asia_temporary_key_is_stripped(self):
+        key = "ASIAABCDEFGHIJKLMNOP"
+        assert key not in _strip_credentials(f"access_key={key}")
+        assert "CLOUD_API_KEY_REDACTED" in _strip_credentials(key)
+
+    def test_credential_layer_mandatory_under_raw(self):
+        doc = _nested("data.aws.requestParameters.masterUserPassword", "hunter2")
+        with patch.object(_redact_mod, "BLUETEAM_ALLOW_FORENSIC_BYPASS", True):
+            out = _redact_alert_data(doc, policy="raw")
+        assert _dig(out, "data.aws.requestParameters.masterUserPassword") == "<CREDENTIAL_REDACTED>"
+
+    def test_identity_not_masked_under_raw(self):
+        doc = _nested("data.win.eventdata.subjectUserName", "jdoe")
+        with patch.object(_redact_mod, "BLUETEAM_ALLOW_FORENSIC_BYPASS", True):
+            out = _redact_alert_data(doc, policy="raw")
+        assert _dig(out, "data.win.eventdata.subjectUserName") == "jdoe"
+
+    def test_key_like_allowlisted_fields_preserved(self):
+        doc = {"data": {"audit": {"key": "audit-wazuh"},
+                        "win": {"eventdata": {"keyName": "HKLM\\Run"},
+                                "system": {"keywords": ["Audit", "Security"]}}}}
+        for policy in ("full", "protect_victim"):
+            out = _redact_alert_data(doc, policy=policy)
+            assert out["data"]["audit"]["key"] == "audit-wazuh", policy
+            assert out["data"]["win"]["eventdata"]["keyName"] == "HKLM\\Run", policy
+            assert out["data"]["win"]["system"]["keywords"] == ["Audit", "Security"], policy
+        with patch.object(_redact_mod, "BLUETEAM_ALLOW_FORENSIC_BYPASS", True):
+            raw = _redact_alert_data(doc, policy="raw")
+        assert raw["data"]["audit"]["key"] == "audit-wazuh"
+        assert raw["data"]["win"]["eventdata"]["keyName"] == "HKLM\\Run"
+
+
+def test_memo_key_includes_identity_setting():
+    """A flip of BLUETEAM_REDACT_IDENTITIES must not reuse memoized output."""
+    _redact_mod._REDACT_MEMO.clear()
+    probe = "memo isolation probe string"
+    try:
+        with patch.object(_redact_mod, "BLUETEAM_REDACT_IDENTITIES", True):
+            _redact_alert_data(probe, policy="full")
+        with patch.object(_redact_mod, "BLUETEAM_REDACT_IDENTITIES", False):
+            _redact_alert_data(probe, policy="full")
+        keys = [k for k in _redact_mod._REDACT_MEMO if k[0] == probe]
+        assert {k[-1] for k in keys} == {True, False}
+    finally:
+        _redact_mod._REDACT_MEMO.clear()
+
+
+class TestNoLengthTruncation:
+    """The redaction layer never shortens a field, only masks content."""
+
+    LONG_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.2535.51")
+
+    def test_long_full_log_returned_in_full(self):
+        log = "alert context segment " * 20
+        out = _redact_alert_data({"full_log": log}, policy="full")
+        assert out["full_log"] == log
+
+    def test_long_user_agent_returned_in_full(self):
+        out = _redact_alert_data({"data": {"user_agent": self.LONG_UA}}, policy="full")
+        assert out["data"]["user_agent"] == self.LONG_UA
+
+    def test_long_field_with_ua_keyword_not_truncated(self):
+        value = "curl request detail " * 20
+        out = _redact_alert_data({"data": {"extra_data": value}}, policy="full")
+        assert out["data"]["extra_data"] == value
+
+    def test_sensitive_path_inside_full_log_still_masked(self):
+        log = "cmd: cat /var/www/html/wp-content/plugins/shell.php && echo suffix-marker-xyz"
+        out = _redact_alert_data({"full_log": log}, policy="full")
+        assert "/var/www/html/wp-content/plugins/shell.php" not in out["full_log"]
+        assert "[h:" in out["full_log"]
+        assert "suffix-marker-xyz" in out["full_log"]
+
+    def test_credential_redaction_unaffected(self):
+        doc = _nested("data.aws.requestParameters.masterUserPassword", "hunter2")
+        assert _dig(_redact_alert_data(doc, policy="full"),
+                    "data.aws.requestParameters.masterUserPassword") == "<CREDENTIAL_REDACTED>"
+        assert "supersecret123" not in _strip_credentials("password=supersecret123")
+        with patch.object(_redact_mod, "BLUETEAM_ALLOW_FORENSIC_BYPASS", True):
+            raw = _redact_alert_data(doc, policy="raw")
+        assert _dig(raw, "data.aws.requestParameters.masterUserPassword") == "<CREDENTIAL_REDACTED>"
+
+    def test_memo_does_not_reintroduce_truncation(self):
+        _redact_mod._REDACT_MEMO.clear()
+        value = self.LONG_UA
+        try:
+            first = _redact_alert_data(value, policy="full")
+            second = _redact_alert_data(value, policy="full")
+            assert first == value and second == value
+            assert any(k[0] == value for k in _redact_mod._REDACT_MEMO)
+        finally:
+            _redact_mod._REDACT_MEMO.clear()
+
+
+CREDENTIAL_LEAVES = [
+    "data.aws.requestParameters.masterUserPassword",
+    "data.aws.requestParameters.masterUsername",
+    "data.aws.requestParameters.accessKeyId",
+    "data.aws.userIdentity.accessKeyId",
+    "data.aws.resource.accessKeyDetails.accessKeyId",
+    "data.aws.resource.accessKeyDetails.principalId",
+    "data.ms-graph.activationLockBypassCode",
+    "data.ms-graph.deviceHealthAttestationState.attestationIdentityKey",
+    "data.pwd",
+]
+
+
+@pytest.mark.parametrize("path", CREDENTIAL_LEAVES)
+def test_all_nine_credential_leaves_are_masked(path):
+    """All nine credential-classified leaves keep mandatory protection."""
+    secret = "AKIAEXAMPLEVALUE1234"
+    out = _redact_alert_data(_nested(path, secret), policy="full")
+    value = _dig(out, path)
+    assert value != secret, path
+    assert secret not in value, path

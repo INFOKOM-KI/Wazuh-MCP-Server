@@ -7,7 +7,7 @@ Indexer alerts/search, MITRE resources, and local alerts fallback.
 Manager API tools use @blueteam_tool for automatic audit logging, error handling (catching WazuhAuthError / WazuhAPIError),
 and response truncation. Agent filtering now passes through Wazuh's native q/sort/select/search/status/distinct parameters.
 
-NOTE: No ``from __future__ import annotations`` — deferred annotation
+NOTE: No ``from __future__ import annotations``. Deferred annotation
       evaluation (PEP 563) breaks the @blueteam_tool decorator's type
       resolution because the wrapper's __globals__ is tool_decorator.py.
 """

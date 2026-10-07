@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data
-from mcp_server.wazuh.indexer import _wazuh_indexer_post
+from mcp_server.wazuh.indexer import _SRCIP_FIELD_PATHS, _wazuh_indexer_post
 from mcp_server.wazuh.time_utils import _parse_time_window
 
 _logger = logging.getLogger("blue_team_mcp.stix")
@@ -444,9 +444,8 @@ async def _fetch_techniques_for_srcip(srcip: str, since: str | None,
             {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                        "format": "strict_date_optional_time"}}},
             {"bool": {"should": [
-                {"match": {"data.srcip": srcip}},
+                *[{"match": {path: srcip}} for path in _SRCIP_FIELD_PATHS],
                 {"match": {"data.srcip2": srcip}},
-                {"match": {"srcip": srcip}},
                 {"match_phrase": {"full_log": srcip}},
             ], "minimum_should_match": 1}},
         ]}},

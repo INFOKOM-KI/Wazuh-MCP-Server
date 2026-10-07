@@ -14,7 +14,8 @@ from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.config import config
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.rerank import rerank as _cross_rerank, status_dict
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _WAZUH_INDEX_PATTERNS,
+                                      _srcip_should_clauses, _srcip_from_doc, _SRCIP_FIELD_PATHS)
 from mcp_server.wazuh.time_utils import _parse_time_window
 
 # BM25
@@ -194,8 +195,8 @@ class SemanticSearchInput(BaseModel):
         description="Number of results to return.")
     srcip: str | None = Field(default=None, max_length=45,
         description="Optional exact source-IP filter. When set with source='alerts', BM25 ranks "
-                    "ONLY alerts from this IP (exact field filter on data.srcip — the IP itself "
-                    "is NOT added to the BM25 corpus).")
+                    "ONLY alerts from this IP (exact match on the source-IP paths; "
+                    "the IP itself is NOT added to the BM25 corpus).")
     rerank: bool = Field(
         default=True,
         description="Re-rank BM25 candidates with the local cross-encoder "
@@ -218,7 +219,7 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
     """Semantic search over Wazuh rules using BM25 lexical ranking.
 
     Matches natural language queries against Wazuh rule descriptions and returns
-    the most relevant rule IDs. Use this BEFORE querying alerts — find which
+    the most relevant rule IDs. Use this BEFORE querying alerts: find which
     rules match "credential theft" or "serangan webshell" then use
     ``blueteamWazuhIndexerSearch`` to retrieve the actual alerts.
 
@@ -236,7 +237,7 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
 
     4. *Hybrid: rank alerts semantically but only from one attacker IP*:
        ``blueteam_semantic_search(query="webshell", source="alerts", srcip="117.247.110.24", since="7d")``
-       (Exact data.srcip filter — the IP stays OUT of the BM25 corpus)
+       (Exact source-IP path filter; the IP stays OUT of the BM25 corpus)
 
     5. *Cross-lingual rerank (Indonesian query)*:
        ``blueteam_semantic_search(query="serangan brute force ssh", source="rules", rerank=True)``
@@ -320,11 +321,8 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
                                    "format": "strict_date_optional_time"}}},
     ]
     if params.srcip:
-        must.append({"bool": {"should": [
-            {"match": {"data.srcip": params.srcip.strip()}},
-            {"match": {"data.srcip2": params.srcip.strip()}},
-            {"match": {"srcip": params.srcip.strip()}},
-        ], "minimum_should_match": 1}})
+        must.append(_srcip_should_clauses(params.srcip, full_log=False,
+                                          extra_paths=("data.srcip2",)))
 
     # Count first: size 0 asks for the total only, which is instant
     count_body = {"size": 0, "query": {"bool": {"must": must}}}
@@ -347,7 +345,7 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
     while len(all_docs) < max_scan:
         body = {"size": min(page_size, max_scan - len(all_docs)),
                 "_source": ["@timestamp", "rule.id", "rule.description", "rule.level",
-                            "rule.groups", "data.srcip", "data.url", "data.domain",
+                            "rule.groups", *_SRCIP_FIELD_PATHS, "data.url", "data.domain",
                             "agent.name", "full_log"],
                 "sort": [{"@timestamp": {"order": "desc"}}, {"_id": "asc"}],
                 "query": {"bool": {"must": must}}}
@@ -423,7 +421,7 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
                 "@timestamp": d.get("@timestamp", "?"),
                 "rule_id": rule.get("id", "?"),
                 "rule_description": str(rule.get("description", ""))[:80],
-                "srcip": data.get("srcip", ""),
+                "srcip": _srcip_from_doc(d),
                 "url": data.get("url", ""),
                 "domain": data.get("domain", ""),
                 "agent": d.get("agent", {}).get("name", ""),
@@ -452,7 +450,7 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
         data = d.get("data", {})
         ts = str(d.get("@timestamp", "?"))[:16]
         rid = rule.get("id", "?")
-        ip = data.get("srcip", "-")
+        ip = _srcip_from_doc(d) or "-"
         detail = (data.get("url") or data.get("domain") or
                   str(rule.get("description", ""))[:50])
         lines.append(f"| {rank} | {score:.3f} | {ts} | `{rid}` | `{ip}` | {detail} |")

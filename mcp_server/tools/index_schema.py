@@ -7,11 +7,13 @@ when the index stores ``field`` as a plain ``keyword`` type (or vice versa).
 """
 from __future__ import annotations
 import json, re, statistics
-from typing import Optional, Literal, Any
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
-from mcp_server.wazuh.indexer import _wazuh_indexer_mapping, _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import (_wazuh_indexer_mapping, _WAZUH_INDEX_PATTERNS,
+                                      _agg_safe_field, _flatten_props, _shape,
+                                      _shape_is_agg_safe)
 
 _COMMON_FIELDS = [
     "data.srcip", "data.srcip2", "data.src_ip", "data.client_ip", "data.remote_ip",
@@ -24,16 +26,6 @@ _COMMON_FIELDS = [
     "GeoLocation.region_name", "GeoLocation.real_region_name",
     "@timestamp", "full_log", "decoder.name", "location",
 ]
-
-
-def _flatten_props(prefix: str, props: dict, out: dict) -> None:
-    """Recursively flatten nested ``properties`` into dotted field paths."""
-    for name, spec in props.items():
-        path = f"{prefix}.{name}" if prefix else name
-        if isinstance(spec, dict) and "properties" in spec:
-            _flatten_props(path, spec["properties"], out)
-            continue
-        out[path] = spec
 
 
 def _truncated_templates(field_counts: dict, ratio: float = 0.5,
@@ -62,37 +54,6 @@ def _field_info(spec: dict) -> dict:
             "agg_safe": _shape_is_agg_safe(_shape(spec))}
 
 
-_AGG_SAFE_TYPES = ("keyword", "long", "integer", "double", "date", "boolean", "ip")
-
-
-def _shape(spec: dict) -> str:
-    """Mapping shape for one index, e.g. ``text+fielddata+analyzer=keyword``.
-    Type and fielddata decide aggregatability; the analyzer decides whether the
-    buckets are values or tokens, so it belongs in the shape.
-    """
-    parts = [spec.get("type", "object")]
-    if "keyword" in spec.get("fields", {}):
-        parts.append("keyword")
-    if spec.get("fielddata"):
-        parts.append("fielddata")
-    if spec.get("analyzer"):
-        parts.append(f"analyzer={spec['analyzer']}")
-    return "+".join(parts)
-
-
-def _shape_is_agg_safe(shape: str) -> bool:
-    """True when the field's own name is asserted to aggregate to its values.
-
-    A keyword sub-field does not count on its own, and a text field with
-    fielddata is not asserted either. It aggregates, but whether the buckets are
-    values or analysed tokens depends on the analyser and on the value format:
-    the standard analyser keeps ``101.255.167.98`` whole while splitting
-    ``a.b.go.id``, so one mapping shape behaves differently per field. This
-    refuses rather than permits.
-    """
-    return shape.split("+")[0] in _AGG_SAFE_TYPES
-
-
 def _shape_counts(by_shape: dict) -> dict:
     return {shape: len(names) for shape, names in by_shape.items()}
 
@@ -106,20 +67,6 @@ def _minority_indices(by_shape: dict, cap: int = 20) -> list:
     odd = sorted(name for shape, names in by_shape.items()
                  if shape != majority for name in names)
     return odd[:cap]
-
-
-def _agg_safe_field(field: str, by_shape: dict) -> Optional[str]:
-    """Field name that aggregates in every matched index, or ``None``.
-    A corpus mixing ``keyword`` with ``text+keyword`` has neither: the bare name
-    fails on the text indices and ``.keyword`` does not exist on the others.
-    """
-    if not by_shape:
-        return None
-    if all(_shape_is_agg_safe(shape) for shape in by_shape):
-        return field
-    if all("keyword" in shape.split("+")[1:] for shape in by_shape):
-        return f"{field}.keyword"
-    return None
 
 
 class IndexSchemaInput(BaseModel):

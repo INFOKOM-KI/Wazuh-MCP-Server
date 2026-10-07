@@ -21,7 +21,7 @@ from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call, _get_client
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
 from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _srcip_should_clauses
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 
@@ -35,7 +35,7 @@ class ThreatCardInput(BaseModel):
         ...,
         min_length=7,
         max_length=45,
-        description="Source IP to generate a comprehensive threat card for.",
+        description="Source IP to generate a threat card for.",
     )
     since: Optional[str] = Field(
         default="24h",
@@ -77,7 +77,7 @@ class ThreatCardInput(BaseModel):
     },
 )
 async def blueteam_threat_card(params: ThreatCardInput) -> str:
-    """Generate a comprehensive threat card for a source IP.
+    """Generate a threat card for a source IP.
     Collapses alert summarization, attack chain analysis, MITRE ATT&CK
     mapping, and threat intelligence (CrowdSec + GreyNoise) into a single
     structured report. Designed as the one-stop triage tool the LLM can
@@ -121,13 +121,7 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
                 "must": [
                     {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                              "format": "strict_date_optional_time"}}},
-                    {"bool": {
-                        "should": [
-                            {"match": {"data.srcip": params.srcip.strip()}},
-                            {"match_phrase": {"full_log": params.srcip.strip()}},
-                        ],
-                        "minimum_should_match": 1,
-                    }},
+                    _srcip_should_clauses(params.srcip),
                 ]
             }
         },
@@ -277,7 +271,7 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     lines.append("| Rule ID | Count | Description |")
     lines.append("|---------|-------|-------------|")
     for rid, cnt in rule_counts.most_common(10):
-        desc = _escape_md_table(rule_descs.get(rid, ""))[:80]
+        desc = _escape_md_table(rule_descs.get(rid, ""))
         lines.append(f"| {rid} | {cnt} | {desc} |")
     lines.append("")
 
@@ -290,7 +284,7 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     if urls:
         lines.append(f"## 🔗 URLs Probed ({len(urls)} unique)")
         for u in sorted(set(urls))[:10]:
-            lines.append(f"- `{u[:120]}`")
+            lines.append(f"- `{u}`")
         if len(set(urls)) > 10:
             lines.append(f"- ... and {len(set(urls)) - 10} more")
         lines.append("")

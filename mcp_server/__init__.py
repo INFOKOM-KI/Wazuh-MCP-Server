@@ -121,7 +121,7 @@ BLUETEAM_REDACT_PII       = _c.redaction.redact_pii
 BLUETEAM_REDACT_EMAILS    = _c.redaction.redact_emails
 BLUETEAM_REDACT_DOMAINS   = _c.redaction.redact_domains
 BLUETEAM_REDACT_LOCATIONS = _c.redaction.redact_locations
-BLUETEAM_REDACT_UAS       = _c.redaction.redact_uas
+BLUETEAM_REDACT_IDENTITIES = _c.redaction.redact_identities
 
 # Redaction policy & forensic bypass gate
 BLUETEAM_REDACTION_POLICY     = _c.redaction.policy

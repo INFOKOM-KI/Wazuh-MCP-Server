@@ -77,6 +77,8 @@ async def blueteam_wazuh_geo_distribution(params: GeoDistributionInput) -> str:
                 "terms": {"field": geo_field, "size": params.top_n,
                           "order": {"_count": "desc"}},
                 "aggs": {
+                    # Single-path cardinality: an exact cross-path count needs terms scans,
+                    # which would change this per-geo metric's cost.
                     "unique_ips": {
                         "cardinality": {"field": "data.srcip",
                                         "precision_threshold": 40000},
@@ -239,6 +241,8 @@ async def blueteam_wazuh_geo_concentration(params: GeoConcentrationInput) -> str
                 "terms": {"field": geo_field, "size": params.max_buckets,
                           "missing": _UNRESOLVED, "order": {"_count": "desc"}},
                 "aggs": {
+                    # Single-path cardinality: an exact cross-path count needs terms scans,
+                    # which would change this per-geo metric's cost.
                     "unique_ips": {"cardinality": {"field": "data.srcip",
                                                     "precision_threshold": 40000}},
                     "centroid": {"geo_centroid": {"field": "GeoLocation.location"}},

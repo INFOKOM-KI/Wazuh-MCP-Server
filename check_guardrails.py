@@ -10,6 +10,8 @@ Catches the regression patterns that caused every production outage:
   5. IMPORT - runtime-evaluated types missing from imports
   6. CLOSURE - inner functions referencing params fields as free variables
   7. KWARG - call-site keyword args missing from the callee's signature (TypeError class)
+  8. FIELD-COV - field manifest/template integrity (unclassified, dead `.keyword`,
+     mapping conflict, fixture-hash drift, stale or inconsistent entries)
 
 Usage:
   python3 check_guardrails.py             # exit 0=clean, 1=warnings
@@ -348,6 +350,42 @@ CHECKS = [
 ]
 
 
+def _field_cov_issue(code: str, message: str) -> dict:
+    return {"check": "FIELD-COV", "file": "tests/fixtures/field_manifest.json",
+            "line": 0, "detail": f"[{code}] {message}"}
+
+
+def check_field_coverage(strict: bool = False, *, manifest=None, index=None,
+                        refs=None) -> tuple:
+    """FIELD-COV: field-manifest and capability integrity via the W0/W0.5 harness.
+
+    Fails on unclassified literals, dead `.keyword` aliases, mapping conflicts, a
+    fixture hash the manifest does not pin, stale entries, and classification or
+    capability inconsistencies. Reads local fixtures only; no cluster needed.
+    """
+    try:
+        from tests import field_coverage_lib as cov
+    except ImportError as e:
+        return ([_field_cov_issue("harness_missing",
+                                  f"field-coverage harness unavailable: {e}")],
+                {"dead_keyword": 0, "mapping_conflict": 0, "unclassified": 0})
+    manifest = manifest if manifest is not None else cov.load_manifest()
+    index = index if index is not None else cov.load_template_index()
+    refs = refs if refs is not None else cov.scan_references()
+
+    errors = cov.validate_fixture(manifest, index)
+    result = cov.validate_references(manifest, index, refs, strict=strict)
+    errors.extend(result.errors)
+    overlay = cov.load_overlay()
+    rows = cov.derive_capabilities(index, overlay, manifest)
+    errors.extend(cov.validate_capabilities(overlay, index, manifest, rows))
+
+    issues = [_field_cov_issue(code, message) for code, message in errors]
+    counts = {cls: result.counts.get(cls, 0)
+              for cls in ("dead_keyword", "mapping_conflict", "unclassified")}
+    return issues, counts
+
+
 def main() -> int:
     if not FILES:
         print("ERROR: no source files found under mcp_server/")
@@ -384,10 +422,25 @@ def main() -> int:
                 if not json_out:
                     print(f"{name} ({path.name}): clean")
 
+    field_issues, field_counts = check_field_coverage(strict)
+    all_issues.extend(field_issues)
+
     if json_out:
         print(json.dumps({'total': len(all_issues), 'issues': all_issues,
-                          'redact_warnings': len(redact_warnings)}, indent=2))
+                          'redact_warnings': len(redact_warnings),
+                          'field_counts': field_counts}, indent=2))
         return 0 if len(all_issues) == 0 else (2 if strict else 1)
+
+    print(f"\n{'='*60}")
+    if field_issues:
+        print(f"FIELD-COV: FAIL ({len(field_issues)} issue(s))")
+        for r in field_issues[:30]:
+            print(f"[{r['check']}] {r['detail']}")
+    else:
+        print("FIELD-COV: PASS")
+    print(f"dead_keyword = {field_counts['dead_keyword']}")
+    print(f"mapping_conflict = {field_counts['mapping_conflict']}")
+    print(f"unclassified = {field_counts['unclassified']}")
 
     # REDACT warnings, informational (not gating): candidates for @blueteam_tool migration.
     if redact_warnings and not json_out:

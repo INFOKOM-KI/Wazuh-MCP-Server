@@ -454,7 +454,7 @@ class UnifiedThreatScoreInput(BaseModel):
 async def blueteam_unified_threat_score(params: UnifiedThreatScoreInput) -> str:
     """Query multiple threat intel sources and return a unified confidence score.
     Aggregates CrowdSec + ThreatFox + AbuseIPDB into a single weighted verdict
-    (0.0–1.0) eliminating the need for 3+ sequential LLM tool calls per IP.
+    (0.0 to 1.0) eliminating the need for 3+ sequential LLM tool calls per IP.
     """
     _audit_log("blueteam_unified_threat_score", {"ip": params.ip})
 

@@ -12,7 +12,7 @@ from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_USER, WAZUH_INDEXER
 from mcp_server.core.audit import _audit_log
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.wazuh.time_utils import _parse_time_window
-from mcp_server.wazuh.indexer import _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import _WAZUH_INDEX_PATTERNS, _srcip_should_clauses
 
 _EXPORT_DIR = os.environ.get("BLUETEAM_EXPORT_DIR", "/var/log/blue-team-mcp/exports")
 
@@ -154,10 +154,7 @@ async def blueteam_wazuh_export(params: WazuhExportInput) -> str:
     if params.agent_name:
         must.append({"match": {"agent.name": params.agent_name.strip()}})
     if params.srcip:
-        must.append({"bool": {"should": [
-            {"match": {"data.srcip": params.srcip.strip()}},
-            {"match_phrase": {"full_log": params.srcip.strip()}},
-        ], "minimum_should_match": 1}})
+        must.append(_srcip_should_clauses(params.srcip))
     if params.rule_groups:
         groups = [g.strip() for g in params.rule_groups.split(",") if g.strip()]
         if groups:

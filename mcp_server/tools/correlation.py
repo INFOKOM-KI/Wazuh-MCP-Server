@@ -18,7 +18,9 @@ from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY
 from mcp_server.core.validators import ValidAgentName, ValidRuleGroups, ValidKeyword
 from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _wazuh_indexer_msearch, _wazuh_indexer_field_caps,
-                                      _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _SRCIP_FIELD_PATHS)
+                                      _agg_safe_paths, _srcip_should_clauses, _srcip_aggs_merged,
+                                      _correct_srcip_counts, _WAZUH_INDEX_PATTERNS,
+                                      _KEYWORD_SEARCH_FIELDS, _SRCIP_FIELD_PATHS)
 from mcp_server.wazuh.time_utils import _parse_time_window, _auto_bucket_interval, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 from mcp_server.core.attacker_registry import register_attacker_ioc, register_attacker_ips
@@ -96,29 +98,34 @@ def _tactic_terms(category: str) -> list[str]:
     return variants
 
 
+def _lockout_should_clauses() -> list[dict]:
+    """Match "locked" in the decoder fields that carry account-lockout text.
+    ``data.data`` is a flat keyword leaf, so a dotted ``data.data.error`` child
+    cannot exist and the old clause could never match.
+    """
+    return [
+        {"match": {"data.error": "locked"}},
+        {"match_phrase": {"full_log": "account is locked"}},
+        {"match_phrase": {"full_log": "account locked"}},
+        {"match_phrase": {"full_log": "locked out"}},
+        {"match": {"data.zimbra_error": "locked"}},
+    ]
+
+
 def _category_filter(category: str, groups: list[str], since_iso: str, until_iso: str,
                      use_mitre: bool, category_techniques: dict[str, list[str]]) -> dict:
     """MITRE-first category filter shared by the 3-Sum tool and the clustering
     population fetch. rule.groups stays a fallback only for alerts that carry no
     MITRE data at all."""
     if use_mitre:
-        mitre_clauses = [
-            {"terms": {"rule.mitre.tactic": _tactic_terms(category)}},
-            {"terms": {"rule.mitre.tactic.keyword": _tactic_terms(category)}},
-        ]
+        mitre_clauses = [{"terms": {"rule.mitre.tactic": _tactic_terms(category)}}]
         tech_ids = category_techniques.get(category, [])
         if tech_ids:
             mitre_clauses.append({"bool": {
-                "must": [{"bool": {"should": [
-                    {"terms": {"rule.mitre.id": tech_ids}},
-                    {"terms": {"rule.mitre.id.keyword": tech_ids}},
-                ], "minimum_should_match": 1}}],
+                "must": [{"terms": {"rule.mitre.id": tech_ids}}],
                 "must_not": [{"exists": {"field": "rule.mitre.tactic"}}],
             }})
-        group_clauses = [
-            {"terms": {"rule.groups": groups}},
-            {"terms": {"rule.groups.keyword": groups}},
-        ]
+        group_clauses = [{"terms": {"rule.groups": groups}}]
         category_match = {"bool": {"should": [
             *mitre_clauses,
             {"bool": {"must": group_clauses,
@@ -126,10 +133,7 @@ def _category_filter(category: str, groups: list[str], since_iso: str, until_iso
                                     {"exists": {"field": "rule.mitre.id"}}]}},
         ], "minimum_should_match": 1}}
     else:
-        category_match = {"bool": {"should": [
-            {"terms": {"rule.groups": groups}},
-            {"terms": {"rule.groups.keyword": groups}},
-        ], "minimum_should_match": 1}}
+        category_match = {"terms": {"rule.groups": groups}}
     return {"bool": {"filter": [
         {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                    "format": "strict_date_optional_time"}}},
@@ -192,6 +196,9 @@ async def _srcip_buckets(query: dict, extra_aggs: dict,
     ``(buckets, warnings, failed, meta)``; ``failed`` is True only when every
     query errored. ``meta`` carries the completeness counters a historical fit
     must gate on: per-path errors, failed shards and mapping fallbacks.
+    When several paths are queried, ``doc_count`` is the per-IP maximum across
+    paths: a lower bound on distinct alerts, because overlap between paths cannot
+    be measured here. Display callers correct it with ``_correct_srcip_counts``.
     ``srcip_paths`` skips the field-caps probe when the caller already resolved
     the mapped paths (a backfill run probes once, not once per day).
     """
@@ -200,8 +207,9 @@ async def _srcip_buckets(query: dict, extra_aggs: dict,
         warnings: list[str] = []
         fallback_paths = 0
     else:
-        caps = await _wazuh_indexer_field_caps(_SRCIP_FIELD_PATHS)
-        live = [f for f in _SRCIP_FIELD_PATHS if f in caps]
+        candidates = [f"{path}.keyword" for path in _SRCIP_FIELD_PATHS]
+        caps = await _wazuh_indexer_field_caps(_SRCIP_FIELD_PATHS + candidates)
+        live = [name for path in _SRCIP_FIELD_PATHS for name in _agg_safe_paths(path, caps)]
         warnings = []
         fallback_paths = 0
         if not live:
@@ -234,7 +242,8 @@ async def _srcip_buckets(query: dict, extra_aggs: dict,
             if current is None or int(bucket.get("doc_count", 0)) > int(current.get("doc_count", 0)):
                 merged[str(key)] = bucket
     meta = {"path_errors": path_errors, "partial_shards": partial_shards,
-            "fallback_paths": fallback_paths, "paths_queried": len(live)}
+            "fallback_paths": fallback_paths, "paths_queried": len(live),
+            "count_basis": "per_path_max_lower_bound"}
     return list(merged.values()), warnings, failed, meta
 
 
@@ -419,39 +428,27 @@ async def wazuh_alert_aggregate_analysis(params: AggregateAnalysisInput) -> str:
         k = params.keyword.strip()
         parts = [f'{f}: ({k})^{b}' if b else f'{f}: ({k})' for f, b in _KEYWORD_SEARCH_FIELDS[:8]]
         filters.append({"query_string": {"query": " OR ".join(parts), "default_operator": "AND", "lenient": True}})
+    srcip_agg = {"top_srcips": {"terms": {"field": "data.srcip", "size": params.top_n}}}
     body = {"size": 0, "query": {"bool": {"filter": filters}},
-            "aggs": {"top_srcips": {"terms": {"field": "data.srcip", "size": params.top_n}},
-                     "top_rules": {"terms": {"field": "rule.id", "size": params.top_n}},
+            "aggs": {"top_rules": {"terms": {"field": "rule.id", "size": params.top_n}},
                      "top_agents": {"terms": {"field": "agent.name", "size": params.top_n}},
                      "severity_bands": {"range": {"field": "rule.level",
                          "ranges": [{"key":"low","to":5},{"key":"medium","from":5,"to":10},{"key":"high","from":10}]}}}}
     # Add compliance breakdown aggregations if any compliance fields active
     for cf in compliance_fields:
         body["aggs"][f"compliance_{cf.split('.')[-1]}"] = {"terms": {"field": cf, "size": 20}}
-    raw = await _wazuh_indexer_post(body)
+    raw, (srcip_merged, _srcip_paths, _srcip_errors) = await asyncio.gather(
+        _wazuh_indexer_post(body),
+        _srcip_aggs_merged(body["query"], srcip_agg))
+    if "error" not in raw:
+        raw.setdefault("aggregations", {}).update(srcip_merged)
+        top_srcips = (raw["aggregations"].get("top_srcips") or {}).get("buckets", [])
+        await _correct_srcip_counts(top_srcips, body["query"])
     if "error" in raw: return json.dumps(raw, indent=2)
 
-    # AUTO-FALLBACK: this deployment's `string_as_keyword` dynamic template maps
-    # strings to PLAIN `keyword` (no `.keyword` sub-field). If the .keyword
-    # aggregations return empty buckets while documents exist, retry with the
-    # plain field names (prevents the silent empty-bucket false-negative).
+    # Plain names: the string_as_keyword template has no `.keyword` sub-field.
     aggs = raw.get("aggregations", {})
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
-    buckets_empty = (
-        not aggs.get("top_srcips", {}).get("buckets")
-        and not aggs.get("top_rules", {}).get("buckets")
-        and not aggs.get("top_agents", {}).get("buckets")
-    )
-    if total > 0 and buckets_empty:
-        # Retry with plain keyword field names (no .keyword suffix)
-        body["aggs"]["top_srcips"] = {"terms": {"field": "data.srcip", "size": params.top_n}}
-        body["aggs"]["top_rules"] = {"terms": {"field": "rule.id", "size": params.top_n}}
-        body["aggs"]["top_agents"] = {"terms": {"field": "agent.name", "size": params.top_n}}
-        raw2 = await _wazuh_indexer_post(body)
-        if "error" not in raw2:
-            raw = raw2
-            aggs = raw.get("aggregations", {})
-            total = raw.get("hits", {}).get("total", {}).get("value", 0)
     if params.response_format == "toon":
         return encode_toon({"total": total, "aggregations": aggs}, limit=CHARACTER_LIMIT)
     if params.response_format == "json":
@@ -727,14 +724,8 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
             in different fields, so match "locked" across the common ones + full_log.
             """
             lock_filter = _build_filter("B", params.category_b_groups)["bool"]["filter"] + [{
-                "bool": {"should": [
-                    {"match": {"data.error": "locked"}},
-                    {"match": {"data.data.error": "locked"}},
-                    {"match_phrase": {"full_log": "account is locked"}},
-                    {"match_phrase": {"full_log": "account locked"}},
-                    {"match_phrase": {"full_log": "locked out"}},
-                    {"match": {"data.zimbra_error": "locked"}},
-                ], "minimum_should_match": 1}}]
+                "bool": {"should": _lockout_should_clauses(),
+                         "minimum_should_match": 1}}]
             body = {"size": 0, "query": {"bool": {"filter": lock_filter}}}
             raw = await _wazuh_indexer_post(body)
             if "error" in raw:
@@ -964,7 +955,7 @@ class InvestigateIpInput(BaseModel):
                  "idempotentHint": True, "openWorldHint": False},
 )
 async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
-    """Run a comprehensive IP investigation - alert profile, timeline, and geo.
+    """Run an IP investigation: alert profile, timeline, and geo.
     Combines three indexer queries in parallel:
     1. Alert count + top rules (like alert summarization)
     2. Hourly timeline (for pattern/beacon detection)
@@ -995,10 +986,7 @@ async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
     base_filter = [
         {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                    "format": "strict_date_optional_time"}}},
-        {"bool": {"should": [
-            {"match": {"data.srcip": srcip}},
-            {"match_phrase": {"full_log": srcip}},
-        ], "minimum_should_match": 1}},
+        _srcip_should_clauses(srcip),
     ]
 
     async def _fetch_summary():

@@ -521,6 +521,66 @@ def test_index_retargeted_true_for_non_saved_search_formats():
     assert out["index_retargeted"] is True
 
 
+WINDOWS_MAP = {
+    "LogonGuid": "data.win.eventdata.logonGuid",
+    "LogonId": "data.win.eventdata.subjectLogonId",
+    "SubjectLogonId": "data.win.eventdata.subjectLogonId",
+    "TargetLogonId": "data.win.eventdata.targetLogonId",
+    "SubjectUserName": "data.win.eventdata.subjectUserName",
+    "SubjectUserSid": "data.win.eventdata.subjectUserSid",
+    "SubjectDomainName": "data.win.eventdata.subjectDomainName",
+    "TargetUserName": "data.win.eventdata.targetUserName",
+    "TargetUserSid": "data.win.eventdata.targetUserSid",
+    "TargetDomainName": "data.win.eventdata.targetDomainName",
+    "WorkstationName": "data.win.eventdata.workstationName",
+    "IpAddress": "data.win.eventdata.ipAddress",
+    "ProcessId": "data.win.eventdata.processId",
+    "ProcessName": "data.win.eventdata.processName",
+    "LogonProcessName": "data.win.eventdata.logonProcessName",
+    "Status": "data.win.eventdata.status",
+    "Service": "data.win.eventdata.service",
+    "Operation": "data.win.eventdata.operation",
+    "Channel": "data.win.system.channel",
+    "Computer": "data.win.system.computer",
+    "ProviderName": "data.win.system.providerName",
+    "Level": "data.win.system.level",
+    "Opcode": "data.win.system.opcode",
+}
+
+
+def test_windows_map_targets_pinned_template_leaves():
+    """Every Windows field-map entry resolves to a leaf of the pinned template."""
+    from tests import field_coverage_lib as cov
+    index = cov.load_template_index()
+    for sigma_name, wazuh_path in WINDOWS_MAP.items():
+        assert sigma_engine.DEFAULT_FIELD_MAP[sigma_name] == wazuh_path, sigma_name
+        assert wazuh_path in index.unique_leaves, wazuh_path
+
+
+@_needs_pysigma
+def test_convert_maps_windows_security_and_system_fields():
+    sr = _module()
+    rule = ("title: Windows security fields\nid: 4f2a9c1e-1111-2222-3333-444455556671\n"
+            "status: experimental\nlogsource:\n  product: windows\n"
+            "detection:\n  selection:\n"
+            "    SubjectUserName|endswith: '\\\\admin'\n"
+            "    TargetUserName|endswith: '$'\n"
+            "    ProcessName|endswith: '\\\\powershell.exe'\n"
+            "    IpAddress: '203.0.113.7'\n"
+            "    Channel: 'Security'\n"
+            "    EventID: 4624\n"
+            "  condition: selection\nlevel: medium\n")
+    out = json.loads(_run(sr.blueteam_sigma_rule_convert(
+        sr.SigmaRuleConvertInput(rule_source=rule, output_format="lucene",
+                                 verify_fields=False, response_format="json"))))
+    query = out["queries"][0]
+    for field in ("data.win.eventdata.subjectUserName", "data.win.eventdata.targetUserName",
+                  "data.win.eventdata.processName", "data.win.eventdata.ipAddress",
+                  "data.win.system.channel", "data.win.system.eventID"):
+        assert field in query, field
+    assert out["unmapped_fields"] == []
+
+
 @_needs_pysigma
 def test_convert_applies_wazuh_field_map():
     sr = _module()
@@ -556,3 +616,13 @@ def test_convert_defaults_come_from_config():
     from mcp_server.core.config import config as cfg
     assert cfg.sigma.index_pattern == "wazuh-alerts-*"
     assert 1 <= cfg.sigma.monitor_interval <= 1440
+
+
+def test_harvest_fields_use_flat_data_file_only():
+    sr = _module()
+    assert sr._FIELD_MODIFIERS["data.file"] == "endswith"
+    assert "data.file.path" not in sr._FIELD_MODIFIERS
+    assert "data.file.name" not in sr._FIELD_MODIFIERS
+    assert "data.file" in sr._HARVEST_ORDER
+    assert "data.file.path" not in sr._HARVEST_ORDER
+    assert "data.file.name" not in sr._HARVEST_ORDER

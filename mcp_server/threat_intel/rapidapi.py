@@ -189,7 +189,7 @@ async def _rapidapi_post(host: str, path: str, payload: dict[str, Any],
 def _dynamic_markdown(title: str, raw: dict[str, Any]) -> str:
     """Render a third-party JSON body without assuming a fixed schema.
     Surfaces common keys (status/message/data/result/matches/total/found) when present and
-    falls back to a pretty-printed full body when the shape is unrecognized — so a schema
+    falls back to a pretty-printed full body when the shape is unrecognized, so a schema
     change upstream never produces an empty or crashing report.
     """
     lines = [f"# {title}", ""]

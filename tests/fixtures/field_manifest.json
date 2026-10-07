@@ -1,0 +1,609 @@
+{
+  "schema_version": 1,
+  "template": {
+    "path": "tests/fixtures/wazuh-template.json",
+    "sha256": "b2d182f49cc68957849e77fd2d79528fd2273ebaec1106c9661c9e320577a089",
+    "source": "Attachment reconstruction from stock Wazuh v4.13.0. Verified deltas from the attached wazuh-template.json: (1) + syscheck.audit.login_group.{id,name} (mapping-only); (2) + data.ms-graph.ipAddress (default_field-only); (3) - data.status mapping (the field stays in query.default_field). Re-run against the raw attachment to confirm the SHA-256.",
+    "derived": {
+      "default_field_entries": 602,
+      "mapping_leaves": 611,
+      "container_entries": 4,
+      "unique_leaves": 761
+    }
+  },
+  "classes": {
+    "template_native": "Resolves to a leaf in the pinned template (mappings.properties or index.query.default_field).",
+    "allowlisted_dynamic": "Not in the stock template; emitted dynamically by decoders when the deployment populates it.",
+    "states_index": "Belongs to the wazuh-states-vulnerabilities-* template, not the alerts template.",
+    "dead_keyword": "Ends in .keyword but the base field has no keyword sub-field in the pinned template.",
+    "mapping_conflict": "A parent path is a terminal mapping leaf, so the dotted child cannot be indexed.",
+    "unclassified": "Scanned literal with no class; never allowed once the manifest is complete."
+  },
+  "strict_fail_classes": [
+    "dead_keyword",
+    "mapping_conflict",
+    "unclassified"
+  ],
+  "baseline": {
+    "code_references": 184,
+    "dead_keyword": 0,
+    "mapping_conflict": 0,
+    "unclassified": 0
+  },
+  "references": {
+    "@timestamp": {
+      "class": "template_native"
+    },
+    "GeoLocation.city_name": {
+      "class": "template_native"
+    },
+    "GeoLocation.country_name": {
+      "class": "template_native"
+    },
+    "GeoLocation.ip": {
+      "class": "template_native"
+    },
+    "GeoLocation.location": {
+      "class": "template_native"
+    },
+    "GeoLocation.real_region_name": {
+      "class": "template_native"
+    },
+    "GeoLocation.region_name": {
+      "class": "template_native"
+    },
+    "agent.id": {
+      "class": "template_native"
+    },
+    "agent.ip": {
+      "class": "template_native"
+    },
+    "agent.name": {
+      "class": "template_native"
+    },
+    "data.account": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Mail/account decoder field; user search in wazuh_email and wazuh_compromised."
+    },
+    "data.audit.acct": {
+      "class": "template_native"
+    },
+    "data.audit.auid": {
+      "class": "template_native"
+    },
+    "data.audit.egid": {
+      "class": "template_native"
+    },
+    "data.audit.euid": {
+      "class": "template_native"
+    },
+    "data.audit.fsgid": {
+      "class": "template_native"
+    },
+    "data.audit.fsuid": {
+      "class": "template_native"
+    },
+    "data.audit.gid": {
+      "class": "template_native"
+    },
+    "data.audit.key": {
+      "class": "template_native"
+    },
+    "data.audit.old-auid": {
+      "class": "template_native"
+    },
+    "data.audit.sgid": {
+      "class": "template_native"
+    },
+    "data.audit.srcip": {
+      "class": "template_native"
+    },
+    "data.audit.suid": {
+      "class": "template_native"
+    },
+    "data.audit.uid": {
+      "class": "template_native"
+    },
+    "data.aws.requestParameters.accessKeyId": {
+      "class": "template_native"
+    },
+    "data.aws.requestParameters.masterUsername": {
+      "class": "template_native"
+    },
+    "data.aws.resource.accessKeyDetails.accessKeyId": {
+      "class": "template_native"
+    },
+    "data.aws.resource.accessKeyDetails.principalId": {
+      "class": "template_native"
+    },
+    "data.aws.resource.accessKeyDetails.userName": {
+      "class": "template_native"
+    },
+    "data.aws.responseElements.loginProfile.userName": {
+      "class": "template_native"
+    },
+    "data.aws.responseElements.ownerId": {
+      "class": "template_native"
+    },
+    "data.aws.responseElements.user.userId": {
+      "class": "template_native"
+    },
+    "data.aws.responseElements.user.userName": {
+      "class": "template_native"
+    },
+    "data.aws.sourceIPAddress": {
+      "class": "template_native"
+    },
+    "data.aws.source_ip_address": {
+      "class": "template_native"
+    },
+    "data.aws.userIdentity.accessKeyId": {
+      "class": "template_native"
+    },
+    "data.aws.userIdentity.accountId": {
+      "class": "template_native"
+    },
+    "data.aws.userIdentity.userName": {
+      "class": "template_native"
+    },
+    "data.client_ip": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Reverse-proxy source-IP alias; probed by _SRCIP_FIELD_PATHS via _field_caps."
+    },
+    "data.command": {
+      "class": "template_native"
+    },
+    "data.dns.question.name": {
+      "class": "allowlisted_dynamic",
+      "rationale": "DNS query name from the bind9 decoder; Sigma QueryName mapping."
+    },
+    "data.domain": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Web/email decoder field; keyword search, alert_compare, curated report, synth harvest."
+    },
+    "data.dstip": {
+      "class": "template_native"
+    },
+    "data.dstuser": {
+      "class": "template_native"
+    },
+    "data.email": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Mail decoder field; wazuh_email user search."
+    },
+    "data.error": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Auth decoder field; Engine B lockout counter filter, advisory only."
+    },
+    "data.file": {
+      "class": "template_native"
+    },
+    "data.ip": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Generic source-IP alias; probed by _SRCIP_FIELD_PATHS via _field_caps."
+    },
+    "data.method": {
+      "class": "allowlisted_dynamic",
+      "rationale": "HTTP method; alert_compare filter."
+    },
+    "data.ms-graph.activationLockBypassCode": {
+      "class": "template_native"
+    },
+    "data.ms-graph.actor.ipAddress": {
+      "class": "template_native"
+    },
+    "data.ms-graph.actor.servicePrincipalName": {
+      "class": "template_native"
+    },
+    "data.ms-graph.actor.userId": {
+      "class": "template_native"
+    },
+    "data.ms-graph.actor.userPrincipalName": {
+      "class": "template_native"
+    },
+    "data.ms-graph.deviceHealthAttestationState.attestationIdentityKey": {
+      "class": "template_native"
+    },
+    "data.ms-graph.ipAddress": {
+      "class": "template_native"
+    },
+    "data.ms-graph.userDisplayName": {
+      "class": "template_native"
+    },
+    "data.ms-graph.userId": {
+      "class": "template_native"
+    },
+    "data.ms-graph.userPrincipalName": {
+      "class": "template_native"
+    },
+    "data.office365.Actor.ID": {
+      "class": "template_native"
+    },
+    "data.office365.ClientIP": {
+      "class": "template_native"
+    },
+    "data.office365.UserId": {
+      "class": "template_native"
+    },
+    "data.osquery.columns.gid": {
+      "class": "template_native"
+    },
+    "data.osquery.columns.src_ip": {
+      "class": "template_native"
+    },
+    "data.osquery.columns.user": {
+      "class": "template_native"
+    },
+    "data.osquery.columns.username": {
+      "class": "template_native"
+    },
+    "data.parameters.alert.rule.id": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Active Response nested wrapper; alert_compare rule-id translation."
+    },
+    "data.process.egroup": {
+      "class": "template_native"
+    },
+    "data.process.euser": {
+      "class": "template_native"
+    },
+    "data.process.fgroup": {
+      "class": "template_native"
+    },
+    "data.process.rgroup": {
+      "class": "template_native"
+    },
+    "data.process.ruser": {
+      "class": "template_native"
+    },
+    "data.process.sgroup": {
+      "class": "template_native"
+    },
+    "data.process.suser": {
+      "class": "template_native"
+    },
+    "data.proto": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Suricata protocol field; labeler feature extraction."
+    },
+    "data.protocol": {
+      "class": "template_native"
+    },
+    "data.referrer": {
+      "class": "allowlisted_dynamic",
+      "rationale": "HTTP referrer; keyword search and alert_compare filter."
+    },
+    "data.remote_ip": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Reverse-proxy source-IP alias; probed by _SRCIP_FIELD_PATHS via _field_caps."
+    },
+    "data.response_code": {
+      "class": "allowlisted_dynamic",
+      "rationale": "HTTP status code; alert_compare filter."
+    },
+    "data.response_size": {
+      "class": "allowlisted_dynamic",
+      "rationale": "HTTP response size; alert_compare range filter."
+    },
+    "data.source_ip": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Generic source-IP alias; probed by _SRCIP_FIELD_PATHS via _field_caps."
+    },
+    "data.src_ip": {
+      "class": "template_native"
+    },
+    "data.srcip": {
+      "class": "template_native"
+    },
+    "data.srcip2": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Second source IP emitted by some decoders; keyword search and siem/semantic/stix lookup."
+    },
+    "data.srcuser": {
+      "class": "template_native"
+    },
+    "data.url": {
+      "class": "template_native"
+    },
+    "data.user_agent": {
+      "class": "allowlisted_dynamic",
+      "rationale": "HTTP user agent; keyword search, alert_compare wildcard, Sigma UserAgent mapping."
+    },
+    "data.win.eventdata.image": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.ipAddress": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.keyName": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.logonGuid": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.logonProcessName": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.operation": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.originalFileName": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Sysmon original filename; Sigma OriginalFileName mapping."
+    },
+    "data.win.eventdata.parentImage": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.processId": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.processName": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.service": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.status": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.subjectDomainName": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.subjectLogonId": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.subjectUserName": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.subjectUserSid": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.targetDomainName": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.targetLogonId": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.targetUserName": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.targetUserSid": {
+      "class": "template_native"
+    },
+    "data.win.eventdata.user": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Sysmon subject user; Sigma User mapping; masked by the redaction identity key 'user' when populated."
+    },
+    "data.win.eventdata.workstationName": {
+      "class": "template_native"
+    },
+    "data.win.system.channel": {
+      "class": "template_native"
+    },
+    "data.win.system.computer": {
+      "class": "template_native"
+    },
+    "data.win.system.eventID": {
+      "class": "template_native"
+    },
+    "data.win.system.keywords": {
+      "class": "template_native"
+    },
+    "data.win.system.level": {
+      "class": "template_native"
+    },
+    "data.win.system.opcode": {
+      "class": "template_native"
+    },
+    "data.win.system.providerName": {
+      "class": "template_native"
+    },
+    "data.win.system.securityUserID": {
+      "class": "template_native"
+    },
+    "data.win.system.userID": {
+      "class": "template_native"
+    },
+    "data.zimbra_error": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Zimbra decoder error field; Engine B lockout counter filter, advisory only."
+    },
+    "decoder.name": {
+      "class": "template_native"
+    },
+    "full_log": {
+      "class": "template_native"
+    },
+    "predecoder.hostname": {
+      "class": "template_native"
+    },
+    "rule.cis": {
+      "class": "template_native"
+    },
+    "rule.cve": {
+      "class": "template_native"
+    },
+    "rule.description": {
+      "class": "template_native"
+    },
+    "rule.firedtimes": {
+      "class": "template_native"
+    },
+    "rule.gdpr": {
+      "class": "template_native"
+    },
+    "rule.groups": {
+      "class": "template_native"
+    },
+    "rule.hipaa": {
+      "class": "template_native"
+    },
+    "rule.id": {
+      "class": "template_native"
+    },
+    "rule.info": {
+      "class": "template_native"
+    },
+    "rule.level": {
+      "class": "template_native"
+    },
+    "rule.mitre.id": {
+      "class": "template_native"
+    },
+    "rule.mitre.tactic": {
+      "class": "template_native"
+    },
+    "rule.mitre.technique": {
+      "class": "template_native"
+    },
+    "rule.nist_800_53": {
+      "class": "template_native"
+    },
+    "rule.pci_dss": {
+      "class": "template_native"
+    },
+    "syscheck.arch": {
+      "class": "template_native"
+    },
+    "syscheck.audit.effective_user.id": {
+      "class": "template_native"
+    },
+    "syscheck.audit.effective_user.name": {
+      "class": "template_native"
+    },
+    "syscheck.audit.group.id": {
+      "class": "template_native"
+    },
+    "syscheck.audit.group.name": {
+      "class": "template_native"
+    },
+    "syscheck.audit.login_group.id": {
+      "class": "template_native"
+    },
+    "syscheck.audit.login_group.name": {
+      "class": "template_native"
+    },
+    "syscheck.audit.login_user.id": {
+      "class": "template_native"
+    },
+    "syscheck.audit.login_user.name": {
+      "class": "template_native"
+    },
+    "syscheck.audit.process.id": {
+      "class": "template_native"
+    },
+    "syscheck.audit.process.name": {
+      "class": "template_native"
+    },
+    "syscheck.audit.process.ppid": {
+      "class": "template_native"
+    },
+    "syscheck.audit.user.id": {
+      "class": "template_native"
+    },
+    "syscheck.audit.user.name": {
+      "class": "template_native"
+    },
+    "syscheck.changed_attributes": {
+      "class": "template_native"
+    },
+    "syscheck.diff": {
+      "class": "template_native"
+    },
+    "syscheck.event": {
+      "class": "template_native"
+    },
+    "syscheck.gid_after": {
+      "class": "template_native"
+    },
+    "syscheck.gid_before": {
+      "class": "template_native"
+    },
+    "syscheck.gname_after": {
+      "class": "template_native"
+    },
+    "syscheck.gname_before": {
+      "class": "template_native"
+    },
+    "syscheck.hard_links": {
+      "class": "template_native"
+    },
+    "syscheck.inode_after": {
+      "class": "template_native"
+    },
+    "syscheck.inode_before": {
+      "class": "template_native"
+    },
+    "syscheck.md5_after": {
+      "class": "template_native"
+    },
+    "syscheck.md5_before": {
+      "class": "template_native"
+    },
+    "syscheck.mode": {
+      "class": "template_native"
+    },
+    "syscheck.mtime_after": {
+      "class": "template_native"
+    },
+    "syscheck.mtime_before": {
+      "class": "template_native"
+    },
+    "syscheck.path": {
+      "class": "template_native"
+    },
+    "syscheck.perm_after": {
+      "class": "template_native"
+    },
+    "syscheck.perm_before": {
+      "class": "template_native"
+    },
+    "syscheck.sha1_after": {
+      "class": "template_native"
+    },
+    "syscheck.sha1_before": {
+      "class": "template_native"
+    },
+    "syscheck.sha256_after": {
+      "class": "template_native"
+    },
+    "syscheck.sha256_before": {
+      "class": "template_native"
+    },
+    "syscheck.size_after": {
+      "class": "template_native"
+    },
+    "syscheck.size_before": {
+      "class": "template_native"
+    },
+    "syscheck.tags": {
+      "class": "template_native"
+    },
+    "syscheck.uid_after": {
+      "class": "template_native"
+    },
+    "syscheck.uid_before": {
+      "class": "template_native"
+    },
+    "syscheck.uname_after": {
+      "class": "template_native"
+    },
+    "syscheck.uname_before": {
+      "class": "template_native"
+    },
+    "syscheck.value_name": {
+      "class": "template_native"
+    },
+    "syscheck.value_type": {
+      "class": "template_native"
+    },
+    "vulnerability.cve": {
+      "class": "states_index",
+      "rationale": "States-index field; blueteam_wazuh_vulnerabilities queries wazuh-states-vulnerabilities-*."
+    },
+    "vulnerability.severity": {
+      "class": "states_index",
+      "rationale": "States-index field; blueteam_wazuh_vulnerabilities queries wazuh-states-vulnerabilities-*."
+    }
+  }
+}

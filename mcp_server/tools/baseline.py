@@ -13,7 +13,7 @@ from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.tool_decorator import blueteam_tool
 from mcp_server.correlation.three_sum_core import evaluate_baseline_drift, DEFAULT_Z_THRESHOLD
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _srcip_should_clauses
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.core.validators import ValidAgentName, ValidRuleGroups, ValidKeyword
 
@@ -72,15 +72,14 @@ async def blueteam_baseline_profile(params: BaselineProfileInput) -> str:
     if params.agent_name:
         filter_clauses.append({"match": {"agent.name": params.agent_name.strip()}})
     if params.rule_groups:
-        filter_clauses.append({"bool": {"should": [
-            {"terms": {"rule.groups": params.rule_groups}},
-            {"terms": {"rule.groups.keyword": params.rule_groups}},
-        ], "minimum_should_match": 1}})
+        filter_clauses.append({"terms": {"rule.groups": params.rule_groups}})
     if params.metric == "high_severity":
         filter_clauses.append({"range": {"rule.level": {"gte": 10}}})
 
     aggs: dict = {}
     if params.metric == "unique_ips":
+        # Single-path cardinality: an exact cross-path count needs terms scans, which
+        # would change this baseline metric's cost and precision.
         aggs["metric_value"] = {"cardinality": {"field": "data.srcip",
                                                  "precision_threshold": 40000}}
     else:
@@ -237,10 +236,7 @@ async def blueteam_calendar_heatmap(params: CalendarHeatmapInput) -> str:
                                    "format": "strict_date_optional_time"}}},
     ]
     if params.srcip:
-        must_clauses.append({"bool": {"should": [
-            {"match": {"data.srcip": params.srcip.strip()}},
-            {"match_phrase": {"full_log": params.srcip.strip()}},
-        ], "minimum_should_match": 1}})
+        must_clauses.append(_srcip_should_clauses(params.srcip))
 
     body = {
         "size": 0,
@@ -444,10 +440,7 @@ async def blueteam_baseline_drift(params: BaselineDriftInput) -> str:
     if params.rule_groups:
         groups = [g.strip() for g in params.rule_groups.split(",") if g.strip()]
         if groups:
-            extra_filters.append({"bool": {"should": [
-                {"terms": {"rule.groups": groups}},
-                {"terms": {"rule.groups.keyword": groups}},
-            ], "minimum_should_match": 1}})
+            extra_filters.append({"terms": {"rule.groups": groups}})
 
     from mcp_server.wazuh.time_utils import _duration_minutes, _auto_bucket_interval
     bucket_interval = _auto_bucket_interval(_duration_minutes(current_since, current_until))

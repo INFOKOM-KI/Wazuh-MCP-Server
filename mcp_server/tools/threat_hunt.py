@@ -10,7 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
+from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _WAZUH_INDEX_PATTERNS,
+                                      _srcip_should_clauses, _srcip_aggs_merged,
+                                      _correct_srcip_counts)
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.core.validators import ValidAgentName
 
@@ -199,10 +201,7 @@ def _base_filters(since: str, until: str, agent: str | None, srcip: str | None) 
     if agent:
         filters.append({"match": {"agent.name": agent.strip()}})
     if srcip:
-        filters.append({"bool": {"should": [
-            {"match": {"data.srcip": srcip.strip()}},
-            {"match_phrase": {"full_log": srcip.strip()}},
-        ], "minimum_should_match": 1}})
+        filters.append(_srcip_should_clauses(srcip))
     return filters
 
 
@@ -268,9 +267,15 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
 
     since_iso, until_iso = _parse_time_window(params.since, params.until)
     body = tmpl["query"](since_iso, until_iso, params.agent_name, params.srcip)
+    srcip_spec = body.get("aggs", {}).pop("by_srcip", None)
     raw = await _wazuh_indexer_post(body)
     if "error" in raw:
         return json.dumps(raw, indent=2)
+    if srcip_spec:
+        merged, _paths, _errors = await _srcip_aggs_merged(body["query"], {"by_srcip": srcip_spec})
+        raw.setdefault("aggregations", {}).update(merged)
+        srcip_buckets = (raw["aggregations"].get("by_srcip") or {}).get("buckets", [])
+        await _correct_srcip_counts(srcip_buckets, body["query"])
 
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
     aggs = _redact_alert_data(raw.get("aggregations", {}))

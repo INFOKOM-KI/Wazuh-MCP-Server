@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-PII redaction pipeline 6 layers. Layer 1 (credentials) Never bypassable.
+PII redaction pipeline. Layer 1 (credentials) is never bypassable.
 Three redaction policies (BLUETEAM_REDACTION_POLICY env / per-call param):
 - "full" (default):    Shape-based masking - emails, private IPs, ALL domains,
-                        paths, UAs. Registered attacker IOCs are exempt.
+                        paths, identity fields. Registered attacker IOCs are exempt.
 - "protect_victim":    Mask ONLY victim-owned indicators - emails/domains at
                         owned domains (BLUETEAM_OWNED_DOMAINS), private IPs,
                         paths, identity fields, agent names. Attacker domains,
@@ -17,7 +17,7 @@ import hashlib, os, re, logging
 from typing import Any
 from collections import Counter, OrderedDict
 from mcp_server import (BLUETEAM_REDACT_PII, BLUETEAM_REDACT_EMAILS, BLUETEAM_REDACT_DOMAINS,
-                         BLUETEAM_REDACT_LOCATIONS, BLUETEAM_REDACT_UAS,
+                         BLUETEAM_REDACT_LOCATIONS, BLUETEAM_REDACT_IDENTITIES,
                          BLUETEAM_ALLOW_FORENSIC_BYPASS, BLUETEAM_REDACTION_POLICY,
                          BLUETEAM_OWNED_DOMAINS, BLUETEAM_FORENSIC_TOKEN)
 from mcp_server.core.attacker_registry import is_attacker_ioc
@@ -64,12 +64,70 @@ def set_owned_domains(domains: str) -> set[str]:
     _REDACT_MEMO.clear()
     return set(_OWNED_DOMAINS)
 
-# Identity fields masked under protect_victim (victim accounts, not attacker srcip)
+# Legacy key-name fallback for dynamic fields that never made it into the template.
 _IDENTITY_KEYS = ("account", "srcuser", "dstuser", "user", "username")
+
+# Template-derived identity paths masked in full AND protect_victim.
+_IDENTITY_PATHS: frozenset[str] = frozenset({
+    "data.srcuser", "data.dstuser", "data.osquery.columns.user", "data.osquery.columns.username",
+    "data.win.eventdata.subjectUserName", "data.win.eventdata.subjectUserSid",
+    "data.win.eventdata.targetUserName", "data.win.eventdata.targetUserSid",
+    "data.win.system.userID", "data.win.system.securityUserID",
+    "data.audit.acct", "data.audit.auid", "data.audit.uid", "data.audit.euid",
+    "data.audit.suid", "data.audit.fsuid", "data.audit.gid", "data.audit.egid",
+    "data.audit.sgid", "data.audit.fsgid", "data.audit.old-auid",
+    "data.aws.userIdentity.userName", "data.aws.userIdentity.accountId",
+    "data.aws.userIdentity.accessKeyId",
+    "data.aws.resource.accessKeyDetails.userName",
+    "data.aws.resource.accessKeyDetails.principalId",
+    "data.aws.responseElements.loginProfile.userName",
+    "data.aws.responseElements.user.userName", "data.aws.responseElements.user.userId",
+    "data.aws.responseElements.ownerId",
+    "data.ms-graph.userPrincipalName", "data.ms-graph.userId", "data.ms-graph.userDisplayName",
+    "data.ms-graph.actor.userPrincipalName", "data.ms-graph.actor.userId",
+    "data.ms-graph.actor.servicePrincipalName",
+    "data.office365.UserId", "data.office365.Actor.ID",
+    "data.osquery.columns.gid",
+    "data.process.euser", "data.process.ruser", "data.process.suser",
+    "data.process.egroup", "data.process.sgroup", "data.process.fgroup", "data.process.rgroup",
+    "syscheck.uid_before", "syscheck.uid_after", "syscheck.uname_before", "syscheck.uname_after",
+    "syscheck.gid_before", "syscheck.gid_after", "syscheck.gname_before", "syscheck.gname_after",
+    "syscheck.audit.user.id", "syscheck.audit.user.name",
+    "syscheck.audit.login_user.id", "syscheck.audit.login_user.name",
+    "syscheck.audit.effective_user.id", "syscheck.audit.effective_user.name",
+    "syscheck.audit.group.id", "syscheck.audit.group.name",
+    "syscheck.audit.login_group.id", "syscheck.audit.login_group.name",
+})
+
+# Layer 1 credential keys. The suffix list is mandatory; the path set covers
+# secret-bearing keys the suffix cannot match (no secret in the key name).
+_CREDENTIAL_SUFFIX_RE = re.compile(
+    r"(password|passwd|pwd|secret|token|api[_-]?key|accesskey|privatekey)$", re.IGNORECASE)
+_CREDENTIAL_PATHS: frozenset[str] = frozenset({
+    "data.aws.requestParameters.masterUsername",
+    "data.aws.requestParameters.accessKeyId",
+    "data.aws.resource.accessKeyDetails.accessKeyId",
+    "data.ms-graph.activationLockBypassCode",
+    "data.ms-graph.deviceHealthAttestationState.attestationIdentityKey",
+})
+# Legitimate fields whose names look credential-like but carry no secret value.
+_CREDENTIAL_KEY_ALLOWLIST: frozenset[str] = frozenset({
+    "data.audit.key",
+    "data.win.eventdata.keyName",
+    "data.win.system.keywords",
+})
+
+
+def _is_credential_path(path: str) -> bool:
+    if path in _CREDENTIAL_KEY_ALLOWLIST:
+        return False
+    if path in _CREDENTIAL_PATHS:
+        return True
+    return bool(_CREDENTIAL_SUFFIX_RE.search(path.rsplit(".", 1)[-1]))
 
 _POLICIES = ("full", "protect_victim", "raw")
 
-# Layer 7 (protect_victim): bare hostname/agent-name candidates in aggregation
+# Layer 6 (protect_victim): bare hostname/agent-name candidates in aggregation
 # bucket "key" values and hostname-context dict keys. Narrow pattern - lowercase
 # single-label, must contain a digit or hyphen - so common words ("web", "high",
 # rule descriptions, countries) and CVE-style tokens never get masked.
@@ -106,7 +164,7 @@ _CREDENTIAL_STRIP_RULES: list[tuple[re.Pattern, str]] = [
         r'-----END (?:RSA |EC |OPENSSH |DSA |ED25519 |ENCRYPTED )?PRIVATE KEY-----',
         re.DOTALL,
     ), '<PRIVATE_KEY_REDACTED>'),
-    (re.compile(r'\b(AKIA[0-9A-Z]{16}|sk_(?:live|test)_[a-zA-Z0-9]{24,})\b'),
+    (re.compile(r'\b((?:AKIA|ASIA)[0-9A-Z]{16}|sk_(?:live|test)_[a-zA-Z0-9]{24,})\b'),
      '<CLOUD_API_KEY_REDACTED>'),
     (re.compile(r'\b(gh[pousr]_[A-Za-z0-9_]{36,}|glpat-[A-Za-z0-9_-]{20,})\b'),
      '<VCS_TOKEN_REDACTED>'),
@@ -216,16 +274,21 @@ def _resolve_policy(bypass: bool, params: Any, policy: str | None) -> str:
     return BLUETEAM_REDACTION_POLICY
 
 
-def _strip_credentials(data: Any) -> Any:
+def _strip_credentials(data: Any, path: str = "") -> Any:
     """Layer 1 only - recursive credential strip (raw policy path)."""
     if isinstance(data, str):
         for pattern, replacement in _CREDENTIAL_STRIP_RULES:
             data = pattern.sub(replacement, data)
         return data
     if isinstance(data, dict):
-        return {k: _strip_credentials(v) for k, v in data.items()}
+        out: dict = {}
+        for k, v in data.items():
+            child_path = f"{path}.{k}" if path else k
+            out[k] = ("<CREDENTIAL_REDACTED>" if _is_credential_path(child_path)
+                      else _strip_credentials(v, child_path))
+        return out
     if isinstance(data, list):
-        return [_strip_credentials(item) for item in data]
+        return [_strip_credentials(item, path) for item in data]
     return data
 
 
@@ -235,13 +298,13 @@ def _strip_credentials(data: Any) -> Any:
 # inside _redact_alert_data.
 # Layer functions live in redact_layers.py - imported explicitly for clean AST edges.
 from mcp_server.core.redact_layers import (_apply_email_layer, _apply_ip_layer,
-    _apply_domain_layer, _apply_location_layer, _apply_ua_layer)
+    _apply_domain_layer, _apply_location_layer)
 
 # Main redaction pipeline
 def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
                        policy: str | None = None, reveal_owned: bool = False,
-                       forensic_token: str | None = None) -> Any:
-    """Apply 6-layer PII and credential masking. Layer 1 NEVER bypassable.
+                       forensic_token: str | None = None, path: str = "") -> Any:
+    """Apply layered PII and credential masking. Layer 1 NEVER bypassable.
 
     Policies:
       - "full": shape-based masking (legacy default).
@@ -255,17 +318,20 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
     Layer 1 credentials remain masked. Ignored under policy="raw".
 
     Layers:
-      1. Credential stripping (MANDATORY - never configurable)
+      1. Credential stripping (MANDATORY - never configurable; value patterns
+         plus credential-suffix/key-name masking)
       2. Email redaction (BLUETEAM_REDACT_EMAILS)
       3. Internal IP masking (BLUETEAM_REDACT_PII)
       4. Domain/hostname masking (BLUETEAM_REDACT_DOMAINS)
       5. Log location masking (BLUETEAM_REDACT_LOCATIONS)
-      6. User-agent truncation (BLUETEAM_REDACT_UAS)
-      7. Hostname/agent-name masking (protect_victim, bucket-key contexts)
+      6. Hostname/agent-name masking (protect_victim, bucket-key contexts)
+      7. Template-path identity masking - full and protect_victim, gated by
+         BLUETEAM_REDACT_IDENTITIES (BLUETEAM_REDACT_PII=false disables it too)
 
-    Layer chain: layers 2-6 are composed as a registry of
-    (name, enabled_check, apply_fn). Add new masking layers by appending to
-    ``_STRING_REDACTION_LAYERS`` - the dispatcher applies them in order.
+    Layer chain: layers 2-5 are composed as a registry of
+    (name, enabled_check, apply_fn). Add new string layers by appending to
+    ``_STRING_REDACTION_LAYERS`` - the dispatcher applies them in order. Layers
+    6-7 act on dict keys and paths during the recursive walk.
     """
     pol = _resolve_policy(bypass, params, policy)
     reveal = reveal_owned or (getattr(params, "reveal_owned", False) if params is not None else False)
@@ -301,7 +367,6 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
         ("ips", lambda: BLUETEAM_REDACT_PII, _apply_ip_layer),
         ("domains", lambda: BLUETEAM_REDACT_DOMAINS, _apply_domain_layer),
         ("locations", lambda: BLUETEAM_REDACT_LOCATIONS, _apply_location_layer),
-        ("uas", lambda: BLUETEAM_REDACT_UAS, _apply_ua_layer),
     ]
 
     def _apply_credential_layer(data: str) -> str:
@@ -325,7 +390,8 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
                     logger.debug("redaction layer '%s' failed - continuing", layer_name)
             return data
         memo_key = (data, pol, reveal, BLUETEAM_REDACT_EMAILS, BLUETEAM_REDACT_PII,
-                    BLUETEAM_REDACT_DOMAINS, BLUETEAM_REDACT_LOCATIONS, BLUETEAM_REDACT_UAS)
+                    BLUETEAM_REDACT_DOMAINS, BLUETEAM_REDACT_LOCATIONS,
+                    BLUETEAM_REDACT_IDENTITIES)
         cached = _REDACT_MEMO.get(memo_key)
         if cached is not None:
             _REDACT_MEMO.move_to_end(memo_key)
@@ -355,6 +421,14 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
     if isinstance(data, dict):
         result: dict[str, Any] = {}
         for k, v in data.items():
+            child_path = f"{path}.{k}" if path else k
+            if _is_credential_path(child_path):
+                result[k] = "<CREDENTIAL_REDACTED>"
+                continue
+            if BLUETEAM_REDACT_PII and BLUETEAM_REDACT_IDENTITIES \
+                    and child_path in _IDENTITY_PATHS and isinstance(v, str) and v:
+                result[k] = _mask_username(v)
+                continue
             if k == "domain" and isinstance(v, str) and BLUETEAM_REDACT_DOMAINS \
                     and _should_mask_domain(v, pol, reveal):
                 v = _mask_domain(v)
@@ -363,9 +437,7 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
                 leaf = parts[-1] if len(parts) > 1 else v
                 path_hash = hashlib.sha256(f"{_REDACT_SALT}:{v}".encode()).hexdigest()[:6]
                 v = f".../{leaf} [h:{path_hash}]"
-            elif k == "user_agent" and isinstance(v, str) and BLUETEAM_REDACT_UAS and len(v) > 80:
-                v = v[:80] + "..."
-            masked_v = _redact_alert_data(v, policy=pol, reveal_owned=reveal)
+            masked_v = _redact_alert_data(v, policy=pol, reveal_owned=reveal, path=child_path)
             # protect_victim: mask victim identity fields, agent names, and
             # hostname-shaped aggregation bucket keys (payload fields like
             # data.url / full_log keep attacker content intact via the layers above)
@@ -375,7 +447,8 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
                 elif k == "agent" and isinstance(masked_v, dict) \
                         and isinstance(masked_v.get("name"), str) and BLUETEAM_REDACT_PII:
                     masked_v = {**masked_v, "name": _mask_username(masked_v["name"])}
-                elif k == "key" and isinstance(masked_v, str) and _is_hostname_candidate(masked_v):
+                elif k == "key" and isinstance(masked_v, str) and _is_hostname_candidate(masked_v) \
+                        and child_path not in _CREDENTIAL_KEY_ALLOWLIST:
                     masked_v = _mask_username(masked_v)  # aggregation bucket hostname
                 elif k in _HOSTNAME_CONTEXT_KEYS and isinstance(masked_v, str) \
                         and _is_hostname_candidate(masked_v) and BLUETEAM_REDACT_PII:
@@ -384,6 +457,7 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
         return result
 
     if isinstance(data, list):
-        return [_redact_alert_data(item, policy=pol, reveal_owned=reveal) for item in data]
+        return [_redact_alert_data(item, policy=pol, reveal_owned=reveal, path=path)
+                for item in data]
 
     return data
