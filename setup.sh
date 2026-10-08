@@ -653,6 +653,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 
 # Performance & Response Limits
 # export BLUETEAM_CHARACTER_LIMIT="100000"       # max chars per tool response before truncation
+# export BLUETEAM_MAX_INPUT_FILE_MB="1024"       # max size per document file (parsing tools + PDF RAG ingest)
 # export HTTP_TIMEOUT="30"                       # seconds per upstream request (Netra is pinned at 90s)
 # export WAZUH_INDEXER_MAX_SIZE="10000"          # max documents per page in Wazuh Indexer search
 
@@ -1105,7 +1106,6 @@ export BLUETEAM_AUTO_PROMOTE_IPS="${BLUETEAM_AUTO_PROMOTE_IPS:-false}"
 export WAZUH_DISABLED_TOOLS="${WAZUH_DISABLED_TOOLS:-}"
 export WAZUH_DISABLED_CATEGORIES="${WAZUH_DISABLED_CATEGORIES:-}"
 export WAZUH_READ_ONLY="${WAZUH_READ_ONLY:-false}"
-export WAZUH_READ_ONLY="${WAZUH_READ_ONLY:-false}"
 export BLUETEAM_CAMPAIGN_SNAPSHOTS="${BLUETEAM_CAMPAIGN_SNAPSHOTS:-/var/log/blue-team-mcp/campaign_snapshots.jsonl}"
 export BLUETEAM_BEACON_EXCLUDE_IPS="${BLUETEAM_BEACON_EXCLUDE_IPS:-}"
 export BLUETEAM_REDACT_EMAILS="${BLUETEAM_REDACT_EMAILS:-true}"
@@ -1115,6 +1115,9 @@ export BLUETEAM_ALLOW_UNTRUNCATED="${BLUETEAM_ALLOW_UNTRUNCATED:-false}"
 export BLUETEAM_ALLOWED_PATHS="${BLUETEAM_ALLOWED_PATHS:-/var:/etc:/home:/opt:/usr}"
 export BLUETEAM_CAPTURE_DIR="${BLUETEAM_CAPTURE_DIR:-/tmp}"
 export BLUETEAM_CHARACTER_LIMIT="${BLUETEAM_CHARACTER_LIMIT:-100000}"
+# Per-file input ceiling, independent of the response cap: a 1 GB document is accepted
+# while the response stays capped, truncated only when it exceeds that limit.
+export BLUETEAM_MAX_INPUT_FILE_MB="${BLUETEAM_MAX_INPUT_FILE_MB:-1024}"
 # Per-request timeout for every outbound upstream call. Netra overrides this per request
 # (90s) because its multi-source fan-out takes ~34s; a budget under real latency makes
 # healthy lookups count as failures and trips that upstream's circuit breaker.
@@ -1250,7 +1253,8 @@ echo "  MCP_API_KEY (REQUIRED for remote HTTP beyond 127.0.0.1):"
 echo "    python3 -c \"import secrets; print('btm_' + secrets.token_urlsafe(32))\""
 echo ""
 echo "  Performance tuning (all optional, defaults shown):"
-echo "    BLUETEAM_CHARACTER_LIMIT=100000"
+echo "    BLUETEAM_CHARACTER_LIMIT=100000
+    BLUETEAM_MAX_INPUT_FILE_MB=1024   # max size per document file (parsing tools + PDF RAG ingest)"
 echo "    HTTP_TIMEOUT=30                   (seconds per upstream request; Netra is pinned at 90)"
 echo "    WAZUH_INDEXER_MAX_SIZE=10000      (docs per page in indexer search)"
 echo "    BLUETEAM_ALLOW_UNTRUNCATED=false  (set true for forensic mode)"

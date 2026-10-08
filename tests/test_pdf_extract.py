@@ -37,25 +37,26 @@ def _input(**over):
 
 
 def _write_text_pdf(tmp_path, text="Hello Wazuh Advisory 2026", name="advisory.pdf",
-                    title="Probe Advisory"):
-    """Build a real one-page PDF with a text layer. Returns the path."""
+                    title="Probe Advisory", pages=1):
+    """Build a real PDF with a text layer on every page. Returns the path."""
     from pypdf import PdfWriter
     from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
     writer = PdfWriter()
-    page = writer.add_blank_page(200, 200)
-    font = DictionaryObject()
-    font.update({
-        NameObject("/Type"): NameObject("/Font"),
-        NameObject("/Subtype"): NameObject("/Type1"),
-        NameObject("/BaseFont"): NameObject("/Helvetica"),
-    })
-    page[NameObject("/Resources")][NameObject("/Font")] = DictionaryObject(
-        {NameObject("/F1"): writer._add_object(font)}
-    )
-    content = DecodedStreamObject()
-    content.set_data(f"BT /F1 18 Tf 20 100 Td ({text}) Tj ET\n".encode("latin-1"))
-    page[NameObject("/Contents")] = writer._add_object(content)
+    for _ in range(pages):
+        page = writer.add_blank_page(200, 200)
+        font = DictionaryObject()
+        font.update({
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        })
+        page[NameObject("/Resources")][NameObject("/Font")] = DictionaryObject(
+            {NameObject("/F1"): writer._add_object(font)}
+        )
+        content = DecodedStreamObject()
+        content.set_data(f"BT /F1 18 Tf 20 100 Td ({text}) Tj ET\n".encode("latin-1"))
+        page[NameObject("/Contents")] = writer._add_object(content)
     writer.add_metadata({"/Title": title, "/Author": "TangerangKota-CSIRT"})
 
     path = tmp_path / name
@@ -109,16 +110,35 @@ def test_prepare_rejects_missing_file():
     assert "File not found" in err
 
 
+def _input_cap() -> int:
+    from mcp_server.core.config import config
+
+    return config.limits.max_input_file_bytes
+
+
 def test_prepare_rejects_oversized_file(tmp_path, monkeypatch):
     pe = _module()
     monkeypatch.setattr(pe, "ALLOWED_PATH_PREFIXES", [str(tmp_path)])
     pdf = tmp_path / "huge.pdf"
     with open(pdf, "wb") as fh:
-        fh.truncate(pe._SIZE_CAP + 1)
+        fh.truncate(_input_cap() + 1)
 
     err, prep = pe._prepare(pe.PdfExtractInput(path=str(pdf)))
     assert prep is None
-    assert "size cap" in err
+    assert "per-file input limit" in err
+
+
+def test_prepare_accepts_a_file_at_the_one_gib_limit(tmp_path, monkeypatch):
+    """Sparse truncate: only st_size is checked, before any parser opens the file."""
+    pe = _module()
+    monkeypatch.setattr(pe, "ALLOWED_PATH_PREFIXES", [str(tmp_path)])
+    pdf = tmp_path / "one-gib.pdf"
+    with open(pdf, "wb") as fh:
+        fh.truncate(_input_cap())
+
+    err, prep = pe._prepare(pe.PdfExtractInput(path=str(pdf)))
+    assert err is None
+    assert prep["path"] == str(pdf)
 
 
 def test_prepare_accepts_pdf_and_parses_page_range(tmp_path, monkeypatch):
@@ -240,7 +260,7 @@ async def test_tool_happy_path_returns_markdown(tmp_path, monkeypatch):
     monkeypatch.setattr(pe, "ALLOWED_PATH_PREFIXES", [str(tmp_path)])
     seen = []
 
-    def _fake_extract(path, pages, mode, include_metadata):
+    def _fake_extract(path, pages, mode, include_metadata, char_budget=None):
         seen.append((path, pages, mode, include_metadata))
         return _payload()
 
@@ -260,7 +280,7 @@ async def test_tool_page_range_reaches_the_extractor(tmp_path, monkeypatch):
     seen = []
     monkeypatch.setattr(
         pe, "_extract_sync",
-        lambda path, pages, mode, md: (seen.append(pages), _payload())[1],
+        lambda path, pages, mode, md, char_budget=None: (seen.append(pages), _payload())[1],
     )
     pdf = tmp_path / "advisory.pdf"
     pdf.write_bytes(b"%PDF-1.4 fake")
@@ -312,6 +332,59 @@ def test_extract_sync_page_range_selects_pages(tmp_path):
     with pytest.raises(BlueTeamMCPError) as exc:
         pe._extract_sync(str(pdf), [9], "plain", False)
     assert "beyond page_count" in str(exc.value)
+
+
+def test_extract_sync_stops_at_the_char_budget(tmp_path):
+    """The tool passes the response cap as the character budget, so a large
+    document is cut while accumulating rather than built in full and truncated."""
+    pytest.importorskip("pypdf")
+    pe = _module()
+    pdf = _write_text_pdf(tmp_path, name="three-pages.pdf", pages=3)
+
+    payload = pe._extract_sync(str(pdf), None, "plain", False, char_budget=1)
+    assert payload["truncated"] is True
+    assert len(payload["pages"]) == 1
+    assert payload["pages_remaining"] == 2
+
+
+def test_extract_sync_without_a_budget_reads_every_page(tmp_path):
+    pytest.importorskip("pypdf")
+    pe = _module()
+    pdf = _write_text_pdf(tmp_path, name="three-pages.pdf", pages=3)
+
+    payload = pe._extract_sync(str(pdf), None, "plain", False)
+    assert payload["truncated"] is False
+    assert len(payload["pages"]) == 3
+    assert payload["pages_remaining"] == 0
+
+
+def test_render_markdown_reports_a_budget_stop():
+    pe = _module()
+
+    out = pe._render_markdown(_payload(truncated=True, pages_remaining=2))
+    assert "Stopped at the character budget" in out
+    assert "2 page(s)" in out
+
+
+def test_limits_config_defaults_to_a_one_gib_input_cap():
+    from mcp_server.core.config import LimitsConfig
+
+    assert LimitsConfig().max_input_file_bytes == 1024 * 1024 * 1024
+
+
+def test_limits_config_reads_the_input_cap_env(monkeypatch):
+    monkeypatch.setenv("BLUETEAM_MAX_INPUT_FILE_MB", "2048")
+    from mcp_server.core.config import LimitsConfig
+
+    assert LimitsConfig.from_env().max_input_file_bytes == 2 * 1024 * 1024 * 1024
+
+
+def test_limits_config_rejects_an_out_of_range_input_cap():
+    from mcp_server.core.config import LimitsConfig
+    from mcp_server.core.exceptions import ConfigurationError
+
+    with pytest.raises(ConfigurationError, match="BLUETEAM_MAX_INPUT_FILE_MB"):
+        LimitsConfig(max_input_file_bytes=4097 * 1024 * 1024).validate()
 
 
 def test_extract_sync_skips_oversized_content_stream(tmp_path, monkeypatch):

@@ -452,6 +452,8 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | Digital PDF → text + metadata | `blueteam_pdf_extract(path)` — pypdf (no torch, no opt-in install): text and `/Info` metadata with per-page headers, `page_range`, and `extraction_mode="layout"` for table-heavy advisories. Digital text layers only; pages over 32 MB decompressed are skipped with a reason |
 | Office / data file → markdown | `blueteam_markitdown_convert(path)` — MarkItDown (no OCR, no torch): docx / pptx / xlsx / xls / msg / html / csv / json / xml / digital PDF → markdown. Image-only PDFs return an error — route those to `blueteam_document_convert` |
 
+All document tools accept one file up to `BLUETEAM_MAX_INPUT_FILE_MB` (default 1 GB). Responses stay capped at `BLUETEAM_CHARACTER_LIMIT`. `blueteam_pdf_extract` and `blueteam_rag_ingest(source="pdf")` read pages in bounded batches; the MarkItDown and Marker converters buffer the document and are bounded by the response cap only, not by a 1 GB memory guarantee.
+
 `blueteam_check_webshell(url)` only accepts **public** hosts by default — any URL whose
 host resolves to a private / loopback / link-local / CGNAT address is rejected. To scan a
 webshell on **your own infrastructure** (e.g. `subdomain.tangerangkota.go.id` resolving to

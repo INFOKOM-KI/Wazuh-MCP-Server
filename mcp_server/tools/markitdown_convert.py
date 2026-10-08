@@ -18,7 +18,12 @@ Design notes:
   must not stall the event loop (shared breakers/keepalive).
 - Input is a server-side path validated by _validate_path against
   ALLOWED_PATH_PREFIXES, same trust boundary as blueteam_document_convert and
-  blueteam_hash_file. URL input is rejected at the schema level (path only).
+  blueteam_hash_file. URL input is rejected at the schema level (path only) and the
+  file is capped at BLUETEAM_MAX_INPUT_FILE_MB (default 1024 MB).
+- MarkItDown has no incremental API: it builds the full markdown in memory, so peak
+  parse memory scales with the document. The result is cut to the response cap before
+  the redaction pass; to analyse a whole large PDF without that cost, use
+  blueteam_rag_ingest(source="pdf"), which chunks page by page.
 - Output goes through the @blueteam_tool uniform boundary: audit -> catch
   BlueTeamMCPError -> PII redaction (params.bypass_redaction skips optional
   layers) -> truncation at CHARACTER_LIMIT.
@@ -29,8 +34,13 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field
+from mcp_server.core.audit import _truncate_if_needed
 from mcp_server.core.exceptions import BlueTeamMCPError
-from mcp_server.core.subprocess import _validate_path, ALLOWED_PATH_PREFIXES
+from mcp_server.core.subprocess import (
+    ALLOWED_PATH_PREFIXES,
+    _input_file_size_error,
+    _validate_path,
+)
 from mcp_server.core.tool_decorator import blueteam_tool
 
 # Local formats only. .zip (member expansion bomb surface) and .epub
@@ -39,7 +49,6 @@ _ALLOWED_EXT = (
     ".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".msg",
     ".html", ".htm", ".csv", ".json", ".xml",
 )
-_SIZE_CAP = 50 * 1024 * 1024  # 50 MB same parser-attack ceiling as Marker.
 
 # Bare singleton, no plugins, no llm_client, no network egress.
 # Module-global lock serialises first init only; concurrent conversions share
@@ -107,13 +116,16 @@ def _convert_sync(path: str) -> str:
     except Exception as e:
         raise _markitdown_error(e, stage="conversion") from e
     text = getattr(result, "markdown", "") or ""
+    # Drop the converter result before the redaction pass: the response is capped
+    # anyway, and the PII regexes would otherwise run across the whole document.
+    del result
     if not text.strip():
         raise BlueTeamMCPError(
             "MarkItDown returned no extractable text for this file. If it is a "
             "scanned or image-only PDF, use blueteam_document_convert (Marker "
             "OCR) instead; MarkItDown reads digital text only."
         )
-    return text
+    return _truncate_if_needed(text)
 
 
 def _markitdown_error(e: Exception, *, stage: str) -> BlueTeamMCPError:
@@ -153,11 +165,9 @@ def _prepare(params: FileToMarkdownInput) -> tuple[Optional[str], Optional[dict]
         return json.dumps({"error": f"File not found: {params.path}"}), None
     if not p.is_file():
         return json.dumps({"error": f"Not a regular file: {params.path}"}), None
-    try:
-        if p.stat().st_size > _SIZE_CAP:
-            return json.dumps({"error": f"File exceeds the {_SIZE_CAP // (1024 * 1024)} MB size cap."}), None
-    except OSError as e:
-        return json.dumps({"error": f"Cannot stat file: {e}"}), None
+    err = _input_file_size_error(p)
+    if err is not None:
+        return json.dumps({"error": err}), None
 
     return None, {"path": str(p)}
 
@@ -183,7 +193,8 @@ async def blueteam_markitdown_convert(params: FileToMarkdownInput) -> str:
     Args:
         params.path: Absolute path to the file. Must be under
             BLUETEAM_ALLOWED_PATHS (default /var:/etc:/home:/opt:/usr). Local
-            filesystem paths only; URL input is rejected. Max 50 MB.
+            filesystem paths only; URL input is rejected. Max
+            BLUETEAM_MAX_INPUT_FILE_MB (default 1024 MB = 1 GB).
             Supported extensions: .pdf, .docx, .pptx, .xlsx, .xls, .msg,
             .html, .htm, .csv, .json, .xml.
         params.bypass_redaction: When true, skip PII/credential redaction for
@@ -215,9 +226,11 @@ async def blueteam_markitdown_convert(params: FileToMarkdownInput) -> str:
     Manager API.
 
     Resource notes: no rate limit (local conversion). MarkItDown is imported
-    lazily on the first call (~1 s import; no model downloads). Missing
-    install returns a typed BlueTeamMCPError naming the required extras, never
-    a traceback. Install via setup.sh (BLUETEAM_INSTALL_MARKITDOWN=1) or:
+    lazily on the first call (~1 s import; no model downloads). The parser buffers
+    the whole document, so peak memory during conversion scales with file size; the
+    response stays capped at the character limit. Missing install returns a typed
+    BlueTeamMCPError naming the required extras, never a traceback. Install via
+    setup.sh (BLUETEAM_INSTALL_MARKITDOWN=1) or:
     pip install "markitdown[pdf,docx,pptx,xlsx,xls,outlook]"
     """
     err, prep = _prepare(params)

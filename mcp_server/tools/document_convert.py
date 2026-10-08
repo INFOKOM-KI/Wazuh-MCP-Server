@@ -14,7 +14,12 @@ Design notes:
 - Conversion runs inside asyncio.to_thread: torch is synchronous CPU work and
   must not stall the event loop (shared breakers/keepalive).
 - Input is a server-side PDF path validated by _validate_path against
-  ALLOWED_PATH_PREFIXES, same trust boundary as blueteam_hash_file.
+  ALLOWED_PATH_PREFIXES, same trust boundary as blueteam_hash_file. The file is
+  capped at BLUETEAM_MAX_INPUT_FILE_MB (default 1024 MB).
+- Marker's converter builds the whole document in memory: peak RSS scales with the
+  file, so the input cap is not a memory bound on this backend. Output is cut at the
+  response cap before redaction; blueteam_pdf_extract and
+  blueteam_rag_ingest(source="pdf") handle large PDFs with bounded accumulation.
 - Output goes through the @blueteam_tool uniform boundary: audit -> catch
   BlueTeamMCPError -> PII redaction (params.bypass_redaction skips optional
   layers) -> truncation at CHARACTER_LIMIT. For documents longer than the cap,
@@ -28,8 +33,13 @@ import threading
 from pathlib import Path
 from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
+from mcp_server.core.audit import _truncate_if_needed
 from mcp_server.core.exceptions import BlueTeamMCPError
-from mcp_server.core.subprocess import _validate_path, ALLOWED_PATH_PREFIXES
+from mcp_server.core.subprocess import (
+    ALLOWED_PATH_PREFIXES,
+    _input_file_size_error,
+    _validate_path,
+)
 from mcp_server.core.tool_decorator import blueteam_tool
 
 logger = logging.getLogger("blue_team_mcp.document_convert")
@@ -38,7 +48,6 @@ logger = logging.getLogger("blue_team_mcp.document_convert")
 # so no separate OCR mode is exposed. Table mode targets spreadsheet-style PDFs.
 _MODES = ("pdf", "table")
 _OUTPUT_FORMATS = ("markdown", "json", "html", "chunks")
-_SIZE_CAP = 50 * 1024 * 1024  # 50 MB untrusted/oversized PDFs are rejected early
 _ALLOWED_EXT = (".pdf",)
 
 # Marker model/converters are cached process-wide. Keyed by (mode, fmt, pages)
@@ -227,7 +236,11 @@ def _convert_sync(path: str, mode: str, fmt: str, pages: Optional[list[int]]) ->
         rendered = converter(path)
     except Exception as e:
         raise _marker_error(e, stage="conversion") from e
-    return _extract_output(rendered, fmt)
+    text = _extract_output(rendered, fmt)
+    # Drop the rendered result before the redaction pass: the response is capped
+    # anyway, and the PII regexes would otherwise run across the whole document.
+    del rendered
+    return _truncate_if_needed(text)
 
 
 def _marker_error(e: Exception, *, stage: str) -> BlueTeamMCPError:
@@ -278,11 +291,9 @@ def _prepare(params: DocumentConvertInput) -> tuple[Optional[str], Optional[dict
         return json.dumps({"error": f"File not found: {params.path}"}), None
     if not p.is_file():
         return json.dumps({"error": f"Not a regular file: {params.path}"}), None
-    try:
-        if p.stat().st_size > _SIZE_CAP:
-            return json.dumps({"error": f"File exceeds the {_SIZE_CAP // (1024 * 1024)} MB size cap."}), None
-    except OSError as e:
-        return json.dumps({"error": f"Cannot stat file: {e}"}), None
+    err = _input_file_size_error(p)
+    if err is not None:
+        return json.dumps({"error": err}), None
 
     mode = params.mode.strip().lower()
     fmt = params.output_format.strip().lower()
@@ -314,7 +325,8 @@ async def blueteam_document_convert(params: DocumentConvertInput) -> str:
 
     Args:
         params.path: Absolute path to the PDF (must be under BLUETEAM_ALLOWED_PATHS,
-            default /var:/etc:/home:/opt:/usr). Max 50 MB, PDF only.
+            default /var:/etc:/home:/opt:/usr). Max BLUETEAM_MAX_INPUT_FILE_MB
+            (default 1024 MB = 1 GB), PDF only.
         params.mode: 'pdf' (default) full document with auto-OCR, or 'table'
             table-only extraction. Table mode always returns JSON.
         params.output_format: 'markdown' (default), 'json', 'html', or 'chunks'.

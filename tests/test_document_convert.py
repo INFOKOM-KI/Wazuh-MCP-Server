@@ -28,6 +28,12 @@ def _module():
     return document_convert
 
 
+def _input_cap() -> int:
+    from mcp_server.core.config import config
+
+    return config.limits.max_input_file_bytes
+
+
 def _input(**over):
     dc = _module()
     base = {"path": "/opt/playbooks/runbook.pdf"}
@@ -112,11 +118,23 @@ def test_prepare_rejects_oversized_file(tmp_path, monkeypatch):
     monkeypatch.setattr(dc, "ALLOWED_PATH_PREFIXES", [str(tmp_path)])
     pdf = tmp_path / "huge.pdf"
     with open(pdf, "wb") as f:
-        f.truncate(dc._SIZE_CAP + 1)
+        f.truncate(_input_cap() + 1)
 
     err, prep = dc._prepare(_input(path=str(pdf)))
     assert prep is None
-    assert "size cap" in err
+    assert "per-file input limit" in err
+
+
+def test_prepare_accepts_a_file_at_the_one_gib_limit(tmp_path, monkeypatch):
+    dc = _module()
+    monkeypatch.setattr(dc, "ALLOWED_PATH_PREFIXES", [str(tmp_path)])
+    pdf = tmp_path / "one-gib.pdf"
+    with open(pdf, "wb") as f:
+        f.truncate(_input_cap())
+
+    err, prep = dc._prepare(_input(path=str(pdf)))
+    assert err is None
+    assert prep["path"] == str(pdf)
 
 
 def test_input_model_rejects_bogus_mode_like_llm_hallucination():
@@ -153,6 +171,23 @@ async def test_convert_happy_path_returns_markdown(tmp_path, monkeypatch):
     )
     assert "SOC playbook" in out
     assert "converted pdf/markdown pages=None" in out
+
+
+def test_convert_sync_truncates_before_the_redaction_pass(monkeypatch):
+    """A large document is cut at the response cap before redaction, so the PII
+    regexes never run across the whole converted text."""
+    from mcp_server import CHARACTER_LIMIT
+
+    dc = _module()
+    monkeypatch.setattr(dc, "_ensure_marker", lambda: None)
+    monkeypatch.setattr(dc, "_get_converter",
+                        lambda mode, fmt, pages: lambda path: object())
+    monkeypatch.setattr(dc, "_extract_output",
+                        lambda rendered, fmt: "y" * (CHARACTER_LIMIT + 4096))
+
+    out = dc._convert_sync("/opt/playbooks/big.pdf", "pdf", "markdown", None)
+    assert len(out) <= CHARACTER_LIMIT + 500
+    assert "[truncated response exceeds" in out
 
 
 @pytest.mark.asyncio

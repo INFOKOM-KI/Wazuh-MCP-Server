@@ -85,6 +85,23 @@ def _validate_path(path: str, allowed_prefixes: List[str], allow_symlinks: bool 
     return False, f"Path not under allowed prefixes: {allowed_prefixes}"
 
 
+def _input_file_size_error(path: Path) -> Optional[str]:
+    """Return the cap message when ``path`` exceeds BLUETEAM_MAX_INPUT_FILE_MB.
+    One check for every document-entry tool. Config is read at call time because the
+    singleton is built by init_config(), after this module is imported.
+    """
+    from mcp_server.core.config import config
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        return f"Cannot stat file: {e}"
+    cap = config.limits.max_input_file_bytes
+    if size > cap:
+        return (f"File exceeds the {cap // (1024 * 1024)} MB per-file input limit "
+                "(BLUETEAM_MAX_INPUT_FILE_MB).")
+    return None
+
+
 def _validate_bpf_filter(expr: str) -> tuple[bool, str]:
     """Validate BPF filter expression to prevent argument injection."""
     if not expr:

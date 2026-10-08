@@ -445,6 +445,9 @@ class AuditConfig:
 class LimitsConfig:
     """Performance and safety limits."""
     character_limit: int = 100000
+    # Per-file input ceiling for the document tools. Independent of character_limit:
+    # the file may be 1 GB while the response stays capped at 100k characters.
+    max_input_file_bytes: int = 1024 * 1024 * 1024
     http_timeout: float = 30.0
     allow_untruncated: bool = False
     max_log_lines: int = 2000
@@ -453,6 +456,9 @@ class LimitsConfig:
     def from_env(cls) -> "LimitsConfig":
         return cls(
             character_limit=int(os.environ.get("BLUETEAM_CHARACTER_LIMIT", "100000")),
+            max_input_file_bytes=(
+                int(os.environ.get("BLUETEAM_MAX_INPUT_FILE_MB", "1024")) * 1024 * 1024
+            ),
             http_timeout=float(os.environ.get("HTTP_TIMEOUT", "30.0")),
             allow_untruncated=_bool(os.environ.get("BLUETEAM_ALLOW_UNTRUNCATED", "false")),
             max_log_lines=2000,
@@ -461,6 +467,11 @@ class LimitsConfig:
     def validate(self) -> None:
         if self.character_limit < 1000:
             raise ConfigurationError("BLUETEAM_CHARACTER_LIMIT must be at least 1000")
+        cap_mb = self.max_input_file_bytes // (1024 * 1024)
+        if not 1 <= cap_mb <= 4096:
+            raise ConfigurationError(
+                f"BLUETEAM_MAX_INPUT_FILE_MB must be between 1 and 4096 (got {cap_mb})"
+            )
         if self.http_timeout <= 0:
             raise ConfigurationError("HTTP_TIMEOUT must be > 0")
 

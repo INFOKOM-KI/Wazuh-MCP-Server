@@ -401,7 +401,6 @@ async def wazuh_domain_lookup(params: WazuhDomainLookupInput) -> str:
     docs = [h.get("_source", h) for h in hit_list]
     docs = _redact_alert_data(docs, params=params)
 
-    # Build next cursor
     next_cursor = None
     if hit_list and len(docs) >= params.limit:
         last_sort = hit_list[-1].get("sort")

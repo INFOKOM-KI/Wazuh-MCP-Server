@@ -43,7 +43,12 @@ from mcp_server.core.query_norm import query_for_retrieval
 from mcp_server.core.rerank import rerank_hits, status_dict
 from mcp_server.core.tool_decorator import blueteam_tool
 from mcp_server.agents.fp_validator_graph import run_fp_validation
-from mcp_server.tools.pdf_extract import PdfExtractInput, _extract_sync, _prepare as _pdf_prepare
+from mcp_server.tools.pdf_extract import (
+    PdfExtractInput,
+    _open_pdf,
+    _read_page_batch,
+    _prepare as _pdf_prepare,
+)
 
 _NOT_CONFIGURED = (
     "RAG store is not configured. Set BLUETEAM_RAG_ENABLED=true and "
@@ -131,39 +136,88 @@ def _docs_from_false_positives(size: int, overlap: int) -> list[dict]:
     return docs
 
 
-async def _docs_from_pdf(path: str, corpus_label: str, size: int,
-                         overlap: int) -> tuple[list[dict], dict]:
-    """Extract a server-side PDF with pypdf and chunk it page by page.
+_PDF_EMBED_BATCH = 256  # rows per add_documents() call; one page can exceed it alone
+
+
+async def _ingest_pdf(path: str, corpus_label: str, size: int, overlap: int) -> dict:
+    """Stream a server-side PDF into the store in bounded batches.
     ``chunker.normalize`` runs first: pypdf hard-wraps mid-sentence, so a line is not a
     sentence and chunking raw page text splits the phrase a query would match.
     Chunking happens here rather than in the tool response, so a multi-hundred-page
     advisory never has to fit inside BLUETEAM_CHARACTER_LIMIT or the model's context
-    window. ``pdf_extract._prepare`` enforces the same path allowlist, extension, and
-    50 MB size cap as the standalone extraction tool; a PDF with no text layer raises
-    the same typed error that points at blueteam_document_convert (Marker OCR).
+    window. Pages are read, embedded, and written batch by batch, so a 1 GB document
+    never becomes one chunk list or one embedding batch. The label is cleared only
+    after the first page yields text: a scanned PDF raises the same typed error as the
+    standalone extractor and leaves the existing corpus intact.
     """
     err, prep = _pdf_prepare(PdfExtractInput(path=path, include_metadata=True))
     if err is not None:
         raise BlueTeamMCPError(json.loads(err).get("error", err))
-    payload = await asyncio.to_thread(
-        _extract_sync, prep["path"], prep["pages"], prep["mode"], prep["include_metadata"]
+    reader, indices, skipped, page_count = await asyncio.to_thread(
+        _open_pdf, prep["path"], prep["pages"]
     )
-    docs: list[dict] = []
+    file_name = Path(prep["path"]).name
     seq = 0
-    for page in payload["pages"]:
-        meta = {"page": page["page"], "file": payload["file"]}
-        body = chunker.normalize(page["text"])
-        added, seq = _document_docs(corpus_label,
-                                    f"{payload['file']}#p{page['page']}",
-                                    body, size, overlap, meta, seq)
-        docs.extend(added)
-    info = {
-        "file": payload["file"],
-        "page_count": payload["page_count"],
-        "pages_extracted": len(payload["pages"]),
-        "pages_skipped": len(payload["skipped"]),
+    cursor = 0
+    pages_extracted = 0
+    chunks = parents = inserted = deleted = 0
+    status: Optional[str] = None
+    cleared = False
+
+    while cursor < len(indices):
+        batch, batch_skips, cursor = await asyncio.to_thread(
+            _read_page_batch, reader, indices, cursor, prep["mode"]
+        )
+        skipped.extend(batch_skips)
+        halted = False
+        for page in batch:
+            meta = {"page": page["page"], "file": file_name}
+            body = chunker.normalize(page["text"])
+            added, seq = _document_docs(corpus_label, f"{file_name}#p{page['page']}",
+                                        body, size, overlap, meta, seq)
+            pages_extracted += 1
+            for start in range(0, len(added), _PDF_EMBED_BATCH):
+                if not cleared:
+                    deleted = await rag_store.delete_source(corpus_label)
+                    cleared = True
+                submitted = added[start:start + _PDF_EMBED_BATCH]
+                batch_inserted, batch_status = await rag_store.add_documents(submitted)
+                inserted += batch_inserted
+                chunks += sum(1 for d in submitted if not d.get("is_parent"))
+                parents += sum(1 for d in submitted if d.get("is_parent"))
+                if batch_status:
+                    status = batch_status
+                if batch_status and batch_status.startswith(("capped:", "unavailable:")):
+                    halted = True
+                    break
+            if halted:
+                break
+        if halted:
+            break
+
+    if pages_extracted == 0:
+        detail = skipped[0]["reason"] if skipped else "all pages were empty"
+        raise BlueTeamMCPError(
+            f"No extractable text in {file_name} ({detail}). If this is a scanned or "
+            "image-only PDF, use blueteam_document_convert (Marker OCR) instead; pypdf "
+            "reads digital text layers only."
+        )
+    if not cleared:
+        deleted = await rag_store.delete_source(corpus_label)
+    return {
+        "pdf": {
+            "file": file_name,
+            "page_count": page_count,
+            "pages_extracted": pages_extracted,
+            "pages_skipped": len(skipped),
+            "stopped_at_cap": bool(status and status.startswith("capped:")),
+        },
+        "chunks": chunks,
+        "parents": parents,
+        "inserted": inserted,
+        "deleted": deleted,
+        "status": status,
     }
-    return docs, info
 
 
 # Ingest
@@ -210,16 +264,21 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
     ``BLUETEAM_RAG_ALLOW_DOWNLOAD=false`` (default) no text can leave the host.
     The audit entry records counts only, never chunk content.
 
-    For ``source='pdf'`` the file is read server-side and chunked page by page: the
+    ``source='pdf'`` the file is read server-side and chunked page by page: the
     text never passes through the model context, so ``BLUETEAM_CHARACTER_LIMIT`` does
-    not apply and a full advisory can be ingested in one call. The label defaults to
-    ``pdf:<filename stem>``, and the label is rebuilt (deleted then re-added) on every
-    call because the file on disk is the source of truth.
+    not apply and a full advisory can be ingested in one call. Input is accepted up to
+    ``BLUETEAM_MAX_INPUT_FILE_MB`` (default 1024 MB); pages are read, embedded, and
+    written in bounded batches, so the file never becomes one chunk list or one
+    embedding batch in memory. ``BLUETEAM_RAG_MAX_CHUNKS`` stays the corpus ceiling.
+    When it is reached, the ingest stops and reports a partial result instead of
+    failing. The label defaults to ``pdf:<filename stem>``, and the label is rebuilt (deleted
+    then re-added) on every call because the file on disk is the source of truth.
 
     Args:
         params.source: 'cases', 'false_positives', 'pdf', or 'text'.
         params.texts: documents for source='text'.
-        params.path: PDF path for source='pdf'.
+        params.path: PDF path for source='pdf' (max ``BLUETEAM_MAX_INPUT_FILE_MB``,
+            default 1024 MB).
         params.label: corpus label for source='text'/'pdf' (defaults 'manual'/'pdf:<stem>').
 
     Returns:
@@ -233,7 +292,7 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
         4. Store not configured, or the embedder unavailable -> an error, not an empty corpus.
 
     Permissions: write on BLUETEAM_RAG_DB. Rate limits: none, but ingest is
-    CPU-bound (one ONNX batch per call) and blocked by BLUETEAM_RAG_MAX_CHUNKS.
+    CPU-bound (one ONNX batch per flushed slice) and blocked by BLUETEAM_RAG_MAX_CHUNKS.
     """
     if params.source == "text":
         if not params.texts:
@@ -250,13 +309,16 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
     size = config.rag.chunk_chars
     overlap = config.rag.chunk_overlap
 
-    pdf_info: Optional[dict] = None
+    pdf_result: Optional[dict] = None
     if params.source == "cases":
         docs = _docs_from_cases(size, overlap)
     elif params.source == "false_positives":
         docs = _docs_from_false_positives(size, overlap)
     elif params.source == "pdf":
-        docs, pdf_info = await _docs_from_pdf(params.path, corpus_label, size, overlap)
+        # _ingest_pdf streams page batches straight into the store; nothing is left
+        # for the shared add_documents() call below.
+        docs = []
+        pdf_result = await _ingest_pdf(params.path, corpus_label, size, overlap)
     else:
         # seq is unique per label and the chunk id is (source, seq, text), so identical
         # documents sharing seq=0 collapse on upsert. A parent reuses its first child's.
@@ -271,14 +333,23 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
     # source="text" is NOT derived, the DB holds the only copy, so it upserts and
     # a rewritten label is cleared deliberately by the operator rather than by a
     # flag that would delete before the embedder has proven it can write.
-    deleted = 0
-    if params.source != "text":
-        deleted = await rag_store.delete_source(corpus_label)
+    if pdf_result is not None:
+        pdf_info = pdf_result["pdf"]
+        deleted = pdf_result["deleted"]
+        inserted = pdf_result["inserted"]
+        status = pdf_result["status"]
+        chunks = pdf_result["chunks"]
+        parents = pdf_result["parents"]
+    else:
+        pdf_info = None
+        deleted = 0
+        if params.source != "text":
+            deleted = await rag_store.delete_source(corpus_label)
 
-    inserted, status = await rag_store.add_documents(docs)
-    parent_docs = sum(1 for d in docs if d.get("is_parent"))
-    parents = parent_docs if config.rag.parent_child else 0
-    chunks = len(docs) - parent_docs
+        inserted, status = await rag_store.add_documents(docs)
+        parent_docs = sum(1 for d in docs if d.get("is_parent"))
+        parents = parent_docs if config.rag.parent_child else 0
+        chunks = len(docs) - parent_docs
     _audit_log("blueteam_rag_ingest", {"source": corpus_label, "documents": chunks,
                                        "parents": parents,
                                        "chunks_inserted": inserted, "chunks_deleted": deleted})
@@ -311,6 +382,11 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
         lines.append(f"**PDF**: `{pdf_info['file']}` | "
                      f"**Pages**: {pdf_info['pages_extracted']}/{pdf_info['page_count']} extracted | "
                      f"**Skipped**: {pdf_info['pages_skipped']}")
+        if pdf_info.get("stopped_at_cap"):
+            lines.append("")
+            lines.append("**Partial ingest**: the corpus reached "
+                         "`BLUETEAM_RAG_MAX_CHUNKS`, so later pages were not stored. "
+                         "Raise the cap or prune the corpus, then re-run.")
         lines.append("")
     if status:
         lines.append(f"**Status**: {status}")

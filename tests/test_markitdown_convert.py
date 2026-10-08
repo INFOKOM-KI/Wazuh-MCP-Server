@@ -26,6 +26,12 @@ def _module():
     return markitdown_convert
 
 
+def _input_cap() -> int:
+    from mcp_server.core.config import config
+
+    return config.limits.max_input_file_bytes
+
+
 def _input(**over):
     mc = _module()
     base = {"path": "/opt/evidence/advisory.docx"}
@@ -67,12 +73,25 @@ def test_prepare_rejects_oversized_file(tmp_path, monkeypatch):
     mc = _module()
     monkeypatch.setattr(mc, "ALLOWED_PATH_PREFIXES", [str(tmp_path)])
     big = tmp_path / "huge.xlsx"
+    cap = _input_cap()
     with open(big, "wb") as f:
-        f.truncate(mc._SIZE_CAP + 1)
+        f.truncate(cap + 1)
 
     err, prep = mc._prepare(_input(path=str(big)))
     assert prep is None
-    assert "size cap" in err
+    assert "per-file input limit" in err
+
+
+def test_prepare_accepts_a_file_at_the_one_gib_limit(tmp_path, monkeypatch):
+    mc = _module()
+    monkeypatch.setattr(mc, "ALLOWED_PATH_PREFIXES", [str(tmp_path)])
+    big = tmp_path / "one-gib.xlsx"
+    with open(big, "wb") as f:
+        f.truncate(_input_cap())
+
+    err, prep = mc._prepare(_input(path=str(big)))
+    assert err is None
+    assert prep == {"path": str(big)}
 
 
 def test_prepare_accepts_local_file(tmp_path, monkeypatch):
@@ -101,6 +120,28 @@ def test_input_model_rejects_extra_fields():
 
 
 # via decorated tool with patched converter
+@pytest.mark.asyncio
+async def test_convert_sync_truncates_before_the_redaction_pass(monkeypatch):
+    """A large document is cut at the response cap before redaction, so the PII
+    regexes never run across the whole converted text."""
+    from mcp_server import CHARACTER_LIMIT
+
+    mc = _module()
+
+    class _Result:
+        markdown = "x" * (CHARACTER_LIMIT + 4096)
+
+    class _FakeMD:
+        def convert(self, path):
+            return _Result()
+
+    monkeypatch.setattr(mc, "_MD", _FakeMD())
+    out = mc._convert_sync("/opt/evidence/big.pdf")
+
+    assert len(out) <= CHARACTER_LIMIT + 500
+    assert "[truncated response exceeds" in out
+
+
 @pytest.mark.asyncio
 async def test_convert_happy_path_returns_markdown(tmp_path, monkeypatch):
     mc = _module()

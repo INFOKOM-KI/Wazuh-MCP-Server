@@ -204,7 +204,6 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
                 unusual_uas.append(f"{label}: `{ua}`")
                 break
 
-    # Build response
     if params.response_format == "json":
         result = {
             "srcip": params.srcip,

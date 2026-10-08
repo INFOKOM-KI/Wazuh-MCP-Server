@@ -146,7 +146,6 @@ async def blueteam_wazuh_export(params: WazuhExportInput) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     filepath = export_dir / f"export_{ts}.jsonl"
 
-    # Build query
     must: list[dict] = [
         {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                    "format": "strict_date_optional_time"}}},

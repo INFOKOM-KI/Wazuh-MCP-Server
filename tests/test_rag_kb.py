@@ -164,18 +164,24 @@ def test_ingest_pdf_requires_path(tmp_path):
 def _stub_pdf(monkeypatch, pages=None, skipped=None):
     """Patch the extraction boundary so these tests exercise the rag_kb wiring,
     not pypdf (which has its own suite in tests/test_pdf_extract.py)."""
+    records = pages if pages is not None else [
+        {"page": 1, "chars": 5, "text": "alpha"},
+        {"page": 2, "chars": 5, "text": "bravo"},
+    ]
     monkeypatch.setattr(rag_kb, "_pdf_prepare", lambda inp: (
         None, {"path": inp.path, "pages": inp.page_range, "mode": "plain",
                "include_metadata": True},
     ))
-    monkeypatch.setattr(rag_kb, "_extract_sync", lambda *a, **k: {
-        "file": "advisory.pdf", "page_count": 2,
-        "pages": pages if pages is not None else [
-            {"page": 1, "chars": 5, "text": "alpha"},
-            {"page": 2, "chars": 5, "text": "bravo"},
-        ],
-        "skipped": skipped or [], "metadata": {}, "encrypted": False, "chars": 10,
-    })
+    monkeypatch.setattr(rag_kb, "_open_pdf", lambda path, pages: (
+        object(), list(range(len(records))), list(skipped or []), len(records),
+    ))
+
+    def _read(reader, indices, start, mode, max_chars=0):
+        if start >= len(indices):
+            return [], [], start
+        return [records[indices[start]]], [], start + 1
+
+    monkeypatch.setattr(rag_kb, "_read_page_batch", _read)
 
 
 def test_ingest_pdf_chunks_pages_and_rebuilds_label(tmp_path, monkeypatch):
@@ -215,6 +221,82 @@ def test_ingest_pdf_reports_skipped_pages(tmp_path, monkeypatch):
                                              path="/opt/advisories/advisory.pdf",
                                              response_format="json")))
     assert json.loads(out)["pdf"]["pages_skipped"] == 1
+
+
+def test_ingest_pdf_flushes_pages_in_batches(tmp_path, monkeypatch):
+    """A long PDF must not become one chunk list and one embedding batch: every
+    page is embedded and written before the next page is read."""
+    _setup(tmp_path)
+    _stub_pdf(monkeypatch, pages=[{"page": i, "chars": 5, "text": f"page {i}"}
+                                  for i in range(1, 9)])
+    batch_sizes = []
+    real_add = rag_store.add_documents
+
+    async def _record(docs):
+        batch_sizes.append(len(docs))
+        return await real_add(docs)
+
+    monkeypatch.setattr(rag_kb.rag_store, "add_documents", _record)
+    out = _run(_ingest(rag_kb.RagIngestInput(source="pdf",
+                                             path="/opt/advisories/advisory.pdf",
+                                             response_format="json")))
+    payload = json.loads(out)
+    assert payload["chunks_inserted"] == 8
+    assert len(batch_sizes) == 8
+
+
+def test_ingest_pdf_slices_one_page_into_embed_batches(tmp_path, monkeypatch):
+    """One page can yield more chunks than the embed batch allows, so the flush is
+    sliced again instead of handing every chunk of the page to one ONNX batch."""
+    _setup(tmp_path)
+    monkeypatch.setattr(config.rag, "chunk_chars", 200)
+    monkeypatch.setattr(config.rag, "chunk_overlap", 20)
+    long_text = "Contain the host. " * 60
+    _stub_pdf(monkeypatch, pages=[{"page": 1, "chars": len(long_text), "text": long_text}])
+    monkeypatch.setattr(rag_kb, "_PDF_EMBED_BATCH", 2)
+    batch_sizes = []
+    real_add = rag_store.add_documents
+
+    async def _record(docs):
+        batch_sizes.append(len(docs))
+        return await real_add(docs)
+
+    monkeypatch.setattr(rag_kb.rag_store, "add_documents", _record)
+    out = _run(_ingest(rag_kb.RagIngestInput(source="pdf",
+                                             path="/opt/advisories/advisory.pdf",
+                                             response_format="json")))
+    payload = json.loads(out)
+    assert payload["chunks_inserted"] > 2
+    assert max(batch_sizes) <= 2
+
+
+def test_ingest_pdf_reports_a_partial_ingest_at_the_corpus_cap(tmp_path, monkeypatch):
+    """BLUETEAM_RAG_MAX_CHUNKS stays the corpus ceiling: the ingest stops with a
+    partial result instead of accumulating the rest and running out of memory."""
+    _setup(tmp_path)
+    monkeypatch.setattr(config.rag, "max_chunks", 2)
+    _stub_pdf(monkeypatch, pages=[{"page": i, "chars": 5, "text": f"page {i}"}
+                                  for i in range(1, 9)])
+    out = _run(_ingest(rag_kb.RagIngestInput(source="pdf",
+                                             path="/opt/advisories/advisory.pdf",
+                                             response_format="json")))
+    payload = json.loads(out)
+    assert payload["pdf"]["stopped_at_cap"] is True
+    assert payload["status"].startswith("capped:")
+    assert payload["chunks_inserted"] == 2
+    assert _store_chunks() == 2
+
+
+def test_ingest_pdf_scanned_file_raises_and_keeps_the_corpus(tmp_path, monkeypatch):
+    """The label must not be cleared before a page proves it has extractable text."""
+    _setup(tmp_path)
+    _run(_ingest(rag_kb.RagIngestInput(source="text", label="ir_playbooks",
+                                       texts=["Contain the host"])))
+    _stub_pdf(monkeypatch, pages=[])
+    with pytest.raises(BlueTeamMCPError, match="No extractable text"):
+        _run(_ingest(rag_kb.RagIngestInput(source="pdf", label="ir_playbooks",
+                                           path="/opt/advisories/scanned.pdf")))
+    assert _store_chunks() == 1
 
 
 def test_ingest_pdf_surfaces_an_extraction_error(tmp_path, monkeypatch):

@@ -982,7 +982,6 @@ async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
     since_iso, until_iso = _parse_time_window(params.since or "24h", None)
     srcip = params.srcip.strip()
 
-    # Build shared filter
     base_filter = [
         {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
                                    "format": "strict_date_optional_time"}}},
