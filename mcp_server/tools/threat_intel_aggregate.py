@@ -12,7 +12,7 @@ Provider coverage:
 - AlienVault OTX      (IP/domain/hash/url) - pulses, adversaries, industries
 - GreyNoise           (IP only)            - scanner vs business service
 - AbuseIPDB           (IP only)            - abuse confidence score
-- VirusTotal          (hash/domain)        - detection ratio
+- VirusTotal          (hash/domain/IP)     - detection ratio
 
 Normalizes each into TIProviderResult, then aggregates into TIQueryOutput.
 """
@@ -24,7 +24,7 @@ from mcp_server import (mcp, CROWDSEC_API_KEY_ENV, OTX_API_KEY_ENV,
                         THREATFOX_API_KEY_ENV, ABUSEIPDB_API_KEY,
                         VIRUSTOTAL_API_KEY, GREYNOISE_COMMUNITY_BASE_URL,
                         ABUSEIPDB_BASE_URL, VIRUSTOTAL_BASE_URL)
-from mcp_server.core.http_client import _api_call, _is_private_or_reserved, ValidPublicIp
+from mcp_server.core.http_client import _api_call, _classify_api_error, _is_private_or_reserved, ValidPublicIp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.threat_intel.otx import _classify_indicator, _normalize_adversary
 
@@ -35,6 +35,11 @@ _HASH_RE = re.compile(r"^[a-fA-F0-9]{32}$|^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$")
 
 # Risk level ordering for aggregation
 _RISK_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "none": 0, None: 0}
+
+
+ErrorKind = Literal["rate_limited", "not_configured", "unsupported_type",
+                   "upstream_error", "timeout", "auth_error", "not_found",
+                   "bad_request", "circuit_open"]
 
 
 class TIProviderResult(BaseModel):
@@ -53,6 +58,7 @@ class TIProviderResult(BaseModel):
     pulses: list[dict] = Field(default_factory=list)
     detail: dict = Field(default_factory=dict)
     error: Optional[str] = None
+    error_kind: Optional[ErrorKind] = None
 
 
 class TIQueryOutput(BaseModel):
@@ -91,9 +97,12 @@ class ThreatIntelAggregateInput(BaseModel):
 
 # Provider adapters (each returns TIProviderResult, never raises)
 async def _crowdsec_provider(indicator: str, ind_type: str) -> TIProviderResult:
-    if ind_type != "IPv4" or not os.environ.get(CROWDSEC_API_KEY_ENV):
+    configured = bool(os.environ.get(CROWDSEC_API_KEY_ENV))
+    if ind_type != "IPv4" or not configured:
         return TIProviderResult(provider="crowdsec", indicator=indicator,
-                                indicator_type=ind_type, error="not configured" if not os.environ.get(CROWDSEC_API_KEY_ENV) else "unsupported type")
+                                indicator_type=ind_type,
+                                error="not configured" if not configured else "unsupported type",
+                                error_kind="not_configured" if not configured else "unsupported_type")
     try:
         from mcp_server.threat_intel.crowdsec import _crowdsec_request
         r = await _crowdsec_request(f"/v2/smoke/{indicator}")
@@ -110,13 +119,16 @@ async def _crowdsec_provider(indicator: str, ind_type: str) -> TIProviderResult:
         )
     except Exception as e:
         return TIProviderResult(provider="crowdsec", indicator=indicator,
-                                indicator_type=ind_type, error=str(e))
+                                indicator_type=ind_type, error=str(e),
+                                error_kind=_classify_api_error(e))
 
 
 async def _threatfox_provider(indicator: str, ind_type: str) -> TIProviderResult:
-    if not os.environ.get(THREATFOX_API_KEY_ENV):
+    configured = bool(os.environ.get(THREATFOX_API_KEY_ENV))
+    if not configured:
         return TIProviderResult(provider="threatfox", indicator=indicator,
-                                indicator_type=ind_type, error="not configured")
+                                indicator_type=ind_type, error="not configured",
+                                error_kind="not_configured")
     try:
         from mcp_server.threat_intel.threatfox import _threatfox_request
         r = await _threatfox_request(indicator, False)
@@ -136,13 +148,16 @@ async def _threatfox_provider(indicator: str, ind_type: str) -> TIProviderResult
         )
     except Exception as e:
         return TIProviderResult(provider="threatfox", indicator=indicator,
-                                indicator_type=ind_type, error=str(e))
+                                indicator_type=ind_type, error=str(e),
+                                error_kind=_classify_api_error(e))
 
 
 async def _otx_provider(indicator: str, ind_type: str) -> TIProviderResult:
-    if not os.environ.get(OTX_API_KEY_ENV):
+    configured = bool(os.environ.get(OTX_API_KEY_ENV))
+    if not configured:
         return TIProviderResult(provider="otx", indicator=indicator,
-                                indicator_type=ind_type, error="not configured")
+                                indicator_type=ind_type, error="not configured",
+                                error_kind="not_configured")
     try:
         from mcp_server.threat_intel.otx import _otx_request
         r = await _otx_request(indicator, "general")
@@ -185,13 +200,15 @@ async def _otx_provider(indicator: str, ind_type: str) -> TIProviderResult:
         )
     except Exception as e:
         return TIProviderResult(provider="otx", indicator=indicator,
-                                indicator_type=ind_type, error=str(e))
+                                indicator_type=ind_type, error=str(e),
+                                error_kind=_classify_api_error(e))
 
 
 async def _greynoise_provider(indicator: str, ind_type: str) -> TIProviderResult:
     if ind_type != "IPv4":
         return TIProviderResult(provider="greynoise", indicator=indicator,
-                                indicator_type=ind_type, error="unsupported type")
+                                indicator_type=ind_type, error="unsupported type",
+                                error_kind="unsupported_type")
     try:
         r = await _api_call("get", f"{GREYNOISE_COMMUNITY_BASE_URL}/{indicator}",
                             headers={"accept": "application/json"})
@@ -209,13 +226,17 @@ async def _greynoise_provider(indicator: str, ind_type: str) -> TIProviderResult
         )
     except Exception as e:
         return TIProviderResult(provider="greynoise", indicator=indicator,
-                                indicator_type=ind_type, error=str(e))
+                                indicator_type=ind_type, error=str(e),
+                                error_kind=_classify_api_error(e))
 
 
 async def _abuseipdb_provider(indicator: str, ind_type: str) -> TIProviderResult:
-    if ind_type != "IPv4" or not ABUSEIPDB_API_KEY:
+    configured = bool(ABUSEIPDB_API_KEY)
+    if ind_type != "IPv4" or not configured:
         return TIProviderResult(provider="abuseipdb", indicator=indicator,
-                                indicator_type=ind_type, error="not configured" if not ABUSEIPDB_API_KEY else "unsupported type")
+                                indicator_type=ind_type,
+                                error="not configured" if not configured else "unsupported type",
+                                error_kind="not_configured" if not configured else "unsupported_type")
     try:
         h = {"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"}
         r = await _api_call("get", f"{ABUSEIPDB_BASE_URL}/check?ipAddress={indicator}&maxAgeInDays=90", headers=h)
@@ -229,15 +250,20 @@ async def _abuseipdb_provider(indicator: str, ind_type: str) -> TIProviderResult
         )
     except Exception as e:
         return TIProviderResult(provider="abuseipdb", indicator=indicator,
-                                indicator_type=ind_type, error=str(e))
+                                indicator_type=ind_type, error=str(e),
+                                error_kind=_classify_api_error(e))
 
 
 async def _virustotal_provider(indicator: str, ind_type: str) -> TIProviderResult:
-    if ind_type not in ("file", "domain") or not VIRUSTOTAL_API_KEY:
+    vt_types = {"file": "files", "domain": "domains", "IPv4": "ip_addresses"}
+    configured = bool(VIRUSTOTAL_API_KEY)
+    if ind_type not in vt_types or not configured:
         return TIProviderResult(provider="virustotal", indicator=indicator,
-                                indicator_type=ind_type, error="not configured" if not VIRUSTOTAL_API_KEY else "unsupported type")
+                                indicator_type=ind_type,
+                                error="not configured" if not configured else "unsupported type",
+                                error_kind="not_configured" if not configured else "unsupported_type")
     try:
-        vt_type = "files" if ind_type == "file" else "domains"
+        vt_type = vt_types[ind_type]
         h = {"x-apikey": VIRUSTOTAL_API_KEY, "Accept": "application/json"}
         r = await _api_call("get", f"{VIRUSTOTAL_BASE_URL}/{vt_type}/{indicator}", headers=h)
         d = r.json().get("data", {})
@@ -254,7 +280,8 @@ async def _virustotal_provider(indicator: str, ind_type: str) -> TIProviderResul
         )
     except Exception as e:
         return TIProviderResult(provider="virustotal", indicator=indicator,
-                                indicator_type=ind_type, error=str(e))
+                                indicator_type=ind_type, error=str(e),
+                                error_kind=_classify_api_error(e))
 
 
 # Aggregation
@@ -312,7 +339,11 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput) -> 
        ``blueteam_threat_intel_aggregate(indicator="<sha256>")``
 
     **Error Handling**: Providers without API keys are skipped and reported in
-    ``errors[]``. Per-provider failures never block the overall aggregation.
+    ``errors[]``. Each result also carries ``error_kind`` for JSON consumers: one of
+    ``rate_limited``, ``auth_error``, ``not_found``, ``bad_request``, ``timeout``,
+    ``circuit_open``, ``upstream_error``, ``not_configured``, ``unsupported_type``,
+    while ``error`` keeps its human-readable text. Per-provider failures never block
+    the overall aggregation.
     """
     _audit_log("blueteam_threat_intel_aggregate", {"indicator": params.indicator})
     ind_type = _classify_indicator(params.indicator)

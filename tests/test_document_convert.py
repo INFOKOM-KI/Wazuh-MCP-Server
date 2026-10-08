@@ -8,7 +8,9 @@ _convert_sync so no torch/model download ever happens in CI.
 """
 from __future__ import annotations
 import json
+import logging
 import os
+from types import SimpleNamespace
 import pytest
 
 # Env must be set before mcp_server is imported (module import inside tests).
@@ -167,3 +169,69 @@ async def test_convert_surface_blue_team_error_when_marker_missing(tmp_path, mon
 
     with pytest.raises(BlueTeamMCPError):
         await dc.blueteam_document_convert(dc.DocumentConvertInput(path=str(pdf)))
+
+
+# prewarm: artifact load only, opt-in, never raises into startup
+
+
+def test_prewarm_once_uses_the_marker_init_path(monkeypatch):
+    dc = _module()
+    calls = []
+
+    def fake_ensure():
+        calls.append(1)
+
+    monkeypatch.setattr(dc, "_ensure_marker", fake_ensure)
+    dc._prewarm_once()
+    assert calls == [1]
+
+
+def test_prewarm_once_swallows_init_failure(monkeypatch, caplog):
+    dc = _module()
+    from mcp_server.core.exceptions import BlueTeamMCPError
+
+    def boom():
+        raise BlueTeamMCPError("Marker is not installed")
+
+    monkeypatch.setattr(dc, "_ensure_marker", boom)
+    with caplog.at_level(logging.WARNING, logger="blue_team_mcp.document_convert"):
+        dc._prewarm_once()
+    assert "Marker prewarm skipped" in caplog.text
+
+
+@pytest.mark.parametrize("value", ["", "0", "false"])
+def test_prewarm_is_a_noop_when_disabled(value, monkeypatch):
+    dc = _module()
+    started = []
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            started.append(kwargs)
+
+        def start(self):
+            started.append("started")
+
+    monkeypatch.setenv("BLUETEAM_PREWARM_MARKER", value)
+    monkeypatch.setattr(dc, "threading", SimpleNamespace(Thread=FakeThread))
+    dc.prewarm()
+    assert started == []
+
+
+def test_prewarm_starts_a_daemon_thread_when_enabled(monkeypatch):
+    dc = _module()
+    captured = {}
+
+    class FakeThread:
+        def __init__(self, target=None, name=None, daemon=None):
+            captured.update(target=target, name=name, daemon=daemon)
+
+        def start(self):
+            captured["started"] = True
+
+    monkeypatch.setenv("BLUETEAM_PREWARM_MARKER", "1")
+    monkeypatch.setattr(dc, "threading", SimpleNamespace(Thread=FakeThread))
+    dc.prewarm()
+    assert captured["target"] is dc._prewarm_once
+    assert captured["name"] == "marker-prewarm"
+    assert captured["daemon"] is True
+    assert captured["started"] is True

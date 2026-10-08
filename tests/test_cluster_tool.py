@@ -182,3 +182,117 @@ def test_assign_refuses_a_window_mismatch_before_reading_the_cache():
         _run(_assign(cluster.AlertClusterAssignInput(
             srcip="203.0.113.7", fit_id=payload["fit_id"], time_window_minutes=10080,
             use_cached=True)))
+
+
+# fetch health: `_degraded` is orthogonal to `status`
+
+
+def _fetch_payload(profiles, **counters):
+    return {"profiles": dict(profiles), "warnings": [], "failures": 0, **counters}
+
+
+def test_fit_empty_with_degraded_fetch_is_not_reported_as_an_empty_window(monkeypatch):
+    async def _empty(categories, since_iso, until_iso, **kwargs):
+        return _fetch_payload({}, failures=3, path_errors=1)
+
+    monkeypatch.setattr(cluster, "fetch_srcip_profiles", _empty)
+    payload = json.loads(_run(_fit(_fit_params(response_format="json"))))
+    assert payload["status"] == "insufficient_data"
+    assert payload["_degraded"] is True
+    assert payload["fetch"]["failures"] == 3
+    assert "fetch degraded" in payload["reason"]
+    assert "hint" not in payload
+
+
+def test_fit_empty_with_healthy_fetch_keeps_the_population_hint(monkeypatch):
+    async def _empty(categories, since_iso, until_iso, **kwargs):
+        return _fetch_payload({})
+
+    monkeypatch.setattr(cluster, "fetch_srcip_profiles", _empty)
+    payload = json.loads(_run(_fit(_fit_params(response_format="json"))))
+    assert payload["status"] == "insufficient_data"
+    assert payload["fetch"]["degraded"] is False
+    assert "_degraded" not in payload
+    assert "No srcip entities" in payload["hint"]
+    assert "reason" not in payload
+
+
+@pytest.mark.parametrize("counters", [{"failures": 1}, {"path_errors": 2},
+                                      {"partial_shards": 4}, {"fallback_paths": 1}])
+def test_fit_on_partial_fetch_is_marked_degraded_and_still_persisted(monkeypatch, counters):
+    async def _partial(categories, since_iso, until_iso, **kwargs):
+        return _fetch_payload(PROFILES, **counters)
+
+    monkeypatch.setattr(cluster, "fetch_srcip_profiles", _partial)
+    payload = json.loads(_run(_fit(_fit_params(response_format="json"))))
+    assert payload["status"] == "ok"
+    assert payload["_degraded"] is True
+    for key, value in counters.items():
+        assert payload["fetch"][key] == value
+    assert load_fit(payload["fit_id"])["entity_count"] == 3
+
+
+def test_fit_with_healthy_fetch_carries_no_degraded_marker():
+    payload = json.loads(_run(_fit(_fit_params(response_format="json"))))
+    assert payload["status"] == "ok"
+    assert payload["fetch"]["degraded"] is False
+    assert "_degraded" not in payload
+
+
+def test_degraded_fit_markdown_names_the_incomplete_fetch(monkeypatch):
+    async def _partial(categories, since_iso, until_iso, **kwargs):
+        return _fetch_payload(PROFILES, failures=1)
+
+    monkeypatch.setattr(cluster, "fetch_srcip_profiles", _partial)
+    out = _run(_fit(_fit_params()))
+    assert "Data fetch degraded" in out
+
+
+def test_assign_not_observed_with_degraded_fetch_reports_unknown(monkeypatch):
+    _run(_fit(_fit_params()))
+
+    async def _degraded(categories, since_iso, until_iso, **kwargs):
+        return _fetch_payload({}, failures=3)
+
+    monkeypatch.setattr(cluster, "fetch_srcip_profiles", _degraded)
+    payload = json.loads(_run(_assign(cluster.AlertClusterAssignInput(
+        srcip="198.51.100.4", response_format="json", use_cached=False))))
+    assert payload["status"] == "not_observed"
+    assert payload["_degraded"] is True
+    assert "may be unobserved" in payload["reason"]
+    assert "hint" not in payload
+    out = _run(_assign(cluster.AlertClusterAssignInput(
+        srcip="198.51.100.4", use_cached=False)))
+    assert "`_degraded`" in out
+
+
+def test_assign_not_observed_with_healthy_fetch_keeps_the_plain_hint():
+    _run(_fit(_fit_params()))
+    payload = json.loads(_run(_assign(cluster.AlertClusterAssignInput(
+        srcip="198.51.100.4", response_format="json", use_cached=False))))
+    assert payload["status"] == "not_observed"
+    assert payload["fetch"]["degraded"] is False
+    assert "_degraded" not in payload
+    assert "No alert for this entity" in payload["hint"]
+
+
+def test_below_min_fit_with_degraded_fetch_markdown_shows_both_reasons(monkeypatch):
+    async def _partial(categories, since_iso, until_iso, **kwargs):
+        return _fetch_payload(PROFILES, failures=1)
+
+    monkeypatch.setattr(cluster, "fetch_srcip_profiles", _partial)
+    monkeypatch.setattr(cluster, "fit_clusters", lambda *a, **k: {
+        "status": "insufficient_data", "entity_count": 3,
+        "reason": "3 entities < min_cluster_size 5"})
+    out = _run(_fit(_fit_params()))
+    assert "3 entities < min_cluster_size 5" in out
+    assert "Data fetch degraded" in out
+
+
+def test_below_min_fit_with_healthy_fetch_markdown_is_unchanged(monkeypatch):
+    monkeypatch.setattr(cluster, "fit_clusters", lambda *a, **k: {
+        "status": "insufficient_data", "entity_count": 3,
+        "reason": "3 entities < min_cluster_size 5"})
+    out = _run(_fit(_fit_params()))
+    assert out == ("# Alert Entity Clustering\n\n**Status**: `insufficient_data`\n\n"
+                   "3 entities < min_cluster_size 5")

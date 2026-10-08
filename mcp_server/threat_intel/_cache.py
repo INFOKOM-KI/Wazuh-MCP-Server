@@ -216,12 +216,3 @@ def get_limiter(namespace: str, max_concurrent: int = 3,
         _limiters[namespace] = AsyncRateLimiter(max_concurrent=max_concurrent,
                                                 min_interval=min_interval)
     return _limiters[namespace]
-
-
-def cache_stats() -> dict:
-    """Operational stats for the shared cache + limiter registry."""
-    return {
-        "cache_entries": len(_SHARED_CACHE),
-        "cache_maxsize": _SHARED_CACHE.maxsize,
-        "limiter_namespaces": sorted(_limiters.keys()),
-    }

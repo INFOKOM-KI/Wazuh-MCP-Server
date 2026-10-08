@@ -137,15 +137,12 @@ class ThreatIntelConfig:
     rdap_base_url: str = "https://rdap.org"
     crtsh_base_url: str = "https://crt.sh"
     # AlienVault OTX
-    otx_api_key: str = ""
     otx_cache_ttl: int = 1800
     otx_base_url: str = "https://otx.alienvault.com"
     # URLhaus
-    urlhaus_api_key: str = ""
     urlhaus_cache_ttl: int = 1800
     urlhaus_base_url: str = "https://urlhaus-api.abuse.ch/v1/"
     # HudsonRock (stealer logs)
-    hudsonrock_api_key: str = ""
     hudsonrock_base_url: str = "https://cavalier.hudsonrock.com/api/json/v2"
     # RapidAPI capability lookups (IP blacklist, IOC search, breach check, bulk IP intel)
     rapidapi_key: str = ""
@@ -181,13 +178,10 @@ class ThreatIntelConfig:
             argus_min_interval=float(os.environ.get("ARGUS_MIN_INTERVAL", "30")),
             rdap_base_url=os.environ.get("RDAP_BASE_URL", "https://rdap.org"),
             crtsh_base_url=os.environ.get("CRTSH_BASE_URL", "https://crt.sh"),
-            otx_api_key=os.environ.get("OTX_API_KEY", ""),
             otx_cache_ttl=int(os.environ.get("OTX_CACHE_TTL", "1800")),
             otx_base_url=os.environ.get("OTX_BASE_URL", "https://otx.alienvault.com"),
-            urlhaus_api_key=os.environ.get("URLHAUS_API_KEY", ""),
             urlhaus_cache_ttl=int(os.environ.get("URLHAUS_CACHE_TTL", "1800")),
             urlhaus_base_url=os.environ.get("URLHAUS_BASE_URL", "https://urlhaus-api.abuse.ch/v1/"),
-            hudsonrock_api_key=os.environ.get("HUDSONROCK_API_KEY", ""),
             hudsonrock_base_url=os.environ.get("HUDSONROCK_BASE_URL", "https://cavalier.hudsonrock.com/api/json/v2"),
             rapidapi_key=os.environ.get("RAPIDAPI_KEY", ""),
             rapidapi_cache_ttl=int(os.environ.get("RAPIDAPI_CACHE_TTL", "604800")),

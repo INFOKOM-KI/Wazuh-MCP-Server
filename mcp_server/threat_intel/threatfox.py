@@ -38,11 +38,6 @@ def _get_threatfox_api_key() -> str:
     return key
 
 
-def _is_ip(ioc: str) -> bool:
-    """Check if an IOC string is an IPv4 address (for SSRF guard scoping)."""
-    return bool(_IP_RE.match(ioc))
-
-
 async def _threatfox_request(search_term: str, exact_match: bool = False) -> dict[str, Any]:
     """Query the ThreatFox API with TTL caching.
 

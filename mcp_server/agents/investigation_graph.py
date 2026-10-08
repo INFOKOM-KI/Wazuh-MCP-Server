@@ -19,6 +19,7 @@ from operator import add
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 from mcp_server.core.tool_decorator import full_payload
+from mcp_server.tools.report_export import default_report_dir
 
 logger = logging.getLogger("blue_team_mcp.investigation_graph")
 
@@ -575,7 +576,7 @@ async def report_step(state: InvestigationState) -> dict:
 
         out = await blueteam_export_report(ReportExportInput(
             format="docx",
-            path=f"{state.get('report_dir', '/tmp')}/investigation_{uuid.uuid4().hex[:8]}.docx",
+            path=f"{state.get('report_dir') or default_report_dir()}/investigation_{uuid.uuid4().hex[:8]}.docx",
             title="SOC Investigation — Blue Team MCP",
             docx_sections=sections,
         ))
@@ -695,7 +696,7 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
                             window: str = "24h", use_attack_graph: bool = True,
                             generate_report: bool = False,
                             record_verdict: bool = False, verdict_label: str = "suspicious",
-                            report_dir: str = "/tmp",
+                            report_dir: str | None = None,
                             dependency_manifest: str | None = None,
                             check_false_positive: bool = False) -> dict:
     """Run the investigation workflow end-to-end and return the final state summary.
@@ -712,7 +713,7 @@ async def run_investigation(alert_text: str | None = None, srcip: str | None = N
         "generate_report": generate_report,
         "record_verdict": record_verdict,
         "verdict_label": verdict_label,
-        "report_dir": report_dir,
+        "report_dir": report_dir or default_report_dir(),
         # Reset output channels: on a durable thread a step this run skips would
         # otherwise report the previous run's value, and three routing predicates
         # read fp_validation / correlation / extract_iocs.

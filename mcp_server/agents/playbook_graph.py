@@ -17,6 +17,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from mcp_server.tools.threat_hunt import _THREAT_HUNT_TEMPLATES
 from mcp_server.agents.investigation_graph import (
     _ensure_aiosqlite_is_alive, run_investigation, thread_id_for)
+from mcp_server.tools.report_export import default_report_dir
 
 logger = logging.getLogger("blue_team_mcp.playbook_graph")
 
@@ -223,7 +224,7 @@ async def investigate(state: PlaybookState) -> dict:
             window=state.get("window", "24h"),
             use_attack_graph=state.get("use_attack_graph", True),
             generate_report=state.get("generate_report", False),
-            report_dir=state.get("report_dir", "/tmp"),
+            report_dir=state.get("report_dir") or default_report_dir(),
             record_verdict=state.get("record_verdict", False),
             verdict_label=state.get("verdict_label", "suspicious"),
         )
@@ -260,7 +261,7 @@ async def run_playbook(alert_text: str | None = None, rule_id: str | None = None
                        window: str = "24h", use_attack_graph: bool = True,
                        generate_report: bool = False,
                        record_verdict: bool = False, verdict_label: str = "suspicious",
-                       report_dir: str = "/tmp") -> dict:
+                       report_dir: str | None = None) -> dict:
     """Run the playbook end-to-end and return the final summary."""
     await _try_load_live_rule_index()  # load live rule index on first run
     initial: PlaybookState = {
@@ -275,7 +276,7 @@ async def run_playbook(alert_text: str | None = None, rule_id: str | None = None
         "generate_report": generate_report,
         "record_verdict": record_verdict,
         "verdict_label": verdict_label,
-        "report_dir": report_dir,
+        "report_dir": report_dir or default_report_dir(),
         "srcips": [],
         "_retry_idx": 0,
         "steps": [],

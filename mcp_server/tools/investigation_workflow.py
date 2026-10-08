@@ -11,6 +11,7 @@ from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.agents.investigation_graph import run_investigation
+from mcp_server.tools.report_export import default_report_dir
 
 
 class InvestigationWorkflowInput(BaseModel):
@@ -37,8 +38,9 @@ class InvestigationWorkflowInput(BaseModel):
                     "suppressed indicator skips enrichment, correlation and the report. "
                     "Requires BLUETEAM_RAG_ENABLED + BLUETEAM_RAG_DB; degrades to a "
                     "recorded error when the store is unavailable.")
-    report_dir: str = Field(default="/tmp", max_length=200,
-        description="Directory for the generated report (used when generate_report=true).")
+    report_dir: str = Field(default_factory=default_report_dir, max_length=200,
+        description="Directory for the generated report; must sit under BLUETEAM_EXPORT_DIR "
+                    "(defaults to it).")
     record_verdict: bool = Field(default=False,
         description="Record an investigation verdict for srcip (requires srcip + BLUETEAM_INVESTIGATION_HISTORY).")
     verdict_label: Literal["true_positive", "false_positive", "suspicious", "clean", "unknown"] = Field(

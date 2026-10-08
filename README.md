@@ -329,12 +329,16 @@ embedding model, no new taxonomy and no extra Indexer work beyond the profile qu
 makes labeling cheap: the default `onnx` backend reuses the RAG embedder's ONNX session, so the
 marginal cost is one embedding per call after a one-time 32-phrase anchor build.
 
-Both tools are off by default and answer with an enable hint while their flag is down. Two
+Both tools are off by default and answer with an enable hint while their flag is down. Three
 structural facts to expect:
 
 - **Assignment is nearest-centroid, not inductive.** The pinned scikit-learn exposes
   `fit_predict` only, so a new entity is accepted when it falls inside a stored cluster's
   radius (95th percentile of member distances) and reported as `novel` otherwise.
+- **Status and fetch health are separate.** `status` describes the clustering result;
+  `_degraded: true` says the Indexer fetch behind it was incomplete (`fetch` carries the
+  counters). A fit can succeed on partial data and is still persisted as an operator snapshot;
+  `insufficient_data` or `not_observed` with `_degraded: true` means unknown, not empty.
 - **A label is a resemblance, not an attribution.** `status="uncertain"` means no tactic
   reached the confidence floor — a result, not an error. The full score vector is returned so a
   human can calibrate the floor on labelled data. `scored=false` means the backend exposes no
@@ -392,7 +396,11 @@ train/val/test, and `rule.mitre.*` is omitted by default because those fields st
 `--with-rule-mitre` emits the leaky variant so the accuracy delta can be measured. Multi-tactic
 techniques are dropped: the tool is single-label. The projected descriptions are synthetic text,
 so the corpus complements, never replaces, analyst-adjudicated alerts exported by
-`scripts/export_case_labels.py`. Then run `scripts/calibrate_labeler.py --backend onnx|laya|setfit`
+`scripts/export_case_labels.py`. `--reviews` is the analyst path: a named reviewer supplies exactly
+one tactic, production-shaped text or a description-only alert (`rule.id`, `rule.mitre.*`,
+`agent.name` are rejected), an explicit `split="test"`, and `--manifest` freezes the dataset hash
+with the backend, model SHA, `criteria_version`, floor and temperature. Then run
+`scripts/calibrate_labeler.py --backend onnx|laya|setfit`
 over the result and apply the suggested floor and temperature. `--gate` makes that run exit 2 when the
 suggested point misses the provisional thresholds — macro-F1 0.80, selective accuracy 0.90,
 coverage 0.60, ECE 0.10 — and `--split test` scores the held-out split, so a regression fails
@@ -417,7 +425,7 @@ from cron and the exit code is the failure signal.
 
 - `MCP_API_KEY` — format `btm_<43-char-urlsafe-base64>` (47 chars). Stored only as a SHA-256
   digest, compared with `hmac.compare_digest` (constant-time).
-- `MCP_API_KEY_SCOPES` — default `wazuh:read` (read-only). Add `wazuh:write` to unlock the 17
+- `MCP_API_KEY_SCOPES` — default `wazuh:read` (read-only). Add `wazuh:write` to enable the 17
   write tools (`blueteam_fail2ban_unban`, `blueteam_case_*` ×3, `blueteam_set_owned_domains`,
   `blueteam_mark_investigated`, `blueteam_wazuh_export`, `blueteam_export_report`,
   `blueteam_stix_export`, `blueteam_rag_ingest`, `blueteam_capture_traffic`,
@@ -563,6 +571,14 @@ Choose the tool by what the analyst wants — never invent tools.
 
 It is unrelated to `threatfox_ioc_search` (different API, no shared budget). The `blueteam_threat_intel_aggregate` covers six providers, does **not** include RapidAPI, and costs no quota at all, which is why it is what a scheduled report uses.
 
+Each provider result carries `error_kind` next to `error` (JSON output; `error` stays the
+human-readable text): `rate_limited`, `auth_error`, `not_found`, `bad_request`,
+`upstream_error`, `timeout`, `circuit_open`, `not_configured`, `unsupported_type`. Read the
+kind, not the message: `not_found` means the upstream has no record (not a provider failure),
+`not_configured` and `unsupported_type` are configuration answers (not findings), and
+`rate_limited` / `circuit_open` / `upstream_error` / `timeout` mean the provider is unavailable
+for this run.
+
 Netra and Argus lookups are spaced 30s apart, Sangfor 5s (`NETRA_MIN_INTERVAL` /
 `ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`); the RapidAPI tools are spaced by
 `BLUETEAM_RAPIDAPI_MIN_INTERVAL` (default 0.25s; set 7.0 where the plan allows one lookup
@@ -683,6 +699,15 @@ Reading the output:
   the window. `novelty=true` on an assignment means the entity fell outside every stored
   cluster radius, so the stored fit no longer describes the current traffic — evidence for
   an operator-run refit, never an automatic one.
+- **`status` and `_degraded` are orthogonal.** `status` describes the clustering result;
+  `_degraded: true` says the Indexer fetch behind it was incomplete (`fetch` carries the counters).
+  `insufficient_data` + `_degraded=false` = genuinely empty or below-minimum population;
+  `insufficient_data` + `_degraded=true` = population unknown; `ok` + `_degraded=true` = a fit
+  persisted from incomplete data, as an operator snapshot; `not_observed` + `_degraded=true` is not
+  proof the entity was absent. A live fit persists a snapshot even when the fetch was incomplete,
+  and marks it `_degraded`; backfill persists a day only when the fetch is complete, and reports
+  degraded days as `incomplete` or `skipped`. The two policies are deliberately different: the
+  live path serves an open investigation, backfill builds history.
 - The cluster response carries **no member IP lists**, by design. Use
   `blueteam_alert_cluster_assign(srcip="X")` to ask about one entity.
 - **A next-tactic probability is a corpus frequency, not an intent forecast.** Report the top
@@ -736,16 +761,29 @@ Reading the output:
 - Accuracy is **unmeasured until the operator's gate passes**. `confidence` is the model's own
   score, not a measured accuracy: quote no macro-F1, ECE or accuracy figure unless the operator
   shows a `calibrate_labeler.py --gate` run that passed. Report the label, the category, the
-  confidence and the floor, and nothing more.
-- The operator loop, in order: `scripts/build_label_corpus.py` projects local checkouts of CAR,
-  Atomic Red Team and Splunk attack_data into calibration rows (a technique lands in exactly one
-  split, `rule.mitre.*` omitted so the label is not leaked); `scripts/export_case_labels.py`
-  pre-fills candidate rows from the FP KB and the investigation history; 
-  `scripts/calibrate_labeler.py --gate` sweeps the floor and the backend-aware temperature and
-  writes `calibration_report.md` with macro-F1, per-tactic precision/recall, coverage and ECE,
-  exiting 2 when the provisional thresholds miss; `scripts/label_health.py` computes coverage and
-  the rolling uncertain ratio from the audit log, failing a cron gate with `--fail`. Applying the
-  suggested values is an operator action.
+  confidence and the floor, and nothing more. Until that report exists for the deployed backend
+  and criteria version, a high `uncertain` rate is evidence of uncertainty, not proof that the
+  model is miscalibrated.
+- The operator loop, in order: `scripts/export_case_labels.py` exports candidate rows from the
+  FP KB and the investigation history; a named reviewer fills `ground_truth_tactic` (exactly one
+  of the 16 tactics), supplies production-shaped text or a description-only alert, marks
+  `split="test"` on held-out rows, and records `reviewer`/`adjudicator`; ambiguous or multi-tactic
+  rows are excluded with an `exclude_reason`, never forced. `--reviews` merges the decisions, and
+  `--manifest` freezes the dataset hash with backend, model SHA, `criteria_version`, floor,
+  temperature and host. `scripts/build_label_corpus.py` projects local CAR / Atomic Red Team /
+  Splunk attack_data checkouts (a technique lands in exactly one split, `rule.mitre.*` omitted) as
+  a supporting signal, never as human ground truth. `scripts/calibrate_labeler.py --gate
+  --split test` sweeps the floor and the backend-aware temperature and writes
+  `calibration_report.md`, exiting 2 when the **default** thresholds miss.
+  `scripts/label_health.py` monitors coverage and the uncertain ratio from the audit log
+  (`--fail`; `--max-uncertain-ratio` adds an absolute bound, default 1.0 = disabled). Applying
+  the suggested values is an operator action.
+- Evaluation alerts must not carry `rule.id`, `rule.mitre.*` or `agent.name`. The exporter
+  rejects them. Those fields state or encode the answer, and the projected corpus strips them for
+  the same reason. A `--gate` pass over the projected corpus alone is supporting evidence; only a
+  pass over the frozen analyst set (`--split test`) under default thresholds, bound to the
+  deployed backend, model hash and `criteria_version`, is evidence that the production confidence
+  scores are calibrated.
 
 ### Investigation / case management
 | Want | Tool |
@@ -941,8 +979,8 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `blueteam_sigma_rule_validate(rule_source)` | YAML + schema check, plus a pySigma parse when pySigma is installed. `engine` names the stages that ran |
 | `blueteam_sigma_rule_convert(rule_source, output_format)` | Sigma → OpenSearch: `lucene` (query string), `dsl` (`_search` body), `monitor` (Dashboards alerting monitor), `saved_search` |
 | `blueteam_sigma_rule_save(rule_source, …)` | write the YAML to the staging dir (`BLUETEAM_SIGMA_RULES_DIR`); needs `wazuh:write` |
-| `blueteam_alert_cluster(mode="fit"\|"status", time_window_minutes, min_cluster_size, min_samples)` | HDBSCAN over srcip entities built from the 3-Sum aggregation (16 tactic sums + 4 scores). Returns clusters, medoids, noise ratio; `insufficient_data` instead of an empty cluster list when the population is too small |
-| `blueteam_alert_cluster_assign(srcip, fit_id, assign_factor, use_cached)` | nearest-centroid assignment against the stored fit. `label=-1` + `novelty=true` = outside every cluster radius. `pending_novelty`/`pending_refit` flag when a refit is justified |
+| `blueteam_alert_cluster(mode="fit"\|"status", time_window_minutes, min_cluster_size, min_samples)` | HDBSCAN over srcip entities built from the 3-Sum aggregation (16 tactic sums + 4 scores). Returns clusters, medoids, noise ratio; `insufficient_data` instead of an empty cluster list when the population is too small (check `_degraded`: with it true the population is unknown, not small) |
+| `blueteam_alert_cluster_assign(srcip, fit_id, assign_factor, use_cached)` | nearest-centroid assignment against the stored fit. `label=-1` + `novelty=true` = outside every cluster radius. `pending_novelty`/`pending_refit` flag when a refit is justified. `not_observed` means no alert for the entity in the window, and is not proof of absence when `_degraded=true` |
 | `blueteam_tactic_forecast(mode="train"\|"predict"\|"status", kind="markov"\|"hmm", srcip, current_tactic, model_id, top_k)` | fit or query a tactic-transition model over per-entity `rule.mitre.tactic` sequences: top-k next tactics, escalation probability, and the chain's mean log-likelihood against the corpus (Markov models; an HMM reports `not_applicable`). `uniform_fallback`/`low_support` flag a ranking the corpus does not back and `prediction.reason` names the missing anchor; `unavailable` means hmmlearn is absent for `kind="hmm"` |
 | `blueteam_volume_forecast(mode="train"\|"predict"\|"status", horizon_buckets, context_buckets, n_components, min_buckets)` | fit or query a PoissonHMM over per-bucket alert counts (empty buckets included). Returns per-bucket expected counts, expected total, mean per bucket and `peak_probability`; `insufficient_data` on a thin/all-zero/constant series, `posterior_fallback` when the context fits no regime |
 | `blueteam_source_forecast(mode="predict"\|"ingest"\|"evaluate"\|"status", as_of, since, until, history_days, max_candidates)` | ranks candidate next-**observed** source IPs/netblocks/observed countries from stored source history. `attribution_status="not_established"` always; `model_score` is an uncalibrated ranking heuristic, `transition_probability` carries `transition_support`; ASN is `unavailable` in v1; country is withheld below the geo-coverage floor; an incomplete ingest is refused (strict) or marked `degraded`. `insufficient_history`/`corpus_unverified` are results, not failures |
@@ -1240,6 +1278,7 @@ Do not lower below these without production telemetry evidence.
 | `{"error": "unavailable: toon_format is not installed"}` | `response_format="toon"` was requested but the optional encoder is missing on the server | re-call the same tool with `response_format="json"`; report the server gap, it is not a finding |
 | `"<step>: degraded"` in a workflow response | that step failed and the reason is listed under `errors[]` | quote the reason in the report limitations; never substitute your own result for the missing step |
 | `status="degraded"` on a workflow response | at least one step recorded an error, so the run did not finish clean | read `errors[]` with it and list those reasons in the report limitations, never as a complete run |
+| `_degraded: true` on a cluster fit or assignment | the clustering result is valid but the Indexer fetch behind it was incomplete; `fetch` carries the category-failure, path-error, failed-shard and mapping-fallback counters | read the counters, report the result as covering a subset, and never present `insufficient_data` or `not_observed` alongside `_degraded=true` as a complete answer or as proof the entity was absent |
 | `"hasn't been inspected yet"` | MCP handshake, not an error | re-invoke with matching params |
 | `"circuit breaker open for '<upstream>' (N consecutive failures)"` | that one upstream failed N times in a row. The name is the pool: a URL host (`otx.alienvault.com`, `urlhaus.abuse.ch`, the Netra host) or an explicit pool (`argus`, `rapidapi`, `indexer`, `wazuh`). Breakers are per upstream, so everything else still works | skip that provider, name it in the report, retry the same call after 60s |
 | `"Request timed out after <N>s for <host>"` | the call exceeded its budget. `<N>` is the budget actually applied (global `HTTP_TIMEOUT`, default 30s; 90s for Netra), `<host>` is the upstream | a timeout is a slow or unreachable upstream, never a finding. Retry once; if it repeats, report the upstream as degraded |
@@ -1252,6 +1291,7 @@ Do not lower below these without production telemetry evidence.
 | `"tool not available in this request"` | client didn't expose that tool this session | use an equivalent tool or note it |
 | `"raw/forensic bypass requires ... token"` | correct gate behavior | pass the token value (see §3) |
 | missing-key provider errors | provider skipped gracefully in `errors[]` | report partial result, note which provider skipped |
+| `error_kind` on an aggregate provider result | machine-readable failure class (see §1): `rate_limited`, `auth_error`, `not_found`, `bad_request`, `upstream_error`, `timeout`, `circuit_open`, `not_configured`, `unsupported_type`. `error` stays the human-readable text | match the kind to the action: `rate_limited` waits, `auth_error` fixes a key or subscription, `not_found` is no record, `not_configured`/`unsupported_type` are configuration answers, the rest mean the provider is degraded for this run |
 | `"MISP_URL and MISP_API_KEY must both be set to use MISP tools"` | MISP is not configured on this server | report it as "MISP not configured". Never as "no results". Ask the operator to set the env vars |
 | `"Provide 'alert_text', 'srcip', or 'dependency_manifest'"` | `blueteam_investigation_workflow` called with no target | pass one of the three targets and re-invoke |
 | `"Marker conversion failed: ... llama-server binary not found"` | surya's OCR VLM backend spawns the external llama.cpp binary, which is absent | install llama-server on the host (ggml-org/llama.cpp releases) and set `LLAMA_CPP_BINARY` (e.g. `Environment="LLAMA_CPP_BINARY=/usr/local/bin/llama-server"`) in the service, then restart |

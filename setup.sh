@@ -923,6 +923,11 @@ _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MAX_CANDIDATES" "${BLUETEAM_RERANK_MA
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_MODEL_SHA256" "$RERANK_SHA"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_ALLOW_DOWNLOAD" "${BLUETEAM_RERANK_ALLOW_DOWNLOAD:-false}"
 _sync_env_key "$ENV_FILE" "BLUETEAM_RERANK_NORMALIZE" "$RERANK_NORMALIZE"
+
+# Marker prewarm is opt-in; persist the install-time choice so main.py's boot
+# prewarm reads the same flag from config.env, and never enable it by default.
+_sync_env_key "$CONFIG_FILE" "BLUETEAM_PREWARM_MARKER" "${BLUETEAM_PREWARM_MARKER:-0}"
+_sync_env_key "$ENV_FILE" "BLUETEAM_PREWARM_MARKER" "${BLUETEAM_PREWARM_MARKER:-0}"
 # RAG block - synced with the same effective values the bootstrap resolved.
 for _envf in "$CONFIG_FILE" "$ENV_FILE"; do
   _sync_env_key "$_envf" "BLUETEAM_RAG_ENABLED" "$RAG_ENABLED"
@@ -985,6 +990,18 @@ for _envf in "$CONFIG_FILE" "$ENV_FILE"; do
   _sync_env_key "$_envf" "NUMEXPR_NUM_THREADS" "${NUMEXPR_NUM_THREADS:-${OMP_NUM_THREADS:-2}}"
 done
 unset -f _sync_env_key 2>/dev/null || true
+
+# Deliverable export dir: blueteam_export_report and blueteam_stix_export refuse paths
+# outside BLUETEAM_EXPORT_DIR, and the LangGraph report step writes here by default.
+_EXPORT_DIR_LOCAL="${BLUETEAM_EXPORT_DIR:-/var/log/blue-team-mcp/exports}"
+if mkdir -p "$_EXPORT_DIR_LOCAL" 2>/dev/null; then
+  chmod 0750 "$_EXPORT_DIR_LOCAL" 2>/dev/null || true
+  if id "$SERVICE_USER" >/dev/null 2>&1; then
+    chown "$SERVICE_USER":"$SERVICE_USER" "$_EXPORT_DIR_LOCAL" 2>/dev/null || true
+  fi
+else
+  echo "[!] Could not create $_EXPORT_DIR_LOCAL - report export will return a path error." >&2
+fi
 
 # Wrapper scripts
 echo "[5/7] Creating MCP server wrapper scripts..."

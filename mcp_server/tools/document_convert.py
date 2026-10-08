@@ -22,6 +22,8 @@ Design notes:
 """
 import asyncio
 import json
+import logging
+import os
 import threading
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -29,6 +31,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from mcp_server.core.exceptions import BlueTeamMCPError
 from mcp_server.core.subprocess import _validate_path, ALLOWED_PATH_PREFIXES
 from mcp_server.core.tool_decorator import blueteam_tool
+
+logger = logging.getLogger("blue_team_mcp.document_convert")
 
 # PDFs only in v1. Marker PdfConverter also auto-OCRs scanned pages (surya),
 # so no separate OCR mode is exposed. Table mode targets spreadsheet-style PDFs.
@@ -142,6 +146,26 @@ def _ensure_marker() -> None:
         ) from e
     _CONVERTER_CLASSES["pdf"] = PdfConverter
     _CONVERTER_CLASSES["table"] = TableConverter
+
+
+def _prewarm_once() -> None:
+    """Load the Marker artifact once so the first conversion does not pay the cost.
+    A failure is logged, never raised: the tool call already reports it as a typed
+    error with the operator hint."""
+    try:
+        with _INIT_LOCK:
+            _ensure_marker()
+    except Exception as exc:
+        logger.warning("Marker prewarm skipped: %s", exc)
+
+
+def prewarm() -> None:
+    """Warm the Marker artifact on a daemon thread when BLUETEAM_PREWARM_MARKER=1.
+    Never blocks startup and never raises; the scanned-page OCR VLM (surya GGUF /
+    llama-server) is not covered by this path."""
+    if os.environ.get("BLUETEAM_PREWARM_MARKER", "").strip().lower() not in ("1", "true"):
+        return
+    threading.Thread(target=_prewarm_once, name="marker-prewarm", daemon=True).start()
 
 
 def _get_converter(mode: str, fmt: str, pages: Optional[list[int]]) -> Any:

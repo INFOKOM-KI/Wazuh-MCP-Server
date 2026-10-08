@@ -83,3 +83,51 @@ def test_render_states_the_gate_result():
     assert "Status: OK" in ok
     bad = cal.render(cal.summarize([_label(1, "unavailable")], NOW, window_days=7))
     assert "Status: FAIL" in bad and "coverage" in bad
+
+
+# absolute uncertain-ratio bound (default 1.0 = disabled)
+
+
+def test_uncertain_ratio_gate_is_disabled_by_default():
+    entries = [_label(10, "uncertain"), _label(11, "uncertain"),
+               _label(12, "uncertain"), _label(13, "ok")]
+    summary = cal.summarize(entries, NOW, window_days=7)
+    assert summary["current"]["uncertain_ratio"] == pytest.approx(0.75)
+    assert not any("uncertain ratio" in f for f in cal.health_failures(summary))
+    assert not any("uncertain ratio" in f
+                   for f in cal.health_failures(summary, max_uncertain_ratio=1.0))
+
+
+def test_uncertain_ratio_gate_fails_when_explicitly_bounded():
+    entries = [_label(10, "uncertain"), _label(11, "uncertain"),
+               _label(12, "ok"), _label(13, "ok")]
+    summary = cal.summarize(entries, NOW, window_days=7)
+    failures = cal.health_failures(summary, max_uncertain_ratio=0.4)
+    assert any("uncertain ratio 50.0% is above 40%" in f for f in failures)
+
+
+def test_uncertain_ratio_boundary_equal_passes_and_greater_fails():
+    entries = [_label(10, "uncertain"), _label(11, "uncertain"),
+               _label(12, "ok"), _label(13, "ok")]
+    summary = cal.summarize(entries, NOW, window_days=7)
+    assert not any("uncertain ratio" in f
+                   for f in cal.health_failures(summary, max_uncertain_ratio=0.5))
+    assert any("uncertain ratio" in f
+               for f in cal.health_failures(summary, max_uncertain_ratio=0.49))
+
+
+def test_uncertain_ratio_gate_ignores_a_window_with_no_covered_labels():
+    summary = cal.summarize([_label(10, "unavailable"), _workflow(20)], NOW, window_days=7)
+    assert summary["current"]["covered"] == 0
+    assert not any("uncertain ratio" in f
+                   for f in cal.health_failures(summary, max_uncertain_ratio=0.0))
+    assert any("coverage" in f
+               for f in cal.health_failures(summary, max_uncertain_ratio=0.0))
+
+
+def test_render_reports_the_observed_ratio_and_bound():
+    out = cal.render(cal.summarize([_label(1, "uncertain")], NOW, window_days=7),
+                     max_uncertain_ratio=0.5)
+    assert "uncertain ratio <= 50%" in out
+    assert "Status: FAIL" in out
+    assert "uncertain ratio 100.0% is above 50%" in out

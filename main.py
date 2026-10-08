@@ -8,6 +8,7 @@ Startup order (must not be reordered):
 3. init_auth_manager() - initialize JWT token manager singleton.
 4. register_all_tools() - import tool modules; gating is enforced here.
 5. prewarm() - start the cross-encoder model load in a daemon thread.
+5b prewarms the labeling anchors; 5c the Marker artifact (opt-in).
 6. mcp.run() - start the selected transport.
 """
 
@@ -87,6 +88,12 @@ def main() -> None:
     # 5b: Same contract for the labeling anchors, and a no-op unless the labeler is on.
     from mcp_server.label.labeler import prewarm as prewarm_labels
     prewarm_labels()
+
+    # 5c: Marker artifact prewarm, opt-in via BLUETEAM_PREWARM_MARKER=1. Guarded by
+    # the registry so a category-disabled tool is never imported just to warm it.
+    if "blueteam_document_convert" in getattr(mcp._tool_manager, "_tools", {}):
+        from mcp_server.tools.document_convert import prewarm as prewarm_marker
+        prewarm_marker()
 
     # 6: Start transport
     tool_count = len(getattr(mcp._tool_manager, "_tools", {}))

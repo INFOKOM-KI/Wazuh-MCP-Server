@@ -9,6 +9,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.config import config
 from mcp_server.core.subprocess import _validate_path
 
 try:
@@ -16,6 +17,12 @@ try:
     OFFICECLI_AVAILABLE = True
 except ImportError:
     OFFICECLI_AVAILABLE = False
+
+
+def default_report_dir() -> str:
+    """Directory `blueteam_export_report` and the workflow report step write into.
+    Read from config so callers default to the same path the write scope allows."""
+    return config.operational.export_dir
 
 
 class DocxSection(BaseModel):
@@ -76,18 +83,22 @@ async def blueteam_export_report(params: ReportExportInput) -> str:
     missing, it is auto-provisioned on first use (see MAESTRO supply-chain note -
     pre-stage the binary in production).
 
+    The path must sit under `BLUETEAM_EXPORT_DIR` (default
+    `/var/log/blue-team-mcp/exports`); a path outside it is refused with
+    `Path not allowed`.
+
     **Worked Examples**
 
     1. *DOCX incident report*:
-       ``blueteam_export_report(format="docx", path="/var/reports/incident.docx",
+       ``blueteam_export_report(format="docx", path="/var/log/blue-team-mcp/exports/incident.docx",
          title="Zimbra Brute Force", docx_sections=[{"heading":"Summary","paragraphs":["IP 117.247.110.24 ..."],"bullets":[]}])``
 
     2. *XLSX blocklist table*:
-       ``blueteam_export_report(format="xlsx", path="/var/reports/blocklist.xlsx",
+       ``blueteam_export_report(format="xlsx", path="/var/log/blue-team-mcp/exports/blocklist.xlsx",
          xlsx_sheets=[{"name":"Blocked","headers":["IP","Score"],"rows":[["1.2.3.4","80"]]}])``
 
     3. *PPTX executive briefing*:
-       ``blueteam_export_report(format="pptx", path="/var/reports/briefing.pptx",
+       ``blueteam_export_report(format="pptx", path="/var/log/blue-team-mcp/exports/briefing.pptx",
          pptx_slides=[{"title":"Top Threats","bullets":["Brute force: 1,200 events"],"notes":"Escalate"}]])``
     """
     _audit_log("blueteam_export_report", {"format": params.format, "path": params.path})
@@ -96,12 +107,18 @@ async def blueteam_export_report(params: ReportExportInput) -> str:
 
     # Write scope: BLUETEAM_EXPORT_DIR only (matches capture_traffic pattern)
     # NOT the shared read allowlist, which includes /etc (would allow --force overwrites)
-    export_dir = os.environ.get("BLUETEAM_EXPORT_DIR", "/var/log/blue-team-mcp/exports")
+    export_dir = default_report_dir()
     path = os.path.abspath(params.path)
     ok, err = _validate_path(path, [export_dir])
     if not ok:
         return json.dumps({"error": f"Path not allowed: {err}", "allowed": [export_dir]}, indent=2)
-    os.makedirs(os.path.dirname(path), exist_ok=True) if os.path.dirname(path) else None
+    target_dir = os.path.dirname(path)
+    try:
+        if target_dir:
+            os.makedirs(target_dir, exist_ok=True)
+    except OSError as e:
+        return json.dumps({"error": f"Export directory not writable: {target_dir} ({e})",
+                           "allowed": [export_dir]}, indent=2)
 
     try:
         with officecli.create(path, "--force") as doc:

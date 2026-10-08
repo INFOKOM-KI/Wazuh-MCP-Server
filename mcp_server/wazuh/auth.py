@@ -179,22 +179,6 @@ def init_auth_manager(
         logger.info("WazuhAuthManager NOT initialized — Manager tools will be unavailable.")
     return _auth_manager
 
-# Module level helpers - thin wrappers for backward compatibility with tools
-async def _wazuh_get_token() -> str:
-    """Obtain a valid JWT from the singleton auth manager.
-
-    Raises:
-        ConfigurationError: If ``init_auth_manager`` was never called.
-        WazuhAuthError: If authentication fails.
-    """
-    if _auth_manager is None:
-        raise ConfigurationError(
-            "WazuhAuthManager not initialized. "
-            "Ensure WAZUH_API_URL and WAZUH_API_PASSWORD are set and init_auth_manager() "
-            "was called at startup."
-        )
-    return await _auth_manager.get_token()
-
 
 async def _wazuh_api_get(path: str, params: Optional[Dict[str, str]] = None) -> Dict:
     """Call the Wazuh Manager API GET endpoint.

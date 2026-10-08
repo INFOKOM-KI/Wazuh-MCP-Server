@@ -11,6 +11,7 @@ from mcp_server import mcp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.agents.playbook_graph import run_playbook, _THREAT_HUNT_TEMPLATES
+from mcp_server.tools.report_export import default_report_dir
 
 
 class PlaybookRunInput(BaseModel):
@@ -36,8 +37,9 @@ class PlaybookRunInput(BaseModel):
                     "PPR suspicion boost, confirmed-IOC).")
     generate_report: bool = Field(default=False,
         description="Generate a .docx SOC report at the end.")
-    report_dir: str = Field(default="/tmp", max_length=200,
-        description="Directory for the generated report.")
+    report_dir: str = Field(default_factory=default_report_dir, max_length=200,
+        description="Directory for the generated report; must sit under BLUETEAM_EXPORT_DIR "
+                    "(defaults to it).")
     record_verdict: bool = Field(default=False,
         description="Record an investigation verdict for the selected srcip.")
     verdict_label: Literal["true_positive", "false_positive", "suspicious", "clean", "unknown"] = Field(

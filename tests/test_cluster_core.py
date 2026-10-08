@@ -38,6 +38,13 @@ def test_insufficient_population_is_reported_not_empty():
     assert "min_cluster_size" in result["reason"]
 
 
+def test_zero_entities_reports_entity_count_zero():
+    result = fit_clusters([])
+    assert result["status"] == "insufficient_data"
+    assert result["entity_count"] == 0
+    assert result["reason"] == "no entity vectors in the window"
+
+
 def test_fit_builds_clusters_and_noise_ratio():
     result = fit_clusters(
         VECTORS, min_cluster_size=3,

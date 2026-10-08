@@ -3,6 +3,8 @@
 Computes label coverage and the uncertain ratio for the current window, compares
 the uncertain ratio with the previous window of the same size, and can fail a
 cron/CI run when coverage drops or the ratio drifts more than the allowed points.
+An absolute uncertain-ratio bound is available with ``--max-uncertain-ratio`` and
+is disabled by its default of 1.0.
 The audit log is the only input: `blueteam_incident_label` rows carry `status`,
 and `blueteam_investigation_workflow` rows count the investigations the labels
 belong to. No runtime state is read or written.
@@ -101,14 +103,19 @@ def _finalize(buckets: dict, window_days: float) -> dict:
 
 
 def health_failures(summary: dict, min_coverage: float = 0.8,
-                    max_drift_points: float = 10.0) -> list[str]:
-    """Gate reasons. Drift needs a previous window with data to mean anything."""
+                    max_drift_points: float = 10.0,
+                    max_uncertain_ratio: float = 1.0) -> list[str]:
+    """Gate reasons. Drift needs a previous window with data to mean anything.
+    The uncertain-ratio bound is off at its default 1.0, which no ratio exceeds."""
     current = summary["current"]
     failures: list[str] = []
     if not current["labels"]:
         failures.append("no label calls in the current window")
     elif current["coverage"] < min_coverage:
         failures.append(f"coverage {current['coverage']:.1%} is below {min_coverage:.0%}")
+    if current["covered"] and current["uncertain_ratio"] > max_uncertain_ratio:
+        failures.append(f"uncertain ratio {current['uncertain_ratio']:.1%} is above "
+                        f"{max_uncertain_ratio:.0%}")
     if summary["uncertain_drift_points"] is not None and \
             abs(summary["uncertain_drift_points"]) > max_drift_points:
         failures.append(f"uncertain ratio drifted {summary['uncertain_drift_points']:+.1f}pp "
@@ -117,7 +124,8 @@ def health_failures(summary: dict, min_coverage: float = 0.8,
 
 
 def render(summary: dict, min_coverage: float = 0.8,
-           max_drift_points: float = 10.0) -> str:
+           max_drift_points: float = 10.0,
+           max_uncertain_ratio: float = 1.0) -> str:
     current, previous = summary["current"], summary["previous"]
     per_inv = current["labels_per_investigation"]
     prev_per_inv = previous["labels_per_investigation"]
@@ -137,10 +145,11 @@ def render(summary: dict, min_coverage: float = 0.8,
              f"| Investigation runs | {current['investigations']} | {previous['investigations']} |",
              f"| Labels per investigation | {fmt_per_inv(per_inv)} | {fmt_per_inv(prev_per_inv)} |",
              "",
-             f"Gate: coverage >= {min_coverage:.0%}, uncertain drift <= {max_drift_points:g}pp",
+             f"Gate: coverage >= {min_coverage:.0%}, uncertain drift <= {max_drift_points:g}pp, "
+             f"uncertain ratio <= {max_uncertain_ratio:.0%}",
              f"- coverage drift: {fmt_drift(summary['coverage_drift_points'])}",
              f"- uncertain ratio drift: {fmt_drift(summary['uncertain_drift_points'])}"]
-    failures = health_failures(summary, min_coverage, max_drift_points)
+    failures = health_failures(summary, min_coverage, max_drift_points, max_uncertain_ratio)
     lines.append(f"Status: {'FAIL - ' + '; '.join(failures) if failures else 'OK'}")
     return "\n".join(lines)
 
@@ -151,6 +160,9 @@ def main() -> int:
     parser.add_argument("--window-days", type=float, default=7.0)
     parser.add_argument("--min-coverage", type=float, default=0.8)
     parser.add_argument("--max-drift-points", type=float, default=10.0)
+    parser.add_argument("--max-uncertain-ratio", type=float, default=1.0,
+                        help="Fail when the uncertain ratio exceeds this bound "
+                             "(default 1.0 = disabled).")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--fail", action="store_true", help="exit 1 on any gate failure")
     args = parser.parse_args()
@@ -161,8 +173,10 @@ def main() -> int:
     if args.json:
         print(json.dumps(summary, indent=2))
     else:
-        print(render(summary, args.min_coverage, args.max_drift_points))
-    failures = health_failures(summary, args.min_coverage, args.max_drift_points)
+        print(render(summary, args.min_coverage, args.max_drift_points,
+                     args.max_uncertain_ratio))
+    failures = health_failures(summary, args.min_coverage, args.max_drift_points,
+                               args.max_uncertain_ratio)
     if failures:
         print("FAIL: " + "; ".join(failures), file=sys.stderr)
         return 1 if args.fail else 0

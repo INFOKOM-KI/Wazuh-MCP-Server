@@ -366,6 +366,31 @@ def _api_error_text(e: Exception, context: str = "") -> str:
     return f"{prefix}Error: Unexpected error ({type(e).__name__})."
 
 
+def _classify_api_error(e: Exception) -> str:
+    """Machine-readable kind for a failed upstream call, read from the exception and
+    HTTP status only - never from the message text. ``RuntimeError`` is the threat-intel
+    key getters' missing-key signal; anything unclassified is ``upstream_error``.
+    """
+    if isinstance(e, CircuitOpenError):  # must precede httpx.ConnectError
+        return "circuit_open"
+    if isinstance(e, httpx.HTTPStatusError):
+        status = e.response.status_code
+        if status == 429:
+            return "rate_limited"
+        if status in (401, 403):
+            return "auth_error"
+        if status == 404:
+            return "not_found"
+        if status == 400:
+            return "bad_request"
+        return "upstream_error"
+    if isinstance(e, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(e, RuntimeError):
+        return "not_configured"
+    return "upstream_error"
+
+
 def _handle_api_error(e: Exception, context: str = "") -> None:
     """Format a failed upstream API call, log it, and raise ``ThreatIntelError``.
     Raising is the point. A tool that *returns* "Error: ..." as text is reported to

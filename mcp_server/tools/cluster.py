@@ -100,6 +100,30 @@ def _categories(params) -> list[tuple[str, str, list[str]]]:
             ("C", "c2_exfil", params.category_c_groups)]
 
 
+def _fetch_health(fetched: dict) -> dict:
+    """Completeness counters for the aggregation behind a clustering result.
+    Missing keys count as zero so a healthy fetch is never marked degraded by an
+    absent counter. ``degraded`` is orthogonal to ``status``: a fit can succeed on
+    partial data and still report it."""
+    fetch = {
+        "failures": int(fetched.get("failures", 0) or 0),
+        "path_errors": int(fetched.get("path_errors", 0) or 0),
+        "partial_shards": int(fetched.get("partial_shards", 0) or 0),
+        "fallback_paths": int(fetched.get("fallback_paths", 0) or 0),
+    }
+    fetch["degraded"] = any((fetch["failures"], fetch["path_errors"],
+                             fetch["partial_shards"], fetch["fallback_paths"]))
+    return fetch
+
+
+def _fetch_detail(fetch: dict) -> str:
+    """One-line rendering of the fetch counters, for reasons and markdown."""
+    return (f"{fetch['failures']} category query failure(s), "
+            f"{fetch['path_errors']} srcip path error(s), "
+            f"{fetch['partial_shards']} failed shard(s), "
+            f"{fetch['fallback_paths']} mapping fallback(s)")
+
+
 def _utc_midnight(value: Optional[str], field: str) -> datetime:
     """Parse a UTC date or ISO timestamp into a naive midnight.
     Non-midnight values are rejected: a backfill window is a whole UTC day.
@@ -407,6 +431,9 @@ def _fit_markdown(payload: dict) -> str:
             )
     else:
         lines.append("No cluster reached the minimum size; every entity is noise.")
+    if payload.get("_degraded"):
+        lines += ["", f"**Data fetch degraded**: {_fetch_detail(payload.get('fetch') or {})}. "
+                      "The fit was persisted from incomplete data."]
     if payload.get("warnings"):
         lines += ["", "**Indexer notes**"] + [f"- {w}" for w in payload["warnings"]]
     lines += ["", "Noise (`-1`) is a result, not a failure: it marks entities the "
@@ -475,9 +502,13 @@ async def blueteam_alert_cluster(params: AlertClusterInput) -> str:
         markdown or json with the fit id, window, entity/noise counts, cluster
         table (size, radius, medoid, top tactics) and indexer warnings. A
         population below min_cluster_size returns ``insufficient_data``, never an
-        empty cluster list. Backfill returns per-day status rows: a day reaches
-        the store only when fetched data is complete, and degraded or empty days
-        are reported as ``incomplete`` or ``skipped``.
+        empty cluster list. Every live result carries ``fetch`` counters and sets
+        ``_degraded: true`` when the Indexer fetch was incomplete: a partial live
+        fit is still persisted as an operator snapshot and marked, and
+        ``insufficient_data`` with ``_degraded: true`` means the population is
+        unknown rather than small. Backfill returns per-day status rows: a day
+        reaches the store only when fetched data is complete, and degraded or
+        empty days are reported as ``incomplete`` or ``skipped``.
 
     Worked Examples:
         1. Daily fit -> ``blueteam_alert_cluster(mode="fit", time_window_minutes=1440)``
@@ -527,12 +558,18 @@ async def blueteam_alert_cluster(params: AlertClusterInput) -> str:
     fetched = await fetch_srcip_profiles(_categories(params), since_iso, until_iso,
                                          use_mitre=params.use_mitre)
     profiles = fetched["profiles"]
+    fetch = _fetch_health(fetched)
     if not profiles:
         payload = {"status": "insufficient_data", "entity_count": 0,
                    "window": {"since": since_iso, "until": until_iso},
-                   "warnings": fetched["warnings"],
-                   "hint": "No srcip entities in the window; widen it or check the "
-                           "category fallback groups."}
+                   "warnings": fetched["warnings"], "fetch": fetch}
+        if fetch["degraded"]:
+            payload["_degraded"] = True
+            payload["reason"] = ("fetch degraded, the population is unknown: "
+                                 + _fetch_detail(fetch))
+        else:
+            payload["hint"] = ("No srcip entities in the window; widen it or check "
+                               "the category fallback groups.")
     else:
         entity_keys = sorted(profiles)
         vectors = [build_vector(profiles[key], params.time_window_minutes)
@@ -543,7 +580,9 @@ async def blueteam_alert_cluster(params: AlertClusterInput) -> str:
         if result["status"] != "ok":
             payload = {"status": result["status"], "entity_count": result.get("entity_count", 0),
                        "reason": result.get("reason"), "window": {"since": since_iso, "until": until_iso},
-                       "warnings": fetched["warnings"]}
+                       "warnings": fetched["warnings"], "fetch": fetch}
+            if fetch["degraded"]:
+                payload["_degraded"] = True
         else:
             fit_id = uuid.uuid4().hex[:12]
             await asyncio.to_thread(
@@ -556,15 +595,20 @@ async def blueteam_alert_cluster(params: AlertClusterInput) -> str:
                 "entity_count": result["entity_count"], "noise_count": result["noise_count"],
                 "noise_ratio": result["noise_ratio"], "params": result["params"],
                 "clusters": _cluster_records(result, entity_keys, vectors, profiles),
-                "warnings": fetched["warnings"],
+                "warnings": fetched["warnings"], "fetch": fetch,
             }
+            if fetch["degraded"]:
+                payload["_degraded"] = True
     if params.response_format == "json":
         return json.dumps(payload, indent=2, ensure_ascii=False)
     if params.response_format == "toon":
         return payload
     if payload.get("status") != "ok":
-        return (f"# Alert Entity Clustering\n\n**Status**: `{payload['status']}`\n\n"
-                f"{payload.get('reason') or payload.get('hint') or ''}")
+        body = payload.get("reason") or payload.get("hint") or ""
+        if payload.get("_degraded"):
+            body += (f"\n\n**Data fetch degraded**: "
+                     f"{_fetch_detail(payload.get('fetch') or {})}.")
+        return (f"# Alert Entity Clustering\n\n**Status**: `{payload['status']}`\n\n{body}")
     return _fit_markdown(payload)
 
 
@@ -613,7 +657,10 @@ async def blueteam_alert_cluster_assign(params: AlertClusterAssignInput) -> str:
     Returns:
         markdown or json with ``label``, ``distance``, ``limit``, ``nearest_label``,
         ``novelty``, ``pending_novelty``, and a ``pending_refit`` flag once enough
-        novel entities accumulate to justify an operator-run refit.
+        novel entities accumulate to justify an operator-run refit. An entity with
+        no alert in the window returns ``status="not_observed"``; when that payload
+        also carries ``_degraded: true`` the fetch was incomplete, so it is not
+        proof the entity was absent.
     Worked Examples:
         1. Label a live alert -> ``blueteam_alert_cluster_assign(srcip="45.194.92.25")``
         2. Looser acceptance -> ``blueteam_alert_cluster_assign(srcip="45.194.92.25",
@@ -662,13 +709,23 @@ async def blueteam_alert_cluster_assign(params: AlertClusterAssignInput) -> str:
                                              use_mitre=params.use_mitre, srcip=key)
         profile = fetched["profiles"].get(key)
         if profile is None:
+            fetch = _fetch_health(fetched)
             payload = {"status": "not_observed", "fit_id": fit["fit_id"], "srcip": key,
                        "window": {"since": since_iso, "until": until_iso},
-                       "hint": "No alert for this entity in the window; nothing to assign."}
+                       "fetch": fetch}
+            if fetch["degraded"]:
+                payload["_degraded"] = True
+                payload["reason"] = ("fetch degraded, the entity may be unobserved "
+                                     "rather than absent: " + _fetch_detail(fetch))
+            else:
+                payload["hint"] = "No alert for this entity in the window; nothing to assign."
             if params.response_format == "json":
                 return json.dumps(payload, indent=2, ensure_ascii=False)
             if params.response_format == "toon":
                 return payload
+            if fetch["degraded"]:
+                return (f"# Cluster assignment\n\n**Status**: `not_observed` "
+                        f"(`_degraded`) - {payload['reason']}.\n")
             return (f"# Cluster assignment\n\n**Status**: `not_observed` - no alert for "
                     f"`{key}` in `{since_iso}` -> `{until_iso}`.\n")
         factor = params.assign_factor or config.cluster.assign_factor
