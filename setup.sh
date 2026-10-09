@@ -700,6 +700,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # Tier-2 forensic bypass — raw (unmasked) data to disk via blueteam_wazuh_export (HUMAN ONLY)
 # export BLUETEAM_ALLOW_FORENSIC_BYPASS="false"
 # export BLUETEAM_FORENSIC_TOKEN="change-me-per-deployment"   # change this adjust based on your server prods
+# Tier-1b identity reveal (reveal_identities=true), needs BLUETEAM_FORENSIC_TOKEN:
+# unmasks identity fields for one call.
+# export BLUETEAM_ALLOW_IDENTITY_REVEAL="false"
 # export BLUETEAM_EXPORT_RETENTION_DAYS="7"     # auto-prune export_*.jsonl older than N days; 0 = keep forever
 
 # Sangfor Blocklist Integration (optional — set SANGFOR_BLOCKLIST_TOKEN to enable sangfor_blocklist_* tools)
@@ -1078,6 +1081,7 @@ export BLUETEAM_REDACT_PII="${BLUETEAM_REDACT_PII:-true}"
 export BLUETEAM_REDACTION_POLICY="${BLUETEAM_REDACTION_POLICY:-protect_victim}"
 export BLUETEAM_OWNED_DOMAINS="${BLUETEAM_OWNED_DOMAINS:-tangerangkota.go.id}"
 export BLUETEAM_ALLOW_FORENSIC_BYPASS="${BLUETEAM_ALLOW_FORENSIC_BYPASS:-false}"
+export BLUETEAM_ALLOW_IDENTITY_REVEAL="${BLUETEAM_ALLOW_IDENTITY_REVEAL:-false}"
 export BLUETEAM_ALLOW_RUNTIME_DOMAINS="${BLUETEAM_ALLOW_RUNTIME_DOMAINS:-false}"
 export ALLOWED_INTERNAL_DOMAINS="${ALLOWED_INTERNAL_DOMAINS:-}"
 export BLUETEAM_ATTACKER_REGISTRY="${BLUETEAM_ATTACKER_REGISTRY:-/var/log/blue-team-mcp/attacker_registry.jsonl}"
@@ -1258,13 +1262,14 @@ echo "    BLUETEAM_CHARACTER_LIMIT=100000
 echo "    HTTP_TIMEOUT=30                   (seconds per upstream request; Netra is pinned at 90)"
 echo "    WAZUH_INDEXER_MAX_SIZE=10000      (docs per page in indexer search)"
 echo "    BLUETEAM_ALLOW_UNTRUNCATED=false  (set true for forensic mode)"
+echo "    BLUETEAM_ALLOW_IDENTITY_REVEAL=false  (needs BLUETEAM_FORENSIC_TOKEN)"
 echo ""
 echo "  GreyNoise Community needs no key — greynoice_ip_context works immediately."
 echo "  ThreatFox needs a free key — https://threatfox.abuse.ch/api"
 echo ""
 echo "Wrapper entry points installed:"
 echo ""
-echo "  mcp-server-blueteam    — All 155 tools (Wazuh, threat intel, host forensics,"
+echo "  mcp-server-blueteam    — All 160 tools (Wazuh, threat intel, host forensics,"
 echo "                            Sangfor blocklist, 3-Sum correlation, curated reports,"
 echo "                            CrowdSec, GreyNoise, ThreatFox)"
 echo "  mcp-server-crowdsec    — DEPRECATED — redirects to mcp-server-blueteam"
