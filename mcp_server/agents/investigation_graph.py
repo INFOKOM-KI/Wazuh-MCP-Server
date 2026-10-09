@@ -450,6 +450,8 @@ async def analytics_step(state: InvestigationState) -> dict:
             update[key] = data
             if key == "graph":
                 update["steps"].append("graph: attack graph analyzed")
+            elif data.get("status") == "no_mitre_data":
+                update["steps"].append("killchain: skipped (no rule.mitre.id in window)")
             else:
                 update["steps"].append("killchain: STIX chain built")
         else:

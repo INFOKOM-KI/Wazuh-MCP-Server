@@ -86,10 +86,16 @@ async def _add_stix_edges(G: nx.Graph, cap: int = 3) -> None:
         _load_stix()
     except Exception:
         return  # no STIX bundle / indexer - degrade gracefully
+    # A failed query must stay visible: without this, absent STIX nodes read
+    # the same as "no techniques observed".
+    fetch_errors: list[dict] = []
     for ip in confirmed_ips:
         try:
-            _, tids = await _fetch_techniques_for_srcip(ip, "30d", None)
+            _, tids, fetch_error = await _fetch_techniques_for_srcip(ip, "30d", None)
         except Exception:
+            continue
+        if fetch_error:
+            fetch_errors.append({"ip": ip, "error": fetch_error})
             continue
         if not tids:
             continue
@@ -109,6 +115,8 @@ async def _add_stix_edges(G: nx.Graph, cap: int = 3) -> None:
                         G.add_node(key, kind=label[:-1], weight=1.0, count=0,
                                    confirmed=False, batches=set())
                     G.add_edge(tid, key, weight=1.0, source="stix")
+    if fetch_errors:
+        G.graph["stix_fetch_errors"] = fetch_errors
 
 
 def analyze_attack_graph(G: nx.Graph, top_n: int = 10) -> dict:
@@ -136,7 +144,7 @@ def analyze_attack_graph(G: nx.Graph, top_n: int = 10) -> dict:
     else:
         top_edges = []
 
-    return {
+    analysis = {
         "num_nodes": n,
         "num_edges": G.number_of_edges(),
         "num_components": len(comps),
@@ -154,6 +162,9 @@ def analyze_attack_graph(G: nx.Graph, top_n: int = 10) -> dict:
                                 "kind_v": G.nodes[v].get("kind")}
                                for u, v in top_edges],
     }
+    if G.graph.get("stix_fetch_errors"):
+        analysis["stix_fetch_errors"] = G.graph["stix_fetch_errors"]
+    return analysis
 
 
 def _personalized_pagerank(G: nx.Graph, personalization: dict, alpha: float = 0.85,

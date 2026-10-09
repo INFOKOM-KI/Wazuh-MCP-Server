@@ -429,14 +429,15 @@ class StixKillchainInput(BaseModel):
 
 
 async def _fetch_techniques_for_srcip(srcip: str, since: str | None,
-                                      until: str | None) -> tuple[int, list[str]]:
+                                      until: str | None) -> tuple[int, list[str], str | None]:
     """Query the indexer for MITRE technique IDs observed for a srcip.
 
-    Returns (total_alerts, technique_ids). Empty list when no rule.mitre.id data
-    or no indexer credentials.
+    Returns (total_alerts, technique_ids, error). An empty list with ``error``
+    set means the query itself failed, which callers must not report as "no
+    MITRE data observed".
     """
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
-        return 0, []
+        return 0, [], "indexer credentials not configured"
     since_iso, until_iso = _parse_time_window(since, until)
     body = {
         "size": 0,
@@ -453,10 +454,10 @@ async def _fetch_techniques_for_srcip(srcip: str, since: str | None,
     }
     raw = await _wazuh_indexer_post(body)
     if "error" in raw:
-        return 0, []
+        return 0, [], str(raw.get("error"))
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
     tids = [b.get("key") for b in raw.get("aggregations", {}).get("techniques", {}).get("buckets", [])]
-    return total, tids
+    return total, tids, None
 
 @mcp.tool(
     name="blueteam_stix_killchain",
@@ -491,9 +492,28 @@ async def blueteam_stix_killchain(params: StixKillchainInput) -> str:
 
     since_iso, until_iso = _parse_time_window(params.since, params.until)
     srcip = params.srcip
-    total, tids = await _fetch_techniques_for_srcip(params.srcip, params.since, params.until)
+    total, tids, fetch_error = await _fetch_techniques_for_srcip(
+        params.srcip, params.since, params.until)
+
+    if fetch_error:
+        payload = {"error": f"Indexer query failed: {fetch_error}", "status": "error",
+                   "srcip": srcip, "window": {"since": since_iso, "until": until_iso},
+                   "total_alerts": total}
+        if params.response_format == "json":
+            return _truncate_if_needed(json.dumps(payload, indent=2, ensure_ascii=False))
+        return _truncate_if_needed(
+            f"# ⛓️ STIX Kill Chain — `{srcip}`\n\n**Alerts**: {total:,} | "
+            f"**Indexer query failed**: {fetch_error}\n\n"
+            f"The kill chain was not built because the alert query failed.")
 
     if not tids:
+        if params.response_format == "json":
+            return _truncate_if_needed(json.dumps(_redact_alert_data({
+                "srcip": srcip, "window": {"since": since_iso, "until": until_iso},
+                "total_alerts": total, "tactics_seen": [], "techniques": [],
+                "status": "no_mitre_data",
+                "note": "No rule.mitre.id values in this srcip's alerts for the window; "
+                        "the kill chain was skipped, not failed."}), indent=2, ensure_ascii=False))
         return _truncate_if_needed(
             f"# ⛓️ STIX Kill Chain — `{srcip}`\n\n**Alerts**: {total:,} | **MITRE techniques observed**: 0\n\n"
             f"No `rule.mitre.id` values in this srcip's alerts for the window. "
@@ -506,7 +526,7 @@ async def blueteam_stix_killchain(params: StixKillchainInput) -> str:
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(_redact_alert_data({
             "srcip": srcip, "window": {"since": since_iso, "until": until_iso},
-            "total_alerts": total, **chain}), indent=2, ensure_ascii=False))
+            "total_alerts": total, "status": "ok", **chain}), indent=2, ensure_ascii=False))
 
     lines = [f"# ⛓️ STIX Kill Chain — `{srcip}`", "",
              f"**Alerts**: {total:,} | **Tactics observed**: {len(chain['tactics_seen'])} | "

@@ -22,10 +22,10 @@ from typing import Any, Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, CROWDSEC_API_KEY_ENV, OTX_API_KEY_ENV,
                         THREATFOX_API_KEY_ENV, ABUSEIPDB_API_KEY,
-                        VIRUSTOTAL_API_KEY, GREYNOISE_COMMUNITY_BASE_URL,
-                        ABUSEIPDB_BASE_URL, VIRUSTOTAL_BASE_URL)
+                        VIRUSTOTAL_API_KEY, ABUSEIPDB_BASE_URL, VIRUSTOTAL_BASE_URL)
 from mcp_server.core.http_client import _api_call, _classify_api_error, _is_private_or_reserved, ValidPublicIp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.threat_intel.greynoise import _greynoise_lookup
 from mcp_server.threat_intel.otx import _classify_indicator, _normalize_adversary
 
 logger = logging.getLogger("blue_team_mcp.threat_intel_aggregate")
@@ -212,9 +212,14 @@ async def _greynoise_provider(indicator: str, ind_type: str) -> TIProviderResult
                                 indicator_type=ind_type, error="unsupported type",
                                 error_kind="unsupported_type")
     try:
-        r = await _api_call("get", f"{GREYNOISE_COMMUNITY_BASE_URL}/{indicator}",
-                            headers={"accept": "application/json"})
-        raw = r.json()
+        raw = await _greynoise_lookup(indicator)
+        if raw.get("message"):
+            # No community data is an absence of signal, not a clean verdict.
+            return TIProviderResult(
+                provider="greynoise", indicator=indicator, indicator_type=ind_type,
+                tags=["no_data"],
+                detail={"classification": raw.get("classification", "unknown"),
+                        "message": raw["message"]})
         classification = raw.get("classification", "unknown")
         is_mal = classification == "malicious"
         return TIProviderResult(

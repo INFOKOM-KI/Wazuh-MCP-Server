@@ -135,14 +135,14 @@ def test_stix_killchain_query_covers_new_srcip_paths(monkeypatch):
 
     monkeypatch.setattr(stix_correlation, "_wazuh_indexer_post", _post)
 
-    total, tids = _run(stix_correlation._fetch_techniques_for_srcip(
+    total, tids, fetch_error = _run(stix_correlation._fetch_techniques_for_srcip(
         "203.0.113.7", None, None))
 
     text = json.dumps(captured["body"])
     assert "data.audit.srcip" in text
     assert "GeoLocation.ip" in text
     assert "data.srcip2" in text
-    assert (total, tids) == (2, ["T1110"])
+    assert (total, tids, fetch_error) == (2, ["T1110"], None)
 
 
 def test_siem_indexer_search_covers_new_srcip_paths(monkeypatch):
