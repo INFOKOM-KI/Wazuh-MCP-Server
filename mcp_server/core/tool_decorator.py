@@ -83,7 +83,8 @@ def blueteam_tool(
         name: MCP tool name (e.g. ``"blueteam_wazuh_agents"``).
         annotations: MCP tool hints dict.  Defaults to read-only blue-team safe values.
         audit: If True, log every invocation to ``BLUETEAM_AUDIT_LOG``.
-        truncate: If True, cap the response at ``CHARACTER_LIMIT`` with a cursor hint.
+        truncate: If True, cap the response at ``CHARACTER_LIMIT``. An over-cap
+            non-JSON body becomes a complete size notice instead of a sliced body.
         redact: If True (default), apply 6-layer PII/credential masking to the result
             (str/dict/list). This is the uniform security boundary - opt out with
             redact=False only for tools returning attacker-only data that

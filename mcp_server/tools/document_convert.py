@@ -17,13 +17,14 @@ Design notes:
   ALLOWED_PATH_PREFIXES, same trust boundary as blueteam_hash_file. The file is
   capped at BLUETEAM_MAX_INPUT_FILE_MB (default 1024 MB).
 - Marker's converter builds the whole document in memory: peak RSS scales with the
-  file, so the input cap is not a memory bound on this backend. Output is cut at the
-  response cap before redaction; blueteam_pdf_extract and
-  blueteam_rag_ingest(source="pdf") handle large PDFs with bounded accumulation.
+  file, so the input cap is not a memory bound on this backend. Output is checked against
+  the response cap before redaction: over the cap you get a size notice, and
+  blueteam_pdf_extract and blueteam_rag_ingest(source="pdf") handle large PDFs with
+  bounded accumulation.
 - Output goes through the @blueteam_tool uniform boundary: audit -> catch
   BlueTeamMCPError -> PII redaction (params.bypass_redaction skips optional
-  layers) -> truncation at CHARACTER_LIMIT. For documents longer than the cap,
-  request a page_range slice.
+  layers) -> over-cap responses become a size notice at CHARACTER_LIMIT. For documents
+  longer than the cap, request a page_range slice or use blueteam_rag_ingest(source="pdf").
 """
 import asyncio
 import json
@@ -240,7 +241,10 @@ def _convert_sync(path: str, mode: str, fmt: str, pages: Optional[list[int]]) ->
     # Drop the rendered result before the redaction pass: the response is capped
     # anyway, and the PII regexes would otherwise run across the whole document.
     del rendered
-    return _truncate_if_needed(text)
+    return _truncate_if_needed(
+        text,
+        recovery_hint="Convert fewer pages with the pages parameter, or use "
+                      "blueteam_rag_ingest(source='pdf') for page-by-page chunks.")
 
 
 def _marker_error(e: Exception, *, stage: str) -> BlueTeamMCPError:
@@ -338,8 +342,8 @@ async def blueteam_document_convert(params: DocumentConvertInput) -> str:
 
     Returns:
         str: The converted document text (markdown/html/json/chunks). Output is
-        PII-redacted by default (emails, hostnames, internal IPs, locations) and
-        truncated at the server character cap with a cursor hint.
+        PII-redacted by default (emails, hostnames, internal IPs, locations); an
+        over-cap response is a complete size notice, not a partial body.
 
     Examples:
         1. Convert an IR playbook to markdown (defaults):

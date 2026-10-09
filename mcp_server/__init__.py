@@ -128,6 +128,7 @@ BLUETEAM_REDACTION_POLICY     = _c.redaction.policy
 BLUETEAM_OWNED_DOMAINS        = _c.redaction.owned_domains
 BLUETEAM_ALLOW_RUNTIME_DOMAINS = _c.redaction.allow_runtime_domains
 BLUETEAM_ALLOW_FORENSIC_BYPASS = _c.redaction.allow_forensic_bypass
+BLUETEAM_ALLOW_IDENTITY_REVEAL = _c.redaction.allow_identity_reveal
 BLUETEAM_FORENSIC_TOKEN        = _c.redaction.forensic_token
 
 # Attacker-IOC registry persistence (JSONL)
@@ -164,6 +165,16 @@ _REVEAL_OWNED_DESC = (
     "(BLUETEAM_OWNED_DOMAINS) unmasked while all other protect_victim masking "
     "stays on. Layer 1 credentials remain masked. Requires BLUETEAM_OWNED_DOMAINS "
     "to be set."
+)
+_REVEAL_IDENTITIES_DESC = (
+    "When true (forensic), expose identity-layer values (usernames, identity "
+    "paths, agent/host bucket names) unmasked. Requires "
+    "BLUETEAM_ALLOW_IDENTITY_REVEAL=true and a matching forensic token."
+)
+_FORENSIC_FULL_OUTPUT_DESC = (
+    "When true, return the full response even when it exceeds "
+    "BLUETEAM_CHARACTER_LIMIT. Requires BLUETEAM_ALLOW_UNTRUNCATED=true and a "
+    "matching forensic token. Security redaction still applies."
 )
 _FORENSIC_TOKEN_DESC = (
     "Operator forensic token (matches BLUETEAM_FORENSIC_TOKEN). Required for "

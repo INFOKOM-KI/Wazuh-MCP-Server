@@ -334,9 +334,88 @@ def test_memo_key_includes_identity_setting():
         with patch.object(_redact_mod, "BLUETEAM_REDACT_IDENTITIES", False):
             _redact_alert_data(probe, policy="full")
         keys = [k for k in _redact_mod._REDACT_MEMO if k[0] == probe]
-        assert {k[-1] for k in keys} == {True, False}
+        assert {k[-3] for k in keys} == {True, False}
+        assert {k[-1] for k in keys} == {False}
     finally:
         _redact_mod._REDACT_MEMO.clear()
+
+
+def test_memo_key_includes_identity_reveal_setting():
+    """A reveal_identities call must not reuse the masked memoized output."""
+    _redact_mod._REDACT_MEMO.clear()
+    probe = "memo isolation probe string"
+    try:
+        with patch.object(_redact_mod, "BLUETEAM_ALLOW_IDENTITY_REVEAL", True), \
+             patch.object(_redact_mod, "BLUETEAM_FORENSIC_TOKEN", "tok-12345678"):
+            _redact_alert_data(probe, policy="protect_victim")
+            _redact_alert_data(probe, policy="protect_victim", reveal_identities=True,
+                               forensic_token="tok-12345678")
+        keys = [k for k in _redact_mod._REDACT_MEMO if k[0] == probe]
+        assert {k[-2] for k in keys} == {False, True}
+    finally:
+        _redact_mod._REDACT_MEMO.clear()
+
+
+class TestIdentityRevealGate:
+
+    def test_reveal_refused_when_flag_disabled(self):
+        with patch.object(_redact_mod, "BLUETEAM_ALLOW_IDENTITY_REVEAL", False):
+            with pytest.raises(ValueError, match="BLUETEAM_ALLOW_IDENTITY_REVEAL"):
+                _redact_alert_data("x", policy="protect_victim", reveal_identities=True)
+
+    def test_reveal_refused_without_token(self):
+        with patch.object(_redact_mod, "BLUETEAM_ALLOW_IDENTITY_REVEAL", True), \
+             patch.object(_redact_mod, "BLUETEAM_FORENSIC_TOKEN", ""):
+            with pytest.raises(ValueError, match="forensic token"):
+                _redact_alert_data("x", policy="protect_victim", reveal_identities=True)
+
+    def test_reveal_refused_on_token_mismatch(self):
+        with patch.object(_redact_mod, "BLUETEAM_ALLOW_IDENTITY_REVEAL", True), \
+             patch.object(_redact_mod, "BLUETEAM_FORENSIC_TOKEN", "tok-12345678"):
+            with pytest.raises(ValueError, match="forensic token"):
+                _redact_alert_data("x", policy="protect_victim", reveal_identities=True,
+                                   forensic_token="wrong-token")
+
+    def test_reveal_unmasks_identity_with_valid_token(self):
+        data = {"data": {"dstuser": "alice"}, "top_agents": [{"name": "web01"}]}
+        with patch.object(_redact_mod, "BLUETEAM_ALLOW_IDENTITY_REVEAL", True), \
+             patch.object(_redact_mod, "BLUETEAM_FORENSIC_TOKEN", "tok-12345678"):
+            out = _redact_alert_data(data, policy="protect_victim",
+                                     reveal_identities=True, forensic_token="tok-12345678")
+        assert out["data"]["dstuser"] == "alice"
+        assert out["top_agents"][0]["name"] == "web01"
+
+    def test_reveal_does_not_widen_reveal_owned(self):
+        """reveal_identities must not unmask an owned-domain email."""
+        with patch.object(_redact_mod, "_OWNED_DOMAINS", {"tangerangkota.go.id"}), \
+             patch.object(_redact_mod, "BLUETEAM_ALLOW_IDENTITY_REVEAL", True), \
+             patch.object(_redact_mod, "BLUETEAM_FORENSIC_TOKEN", "tok-12345678"):
+            out = _redact_alert_data({"data": {"dstuser": "op@tangerangkota.go.id"}},
+                                     policy="protect_victim", reveal_identities=True,
+                                     forensic_token="tok-12345678")
+        assert out["data"]["dstuser"] != "op@tangerangkota.go.id"
+
+
+class TestAgentBucketNameMasking:
+
+    def test_agent_bucket_names_masked_under_protect_victim(self):
+        data = {"ip_a": {"agents": [{"name": "web01", "count": 3}]},
+                "top_agents": [{"name": "web02", "count": 1}]}
+        out = _redact_alert_data(data, policy="protect_victim")
+        assert out["ip_a"]["agents"][0]["name"].startswith("w***1")
+        assert out["top_agents"][0]["name"].startswith("w***2")
+
+    def test_agent_bucket_names_untouched_under_full(self):
+        data = {"agents": [{"name": "web01"}], "top_agents": [{"name": "web02"}]}
+        out = _redact_alert_data(data, policy="full")
+        assert out["agents"][0]["name"] == "web01"
+        assert out["top_agents"][0]["name"] == "web02"
+
+    def test_agent_bucket_names_untouched_when_pii_off(self):
+        data = {"top_agents": [{"name": "web01"}]}
+        with patch.object(_redact_mod, "BLUETEAM_REDACT_PII", False):
+            out = _redact_alert_data(data, policy="protect_victim")
+        assert out["top_agents"][0]["name"] == "web01"
 
 
 class TestNoLengthTruncation:
@@ -359,12 +438,11 @@ class TestNoLengthTruncation:
         out = _redact_alert_data({"data": {"extra_data": value}}, policy="full")
         assert out["data"]["extra_data"] == value
 
-    def test_sensitive_path_inside_full_log_still_masked(self):
+    def test_sensitive_path_inside_full_log_is_preserved_whole(self):
+        """full_log is forensic: the location layer must not shorten it."""
         log = "cmd: cat /var/www/html/wp-content/plugins/shell.php && echo suffix-marker-xyz"
         out = _redact_alert_data({"full_log": log}, policy="full")
-        assert "/var/www/html/wp-content/plugins/shell.php" not in out["full_log"]
-        assert "[h:" in out["full_log"]
-        assert "suffix-marker-xyz" in out["full_log"]
+        assert out["full_log"] == log
 
     def test_credential_redaction_unaffected(self):
         doc = _nested("data.aws.requestParameters.masterUserPassword", "hunter2")
@@ -408,3 +486,88 @@ def test_all_nine_credential_leaves_are_masked(path):
     value = _dig(out, path)
     assert value != secret, path
     assert secret not in value, path
+
+
+class TestForensicPayloadLocationBypass:
+
+    def test_complete_values_survive_both_policies(self):
+        doc = {
+            "full_log": "GET /var/www/html/a/b/c/deep.php?cmd=id HTTP/1.1",
+            "data": {"url": "http://203.0.113.7/a/b/c/d/file.php?q=first&r=second",
+                      "user_agent": "curl/8.0 " + "U" * 300},
+        }
+        for policy in ("full", "protect_victim"):
+            out = _redact_alert_data(doc, policy=policy)
+            assert out["full_log"] == doc["full_log"]
+            assert out["data"]["url"] == doc["data"]["url"]
+            assert out["data"]["user_agent"] == doc["data"]["user_agent"]
+
+    def test_nested_alert_documents_are_covered(self):
+        doc = {"alerts": [{"full_log": "/opt/app/a/b/c.log",
+                            "data": {"url": "http://host/a/b/c?x=1"}}]}
+        out = _redact_alert_data(doc, policy="protect_victim")
+        assert out["alerts"][0]["full_log"] == "/opt/app/a/b/c.log"
+        assert out["alerts"][0]["data"]["url"] == "http://host/a/b/c?x=1"
+
+    def test_ordinary_location_fields_still_masked(self):
+        doc = {"location": "/var/ossec/logs/alerts/alerts.json",
+               "rule": {"file": "/opt/app/a/b/c.log"}}
+        out = _redact_alert_data(doc, policy="full")
+        assert "[h:" in out["location"]
+        assert "[h:" in out["rule"]["file"]
+
+    def test_security_redaction_still_applies_inside_full_log(self):
+        doc = {"full_log": "login attacker@evil.example.org from 10.0.0.5 "
+                          "GET /opt/app/a/b/c.php"}
+        out = _redact_alert_data(doc, policy="full")
+        assert "attacker@evil.example.org" not in out["full_log"]
+        assert "10.***.***.5" in out["full_log"]
+        assert "/opt/app/a/b/c.php" in out["full_log"]
+        assert ".../" not in out["full_log"]
+
+    def test_memo_key_separates_forensic_paths(self):
+        _redact_mod._REDACT_MEMO.clear()
+        probe = "/opt/a/b/c.log"
+        try:
+            _redact_alert_data(probe, policy="full")
+            _redact_alert_data(probe, policy="full", skip_location=True)
+            keys = [k for k in _redact_mod._REDACT_MEMO if k[0] == probe]
+            assert {k[-1] for k in keys} == {False, True}
+        finally:
+            _redact_mod._REDACT_MEMO.clear()
+
+
+class TestEmailLayerBounds:
+    """The bounded email regex still masks addresses and stays linear."""
+
+    def test_ordinary_email_is_masked(self):
+        out = _redact_alert_data(
+            {"full_log": "login attacker@evil.example.org ok"}, policy="full")
+        assert "attacker@evil.example.org" not in out["full_log"]
+        assert "[h:" in out["full_log"]
+
+    def test_email_inside_a_long_payload_is_masked(self):
+        log = "X" * 60000 + " contact attacker@evil.example.org " + "Y" * 60000
+        out = _redact_alert_data({"full_log": log}, policy="full")
+        assert "attacker@evil.example.org" not in out["full_log"]
+        assert "[h:" in out["full_log"]
+
+    def test_long_payload_without_email_is_unchanged(self):
+        # Unbounded quantifiers made this case quadratic: 50k chars took 11s.
+        log = "L" * 120000
+        out = _redact_alert_data({"full_log": log}, policy="full")
+        assert out["full_log"] == log
+
+    def test_local_part_of_64_chars_is_masked(self):
+        local = "a" * 64
+        out = _redact_alert_data(
+            {"full_log": f"contact {local}@evil.example.org here"}, policy="full")
+        assert local not in out["full_log"]
+        assert "[h:" in out["full_log"]
+
+    def test_local_part_over_64_chars_is_not_treated_as_email(self):
+        local = "a" * 65
+        out = _redact_alert_data(
+            {"full_log": f"contact {local}@evil.example.org here"}, policy="full")
+        assert f"contact {local}@" in out["full_log"]
+        assert "[h:" not in out["full_log"]

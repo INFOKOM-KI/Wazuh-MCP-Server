@@ -21,12 +21,13 @@ Design notes:
   blueteam_hash_file. URL input is rejected at the schema level (path only) and the
   file is capped at BLUETEAM_MAX_INPUT_FILE_MB (default 1024 MB).
 - MarkItDown has no incremental API: it builds the full markdown in memory, so peak
-  parse memory scales with the document. The result is cut to the response cap before
-  the redaction pass; to analyse a whole large PDF without that cost, use
-  blueteam_rag_ingest(source="pdf"), which chunks page by page.
+  parse memory scales with the document. The result is checked against the response cap
+  before the redaction pass; over the cap you get a size notice, so to analyse a whole
+  large PDF without that cost, use blueteam_rag_ingest(source="pdf"), which chunks page
+  by page.
 - Output goes through the @blueteam_tool uniform boundary: audit -> catch
   BlueTeamMCPError -> PII redaction (params.bypass_redaction skips optional
-  layers) -> truncation at CHARACTER_LIMIT.
+  layers) -> over-cap responses become a size notice at CHARACTER_LIMIT.
 """
 import asyncio
 import json
@@ -125,7 +126,9 @@ def _convert_sync(path: str) -> str:
             "scanned or image-only PDF, use blueteam_document_convert (Marker "
             "OCR) instead; MarkItDown reads digital text only."
         )
-    return _truncate_if_needed(text)
+    return _truncate_if_needed(
+        text,
+        recovery_hint="Split the source into smaller files and convert each.")
 
 
 def _markitdown_error(e: Exception, *, stage: str) -> BlueTeamMCPError:
@@ -201,12 +204,12 @@ async def blueteam_markitdown_convert(params: FileToMarkdownInput) -> str:
             audit investigations.
 
     Returns:
-        str: The file content as Markdown. Output is PII-redacted by default
-        and truncated at the server character cap (BLUETEAM_CHARACTER_LIMIT,
-        default 100000) with a cursor hint. MarkItDown does not slice pages or
-        sheets: for workbooks or documents whose full text would exceed the
-        cap, pre-split the source (per-sheet CSVs, per-section documents) or
-        the tail is cut.
+        str: The file content as Markdown. Output is PII-redacted by default.
+        When it exceeds the server character cap (BLUETEAM_CHARACTER_LIMIT,
+        default 100000), the response is a complete size notice with the recovery
+        path, never a partial body. MarkItDown does not slice pages or sheets:
+        for workbooks or documents whose full text would exceed the cap, pre-split
+        the source (per-sheet CSVs, per-section documents).
 
     Examples:
         1. Convert a vendor advisory .docx to markdown (defaults):

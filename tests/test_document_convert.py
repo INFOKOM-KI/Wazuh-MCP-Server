@@ -174,8 +174,8 @@ async def test_convert_happy_path_returns_markdown(tmp_path, monkeypatch):
 
 
 def test_convert_sync_truncates_before_the_redaction_pass(monkeypatch):
-    """A large document is cut at the response cap before redaction, so the PII
-    regexes never run across the whole converted text."""
+    """A large document returns a size notice before the redaction pass, so the
+    PII regexes never run across the whole converted text."""
     from mcp_server import CHARACTER_LIMIT
 
     dc = _module()
@@ -186,8 +186,9 @@ def test_convert_sync_truncates_before_the_redaction_pass(monkeypatch):
                         lambda rendered, fmt: "y" * (CHARACTER_LIMIT + 4096))
 
     out = dc._convert_sync("/opt/playbooks/big.pdf", "pdf", "markdown", None)
-    assert len(out) <= CHARACTER_LIMIT + 500
-    assert "[truncated response exceeds" in out
+    assert len(out) <= CHARACTER_LIMIT
+    assert "exceeds the character limit" in out
+    assert "y" * 100 not in out
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@ from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _BYPASS_REDACTION_DESC, _RESPONSE_FORMAT_DESC, _AGENT_NAME_DESC,
-                        _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC)
+                        _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _handle_api_error
@@ -62,6 +62,7 @@ class WazuhAttackVelocityInput(BaseModel):
         description=_REDACTION_POLICY_DESC,
     )
     reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    reveal_identities: bool = Field(default=False, description=_REVEAL_IDENTITIES_DESC)
     forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
 
 
@@ -206,8 +207,8 @@ async def wazuh_attack_velocity(params: WazuhAttackVelocityInput = WazuhAttackVe
 
     current_buckets = current_raw.get("aggregations", {}).get("over_time", {}).get("buckets", [])
     previous_buckets = previous_raw.get("aggregations", {}).get("over_time", {}).get("buckets", [])
-    current_buckets = _redact_alert_data(current_buckets, reveal_owned=params.reveal_owned)  # mask victim identifiers in bucket keys
-    previous_buckets = _redact_alert_data(previous_buckets, reveal_owned=params.reveal_owned)
+    current_buckets = _redact_alert_data(current_buckets, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities)  # mask victim identifiers in bucket keys
+    previous_buckets = _redact_alert_data(previous_buckets, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities)
 
     current_total = sum(b.get("doc_count", 0) for b in current_buckets)
     previous_total = sum(b.get("doc_count", 0) for b in previous_buckets)

@@ -274,7 +274,7 @@ def test_aggregate_analysis_uses_exact_case_b_count(monkeypatch):
     async def _post(body, index_pattern=None):
         field = _srcip_field(body)
         return {"aggregations": {"top_srcips": {"buckets": [
-            {"key": "10.0.0.1", "doc_count": counts[field]}]}}}
+            {"key": "203.0.113.7", "doc_count": counts[field]}]}}}
 
     async def _base_post(body, index_pattern=None):
         return {"hits": {"total": {"value": 5}},
@@ -285,13 +285,13 @@ def test_aggregate_analysis_uses_exact_case_b_count(monkeypatch):
     monkeypatch.setattr(indexer, "_wazuh_indexer_field_caps", _caps)
     monkeypatch.setattr(indexer, "_wazuh_indexer_post", _post)
     monkeypatch.setattr(correlation, "_wazuh_indexer_post", _base_post)
-    monkeypatch.setattr(indexer, "_wazuh_indexer_msearch", _msearch_fake({"10.0.0.1": 5}))
+    monkeypatch.setattr(indexer, "_wazuh_indexer_msearch", _msearch_fake({"203.0.113.7": 5}))
 
     out = json.loads(_run(_tool(correlation.wazuh_alert_aggregate_analysis)(
         correlation.AggregateAnalysisInput(response_format="json"))))
 
     assert out["aggregations"]["top_srcips"]["buckets"] == [
-        {"key": "10.0.0.1", "doc_count": 5}]
+        {"key": "203.0.113.7", "doc_count": 5}]
 
 
 def test_correlation_buckets_mark_the_lower_bound_basis(monkeypatch):

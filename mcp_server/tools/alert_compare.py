@@ -163,6 +163,7 @@ async def blueteam_wazuh_alert_compare(params: AlertCompareInput) -> str:
             result["verdict"] = f"{params.srcip_b} is significantly more active"
         else:
             result["verdict"] = "Both IPs show comparable activity levels"
+        result = _redact_alert_data(result, params=params)
         return _truncate_if_needed(json.dumps(result, indent=2, ensure_ascii=False))
 
     # Markdown side-by-side
@@ -209,7 +210,7 @@ async def blueteam_wazuh_alert_compare(params: AlertCompareInput) -> str:
         f"{verdict}",
     ]
 
-    return _truncate_if_needed("\n".join(lines))
+    return _truncate_if_needed(_redact_alert_data("\n".join(lines), params=params))
 
 
 # Geo-Aware Curated Threat Intelligence Pipeline (AUL Adjust)

@@ -244,6 +244,70 @@ def test_json_output_carries_error_kind_without_losing_error():
     assert payload["results"][1]["error_kind"] is None
 
 
+def test_aggregate_coverage_counts_only_attempted_providers():
+    from mcp_server.tools.threat_intel_aggregate import _aggregate, TIProviderResult
+    results = [
+        TIProviderResult(provider="crowdsec", indicator="1.2.3.4",
+                         indicator_type="IPv4", risk_level="high", is_malicious=True),
+        TIProviderResult(provider="otx", indicator="1.2.3.4",
+                         indicator_type="IPv4", error="boom", error_kind="upstream_error"),
+        TIProviderResult(provider="virustotal", indicator="1.2.3.4",
+                         indicator_type="IPv4", error="not configured",
+                         error_kind="not_configured"),
+        TIProviderResult(provider="greynoise", indicator="1.2.3.4",
+                         indicator_type="IPv4", error="unsupported type",
+                         error_kind="unsupported_type"),
+    ]
+    out = _aggregate(results)
+    assert out.providers_total == 2  # crowdsec + otx only
+    assert out.providers_ok == 1
+    assert len(out.errors) == 3
+
+
+def test_aggregate_all_attempted_providers_fail():
+    from mcp_server.tools.threat_intel_aggregate import _aggregate, TIProviderResult
+    results = [
+        TIProviderResult(provider="crowdsec", indicator="1.2.3.4",
+                         indicator_type="IPv4", error="429", error_kind="rate_limited"),
+        TIProviderResult(provider="otx", indicator="1.2.3.4",
+                         indicator_type="IPv4", error="timeout", error_kind="timeout"),
+    ]
+    out = _aggregate(results)
+    assert out.providers_total == 2
+    assert out.providers_ok == 0
+    assert out.aggregated_risk_level is None
+
+
+def test_aggregate_zero_eligible_providers():
+    from mcp_server.tools.threat_intel_aggregate import _aggregate, TIProviderResult
+    results = [
+        TIProviderResult(provider="crowdsec", indicator="evil.example.com",
+                         indicator_type="domain", error="unsupported type",
+                         error_kind="unsupported_type"),
+        TIProviderResult(provider="virustotal", indicator="evil.example.com",
+                         indicator_type="domain", error="not configured",
+                         error_kind="not_configured"),
+    ]
+    out = _aggregate(results)
+    assert out.providers_total == 0
+    assert out.providers_ok == 0
+    assert out.aggregated_risk_level is None
+    assert len(out.errors) == 2
+
+
+def test_aggregate_full_success_coverage():
+    from mcp_server.tools.threat_intel_aggregate import _aggregate, TIProviderResult
+    results = [
+        TIProviderResult(provider="crowdsec", indicator="1.2.3.4",
+                         indicator_type="IPv4", risk_level="low", is_malicious=False),
+        TIProviderResult(provider="otx", indicator="1.2.3.4",
+                         indicator_type="IPv4", risk_level="none", is_malicious=False),
+    ]
+    out = _aggregate(results)
+    assert out.providers_total == 2
+    assert out.providers_ok == 2
+
+
 if __name__ == "__main__":
     import sys, traceback
     tests = [f for f in dir() if f.startswith("test_")]

@@ -302,9 +302,10 @@ def check_unexpected_kwargs(source: str, lines: list[str]) -> list[dict]:
 
 
 def check_redaction(source: str, lines: list[str]) -> list[dict]:
-    """REDACT (warning): flag @mcp.tool handlers that reference PII-bearing fields
+    """REDACT: flag @mcp.tool handlers that reference PII-bearing fields
     (full_log, data.*, email, agent.name, srcuser/dstuser) without calling
-    _redact_alert_data. These are candidates for @blueteam_tool migration."""
+    _redact_alert_data. A handler that also reads the Indexer is a gating
+    failure (alert data leaving unredacted); the rest stay warnings."""
     tree = ast.parse(source)
     pii_markers = ("full_log", "data.srcip", "data.domain", "data.url",
                    "email", "agent.name", "srcuser", "dstuser", "data.user_agent")
@@ -335,8 +336,14 @@ def check_redaction(source: str, lines: list[str]) -> list[dict]:
                 "line": node.lineno,
                 "detail": "MCP tool references PII fields but does not call _redact_alert_data",
                 "context": lines[node.lineno - 1].strip()[:80],
+                "gate": "_wazuh_indexer_" in src,
             })
     return issues
+
+
+# Indexer-reading tools that return no alert values: mapping metadata and
+# operator config only. Anything else reading the Indexer must redact.
+_REDACT_GATE_EXEMPT = frozenset({"blueteam_index_schema"})
 
 
 CHECKS = [
@@ -396,13 +403,18 @@ def main() -> int:
     all_issues = []
     clean = 0
     redact_warnings: list[dict] = []
+    redact_gated: list[dict] = []
 
     for path in FILES:
         source = path.read_text()
         lines = source.split('\n')
         for r in check_redaction(source, lines):
             r['file'] = str(path.relative_to(Path(__file__).parent))
-            redact_warnings.append(r)
+            if r.get('gate') and r['func'] not in _REDACT_GATE_EXEMPT:
+                r['check'] = 'REDACT-GATE'
+                redact_gated.append(r)
+            else:
+                redact_warnings.append(r)
         for name, check_fn in CHECKS:
             result = check_fn(source, lines)
             for r in result:
@@ -424,10 +436,12 @@ def main() -> int:
 
     field_issues, field_counts = check_field_coverage(strict)
     all_issues.extend(field_issues)
+    all_issues.extend(redact_gated)
 
     if json_out:
         print(json.dumps({'total': len(all_issues), 'issues': all_issues,
                           'redact_warnings': len(redact_warnings),
+                          'redact_gate': len(redact_gated),
                           'field_counts': field_counts}, indent=2))
         return 0 if len(all_issues) == 0 else (2 if strict else 1)
 
@@ -442,7 +456,14 @@ def main() -> int:
     print(f"mapping_conflict = {field_counts['mapping_conflict']}")
     print(f"unclassified = {field_counts['unclassified']}")
 
-    # REDACT warnings, informational (not gating): candidates for @blueteam_tool migration.
+    # REDACT warnings, informational: raw @mcp.tool handlers that touch PII
+    # markers without reading the Indexer (caller-supplied text, operator config).
+    if redact_gated and not json_out:
+        print(f"\n{'='*60}")
+        print(f"REDACT-GATE failures (Indexer-reading tools returning unredacted PII): {len(redact_gated)}")
+        print(f"{'='*60}")
+        for r in redact_gated[:30]:
+            print(f"[REDACT-GATE] {r['file']} {r['func']}@{r['line']} -> {r['detail']}")
     if redact_warnings and not json_out:
         print(f"\n{'='*60}")
         print(f"REDACT warnings (PII-touching @mcp.tool tools without _redact_alert_data): {len(redact_warnings)}")

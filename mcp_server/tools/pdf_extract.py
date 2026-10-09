@@ -36,8 +36,8 @@ Design notes:
   ALLOWED_PATH_PREFIXES, same trust boundary as blueteam_markitdown_convert.
   URLs are rejected at the schema level (path only).
 - Output goes through the @blueteam_tool uniform boundary: audit -> catch
-  BlueTeamMCPError -> PII redaction -> truncation at CHARACTER_LIMIT. For
-  documents longer than the cap, request a page_range slice.
+  BlueTeamMCPError -> PII redaction -> over-cap responses become a size notice at
+  CHARACTER_LIMIT. For documents longer than the cap, request a page_range slice.
 
 NOTE: No ``from __future__ import annotations`` deferred annotation evaluation
       (PEP 563) breaks @blueteam_tool type resolution. Same constraint as
@@ -444,8 +444,9 @@ async def blueteam_pdf_extract(params: PdfExtractInput) -> str:
         call. Extraction stops at the response character cap while accumulating
         and reports the remaining pages under "Stopped at the character budget",
         so a large document is never materialised in full. Output is PII-redacted
-        by default and truncated at the server character cap
-        (BLUETEAM_CHARACTER_LIMIT, default 100000) with a cursor hint.
+        by default; if it still exceeds the server character cap
+        (BLUETEAM_CHARACTER_LIMIT, default 100000), the response is a complete size
+        notice instead of a partial body.
 
     Examples:
         1. Extract a digital vendor advisory (defaults):

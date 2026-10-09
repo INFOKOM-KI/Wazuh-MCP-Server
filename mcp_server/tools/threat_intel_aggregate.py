@@ -68,6 +68,8 @@ class TIQueryOutput(BaseModel):
     results: list[TIProviderResult] = Field(default_factory=list)
     aggregated_risk_level: Optional[str] = None
     consensus_malicious: int = 0
+    providers_total: int = 0
+    providers_ok: int = 0
     errors: list[str] = Field(default_factory=list)
 
 
@@ -290,12 +292,17 @@ def _aggregate(results: list[TIProviderResult]) -> TIQueryOutput:
     # Ignore results with errors for scoring
     valid = [r for r in results if r.error is None]
     errors = [f"{r.provider}: {r.error}" for r in results if r.error]
+    # Configuration answers are not attempts: a provider that is unconfigured or
+    # does not support the indicator type never left the process.
+    attempted = [r for r in results
+                 if r.error_kind not in ("not_configured", "unsupported_type")]
+    coverage = {"providers_total": len(attempted), "providers_ok": len(valid)}
 
     if not valid:
         return TIQueryOutput(indicator=results[0].indicator if results else "",
                              indicator_type=results[0].indicator_type if results else "unknown",
                              results=results, aggregated_risk_level=None,
-                             consensus_malicious=0, errors=errors)
+                             consensus_malicious=0, errors=errors, **coverage)
 
     malicious_votes = sum(1 for r in valid if r.is_malicious)
     # Weighted risk: take the highest risk level among providers
@@ -309,6 +316,7 @@ def _aggregate(results: list[TIProviderResult]) -> TIQueryOutput:
         aggregated_risk_level=aggregated,
         consensus_malicious=malicious_votes,
         errors=errors,
+        **coverage,
     )
 
 
@@ -343,7 +351,9 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput) -> 
     ``rate_limited``, ``auth_error``, ``not_found``, ``bad_request``, ``timeout``,
     ``circuit_open``, ``upstream_error``, ``not_configured``, ``unsupported_type``,
     while ``error`` keeps its human-readable text. Per-provider failures never block
-    the overall aggregation.
+    the overall aggregation. ``providers_ok``/``providers_total`` count attempted
+    providers: a provider that is not configured or does not support the indicator
+    type is excluded from the ratio and stays in ``errors[]``.
     """
     _audit_log("blueteam_threat_intel_aggregate", {"indicator": params.indicator})
     ind_type = _classify_indicator(params.indicator)
@@ -367,6 +377,7 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput) -> 
     lines = [f"# Threat Intel Aggregate — `{params.indicator}`", "",
              f"**Type**: `{ind_type}` | **Aggregated Risk**: **{output.aggregated_risk_level or 'unknown'}** "
              f"| **Malicious votes**: {output.consensus_malicious}/{len([r for r in results if r.error is None])}",
+             f"**Provider coverage**: {output.providers_ok}/{output.providers_total} attempted providers answered",
              "", "| Provider | Risk | Score | Malicious | Malware / Adversary |",
              "|----------|------|-------|-----------|---------------------|"]
     for r in results:

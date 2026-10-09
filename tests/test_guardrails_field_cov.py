@@ -122,3 +122,30 @@ def test_new_allowlisted_dynamic_entry_passes(base):
         "class": "allowlisted_dynamic", "rationale": "decoder-emitted dynamic field"}
     issues, _ = _check(dynamic, index, refs2)
     assert issues == []
+
+
+def test_redact_gate_flags_indexer_tool_without_redaction():
+    src = '''
+@mcp.tool(name="blueteam_fake")
+async def blueteam_fake(params):
+    raw = await _wazuh_indexer_post({"query": {"match": {"agent.name": "x"}}})
+    return raw
+'''
+    issues = guard.check_redaction(src, src.split("\n"))
+    assert len(issues) == 1
+    assert issues[0]["gate"] is True
+
+
+def test_redact_gate_stays_warning_without_indexer_read():
+    src = '''
+@mcp.tool(name="blueteam_fake")
+async def blueteam_fake(params):
+    return "agent.name"
+'''
+    issues = guard.check_redaction(src, src.split("\n"))
+    assert len(issues) == 1
+    assert issues[0]["gate"] is False
+
+
+def test_redact_gate_exempts_mapping_metadata_tool():
+    assert "blueteam_index_schema" in guard._REDACT_GATE_EXEMPT

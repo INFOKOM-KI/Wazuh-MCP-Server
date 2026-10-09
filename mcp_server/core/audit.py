@@ -6,7 +6,9 @@ Audit logging, response truncation, markdown escaping, rate limiting, response p
 from __future__ import annotations
 import functools, json, os, time, hashlib, logging, queue, threading, atexit, signal
 from datetime import datetime
-from mcp_server import CHARACTER_LIMIT, BLUETEAM_AUDIT_LOG, BLUETEAM_ALLOW_UNTRUNCATED, BLUETEAM_RATE_LIMIT
+from typing import Any
+from mcp_server import (CHARACTER_LIMIT, BLUETEAM_AUDIT_LOG, BLUETEAM_ALLOW_UNTRUNCATED,
+                        BLUETEAM_RATE_LIMIT, BLUETEAM_FORENSIC_TOKEN)
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core import metrics
 
@@ -118,8 +120,57 @@ def _audit_log(tool_name: str, params: dict, result_preview: str = "") -> None:
 
 
 # Response truncation
-def _truncate_if_needed(text: str, *, bypass: bool = False) -> str:
-    """Cap response at CHARACTER_LIMIT. When bypass=True, prepends forensic warning."""
+def _resolve_forensic_full_output(params: Any) -> bool:
+    """Validate a forensic full-output request; raise when the gate is closed."""
+    if params is None or not getattr(params, "forensic_full_output", False):
+        return False
+    if not BLUETEAM_ALLOW_UNTRUNCATED:
+        raise ValueError(
+            "forensic_full_output requested but BLUETEAM_ALLOW_UNTRUNCATED is not enabled."
+        )
+    token = getattr(params, "forensic_token", None)
+    if not BLUETEAM_FORENSIC_TOKEN or token != BLUETEAM_FORENSIC_TOKEN:
+        raise ValueError(
+            "forensic_full_output requires the operator forensic token "
+            "(BLUETEAM_FORENSIC_TOKEN). Pass forensic_token=<token>."
+        )
+    return True
+
+
+def _fit_document_prefix(render, count: int, limit: int | None = None) -> int:
+    """Largest k in [0, count] whose rendered response fits the character limit.
+
+    render(k) returns the complete serialized response for the first k documents,
+    including paging metadata for that boundary. A document is never split.
+    """
+    cap = CHARACTER_LIMIT if limit is None else limit
+    if count <= 0:
+        return 0
+    if len(render(count)) <= cap:
+        return count
+    lo, hi = 0, count
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(render(mid)) <= cap:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def _document_stub(doc: dict) -> dict:
+    """Minimal locator for a document too large to page whole."""
+    rule = doc.get("rule") if isinstance(doc.get("rule"), dict) else {}
+    return {"_id": doc.get("_id", ""), "@timestamp": doc.get("@timestamp", ""),
+            "rule_id": rule.get("id", "")}
+
+
+def _truncate_if_needed(text: str, *, bypass: bool = False, params: Any = None,
+                        recovery_hint: str = "") -> str:
+    """Cap response at CHARACTER_LIMIT. When bypass=True, prepends forensic warning.
+    params.forensic_full_output returns the full response when the gate is open.
+    An over-limit non-JSON body is replaced by a complete size notice, never sliced."""
+    forensic_full = _resolve_forensic_full_output(params)
     if bypass:
         banner = "⚠️ UNREDACTED - FORENSIC USE ONLY. Contains PII/internal IP.\n"
         text = banner + text
@@ -138,6 +189,20 @@ def _truncate_if_needed(text: str, *, bypass: bool = False) -> str:
             return text
     if len(text) <= CHARACTER_LIMIT:
         return text
+    if forensic_full:
+        if BLUETEAM_AUDIT_LOG:
+            try:
+                with open(BLUETEAM_AUDIT_LOG, "a") as f:
+                    f.write(json.dumps({
+                        "ts": datetime.utcnow().isoformat() + "Z",
+                        "event": "forensic_full_output",
+                        "response_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                        "response_bytes": len(text.encode()),
+                        "limit": CHARACTER_LIMIT,
+                    }) + "\n")
+            except Exception:
+                pass
+        return text
     if text.lstrip()[:1] in ("{", "["):
         try:
             json.loads(text)
@@ -152,13 +217,23 @@ def _truncate_if_needed(text: str, *, bypass: bool = False) -> str:
                 "response_chars": len(text),
                 "hint": "narrow the query (smaller window or limit) and retry",
             })
-    truncated = text[:CHARACTER_LIMIT]
-    return (
-        truncated
-        + f"\n\n... [truncated response exceeds {CHARACTER_LIMIT} characters. "
-        "Use a smaller limit per page (e.g. limit=50) or iterate with the next_cursor "
-        "to process results incrementally.]"
-    )
+    lines = [
+        "# Response exceeds the character limit",
+        "",
+        f"This response is {len(text):,} characters, above the {CHARACTER_LIMIT:,} character "
+        "limit, so the body was not returned. Nothing was cut from the underlying data.",
+        "",
+        "To retrieve it:",
+        "- Narrow the query and retry.",
+    ]
+    if recovery_hint:
+        lines.append(f"- {recovery_hint}")
+    if params is not None and hasattr(params, "forensic_full_output"):
+        lines.append(
+            "- When the server sets BLUETEAM_ALLOW_UNTRUNCATED=true, request "
+            "forensic_full_output=true with forensic_token=<token>."
+        )
+    return "\n".join(lines)
 
 
 # Markdown escaping

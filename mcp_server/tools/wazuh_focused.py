@@ -9,9 +9,10 @@ from typing import Optional, Literal, Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
-                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC, _RESPONSE_FORMAT_DESC,
+                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC, _FORENSIC_FULL_OUTPUT_DESC, _RESPONSE_FORMAT_DESC,
                         BLUETEAM_ALLOW_UNTRUNCATED, CHARACTER_LIMIT)
-from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
+from mcp_server.core.audit import (_audit_log, _escape_md_table, _resolve_forensic_full_output,
+                                   _fit_document_prefix, _document_stub)
 from mcp_server.core.http_client import _handle_api_error
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _srcip_should_clauses,
@@ -55,6 +56,10 @@ class FocusedCrawlInput(BaseModel):
         le=200,
         description="Number of representative alert documents to retrieve (default 50, max 200).",
     )
+    cursor: Optional[str] = Field(
+        default=None,
+        description="Pagination cursor from a previous crawl; resumes after the last returned document.",
+    )
     include_full_log: bool = Field(
         default=True,
         description="Include the full_log field in returned documents (PII-redacted per BLUETEAM_REDACT_PII).",
@@ -68,7 +73,9 @@ class FocusedCrawlInput(BaseModel):
         description=_REDACTION_POLICY_DESC,
     )
     reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    reveal_identities: bool = Field(default=False, description=_REVEAL_IDENTITIES_DESC)
     forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
+    forensic_full_output: bool = Field(default=False, description=_FORENSIC_FULL_OUTPUT_DESC)
     fields: Optional[str] = Field(
         default=None,
         description="Comma-separated additional _source fields to retrieve beyond defaults. "
@@ -150,6 +157,7 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
         params.since: Start of time window (default '24h').
         params.until: End of time window (default: now).
         params.sample_size: Alert documents to retrieve (default 50, max 200).
+        params.cursor: Pagination cursor from a previous crawl.
         params.include_full_log: Include raw log lines (PII-redacted).
         params.bypass_redaction: Skip PII masking for audit (if BLUETEAM_REDACT_PII allows).
         params.fields: Comma-separated extra _source fields to include.
@@ -206,6 +214,10 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
             ]}},
             "sort": [{"@timestamp": "asc"}, {"_id": "asc"}],
         }
+        if params.cursor:
+            decoded = _decode_cursor(params.cursor)
+            if decoded and decoded.get("search_after"):
+                body["search_after"] = decoded["search_after"]
         if params.agent_name:
             body["query"]["bool"]["filter"].append({"match": {"agent.name": params.agent_name}})
         if params.src_ip:
@@ -226,8 +238,14 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
     total = hits.get("total", {})
     hit_list = hits.get("hits", [])
 
+    hits_state = []
+    for h in hit_list:
+        doc = h.get("_source", h)
+        if h.get("_id") and isinstance(doc, dict):
+            doc = {**doc, "_id": h["_id"]}
+        hits_state.append({"sort": h.get("sort"), "doc": doc})
     # Apply PII redaction to all document bodies
-    docs = [_redact_alert_data(h.get("_source", h), params=params) for h in hit_list]
+    docs = [_redact_alert_data(x["doc"], params=params) for x in hits_state]
 
     # Build next_cursor for further pagination within the same slice
     next_cursor = None
@@ -252,8 +270,15 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
             band = "high" if lvl >= 10 else ("medium" if lvl >= 5 else "low")
             level_counts[band] = level_counts.get(band, 0) + 1
 
-    if params.response_format == "json":
-        return _truncate_if_needed(json.dumps({
+    def _json_payload(k: int) -> dict:
+        omitted = len(docs) - k
+        if omitted > 0:
+            boundary = (hits_state[k - 1]["sort"] if k > 0
+                        else (hits_state[0]["sort"] if hits_state else None))
+            cursor = _encode_cursor({"search_after": boundary}) if boundary else next_cursor
+        else:
+            cursor = next_cursor
+        payload = {
             "window": {"since": since_str, "until": until_str},
             "filter": {
                 "src_ip": params.src_ip,
@@ -261,17 +286,29 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
                 "agent_name": params.agent_name,
             },
             "total": {"value": total.get("value", 0), "relation": total.get("relation", "eq")},
-            "count": len(docs),
+            "count": k if omitted > 0 else len(docs),
             "sample_unique_ips": len(unique_ips),
             "sample_unique_rules": len(unique_rules),
             "severity_bands": level_counts,
-            "next_cursor": next_cursor,
-            "alerts": docs,
-        }, indent=2, default=str))
+            "next_cursor": cursor,
+            "alerts": docs[:k],
+        }
+        if omitted > 0:
+            payload["truncated"] = True
+            payload["documents_omitted"] = omitted
+            if k == 0 and hits_state:
+                payload["oversized_documents"] = [_document_stub(hits_state[0]["doc"])]
+        return payload
+
+    full_output = _resolve_forensic_full_output(params)
+    if params.response_format == "json":
+        k = len(docs) if full_output else _fit_document_prefix(
+            lambda n: json.dumps(_json_payload(n), indent=2, default=str), len(docs))
+        return json.dumps(_json_payload(k), indent=2, default=str)
 
     # Markdown format
     total_val = total.get("value", 0)
-    lines = [
+    header = [
         "# Wazuh Alert Focused Crawl",
         "",
         f"**Window**: {since_str} -> {until_str}",
@@ -280,12 +317,12 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
         "|--------|-------|",
     ]
     if params.src_ip:
-        lines.append(f"| Source IP | `{params.src_ip}` |")
+        header.append(f"| Source IP | `{params.src_ip}` |")
     if params.rule_id:
-        lines.append(f"| Rule ID | `{params.rule_id}` |")
+        header.append(f"| Rule ID | `{params.rule_id}` |")
     if params.agent_name:
-        lines.append(f"| Agent | `{params.agent_name}` |")
-    lines.extend([
+        header.append(f"| Agent | `{params.agent_name}` |")
+    header.extend([
         f"| Total matching | {total_val} ({total.get('relation', 'eq')}) |",
         f"| Retrieved | {len(docs)} |",
         f"| Unique IPs in sample | {len(unique_ips)} |",
@@ -293,33 +330,51 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
         "",
     ])
     if level_counts:
-        lines.append(f"**Severity**: L:{level_counts.get('low', 0)} M:{level_counts.get('medium', 0)} H:{level_counts.get('high', 0)}")
-        lines.append("")
-
+        header.append(f"**Severity**: L:{level_counts.get('low', 0)} M:{level_counts.get('medium', 0)} H:{level_counts.get('high', 0)}")
+        header.append("")
     if not docs:
-        lines.append("_No alerts matched the filter criteria in this time window._")
-    else:
-        lines.append(f"## Alert Samples ({len(docs)} of {total_val} total)")
-        lines.append("")
-        for i, d in enumerate(docs[:20], 1):
-            ts = d.get("@timestamp", "?")
-            rule = d.get("rule", {}) if isinstance(d.get("rule"), dict) else {}
-            rid = rule.get("id", d.get("rule.id", "?"))
-            desc = rule.get("description", d.get("rule.description", "?"))
-            lvl = rule.get("level", d.get("rule.level", "?"))
-            src = _srcip_from_doc(d) or "?"
-            agent = d.get("agent", {}).get("name") if isinstance(d.get("agent"), dict) else d.get("agent.name", "?")
-            lines.append(f"**{i}.** `{ts}` | Level {lvl} | Rule {rid} - {desc}")
-            lines.append(f"- Source: `{src}` | Agent: `{agent}`")
-            full = d.get("full_log", "")
-            if full:
-                lines.append(f"- Log: `{full}`")
+        header.append("_No alerts matched the filter criteria in this time window._")
+
+    blocks: list[list[str]] = []
+    for d in docs[:20]:
+        ts = d.get("@timestamp", "?")
+        rule = d.get("rule", {}) if isinstance(d.get("rule"), dict) else {}
+        rid = rule.get("id", d.get("rule.id", "?"))
+        desc = rule.get("description", d.get("rule.description", "?"))
+        lvl = rule.get("level", d.get("rule.level", "?"))
+        src = _srcip_from_doc(d) or "?"
+        agent = d.get("agent", {}).get("name") if isinstance(d.get("agent"), dict) else d.get("agent.name", "?")
+        block = [f"**{len(blocks) + 1}.** `{ts}` | Level {lvl} | Rule {rid} - {desc}",
+                 f"- Source: `{src}` | Agent: `{agent}`"]
+        full = d.get("full_log", "")
+        if full:
+            block.append(f"- Log: `{full}`")
+        block.append("")
+        blocks.append(block)
+
+    def _markdown(rendered: int) -> str:
+        lines = list(header)
+        if docs:
+            lines.append(f"## Alert Samples ({len(docs)} of {total_val} total)")
             lines.append("")
-        if len(docs) > 20:
-            lines.append(f"_... and {len(docs) - 20} more alerts (use next_cursor for next page)_")
+            for block in blocks[:rendered]:
+                lines.extend(block)
+            if len(docs) > 20:
+                lines.append(f"_... and {len(docs) - 20} more alerts (use next_cursor for next page)_")
+        cursor = next_cursor
+        if rendered < len(blocks):
+            boundary = (hits_state[rendered - 1]["sort"] if rendered > 0
+                        else (hits_state[0]["sort"] if hits_state else None))
+            cursor = _encode_cursor({"search_after": boundary}) if boundary else next_cursor
+            lines.append("")
+            lines.append(f"_... {len(docs) - rendered} more documents omitted to stay under the response limit; continue with next_cursor._")
+            if rendered == 0 and hits_state:
+                lines.append(f"_oversized document: `{_document_stub(hits_state[0]['doc'])['_id']}` - retrieve it with blueteam_wazuh_forensic_window._")
+        if cursor:
+            lines.append("")
+            lines.append(f"**next_cursor**: `{cursor}` - pass this to the `cursor` parameter of `blueteam_wazuh_indexer_search` to continue paginating this slice.")
+        return "\n".join(lines)
 
-    if next_cursor:
-        lines.append("")
-        lines.append(f"**next_cursor**: `{next_cursor}` - pass this to the `cursor` parameter of `blueteam_wazuh_indexer_search` to continue paginating this slice.")
-
-    return _truncate_if_needed("\n".join(lines))
+    if full_output:
+        return _markdown(len(blocks))
+    return _markdown(_fit_document_prefix(_markdown, len(blocks)))

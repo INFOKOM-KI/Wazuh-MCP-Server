@@ -10,7 +10,7 @@ from collections import Counter
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
-                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC)
+                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.http_client import _handle_api_error
 from mcp_server.core.redact import _redact_alert_data
@@ -96,6 +96,7 @@ class WazuhEmailLookupInput(BaseModel):
         description=_REDACTION_POLICY_DESC,
     )
     reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    reveal_identities: bool = Field(default=False, description=_REVEAL_IDENTITIES_DESC)
     forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
 
 

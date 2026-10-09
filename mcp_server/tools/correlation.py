@@ -10,7 +10,7 @@ from collections import Counter
 from pydantic import field_validator, BaseModel, ConfigDict, Field
 from mcp_server import (mcp, CHARACTER_LIMIT, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _WAZUH_INDEXER_MAX_SIZE,
                         _INVESTIGATION_HISTORY_FILE, CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV,
-                        _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC)
+                        _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.toon import encode_toon
 from mcp_server.core.http_client import _api_call, _handle_api_error, ValidPublicIp
@@ -340,7 +340,7 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _WAZUH_INDEXER_MAX_SIZE,
                         CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV, _INVESTIGATION_HISTORY_FILE,
-                        _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC)
+                        _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.http_client import _api_call, _handle_api_error
 from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY, _last_eval_time, _last_eval_result
@@ -378,6 +378,7 @@ class AggregateAnalysisInput(BaseModel):
         description=_REDACTION_POLICY_DESC,
     )
     reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    reveal_identities: bool = Field(default=False, description=_REVEAL_IDENTITIES_DESC)
     forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
     bypass_redaction: bool = Field(default=False)
 
@@ -386,8 +387,8 @@ class AggregateAnalysisInput(BaseModel):
     def validate_mode(cls, v):
         if v.strip().lower() not in ("topology","anomaly","correlation","trend","summary"):
             raise ValueError("mode must be: topology, anomaly, correlation, trend, summary. "
-                             "For top rules/srcips/agents by keyword, use blueteamWazuhIndexerSearch "
-                             "or wazuhAlertFocusedCrawl instead.")
+                             "For top rules/srcips/agents by keyword, use blueteam_wazuh_indexer_search "
+                             "or wazuh_alert_focused_crawl instead.")
         return v.strip().lower()
 
 
@@ -449,17 +450,18 @@ async def wazuh_alert_aggregate_analysis(params: AggregateAnalysisInput) -> str:
     # Plain names: the string_as_keyword template has no `.keyword` sub-field.
     aggs = raw.get("aggregations", {})
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
+    payload = _redact_alert_data({"total": total, "aggregations": aggs}, params=params)
     if params.response_format == "toon":
-        return encode_toon({"total": total, "aggregations": aggs}, limit=CHARACTER_LIMIT)
+        return encode_toon(payload, limit=CHARACTER_LIMIT)
     if params.response_format == "json":
-        return _truncate_if_needed(json.dumps({"total": total, "aggregations": aggs}, indent=2))
+        return _truncate_if_needed(json.dumps(payload, indent=2))
     sev = {b["key"]: b["doc_count"] for b in aggs.get("severity_bands", {}).get("buckets", [])}
     lines = [f"# Aggregate Analysis ({params.mode})", "", f"**Total alerts**: {total:,}", "",
              "## Severity", f"- Low: {sev.get('low',0):,}", f"- Medium: {sev.get('medium',0):,}",
              f"- High: {sev.get('high',0):,}", "", "## Top Source IPs"]
     for b in aggs.get("top_srcips", {}).get("buckets", [])[:10]:
         lines.append(f"- `{b['key']}`: {b['doc_count']:,}")
-    return _truncate_if_needed("\n".join(lines))
+    return _truncate_if_needed(_redact_alert_data("\n".join(lines), params=params))
 
 
 # Three-Sum Correlation
@@ -527,6 +529,7 @@ class ThreeSumCorrelationInput(BaseModel):
         description=_REDACTION_POLICY_DESC,
     )
     reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    reveal_identities: bool = Field(default=False, description=_REVEAL_IDENTITIES_DESC)
     forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
     multi_resolution: bool = Field(default=False)
     cross_agent: bool = Field(
@@ -1040,6 +1043,7 @@ async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
             "geo": [{"country": b["key"], "count": b["doc_count"]}
                     for b in g_aggs.get("by_country", {}).get("buckets", [])],
         }
+        payload = _redact_alert_data(payload, params=params)
         if params.response_format == "toon":
             return encode_toon(payload, limit=CHARACTER_LIMIT)
         return json.dumps(payload, indent=2, ensure_ascii=False)
@@ -1111,4 +1115,4 @@ async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
         lines.append(f"*`blueteam_attack_chain(srcip='{srcip}')` for kill-chain analysis, or*")
         lines.append(f"*`blueteam_unified_threat_score(ip='{srcip}')` for multi-source scoring.*")
 
-    return _truncate_if_needed("\n".join(lines))
+    return _truncate_if_needed(_redact_alert_data("\n".join(lines), params=params))

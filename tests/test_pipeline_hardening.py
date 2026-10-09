@@ -40,10 +40,13 @@ def test_oversized_json_is_capped_to_valid_json():
     assert parsed["response_chars"] == len(payload)
 
 
-def test_markdown_and_small_json_keep_the_old_path():
+def test_oversized_markdown_returns_a_complete_notice():
     assert audit._truncate_if_needed('{"a": 1}') == '{"a": 1}'
     long_markdown = "x" * (audit.CHARACTER_LIMIT + 1)
-    assert "truncated response exceeds" in audit._truncate_if_needed(long_markdown)
+    notice = audit._truncate_if_needed(long_markdown)
+    assert "exceeds the character limit" in notice
+    assert "Narrow the query" in notice
+    assert "x" * 100 not in notice
 
 
 def test_in_process_calls_skip_truncation_but_transport_still_caps():

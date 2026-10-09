@@ -122,8 +122,8 @@ def test_input_model_rejects_extra_fields():
 # via decorated tool with patched converter
 @pytest.mark.asyncio
 async def test_convert_sync_truncates_before_the_redaction_pass(monkeypatch):
-    """A large document is cut at the response cap before redaction, so the PII
-    regexes never run across the whole converted text."""
+    """A large document returns a size notice before the redaction pass, so the
+    PII regexes never run across the whole converted text."""
     from mcp_server import CHARACTER_LIMIT
 
     mc = _module()
@@ -138,8 +138,9 @@ async def test_convert_sync_truncates_before_the_redaction_pass(monkeypatch):
     monkeypatch.setattr(mc, "_MD", _FakeMD())
     out = mc._convert_sync("/opt/evidence/big.pdf")
 
-    assert len(out) <= CHARACTER_LIMIT + 500
-    assert "[truncated response exceeds" in out
+    assert len(out) <= CHARACTER_LIMIT
+    assert "exceeds the character limit" in out
+    assert "x" * 100 not in out
 
 
 @pytest.mark.asyncio

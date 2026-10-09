@@ -307,6 +307,7 @@ class RedactionConfig:
     owned_domains: str = ""
     allow_runtime_domains: bool = False   # gate for blueteam_set_owned_domains
     allow_forensic_bypass: bool = False
+    allow_identity_reveal: bool = False
     forensic_token: str = ""
 
     _VALID_POLICIES = frozenset({"full", "protect_victim", "raw"})
@@ -323,6 +324,7 @@ class RedactionConfig:
             owned_domains=os.environ.get("BLUETEAM_OWNED_DOMAINS", ""),
             allow_runtime_domains=_bool(os.environ.get("BLUETEAM_ALLOW_RUNTIME_DOMAINS", "false")),
             allow_forensic_bypass=_bool(os.environ.get("BLUETEAM_ALLOW_FORENSIC_BYPASS", "false")),
+            allow_identity_reveal=_bool(os.environ.get("BLUETEAM_ALLOW_IDENTITY_REVEAL", "false")),
             forensic_token=os.environ.get("BLUETEAM_FORENSIC_TOKEN", ""),
         )
 
@@ -354,6 +356,11 @@ class RedactionConfig:
                 raise ConfigurationError(
                     "BLUETEAM_FORENSIC_TOKEN must be at least 8 characters."   # use openssl rand fot generate it.
                 )
+        if self.allow_identity_reveal and not self.forensic_token:
+            logger.warning(
+                "BLUETEAM_ALLOW_IDENTITY_REVEAL=true but BLUETEAM_FORENSIC_TOKEN is empty "
+                "- reveal_identities calls will be refused."
+            )
 
 
 @dataclass

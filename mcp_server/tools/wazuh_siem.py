@@ -20,6 +20,7 @@ from mcp_server import (
     mcp, CHARACTER_LIMIT,
     WAZUH_API_URL, WAZUH_API_PASSWORD,
     WAZUH_INDEXER_PASSWORD, WAZUH_INDEXER_URL,
+    _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC, _FORENSIC_FULL_OUTPUT_DESC,
 )
 from mcp_server.core.constants import (
     _WAZUH_ALERTS_MAX_LINES, MITRE_TACTIC_TO_CATEGORY,
@@ -44,7 +45,9 @@ def _dig(doc: dict, path: str):
 # Manager API tools - all benefit from @blueteam_tool (audit + error + trunc)
 # blueteam_wazuh_get_rules
 # Indexer tools (remaining after Manager API split)
-from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server.core.audit import (_audit_log, _truncate_if_needed,
+                                   _resolve_forensic_full_output, _fit_document_prefix,
+                                   _document_stub)
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.toon import encode_toon
 from mcp_server.core.subprocess import _run_async
@@ -60,6 +63,8 @@ class WazuhAlertsInput(BaseModel):
     cursor: Optional[str] = Field(default=None, description="Pagination cursor from a previous response")
     bypass_redaction: bool = Field(default=False, description="When true, skip PII/credential redaction")
     redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(default=None, description="Redaction policy")
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
+    forensic_full_output: bool = Field(default=False, description=_FORENSIC_FULL_OUTPUT_DESC)
     response_format: str = Field(default="json", description="'json' (default) or 'toon'")
 
 
@@ -118,23 +123,48 @@ async def blueteam_wazuh_alerts(params: WazuhAlertsInput) -> str:
         if "error" in raw:
             return json.dumps(raw, indent=2)
         hits = raw.get("hits", {})
-        docs = [h.get("_source", h) for h in hits.get("hits", [])]
-        next_cursor = None
         hit_list = hits.get("hits", [])
-        if hit_list and len(docs) >= params.limit:
-            last_sort = hit_list[-1].get("sort")
-            if last_sort:
-                next_cursor = _encode_cursor({"search_after": last_sort})
-        payload = {
-            "source": "wazuh-indexer",
-            "alerts": _redact_alert_data(docs, bypass=params.bypass_redaction,
-                                          policy=params.redaction_policy),
-            "count": len(docs),
-            "next_cursor": next_cursor,
-        }
+        hits_state = []
+        for h in hit_list:
+            doc = h.get("_source", h)
+            if h.get("_id") and isinstance(doc, dict):
+                doc = {**doc, "_id": h["_id"]}
+            hits_state.append({"sort": h.get("sort"), "doc": doc})
+        redacted = _redact_alert_data([x["doc"] for x in hits_state],
+                                      bypass=params.bypass_redaction,
+                                      policy=params.redaction_policy)
+
+        def _payload(k: int) -> dict:
+            omitted = len(redacted) - k
+            if omitted > 0:
+                boundary = (hits_state[k - 1]["sort"] if k > 0
+                            else (hits_state[0]["sort"] if hits_state else None))
+                cursor = _encode_cursor({"search_after": boundary}) if boundary else None
+            else:
+                tail = hits_state[-1]["sort"] if hits_state else None
+                cursor = (_encode_cursor({"search_after": tail})
+                          if tail and len(hits_state) >= params.limit else None)
+            payload = {
+                "source": "wazuh-indexer",
+                "alerts": redacted[:k],
+                "count": k if omitted > 0 else len(redacted),
+                "next_cursor": cursor,
+            }
+            if omitted > 0:
+                payload["truncated"] = True
+                payload["documents_omitted"] = omitted
+                if k == 0 and hits_state:
+                    payload["oversized_documents"] = [_document_stub(hits_state[0]["doc"])]
+            return payload
+
+        full_output = _resolve_forensic_full_output(params)
         if params.response_format == "toon":
-            return encode_toon(payload, limit=CHARACTER_LIMIT)
-        return _truncate_if_needed(json.dumps(payload, indent=2))
+            k = len(redacted) if full_output else _fit_document_prefix(
+                lambda n: encode_toon(_payload(n), limit=None), len(redacted))
+            return encode_toon(_payload(k), limit=None)
+        k = len(redacted) if full_output else _fit_document_prefix(
+            lambda n: json.dumps(_payload(n), indent=2), len(redacted))
+        return json.dumps(_payload(k), indent=2)
 
     # Local alerts.json path
     skip = 0
@@ -147,7 +177,7 @@ async def blueteam_wazuh_alerts(params: WazuhAlertsInput) -> str:
     if r.get("returncode", 0) != 0:
         return json.dumps({"error": "Failed to read alerts",
                             "stderr": r.get("stderr", "")})
-    alerts = []
+    alerts: list[tuple[int, dict]] = []
     af = (params.agent_name or "").strip()
     ipf = (params.srcip or "").strip()
     scanned = 0
@@ -172,20 +202,41 @@ async def blueteam_wazuh_alerts(params: WazuhAlertsInput) -> str:
                 fl = str(a.get("full_log", ""))
                 if ipf not in values and ipf not in fl:
                     continue
-            alerts.append(a)
+            alerts.append((scanned, a))
         except json.JSONDecodeError:
             continue
-    next_cursor = _encode_cursor({"scanned": scanned}) if len(alerts) >= params.limit else None
-    payload = {
-        "source": "local",
-        "alerts": _redact_alert_data(alerts, bypass=params.bypass_redaction,
-                                      policy=params.redaction_policy),
-        "count": len(alerts),
-        "next_cursor": next_cursor,
-    }
+    redacted = _redact_alert_data([a for _, a in alerts], bypass=params.bypass_redaction,
+                                  policy=params.redaction_policy)
+
+    def _payload(k: int) -> dict:
+        omitted = len(redacted) - k
+        if omitted > 0:
+            boundary = alerts[k - 1][0] if k > 0 else (alerts[0][0] if alerts else None)
+            cursor = _encode_cursor({"scanned": boundary}) if boundary is not None else None
+        else:
+            cursor = (_encode_cursor({"scanned": scanned})
+                      if len(alerts) >= params.limit else None)
+        payload = {
+            "source": "local",
+            "alerts": redacted[:k],
+            "count": k if omitted > 0 else len(redacted),
+            "next_cursor": cursor,
+        }
+        if omitted > 0:
+            payload["truncated"] = True
+            payload["documents_omitted"] = omitted
+            if k == 0 and alerts:
+                payload["oversized_documents"] = [_document_stub(alerts[0][1])]
+        return payload
+
+    full_output = _resolve_forensic_full_output(params)
     if params.response_format == "toon":
-        return encode_toon(payload, limit=CHARACTER_LIMIT)
-    return _truncate_if_needed(json.dumps(payload, indent=2))
+        k = len(redacted) if full_output else _fit_document_prefix(
+            lambda n: encode_toon(_payload(n), limit=None), len(redacted))
+        return encode_toon(_payload(k), limit=None)
+    k = len(redacted) if full_output else _fit_document_prefix(
+        lambda n: json.dumps(_payload(n), indent=2), len(redacted))
+    return json.dumps(_payload(k), indent=2)
 
 
 class WazuhIndexerSearchInput(BaseModel):
@@ -200,7 +251,10 @@ class WazuhIndexerSearchInput(BaseModel):
     keyword: Optional[str] = Field(default=None, max_length=256, description="Free-text keyword to narrow results")
     response_format: str = Field(default="json", description="'json' (default) or 'toon'")
     redaction_policy: Optional[Literal["full", "protect_victim", "raw"]] = Field(default=None, description="Redaction policy")
-    reveal_owned: bool = Field(default=False, description="When true, unmask emails/subdomains at owned domains (BLUETEAM_OWNED_DOMAINS)")
+    reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    reveal_identities: bool = Field(default=False, description=_REVEAL_IDENTITIES_DESC)
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
+    forensic_full_output: bool = Field(default=False, description=_FORENSIC_FULL_OUTPUT_DESC)
 
 
 @mcp.tool(
@@ -269,7 +323,7 @@ async def blueteam_wazuh_indexer_search(params: WazuhIndexerSearchInput) -> str:
         if decoded:
             search_after = decoded.get("search_after")
 
-    all_docs: list[dict] = []
+    hits_state: list[dict] = []
     total_scanned = 0
     total_val = 0
     total_relation = "eq"
@@ -287,40 +341,66 @@ async def blueteam_wazuh_indexer_search(params: WazuhIndexerSearchInput) -> str:
             body["search_after"] = search_after
         raw = await _wazuh_indexer_post(body)
         if "error" in raw:
-            if all_docs:
+            if hits_state:
                 break
             return json.dumps(raw, indent=2)
         hits = raw.get("hits", {})
         hit_list = hits.get("hits", [])
-        docs = [h.get("_source", h) for h in hit_list]
+        docs = []
+        for h in hit_list:
+            doc = h.get("_source", h)
+            if h.get("_id") and isinstance(doc, dict):
+                doc = {**doc, "_id": h["_id"]}
+            docs.append(doc)
+            hits_state.append({"sort": h.get("sort"), "doc": doc})
         total = hits.get("total", {})
         total_val = total.get("value", 0) if isinstance(total, dict) else total
         total_relation = total.get("relation", "eq") if isinstance(total, dict) else "eq"
         if not docs:
             break
-        all_docs.extend(docs)
         total_scanned += len(docs)
         last_sort = hit_list[-1].get("sort") if hit_list else None
         if len(docs) < page_size or last_sort is None:
             break
         search_after = last_sort
 
-    next_cursor = (
-        _encode_cursor({"search_after": search_after})
-        if search_after and total_scanned < total_val
-        else None
-    )
-    has_more = next_cursor is not None
-    payload = {
-        "total": {"value": total_val, "relation": total_relation},
-        "retrieved": total_scanned,
-        "has_more": has_more,
-        "next_cursor": next_cursor,
-        "alerts": _redact_alert_data(all_docs, policy=params.redaction_policy, reveal_owned=params.reveal_owned),
-    }
+    redacted = _redact_alert_data([x["doc"] for x in hits_state],
+                                  policy=params.redaction_policy,
+                                  reveal_owned=params.reveal_owned,
+                                  reveal_identities=params.reveal_identities)
+
+    def _payload(k: int) -> dict:
+        omitted = len(redacted) - k
+        if omitted > 0:
+            boundary = (hits_state[k - 1]["sort"] if k > 0
+                        else (hits_state[0]["sort"] if hits_state else None))
+            cursor = _encode_cursor({"search_after": boundary}) if boundary else None
+        else:
+            tail = hits_state[-1]["sort"] if hits_state else None
+            cursor = (_encode_cursor({"search_after": tail})
+                      if tail and total_scanned < total_val else None)
+        payload = {
+            "total": {"value": total_val, "relation": total_relation},
+            "retrieved": k if omitted > 0 else total_scanned,
+            "has_more": cursor is not None,
+            "next_cursor": cursor,
+            "alerts": redacted[:k],
+        }
+        if omitted > 0:
+            payload["truncated"] = True
+            payload["documents_omitted"] = omitted
+            if k == 0 and hits_state:
+                payload["oversized_documents"] = [_document_stub(hits_state[0]["doc"])]
+        return payload
+
+    full_output = _resolve_forensic_full_output(params)
     if params.response_format == "toon":
-        return encode_toon(payload, limit=CHARACTER_LIMIT)
-    return _truncate_if_needed(json.dumps(payload, indent=2))
+        k = len(redacted) if full_output else _fit_document_prefix(
+            lambda n: encode_toon(_payload(n), limit=None), len(redacted))
+        return encode_toon(_payload(k), limit=None)
+    k = len(redacted) if full_output else _fit_document_prefix(
+        lambda n: json.dumps(_payload(n), indent=2), len(redacted))
+    return json.dumps(_payload(k), indent=2)
 
 
 class MitreLookupInput(BaseModel):

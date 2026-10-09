@@ -10,7 +10,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
 from mcp_server import (mcp, CHARACTER_LIMIT, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _BYPASS_REDACTION_DESC, _RESPONSE_FORMAT_DESC, _AGENT_NAME_DESC,
-                        _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC)
+                        _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.toon import encode_toon
@@ -74,6 +74,7 @@ class WazuhAlertTimelineInput(BaseModel):
         description=_REDACTION_POLICY_DESC,
     )
     reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    reveal_identities: bool = Field(default=False, description=_REVEAL_IDENTITIES_DESC)
     forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
 
 
@@ -191,7 +192,7 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
         )
 
     total_alerts = sum(b.get("doc_count", 0) for b in buckets)
-    buckets = _redact_alert_data(buckets, reveal_owned=params.reveal_owned)  # mask victim emails/IP/domains in bucket keys
+    buckets = _redact_alert_data(buckets, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities)  # mask victim emails/IP/domains in bucket keys
 
     if params.response_format in ("json", "toon"):
         payload = {

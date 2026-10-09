@@ -18,7 +18,8 @@ from typing import Any
 from collections import Counter, OrderedDict
 from mcp_server import (BLUETEAM_REDACT_PII, BLUETEAM_REDACT_EMAILS, BLUETEAM_REDACT_DOMAINS,
                          BLUETEAM_REDACT_LOCATIONS, BLUETEAM_REDACT_IDENTITIES,
-                         BLUETEAM_ALLOW_FORENSIC_BYPASS, BLUETEAM_REDACTION_POLICY,
+                         BLUETEAM_ALLOW_FORENSIC_BYPASS, BLUETEAM_ALLOW_IDENTITY_REVEAL,
+                         BLUETEAM_REDACTION_POLICY,
                          BLUETEAM_OWNED_DOMAINS, BLUETEAM_FORENSIC_TOKEN)
 from mcp_server.core.attacker_registry import is_attacker_ioc
 from mcp_server.core import metrics
@@ -30,7 +31,10 @@ _REDACT_SALT = os.environ.get(
     hashlib.sha256(os.uname().nodename.encode()).hexdigest()[:16]
 )
 
-_REDACT_EMAIL_RE = re.compile(r"([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})")
+# Bounded quantifiers and a local-part boundary: an unbounded local part makes
+# the layer quadratic on long attacker payloads (50k chars took 11s).
+_REDACT_EMAIL_RE = re.compile(
+    r"(?<![a-zA-Z0-9._%+-])([a-zA-Z0-9._%+-]{1,64})@([a-zA-Z0-9.-]{1,255}\.[a-zA-Z]{2,})")
 
 # Memoize string redaction results. The string path is pure given (data, policy,
 # reveal, layer toggles), so repeated identical payloads are redacted once.
@@ -133,6 +137,15 @@ _POLICIES = ("full", "protect_victim", "raw")
 # rule descriptions, countries) and CVE-style tokens never get masked.
 _HOSTNAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _HOSTNAME_CONTEXT_KEYS = ("host", "hostname", "server", "node", "host_name")
+
+# Attacker-supplied forensic fields. The location layer must not shorten these
+# or inject a hash marker; security layers (emails, IPs, domains) still apply.
+_FORENSIC_PAYLOAD_PATHS = ("full_log", "data.url", "data.user_agent")
+
+
+def _is_forensic_payload_path(path: str) -> bool:
+    """True when a node path ends at a forensic payload field."""
+    return any(path == p or path.endswith("." + p) for p in _FORENSIC_PAYLOAD_PATHS)
 
 
 def _is_hostname_candidate(v: str) -> bool:
@@ -292,18 +305,16 @@ def _strip_credentials(data: Any, path: str = "") -> Any:
     return data
 
 
-# Composable string redaction layers
-# Each layer is a function (data: str, pol: str, reveal: bool) -> str.
-# To add a new layer, define it here and append to _STRING_REDACTION_LAYERS
-# inside _redact_alert_data.
-# Layer functions live in redact_layers.py - imported explicitly for clean AST edges.
+# Composable string redaction layers; layer functions live in redact_layers.py.
 from mcp_server.core.redact_layers import (_apply_email_layer, _apply_ip_layer,
     _apply_domain_layer, _apply_location_layer)
 
 # Main redaction pipeline
 def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
                        policy: str | None = None, reveal_owned: bool = False,
-                       forensic_token: str | None = None, path: str = "") -> Any:
+                       reveal_identities: bool = False,
+                       forensic_token: str | None = None, path: str = "",
+                       skip_location: bool = False) -> Any:
     """Apply layered PII and credential masking. Layer 1 NEVER bypassable.
 
     Policies:
@@ -316,6 +327,15 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
     reveal_owned (forensic): expose emails/subdomains at owned domains
     (BLUETEAM_OWNED_DOMAINS) unmasked while all other masking stays on.
     Layer 1 credentials remain masked. Ignored under policy="raw".
+
+    reveal_identities (forensic): expose identity-layer values (identity paths,
+    usernames, agent/host bucket names) unmasked. Hard-gated behind
+    BLUETEAM_ALLOW_IDENTITY_REVEAL (default false) and a matching
+    BLUETEAM_FORENSIC_TOKEN. Layer 1 credentials remain masked.
+
+    Forensic payload fields (full_log, data.url, data.user_agent) skip the
+    location layer so the attacker-supplied value is never shortened; the other
+    security layers still apply.
 
     Layers:
       1. Credential stripping (MANDATORY - never configurable; value patterns
@@ -335,6 +355,11 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
     """
     pol = _resolve_policy(bypass, params, policy)
     reveal = reveal_owned or (getattr(params, "reveal_owned", False) if params is not None else False)
+    reveal_ident = reveal_identities or (
+        getattr(params, "reveal_identities", False) if params is not None else False)
+    caller_token = forensic_token or (
+        getattr(params, "forensic_token", None) if params is not None else None)
+    forensic_payload = skip_location or _is_forensic_payload_path(path)
 
     if pol == "raw":
         if not BLUETEAM_ALLOW_FORENSIC_BYPASS:
@@ -355,19 +380,33 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
         logger.warning("REDACTION BYPASSED (raw) - Layer 1 credential strip only")
         return _strip_credentials(data)
 
+    if reveal_ident:
+        if not BLUETEAM_ALLOW_IDENTITY_REVEAL:
+            metrics.record_gate_failure()
+            raise ValueError(
+                "reveal_identities requested but BLUETEAM_ALLOW_IDENTITY_REVEAL is not "
+                "enabled. Set BLUETEAM_ALLOW_IDENTITY_REVEAL=true to allow identity reveal."
+            )
+        if not BLUETEAM_FORENSIC_TOKEN or caller_token != BLUETEAM_FORENSIC_TOKEN:
+            metrics.record_gate_failure()
+            raise ValueError(
+                "reveal_identities requires the operator forensic token "
+                "(BLUETEAM_FORENSIC_TOKEN). Pass forensic_token=<token>."
+            )
+
     if pol == "protect_victim":
         logger.debug("redaction policy=protect_victim")
 
-    # Composable string redaction layer chain
-    # Each layer: (name, enabled_check, apply_fn).
-    # enabled_check: callable() -> bool.
-    # apply_fn: callable(data: str, pol: str, reveal: bool) -> str.
+    # Layer chain entries: (name, enabled_check, apply_fn).
     _STRING_REDACTION_LAYERS: list[tuple[str, object, object]] = [
         ("emails", lambda: BLUETEAM_REDACT_EMAILS, _apply_email_layer),
         ("ips", lambda: BLUETEAM_REDACT_PII, _apply_ip_layer),
         ("domains", lambda: BLUETEAM_REDACT_DOMAINS, _apply_domain_layer),
         ("locations", lambda: BLUETEAM_REDACT_LOCATIONS, _apply_location_layer),
     ]
+    active_layers = _STRING_REDACTION_LAYERS
+    if forensic_payload:
+        active_layers = [entry for entry in _STRING_REDACTION_LAYERS if entry[0] != "locations"]
 
     def _apply_credential_layer(data: str) -> str:
         """Layer 1: Credential stripping (ALWAYS)."""
@@ -381,7 +420,7 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
         if not data or len(data) > _REDACT_MEMO_MAX_STR:
             # Too large to memoize (or empty) - redact directly.
             data = _apply_credential_layer(data)
-            for layer_name, check, apply_fn in _STRING_REDACTION_LAYERS:
+            for layer_name, check, apply_fn in active_layers:
                 if not check():
                     continue
                 try:
@@ -391,7 +430,7 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
             return data
         memo_key = (data, pol, reveal, BLUETEAM_REDACT_EMAILS, BLUETEAM_REDACT_PII,
                     BLUETEAM_REDACT_DOMAINS, BLUETEAM_REDACT_LOCATIONS,
-                    BLUETEAM_REDACT_IDENTITIES)
+                    BLUETEAM_REDACT_IDENTITIES, reveal_ident, forensic_payload)
         cached = _REDACT_MEMO.get(memo_key)
         if cached is not None:
             _REDACT_MEMO.move_to_end(memo_key)
@@ -400,11 +439,8 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
         # Layer 1: Credential stripping (ALWAYS)
         data = _apply_credential_layer(data)
 
-        # Apply all enabled optional layers in registration order.
-        # Each layer is a (name, enabled_check, apply_fn) tuple registered in
-        # _STRING_REDACTION_LAYERS above. To add a new masking layer, append
-        # to that list - no dispatcher changes needed.
-        for layer_name, check, apply_fn in _STRING_REDACTION_LAYERS:
+        # Apply enabled layers in order; append to _STRING_REDACTION_LAYERS to add one.
+        for layer_name, check, apply_fn in active_layers:
             if not check():
                 continue
             try:
@@ -425,7 +461,7 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
             if _is_credential_path(child_path):
                 result[k] = "<CREDENTIAL_REDACTED>"
                 continue
-            if BLUETEAM_REDACT_PII and BLUETEAM_REDACT_IDENTITIES \
+            if BLUETEAM_REDACT_PII and BLUETEAM_REDACT_IDENTITIES and not reveal_ident \
                     and child_path in _IDENTITY_PATHS and isinstance(v, str) and v:
                 result[k] = _mask_username(v)
                 continue
@@ -437,11 +473,14 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
                 leaf = parts[-1] if len(parts) > 1 else v
                 path_hash = hashlib.sha256(f"{_REDACT_SALT}:{v}".encode()).hexdigest()[:6]
                 v = f".../{leaf} [h:{path_hash}]"
-            masked_v = _redact_alert_data(v, policy=pol, reveal_owned=reveal, path=child_path)
+            masked_v = _redact_alert_data(v, policy=pol, reveal_owned=reveal,
+                                          reveal_identities=reveal_ident,
+                                          forensic_token=caller_token, path=child_path,
+                                          skip_location=forensic_payload)
             # protect_victim: mask victim identity fields, agent names, and
             # hostname-shaped aggregation bucket keys (payload fields like
             # data.url / full_log keep attacker content intact via the layers above)
-            if pol == "protect_victim":
+            if pol == "protect_victim" and not reveal_ident:
                 if k in _IDENTITY_KEYS and isinstance(masked_v, str) and masked_v and BLUETEAM_REDACT_PII:
                     masked_v = _mask_username(masked_v)
                 elif k == "agent" and isinstance(masked_v, dict) \
@@ -453,11 +492,18 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
                 elif k in _HOSTNAME_CONTEXT_KEYS and isinstance(masked_v, str) \
                         and _is_hostname_candidate(masked_v) and BLUETEAM_REDACT_PII:
                     masked_v = _mask_username(masked_v)
+                elif k == "name" and isinstance(masked_v, str) and masked_v \
+                        and BLUETEAM_REDACT_PII \
+                        and path.rsplit(".", 1)[-1] in ("agents", "top_agents"):
+                    masked_v = _mask_username(masked_v)  # agent bucket name
             result[k] = masked_v
         return result
 
     if isinstance(data, list):
-        return [_redact_alert_data(item, policy=pol, reveal_owned=reveal, path=path)
+        return [_redact_alert_data(item, policy=pol, reveal_owned=reveal,
+                                   reveal_identities=reveal_ident,
+                                   forensic_token=caller_token, path=path,
+                                   skip_location=forensic_payload)
                 for item in data]
 
     return data

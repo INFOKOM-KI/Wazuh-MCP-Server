@@ -8,8 +8,8 @@ import json, re
 from typing import Optional, Literal, Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from mcp_server import mcp, logger, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, CHARACTER_LIMIT, _REVEAL_OWNED_DESC
-from mcp_server.core.audit import _audit_log, _truncate_if_needed
+from mcp_server import mcp, logger, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, CHARACTER_LIMIT, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC, _FORENSIC_FULL_OUTPUT_DESC
+from mcp_server.core.audit import _audit_log, _truncate_if_needed, _resolve_forensic_full_output
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.toon import encode_toon
 from mcp_server.core.http_client import _handle_api_error
@@ -94,6 +94,9 @@ class DslQueryInput(BaseModel):
         description="'json' (default, machine-readable), 'markdown', or 'toon'.",
     )
     reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    reveal_identities: bool = Field(default=False, description=_REVEAL_IDENTITIES_DESC)
+    forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
+    forensic_full_output: bool = Field(default=False, description=_FORENSIC_FULL_OUTPUT_DESC)
 
     @model_validator(mode="after")
     def require_exactly_one_input_path(self):
@@ -261,12 +264,19 @@ async def wazuh_alert_dsl_query(params: DslQueryInput) -> str:
         _handle_api_error(e, context="wazuh_alert_dsl_query")
 
     if params.response_format == "toon":
-        return encode_toon(_redact_alert_data(data, reveal_owned=params.reveal_owned), limit=CHARACTER_LIMIT)
+        toon_limit = None if _resolve_forensic_full_output(params) else CHARACTER_LIMIT
+        return encode_toon(_redact_alert_data(data, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities), limit=toon_limit)
 
     if params.response_format == "markdown":
         if isinstance(data.get("error"), str):
             return f"# DSL Query Error\n\n**Error**: {data['error']}\n\n**Detail**: {data.get('detail', 'N/A')}"
         aggs = data.get("aggregations", data.get("aggs", {}))
-        return f"# DSL Query Result\n\n**Index**: {params.index_pattern}\n\n```json\n{json.dumps(_redact_alert_data(aggs, reveal_owned=params.reveal_owned), indent=2, default=str)[:CHARACTER_LIMIT]}\n```"
+        md = (f"# DSL Query Result\n\n**Index**: {params.index_pattern}\n\n"
+              f"```json\n{json.dumps(_redact_alert_data(aggs, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities), indent=2, default=str)}\n```")
+        return _truncate_if_needed(
+            md, params=params,
+            recovery_hint="Narrow the aggregation (smaller terms size, a tighter query) or "
+                          "request response_format='json'. This tool returns aggregations, not "
+                          "documents, so a field window does not apply.")
 
-    return _truncate_if_needed(json.dumps(_redact_alert_data(data, reveal_owned=params.reveal_owned), indent=2, default=str))
+    return _truncate_if_needed(json.dumps(_redact_alert_data(data, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities), indent=2, default=str), params=params)

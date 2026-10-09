@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC
+from mcp_server import mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.redact import _redact_alert_data, _IDENTITY_PATHS
 from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _wazuh_indexer_field_caps,
@@ -364,6 +364,7 @@ class GeoHeatmapInput(BaseModel):
         description=_REDACTION_POLICY_DESC,
     )
     reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    reveal_identities: bool = Field(default=False, description=_REVEAL_IDENTITIES_DESC)
     forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
 
 
@@ -422,7 +423,7 @@ async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
     raw = await _wazuh_indexer_post(body)
     if "error" in raw:
         return json.dumps(raw, indent=2)
-    aggs = _redact_alert_data(raw.get("aggregations", {}), reveal_owned=params.reveal_owned)
+    aggs = _redact_alert_data(raw.get("aggregations", {}), reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities)
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
     buckets = aggs.get("by_city", {}).get("buckets", [])
     if params.response_format == "json":

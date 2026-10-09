@@ -10,7 +10,7 @@ from typing import Optional, Literal, Any
 from collections import Counter
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
-                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC,
+                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC, _FORENSIC_FULL_OUTPUT_DESC,
                         CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV,
                         ABUSEIPDB_API_KEY, VIRUSTOTAL_API_KEY,
                         GREYNOISE_COMMUNITY_BASE_URL, ABUSEIPDB_BASE_URL,
@@ -67,7 +67,9 @@ class AlertSummarizeInput(BaseModel):
         description=_REDACTION_POLICY_DESC,
     )
     reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    reveal_identities: bool = Field(default=False, description=_REVEAL_IDENTITIES_DESC)
     forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
+    forensic_full_output: bool = Field(default=False, description=_FORENSIC_FULL_OUTPUT_DESC)
     bypass_redaction: bool = Field(
         default=False,
         description=_BYPASS_REDACTION_DESC,
@@ -230,7 +232,7 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
             "mitre_tactics": sorted(mitre_tactics),
             "unusual_user_agents": unusual_uas,
         }
-        return _truncate_if_needed(json.dumps(result, indent=2, ensure_ascii=False))
+        return _truncate_if_needed(json.dumps(result, indent=2, ensure_ascii=False), params=params)
 
     # Markdown digest
     lines = [
@@ -284,7 +286,11 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
         for ua, n in uas.most_common(3):
             lines.append(f"- ({n}×) `{ua}`")
 
-    return _truncate_if_needed("\n".join(lines))
+    return _truncate_if_needed(
+        "\n".join(lines), params=params,
+        recovery_hint="Narrow the time window; the same srcip can be searched with "
+                      "blueteam_wazuh_indexer_search, whose results carry _id for "
+                      "blueteam_wazuh_forensic_window.")
 
 
 # 2: Beacon Detection

@@ -50,6 +50,7 @@ def register_all_tools() -> None:
         ("host_forensics",        "host_forensics",        True),   # 23 tools, some destructive-ish
         ("fail2ban",              "fail2ban",              True),   # 3 tools, blueteam_fail2ban_unban is destructive
         ("wazuh_siem",            "wazuh_siem",            False),  # Indexer query tools
+        ("forensic_window",      "forensic_window",      False),  # 1 tool - windowed forensic field retrieval
         ("wazuh_manager",         "wazuh_manager",         False),  # Manager API tools (rules, decoders, groups, etc.)
         ("alert_enrichment",      "alert_enrichment",      False),  # Standalone threat-intel + Sangfor + unified scoring
         ("alert_summarize",       "alert_summarize",       False),  # F-1 Alert summarization

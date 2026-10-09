@@ -70,6 +70,7 @@ Choose the tool by what the analyst wants — never invent tools.
 | Velocity (accelerating?) | `wazuh_attack_velocity(srcip)` |
 | Timeline buckets | `wazuh_alert_timeline(srcip)` |
 | Raw alert search (Indexer) | `blueteam_wazuh_indexer_search(...)` |
+| Oversized forensic field | `blueteam_wazuh_forensic_window(doc_id, field, offset, max_chars)` |
 | Local alerts file (fallback Indexer) | `blueteam_wazuh_alerts(srcip, since, limit)` |
 
 ### Threat intel (enrichment)
@@ -103,6 +104,11 @@ kind, not the message: `not_found` means the upstream has no record (not a provi
 `not_configured` and `unsupported_type` are configuration answers (not findings), and
 `rate_limited` / `circuit_open` / `upstream_error` / `timeout` mean the provider is unavailable
 for this run.
+
+The same JSON carries `providers_ok` and `providers_total`: how many attempted
+providers answered, and how many were attempted. A provider that is not configured
+or does not support the indicator type is excluded from the ratio and stays in
+`errors[]`, so `0/0` means no eligible provider, not a clean result.
 
 Netra and Argus lookups are spaced 30s apart, Sangfor 5s (`NETRA_MIN_INTERVAL` /
 `ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`); the RapidAPI tools are spaced by
@@ -718,7 +724,14 @@ lexical fallback for a cluster or a label.
 The server masks PII/credentials in layers (credentials, emails, private IPs,
 domains, paths, identities) plus a `protect_victim` extension (bare
 hostname/agent-name masking). Layer 1 (credentials) is **never
-bypassable**. No field is length-truncated by the output layer. Policies:
+bypassable**. No field is length-truncated by the output layer. The forensic
+payload fields (`full_log`, `data.url`, `data.user_agent`) also skip the path
+layer, so an attacker-supplied value keeps its complete original content:
+deep URL paths, query parameters, encoded content, filesystem paths and command
+strings. Security redaction still applies inside them: credentials, private
+IPs, domains, emails and identities are masked under the active policy,
+including the `[h:...]` marker the email mask adds. Only shortening markers are
+excluded from these fields. Policies:
 
 - `full` (default): mask emails, private IPs, all domains, paths, identities.
 - `protect_victim`: mask **only** victim-owned indicators (owned domains), keep
@@ -746,6 +759,36 @@ prompt. Do NOT claim the env var is broken.
 
 To partially unmask owned domains without `raw`, use `reveal_owned=true` +
 `redaction_policy="protect_victim"` (no token needed).
+
+`reveal_owned` reaches the email and domain layers only. Identity-layer values
+(identity-path usernames, `agents[]` / `top_agents[]` names, hostname-shaped
+aggregation keys) stay masked, and under `protect_victim` a tool that reads the
+Indexer masks those names the same way canonical `agent.name` is masked. To expose
+them for one call, pass `reveal_identities=true` plus `forensic_token=<token>`; the
+server must also run with `BLUETEAM_ALLOW_IDENTITY_REVEAL=true` (default false).
+Without both, the call is refused with `reveal_identities requires the operator
+forensic token`. The refusal means the gate is working.
+
+A response larger than `BLUETEAM_CHARACTER_LIMIT` (default 100,000) is paged by
+whole document: the tool returns as many complete documents as fit, plus
+`truncated: true`, `documents_omitted` and a `next_cursor` that resumes exactly
+after the last returned document. A returned document is never split and a
+forensic field inside it is never shortened. When one field alone is too large
+for any page, the response lists the document's `_id` under
+`oversized_documents`; retrieve it with
+`blueteam_wazuh_forensic_window(doc_id, field, offset, max_chars)`, which returns
+the post-redaction window plus `has_more` and `next_offset`. The approved fields
+are `full_log`, `user_agent` and `data.url`; security redaction still applies
+inside the window. `forensic_full_output=true` with `forensic_token=<token>`
+remains an optional one-shot convenience, gated behind
+`BLUETEAM_ALLOW_UNTRUNCATED=true` and audited.
+
+An over-cap aggregate (`blueteam_wazuh_alert_summarize`, `blueteam_threat_card`) is not
+paged: re-query the same `srcip` and window with `blueteam_wazuh_indexer_search`, whose
+results carry `_id`, then window any oversized field with
+`blueteam_wazuh_forensic_window`. A Markdown body that exceeds the cap is replaced by a
+complete size notice naming the recovery path for that tool; it is never sliced mid-string.
+JSON and TOON keep the `truncated: true` envelope.
 
 **One deliberate exception: `blueteam_subnet_calc`.** It returns its output unmasked, because
 Layer 3 would rewrite the network and broadcast addresses the analyst asked for (`10.0.0.0/24` →
@@ -915,6 +958,15 @@ Level 1: Owned-domain unmask (no token needed)
   → Attacker IOCs stay visible, victim PII masked.
   → No token required if BLUETEAM_OWNED_DOMAINS is set.
   → Falls back silently to "full" if owned domains not configured.
+  → Does NOT reach identity-layer values (see Level 1b).
+
+Level 1b: Identity-layer unmask (token required)
+  → reveal_identities=true, forensic_token="<token>"
+  → Identity paths, usernames, agents[]/top_agents[] names, hostname bucket
+    keys unmasked for that call. Emails/domains keep their own policy, so pair
+    with reveal_owned for owned domains.
+  → Requires BOTH BLUETEAM_ALLOW_IDENTITY_REVEAL=true on the server
+    AND the operator to pass the token value.
 
 Level 2: Full forensic unmask (token required)
   → redaction_policy="raw", forensic_token="<token>"

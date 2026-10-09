@@ -10,7 +10,7 @@ from typing import Optional, Literal, Any
 from collections import Counter
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
-                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC,
+                        _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC,
                         CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV,
                         ABUSEIPDB_API_KEY, VIRUSTOTAL_API_KEY,
                         GREYNOISE_COMMUNITY_BASE_URL, ABUSEIPDB_BASE_URL,
@@ -50,6 +50,7 @@ class CuratedThreatReportInput(BaseModel):
         description=_REDACTION_POLICY_DESC,
     )
     reveal_owned: bool = Field(default=False, description=_REVEAL_OWNED_DESC)
+    reveal_identities: bool = Field(default=False, description=_REVEAL_IDENTITIES_DESC)
     forensic_token: Optional[str] = Field(default=None, max_length=128, description=_FORENSIC_TOKEN_DESC)
     compare_since: Optional[str] = Field(default=None, max_length=30)
     investigation_depth: Literal["summary", "enriched", "deep"] = Field(default="enriched")

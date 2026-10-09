@@ -221,7 +221,7 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
     Matches natural language queries against Wazuh rule descriptions and returns
     the most relevant rule IDs. Use this BEFORE querying alerts: find which
     rules match "credential theft" or "serangan webshell" then use
-    ``blueteamWazuhIndexerSearch`` to retrieve the actual alerts.
+    ``blueteam_wazuh_indexer_search`` to retrieve the actual alerts.
 
     **Worked Examples**
 
@@ -304,7 +304,7 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
         lines.append("")
         lines.append(f"*Rerank fallback: {rerank_status} - results are BM25-only.*")
     lines.append("")
-    lines.append("*Gunakan `blueteamWazuhIndexerSearch` dengan rule ID dari hasil di atas untuk melihat alert terkait.*")
+    lines.append("*Gunakan `blueteam_wazuh_indexer_search` dengan rule ID dari hasil di atas untuk melihat alert terkait.*")
     return _truncate_if_needed("\n".join(lines))
 
 
