@@ -18,8 +18,11 @@ from mcp_server.threat_intel._cache import cache_get, cache_set, get_limiter
 _CACHE_TTL = 900
 _greynoise_limiter = get_limiter("greynoise", max_concurrent=2, min_interval=1.0)
 
+# A 404 is replaced with this record, so the exact message identifies no-data;
+# a 200 body carries message="Success" and must not be mistaken for one.
+_NO_DATA_MESSAGE = "No data in GreyNoise Community dataset"
 _NO_DATA = {"noise": False, "riot": False, "classification": "unknown",
-            "message": "No data in GreyNoise Community dataset"}
+            "message": _NO_DATA_MESSAGE}
 
 
 async def _greynoise_lookup(ip: str) -> dict:

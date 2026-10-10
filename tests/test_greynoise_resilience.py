@@ -166,3 +166,48 @@ def test_aggregate_keeps_rate_limited_provider_out_of_the_verdict(monkeypatch):
     assert out.providers_ok == 1
     assert out.providers_total == 2
     assert any("greynoise" in e for e in out.errors)
+
+
+def test_aggregate_keeps_success_body_with_message_field(monkeypatch):
+    from mcp_server.tools import threat_intel_aggregate as agg
+    from mcp_server.threat_intel import greynoise as gn
+
+    _no_pacing(monkeypatch, gn)
+
+    async def _api(method, url, **kw):
+        # GreyNoise puts message="Success" in every 200 body; only the synthetic
+        # 404 record marks no-data.
+        return _response("9.9.9.9", {"ip": "9.9.9.9", "noise": False, "riot": True,
+                                     "classification": "benign", "name": "Quad9",
+                                     "last_seen": "2026-01-01", "message": "Success"})
+
+    monkeypatch.setattr(gn, "_api_call", _api)
+
+    result = _run(agg._greynoise_provider("9.9.9.9", "IPv4"))
+
+    assert result.error is None
+    assert result.risk_level == "none"
+    assert result.is_malicious is False
+    assert "no_data" not in result.tags
+    assert result.detail["name"] == "Quad9"
+
+
+def test_provider_errors_keep_their_classifications(monkeypatch):
+    import httpx
+    from mcp_server.tools import threat_intel_aggregate as agg
+
+    async def _lookup_timeout(ip):
+        raise httpx.TimeoutException("read timeout")
+
+    async def _lookup_malformed(ip):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr(agg, "_greynoise_lookup", _lookup_timeout)
+    timeout_result = _run(agg._greynoise_provider("9.9.9.9", "IPv4"))
+    assert timeout_result.error_kind == "timeout"
+    assert timeout_result.risk_level is None
+
+    monkeypatch.setattr(agg, "_greynoise_lookup", _lookup_malformed)
+    malformed_result = _run(agg._greynoise_provider("9.9.9.9", "IPv4"))
+    assert malformed_result.error_kind == "upstream_error"
+    assert malformed_result.risk_level is None

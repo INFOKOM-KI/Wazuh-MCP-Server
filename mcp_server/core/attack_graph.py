@@ -33,8 +33,8 @@ async def build_attack_graph(since_days: int = 30, min_count: int = 1,
                              stix_ips_cap: int = 3) -> nx.Graph:
     """Build the attacker relationship graph from the IOC store.
     include_stix: enrich up to `stix_ips_cap` confirmed IPs with MITRE
-    technique/actor/campaign nodes via the STIX graph (requires indexer
-    credentials; degrades silently without them).
+    technique/actor/campaign nodes via the STIX graph; a failed lookup is
+    recorded as `stix_fetch_errors` in the analysis instead of hidden.
     """
     cache_key = (since_days, min_count, max_iocs, include_stix, stix_ips_cap)
     now = time.monotonic()
@@ -231,7 +231,6 @@ def save_snapshot(G: nx.Graph, window_days: int) -> None:
              "num_nodes": G.number_of_nodes(), "num_edges": G.number_of_edges(),
              "clusters": extract_clusters(G)}
     try:
-        import os as _os
         from pathlib import Path as _Path
         path = _Path(_SNAPSHOT_PATH)
         path.parent.mkdir(parents=True, exist_ok=True)
