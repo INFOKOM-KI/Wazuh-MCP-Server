@@ -585,6 +585,14 @@ providers answered, and how many were attempted. A provider that is not configur
 or does not support the indicator type is excluded from the ratio and stays in
 `errors[]`, so `0/0` means no eligible provider, not a clean result.
 
+**GreyNoise shares one cache across both call paths.** `greynoise_ip_context(ip)` and the
+aggregate hit the same entry: a response is cached for 15 minutes and requests are spaced by
+a one-second minimum interval, so repeated lookups of the same IP inside that window are
+served from the cache, not the provider. A 404 is GreyNoise having no community record: in
+the aggregate it arrives as `tags: ["no_data"]`, no `risk_level` and no vote — an absence of
+signal, never a clean verdict. A 429 stays `error_kind: "rate_limited"` and is neither
+cached nor retried without a `Retry-After`.
+
 Netra and Argus lookups are spaced 30s apart, Sangfor 5s (`NETRA_MIN_INTERVAL` /
 `ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`); the RapidAPI tools are spaced by
 `BLUETEAM_RAPIDAPI_MIN_INTERVAL` (default 0.25s; set 7.0 where the plan allows one lookup
@@ -647,6 +655,13 @@ gate. SSVC stays advisory metadata, never a correlation input.
 > returns a STIX load error, report ATT&CK enrichment as unavailable for that pass, note it in the
 > report, and continue with the remaining tools — do not retry in a loop. A missing `rule.mitre.id`
 > on the alerts is the more common cause and it is worth reporting on its own.
+>
+> `blueteam_stix_killchain` names the case in JSON: `status: "ok"` (chain built),
+> `status: "no_mitre_data"` (no `rule.mitre.id` in the window — the analysis was skipped, not
+> failed; `techniques` and `tactics_seen` are empty), or `status: "error"` with an `error` (the
+> Indexer query itself failed — report the error, never an empty chain). `blueteam_attack_graph`
+> carries `stix_fetch_errors` in its analysis when a STIX technique lookup failed, so an empty
+> chain and a failed lookup stay distinguishable.
 
 ### Alert clustering & incident labeling (opt-in)
 
