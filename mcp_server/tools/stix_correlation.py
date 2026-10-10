@@ -488,7 +488,8 @@ async def blueteam_stix_killchain(params: StixKillchainInput) -> str:
     """
     _audit_log("blueteam_stix_killchain", {"srcip": params.srcip, "since": params.since})
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
-        return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set."}, indent=2)
+        return json.dumps({"error": "WAZUH_INDEXER_URL and WAZUH_INDEXER_PASSWORD must be set.",
+                           "status": "error"}, indent=2)
 
     since_iso, until_iso = _parse_time_window(params.since, params.until)
     srcip = params.srcip

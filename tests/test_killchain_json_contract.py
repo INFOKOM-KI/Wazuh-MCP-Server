@@ -163,3 +163,37 @@ def test_attack_graph_omits_error_field_when_no_technique_data(monkeypatch):
 
     assert "stix_fetch_errors" not in G.graph
     assert "stix_fetch_errors" not in attack_graph.analyze_attack_graph(G, top_n=5)
+
+
+def test_missing_indexer_credentials_return_error_status(monkeypatch):
+    from mcp_server.tools import stix_correlation
+
+    monkeypatch.setattr(stix_correlation, "WAZUH_INDEXER_URL", "")
+
+    raw = _run(stix_correlation.blueteam_stix_killchain(
+        stix_correlation.StixKillchainInput(srcip="203.0.113.7", response_format="json")))
+
+    payload = json.loads(raw)
+    assert payload["status"] == "error"
+    assert "WAZUH_INDEXER_URL" in payload["error"]
+
+
+def test_attack_graph_records_unexpected_exception(monkeypatch):
+    import networkx as nx
+    from mcp_server.core import attack_graph
+    from mcp_server.tools import stix_correlation
+
+    async def _fetch(ip, since, until):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(stix_correlation, "_load_stix", lambda: None)
+    monkeypatch.setattr(stix_correlation, "_fetch_techniques_for_srcip", _fetch)
+
+    G = nx.Graph()
+    G.add_node("203.0.113.7", kind="ip", confirmed=True)
+
+    _run(attack_graph._add_stix_edges(G, cap=3))
+
+    expected = [{"ip": "203.0.113.7", "error": "RuntimeError: boom"}]
+    assert G.graph["stix_fetch_errors"] == expected
+    assert attack_graph.analyze_attack_graph(G, top_n=5)["stix_fetch_errors"] == expected

@@ -92,7 +92,8 @@ async def _add_stix_edges(G: nx.Graph, cap: int = 3) -> None:
     for ip in confirmed_ips:
         try:
             _, tids, fetch_error = await _fetch_techniques_for_srcip(ip, "30d", None)
-        except Exception:
+        except Exception as e:
+            fetch_errors.append({"ip": ip, "error": f"{type(e).__name__}: {str(e)[:300]}"})
             continue
         if fetch_error:
             fetch_errors.append({"ip": ip, "error": fetch_error})

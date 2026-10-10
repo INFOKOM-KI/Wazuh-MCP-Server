@@ -1020,6 +1020,12 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 | `metrics://prometheus` | Server telemetry (tool-call counters, timings) in Prometheus text format |
 | `metrics://prometheus/json` | Same telemetry as a JSON snapshot |
 
+When the client cannot read a resource, the tool equivalents cover the same need:
+`blueteam_wazuh_get_rules` for the rule taxonomy, `blueteam_mitre_lookup` (one tactic or
+technique per call) for the ATT&CK tactic-to-category mapping, and `blueteam_metrics` for the
+server telemetry snapshot. A resource the client does not expose is a client capability gap,
+not a server outage.
+
 ## 2. Standard investigation workflows
 
 ### Workflow A — IP triage (fast, 2 calls)
