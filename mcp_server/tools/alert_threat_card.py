@@ -171,7 +171,6 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     if not docs:
         return "# Threat Card - `" + params.srcip + "`\n\n**No alerts found** for this IP in the selected time window."
 
-    # Extract common data
     rule_counts: Counter[str] = Counter()
     rule_descs: dict[str, str] = {}
     mitre_tactics: set[str] = set()
@@ -208,7 +207,6 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     max_level = max(levels) if levels else 0
     avg_level = sum(levels) / len(levels) if levels else 0.0
 
-    # Format output
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps({
             "srcip": params.srcip,

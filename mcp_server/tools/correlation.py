@@ -998,7 +998,6 @@ async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
     summary_raw, timeline_raw, geo_raw = await asyncio.gather(
         _fetch_summary(), _fetch_timeline(), _fetch_geo())
 
-    # Parse results
     total = summary_raw.get("hits", {}).get("total", {}).get("value", 0)
     s_aggs = summary_raw.get("aggregations", {})
     t_aggs = timeline_raw.get("aggregations", {})
@@ -1026,7 +1025,6 @@ async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
             return encode_toon(payload, limit=CHARACTER_LIMIT)
         return json.dumps(payload, indent=2, ensure_ascii=False)
 
-    # Build markdown report
     lines = [
         f"# 🔎 IP Investigation - `{srcip}`",
         "",

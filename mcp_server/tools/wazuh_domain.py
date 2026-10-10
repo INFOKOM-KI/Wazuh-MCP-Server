@@ -560,7 +560,6 @@ async def blueteam_whois_lookup(params: WhoisLookupInput) -> str:
     except Exception as e:
         return json.dumps({"error": f"RDAP lookup failed: {e}", "domain": domain}, indent=2)
 
-    # Extract key fields
     nameservers = []
     for ns in data.get("nameservers", []):
         name = ns.get("ldhName") or ns.get("objectClassName", "?")

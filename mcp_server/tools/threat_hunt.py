@@ -290,7 +290,6 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
             "aggregations": {k: v for k, v in aggs.items()},
         }, indent=2, ensure_ascii=False)
 
-    # Build markdown summary
     lines = [
         f"# 🔍 Threat Hunt - `{params.template}`",
         "",

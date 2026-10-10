@@ -179,7 +179,6 @@ def blueteam_tool(
         wrapper.__annotations__ = _resolve_annotations(func.__annotations__, func.__globals__)
         wrapper.__module__ = func.__module__
 
-        # Register with FastMCP.
         return mcp.tool(name=name, annotations=ann)(wrapper)
 
     return decorator

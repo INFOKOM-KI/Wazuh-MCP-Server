@@ -407,7 +407,6 @@ class PromptRouter:
                             buckets[best_tool]["description"] = t["description"]
                             break
 
-        # Sort buckets by score descending
         sorted_buckets = dict(
             sorted(buckets.items(), key=lambda x: -x[1]["score"])
         )

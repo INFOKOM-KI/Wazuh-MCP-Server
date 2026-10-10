@@ -283,7 +283,6 @@ async def blueteam_calendar_heatmap(params: CalendarHeatmapInput) -> str:
     variance = sum((v - mean_val) ** 2 for v in flat) / n_cells if n_cells > 0 else 0.0
     stddev = math.sqrt(variance)
 
-    # Find peak day and hour
     peak_day_idx, peak_hour = 0, 0
     for d in range(7):
         for h in range(24):

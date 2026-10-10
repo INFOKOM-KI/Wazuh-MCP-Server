@@ -18,7 +18,6 @@ from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
                                       _srcip_should_clauses, _srcip_from_doc, _SRCIP_FIELD_PATHS)
 from mcp_server.wazuh.time_utils import _parse_time_window
 
-# BM25
 # BM25(D, Q) = Σ IDF(q_i) · TF(q_i, D)
 # IDF(q_i) = ln((N - n_i + 0.5) / (n_i + 0.5) + 1)
 # TF(q_i, D) = f(q_i, D) · (k1 + 1) / (f(q_i, D) + k1 · (1 - b + b · |D| / avgdl))
