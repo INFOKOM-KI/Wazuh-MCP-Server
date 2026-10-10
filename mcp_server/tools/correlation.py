@@ -3,32 +3,29 @@
 © NAuliajati - TangerangKota-CSIRT
 3-Sum correlation orchestrator, IP investigation, aggregate analysis, enrichment
 """
-import json, asyncio, time, math, os
+import json, asyncio, time
 from datetime import datetime, timedelta
-from typing import Optional, Literal, Any
-from collections import Counter
+from typing import Optional, Literal
 from pydantic import field_validator, BaseModel, ConfigDict, Field
-from mcp_server import (mcp, CHARACTER_LIMIT, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _WAZUH_INDEXER_MAX_SIZE,
-                        _INVESTIGATION_HISTORY_FILE, CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV,
-                        _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC)
-from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
+from mcp_server import (mcp, CHARACTER_LIMIT, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
+                        _INVESTIGATION_HISTORY_FILE,
+                        _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC)
+from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.core.toon import encode_toon
-from mcp_server.core.http_client import _api_call, _handle_api_error, ValidPublicIp
 from mcp_server.core.redact import _redact_alert_data
-from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY
 from mcp_server.core.validators import ValidAgentName, ValidRuleGroups, ValidKeyword
 from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _wazuh_indexer_msearch, _wazuh_indexer_field_caps,
                                       _agg_safe_paths, _srcip_should_clauses, _srcip_aggs_merged,
-                                      _correct_srcip_counts, _WAZUH_INDEX_PATTERNS,
+                                      _correct_srcip_counts,
                                       _KEYWORD_SEARCH_FIELDS, _SRCIP_FIELD_PATHS)
-from mcp_server.wazuh.time_utils import _parse_time_window, _auto_bucket_interval, _duration_minutes
+from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
-from mcp_server.core.attacker_registry import register_attacker_ioc, register_attacker_ips
+from mcp_server.core.attacker_registry import register_attacker_ips
 from mcp_server.core.ioc_store import record_iocs
 from mcp_server.tools.investigation_history import _read_history
 from mcp_server.correlation.three_sum_core import (evaluate_engine_a, evaluate_engine_b, format_evaluation_dict,
-    normalize_srcip_to_cidr, DEFAULT_THRESHOLD_SCORE, DEFAULT_Z_THRESHOLD, DEFAULT_WINDOW_MINUTES,
-    DEFAULT_SPARSE_FLOOR, evaluate_baseline_drift, evaluate_multi_resolution, _MULTI_RES_TIERS)
+    DEFAULT_THRESHOLD_SCORE, DEFAULT_Z_THRESHOLD, DEFAULT_WINDOW_MINUTES,
+    evaluate_multi_resolution, _MULTI_RES_TIERS)
 
 # IOC limit for attack-graph cluster context
 _GRAPH_MAX_IOCS = 500
@@ -333,27 +330,8 @@ async def fetch_srcip_profiles(categories: list[tuple[str, str, list[str]]], sin
             "fallback_paths": fallback_paths}
 
 
-# Wazuh Indexer index patterns (OpenSearch)
 # Correlation tools (hand-migrated)
-import json, asyncio, time, math
-from datetime import datetime, timedelta
-from pydantic import BaseModel, ConfigDict, Field, field_validator
-from mcp_server import (WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD, _WAZUH_INDEXER_MAX_SIZE,
-                        CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV, _INVESTIGATION_HISTORY_FILE,
-                        _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC)
-from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
-from mcp_server.core.http_client import _api_call, _handle_api_error
-from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY, _last_eval_time, _last_eval_result
-from mcp_server.core.validators import ValidAgentName, ValidRuleGroups, ValidKeyword
-from mcp_server.wazuh.indexer import _wazuh_indexer_post, _wazuh_indexer_msearch, _WAZUH_INDEX_PATTERNS, _KEYWORD_SEARCH_FIELDS, _SRCIP_FIELD_PATHS
-from mcp_server.wazuh.time_utils import _parse_time_window, _auto_bucket_interval, _duration_minutes
-from mcp_server.threat_intel.crowdsec import _crowdsec_request
-from mcp_server.core.attacker_registry import register_attacker_ioc, register_attacker_ips
-from mcp_server.core.ioc_store import record_iocs
 from mcp_server.core.tool_decorator import blueteam_tool
-from mcp_server.correlation.three_sum_core import (evaluate_engine_a, evaluate_engine_b, format_evaluation_dict,
-    normalize_srcip_to_cidr, DEFAULT_THRESHOLD_SCORE, DEFAULT_Z_THRESHOLD, DEFAULT_WINDOW_MINUTES,
-    DEFAULT_SPARSE_FLOOR, evaluate_baseline_drift, evaluate_multi_resolution, _MULTI_RES_TIERS)
 
 
 # Aggregate Analysis

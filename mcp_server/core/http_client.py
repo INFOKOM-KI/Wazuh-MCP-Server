@@ -4,12 +4,11 @@
 HTTP client pool, unified API call helper, error handling, IP validation.
 """
 from __future__ import annotations
-import asyncio, ipaddress, json, logging, random, socket, time
-from typing import Any, Dict, Optional, Annotated
+import asyncio, ipaddress, logging, random, socket, time
+from typing import Annotated
 import httpx
 from pydantic import AfterValidator
-from mcp_server import WAZUH_INDEXER_VERIFY_SSL
-from mcp_server import HTTP_TIMEOUT, WAZUH_API_VERIFY_SSL, WAZUH_INDEXER_VERIFY_SSL, ARGUS_VERIFY_SSL
+from mcp_server import HTTP_TIMEOUT
 from mcp_server.core.exceptions import ThreatIntelError
 
 logger = logging.getLogger("blue_team_mcp.http")

@@ -7,12 +7,6 @@ from __future__ import annotations
 import re
 from typing import Optional, Annotated
 from pydantic import AfterValidator
-from mcp_server import _AGENT_NAME_DESC
-from mcp_server import _SINCE_DESC
-from mcp_server import _UNTIL_DESC
-from mcp_server import _RESPONSE_FORMAT_DESC
-from mcp_server import _BYPASS_REDACTION_DESC, _RESPONSE_FORMAT_DESC, _SINCE_DESC, _UNTIL_DESC, _AGENT_NAME_DESC
-
 _AGENT_NAME_SAFE_RE = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
 
 # Practical email regex for extraction from log fields - covers >99% of real addresses

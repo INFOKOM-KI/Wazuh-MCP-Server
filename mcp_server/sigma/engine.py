@@ -356,10 +356,6 @@ def parse_check(rule_source: str) -> tuple:
         return False, [f"pySigma parse failed: {type(e).__name__}: {str(e)[:300]}"]
 
 
-class SigmaConversionError(BlueTeamMCPError):
-    """Raised when pySigma cannot parse or convert the supplied rule."""
-
-
 if __name__ == "__main__":
     # Self-check: the pure helpers hold without pySigma; the conversion path is
     # exercised only when the optional dependency is present.

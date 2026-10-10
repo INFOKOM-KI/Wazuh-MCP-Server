@@ -4,12 +4,12 @@
 CrowdSec CTI - single + bulk IP reputation
 """
 from __future__ import annotations
-import json, logging, time, os, asyncio
+import json, logging, os
 from typing import Any
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import mcp, CROWDSEC_API_KEY_ENV, CROWDSEC_CACHE_TTL, CROWDSEC_BASE_URL
-from mcp_server.core.http_client import _api_call, _handle_api_error, _api_error_text, _is_private_or_reserved, ValidPublicIp
+from mcp_server.core.http_client import _api_call, _handle_api_error, _api_error_text, ValidPublicIp
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.threat_intel._cache import cache_get, cache_set, get_limiter
 
