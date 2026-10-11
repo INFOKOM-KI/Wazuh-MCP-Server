@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
+# © NAuliajati - TangerangKota-CSIRT
 """Read-only inventory of the stores that could support a correlation evaluation.
-
 Phase 0 of the correlation evaluation. It answers one question before any
 preprocessing, F1 or feature work is built: *is there any independently labelled
 ground truth to score a same-incident correlation against, and if not, what is
@@ -9,7 +9,6 @@ to a store, never calls the Wazuh Indexer, never loads a model, and never emits
 raw IPs, notes, titles or record contents.
 
 Why the separation matters
---------------------------
 The 3-Sum engine auto-registers its own trigger IPs as attacker IOCs
 (``correlation.py`` ``register_attacker_ips(source="engine_a")``), and
 ``is_attacker_ioc`` cannot tell an engine lead from an analyst verdict. A
@@ -22,7 +21,6 @@ which has its own independent review path (``scripts/export_case_labels.py``,
 ``mcp_server/label/criteria.py``).
 
 Environment (all read-only; no positional paths, no directory scanning)
------------------------------------------------------------------------
 ``BLUETEAM_INVENTORY_ROOT``      required. Absolute staging root. Every configured
                                  store path must resolve inside it. Missing root,
                                  relative paths, symlink escapes, duplicate store

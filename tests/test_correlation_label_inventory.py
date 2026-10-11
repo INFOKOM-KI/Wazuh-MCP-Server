@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
+# © NAuliajati - TangerangKota-CSIRT
 """Tests for scripts/correlation_label_inventory.py. Synthetic temporary fixtures
 only: no live store, no Indexer, no production path, no real labels.
 """
 from __future__ import annotations
-
 import hashlib
 import importlib.util
 import json
