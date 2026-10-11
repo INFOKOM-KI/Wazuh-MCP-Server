@@ -188,7 +188,6 @@ async def _wazuh_domain_lookup_full_scan(
     all_docs = result["all_docs"]
     sample_docs = result["sample_docs"]
 
-    # Accumulate counters from all scanned docs
     global_srcip_counter: Counter[str] = Counter()
     global_rule_group_counter: Counter[str] = Counter()
     global_rule_counter: Counter[str] = Counter()
@@ -240,7 +239,6 @@ async def _wazuh_domain_lookup_full_scan(
         }
         return _truncate_if_needed(json.dumps(output, indent=2, ensure_ascii=False))
 
-    #Markdown output
     lines: list[str] = [
         f"#Wazuh Domain Lookup - {params.domain} (Full Scan)",
         "",
@@ -450,7 +448,6 @@ async def wazuh_domain_lookup(params: WazuhDomainLookupInput) -> str:
         }
         return _truncate_if_needed(json.dumps(output, indent=2, ensure_ascii=False))
 
-    # Markdown output
     total_display = f"{total_val:,}" + ("+" if total_relation == "gte" else "")
     page_info = f"Page ({len(docs)} of {total_display})"
     lines: list[str] = [
@@ -621,7 +618,6 @@ async def blueteam_whois_lookup(params: WhoisLookupInput) -> str:
             lines.append(f"- **{roles_str}**: {e['name']}")
         lines.append("")
 
-    # Red flags for LLM analysis
     lines.append("## ⚠️ Red Flags")
     flags = []
     created = events.get("registration", "")
@@ -717,11 +713,9 @@ async def blueteam_crtsh_lookup(params: CrtshLookupInput) -> str:
                 seen.add(name)
                 names.append(name)
         issuer = e.get("issuer_name", "?")
-        # Truncate long issuer names
         issuer_short = issuer[:80] if issuer else "?"
         issuers[issuer_short] = issuers.get(issuer_short, 0) + 1
 
-    # Classify names
     subdomains = [n for n in names if n.endswith(f".{domain}")]
     siblings = [n for n in names if not n.endswith(f".{domain}") and n != domain]
 

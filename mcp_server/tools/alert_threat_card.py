@@ -114,7 +114,6 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
 
     since_iso, until_iso = _parse_time_window(params.since, params.until)
 
-    # Fetch alerts for this IP
     body = {
         "size": 500,
         "sort": [{"@timestamp": {"order": "asc"}}],
@@ -134,7 +133,6 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
         ],
     }
 
-    # Fetch alerts + threat intel concurrently
     async def _fetch_alerts():
         raw = await _wazuh_indexer_post(body)
         if "error" in raw:
@@ -225,7 +223,6 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
             "threat_intel": {"crowdsec": crowdsec_data, "greynoise": greynoise_data},
         }, indent=2, ensure_ascii=False), params=params)
 
-    # Markdown threat card
     lines = [
         f"# 🛡️ Threat Card - `{params.srcip}`",
         "",
@@ -240,7 +237,6 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
         lines.append(f"No Wazuh alerts for `{params.srcip}` in this time window.")
         return "\n".join(lines)
 
-    # Section 1: Executive Summary
     lines.append("## 📊 Executive Summary")
     lines.append("")
     lines.append(f"| Field | Value |")
@@ -254,7 +250,6 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     lines.append(f"| Last seen | `{last_ts}` |")
     lines.append("")
 
-    # Section 2: MITRE ATT&CK
     if mitre_tactics:
         lines.append("## 🎯 MITRE ATT&CK Tactics")
         lines.append("")
@@ -265,7 +260,6 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
             lines.append(f"| {t} | `{cat}` |")
         lines.append("")
 
-    # Section 3: Rules Fired
     lines.append("## 🔥 Rules Triggered")
     lines.append("")
     lines.append("| Rule ID | Count | Description |")
@@ -275,7 +269,6 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
         lines.append(f"| {rid} | {cnt} | {desc} |")
     lines.append("")
 
-    # Section 4: Targeted Resources
     if domains:
         lines.append("## 🌐 Targeted Domains")
         for d in sorted(domains):
@@ -289,7 +282,6 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
             lines.append(f"- ... and {len(set(urls)) - 10} more")
         lines.append("")
 
-    # Section 5: Threat Intelligence
     if crowdsec_data or greynoise_data:
         lines.append("## 🌍 External Threat Intelligence")
         lines.append("")
@@ -314,7 +306,6 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     if crowdsec_data or greynoise_data:
         lines.append("")
 
-    # Section 6: Recommended Actions
     lines.append("## 🛠️ Recommended Actions")
     lines.append("")
 

@@ -69,7 +69,6 @@ def _make_params_dict(params: Any) -> dict:
     return {}
 
 
-# Public decorator
 def blueteam_tool(
     name: str,
     annotations: dict | None = None,
@@ -108,7 +107,6 @@ def blueteam_tool(
             _t0 = time.monotonic()
             params = args[0] if args else None
 
-            # pre-call: audit
             if audit:
                 pd = _make_params_dict(params)
                 _audit_log(name, {k: v for k, v in pd.items()
@@ -124,7 +122,6 @@ def blueteam_tool(
                 metrics.record_timing(name, (time.monotonic() - _t0) * 1000)
                 raise
 
-            # timing
             metrics.record_timing(name, (time.monotonic() - _t0) * 1000)
 
             # post-call: redact (default ON uniform security boundary)

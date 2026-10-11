@@ -38,7 +38,6 @@ _SEVERITY_ORDER = {
 _limiter = get_limiter("osv", max_concurrent=8, min_interval=0.05)
 
 
-# Format parsers
 def _parse_requirements_txt(text: str) -> list[dict]:
     results: list[dict] = []
     for line in text.splitlines():

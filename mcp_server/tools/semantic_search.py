@@ -33,7 +33,6 @@ class _BM25:
         self.doc_len = [len(t) for t in self.tokenized]
         # avgdl guard: empty corpus or all-empty docs must not divide by zero (Aul adjust)
         self.avgdl = sum(self.doc_len) / max(self.n, 1) or 1e-9
-        # Pre-compute IDF per term
         df: dict[str, int] = defaultdict(int)
         for tokens in self.tokenized:
             for t in set(tokens):
@@ -121,7 +120,6 @@ _STATIC_RULE_CORPUS: list[dict] = [
     {"id": "801", "desc": "PCI DSS compliance violation detected", "groups": "pci_dss,compliance"},
 ]
 
-# Live corpus builder (calls Wazuh API for full rule set)
 def _build_bm25_from_corpus(corpus: list[dict]) -> _BM25:
     """Build BM25 index from a rule corpus."""
     texts = [f"{r['id']} {r['desc']} {r['groups']}" for r in corpus]
@@ -159,7 +157,6 @@ async def _try_load_live_corpus():
         _bm25_corpus = live_corpus
         _bm25_index = _build_bm25_from_corpus(live_corpus)
     except Exception:
-        # Fall back to static corpus
         _bm25_corpus = _STATIC_RULE_CORPUS
         _bm25_index = _build_bm25_from_corpus(_STATIC_RULE_CORPUS)
 
@@ -181,7 +178,6 @@ async def _rerank_candidates(query: str, indices: list[int], docs: list[str],
     return [(indices[i], scores[i]) for i in order[:top_k]], None
 
 
-# Semantic Search Tool
 class SemanticSearchInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     query: str = Field(..., min_length=2, max_length=512,

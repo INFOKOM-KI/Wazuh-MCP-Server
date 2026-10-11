@@ -183,7 +183,6 @@ async def wazuh_alert_focused_crawl(params: FocusedCrawlInput = FocusedCrawlInpu
     _audit_log("wazuh_alert_focused_crawl", {"src_ip": params.src_ip, "rule_id": params.rule_id, "sample_size": params.sample_size})
     since_str, until_str = _parse_time_window(params.since, params.until)
 
-    # Build _source fields: defaults + user-specified extras
     source_fields = [
         "@timestamp",
         "agent.name",

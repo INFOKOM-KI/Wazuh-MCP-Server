@@ -227,7 +227,6 @@ async def blueteam_stix_analyze(params: StixAnalyzeInput) -> str:
     assert _stix_data is not None
     by_id, by_type, rel_index = _stix_data["by_id"], _stix_data["by_type"], _stix_data["rel_index"]
 
-    # Find matching objects by query
     matched: list[dict] = []
     if params.technique_id:
         tid = params.technique_id.strip().upper()

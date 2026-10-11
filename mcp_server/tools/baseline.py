@@ -119,7 +119,6 @@ async def blueteam_baseline_profile(params: BaselineProfileInput) -> str:
     variance = sum((v - mean_val) ** 2 for v in values) / n
     stddev = math.sqrt(variance)
 
-    # Current value = most recent bucket
     current = values[-1] if values else 0
     z_current = (current - mean_val) / stddev if stddev > 0.0001 else 0.0
 
@@ -275,7 +274,6 @@ async def blueteam_calendar_heatmap(params: CalendarHeatmapInput) -> str:
         except (ValueError, TypeError):
             continue
 
-    # Find peak cell and compute statistics
     max_val = max(max(row) for row in matrix)
     flat = [v for row in matrix for v in row]
     n_cells = len(flat)
@@ -289,7 +287,6 @@ async def blueteam_calendar_heatmap(params: CalendarHeatmapInput) -> str:
             if matrix[d][h] > matrix[peak_day_idx][peak_hour]:
                 peak_day_idx, peak_hour = d, h
 
-    # Detect strongly periodic patterns (Z > 2.5 in any cell)
     periodic_cells = []
     for d in range(7):
         for h in range(24):
@@ -318,7 +315,6 @@ async def blueteam_calendar_heatmap(params: CalendarHeatmapInput) -> str:
                       for d in range(7)},
         }, indent=2, ensure_ascii=False))
 
-    # ASCII heatmap
     lines = [
         f"# 📅 Calendar Heatmap — {params.srcip or 'All IPs'}",
         "",
@@ -337,7 +333,6 @@ async def blueteam_calendar_heatmap(params: CalendarHeatmapInput) -> str:
 
     lines.append(f"## Day × Hour Matrix  (peak: {days_of_week[peak_day_idx]} {peak_hour:02d}:00 = {matrix[peak_day_idx][peak_hour]:,})")
     lines.append("")
-    # Header
     lines.append("```")
     header = "     " + "".join(f"{h:>4}" for h in range(24))
     lines.append(header)
@@ -345,9 +340,7 @@ async def blueteam_calendar_heatmap(params: CalendarHeatmapInput) -> str:
 
     for d in range(7):
         row_vals = matrix[d]
-        # Find max in this row for scaling
         row_max = max(row_vals) if max(row_vals) > 0 else 1
-        # Build ASCII bar row
         bars = ""
         for h in range(24):
             v = row_vals[h]

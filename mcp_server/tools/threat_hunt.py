@@ -306,7 +306,6 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
         lines.append(f"**Source IP filter**: `{params.srcip}`")
     lines.append("")
 
-    # Agent breakdown
     by_agent = aggs.get("by_agent", {}).get("buckets", [])
     if by_agent:
         lines.append("## By Agent")
@@ -316,7 +315,6 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
             lines.append(f"| `{b['key']}` | {b['doc_count']:,} |")
         lines.append("")
 
-    # Source IP breakdown
     by_srcip = aggs.get("by_srcip", {}).get("buckets", [])
     if by_srcip:
         lines.append("## By Source IP")
@@ -326,7 +324,6 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
             lines.append(f"| `{b['key']}` | {b['doc_count']:,} |")
         lines.append("")
 
-    # Rule breakdown
     by_rule = aggs.get("by_rule", {}).get("buckets", [])
     if by_rule:
         lines.append("## By Rule")
@@ -336,7 +333,6 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
             lines.append(f"| `{b['key']}` | {b['doc_count']:,} |")
         lines.append("")
 
-    # Time histogram
     by_hour = aggs.get("by_hour", {}).get("buckets", [])
     if by_hour:
         lines.append("## Hourly Trend")
@@ -349,7 +345,7 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
             lines.append(f"  `{ts}`  {count:>6,}  {bar}")
         lines.append("")
 
-    # Destination IP breakdown (lateral movement only)
+    # by_dstip is only populated by the lateral_movement template
     by_dstip = aggs.get("by_dstip", {}).get("buckets", [])
     if by_dstip:
         lines.append("## By Destination IP")
@@ -359,7 +355,7 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
             lines.append(f"| `{b['key']}` | {b['doc_count']:,} |")
         lines.append("")
 
-    # URL breakdown (web shells only)
+    # by_url is only populated by the web_shells template
     by_url = aggs.get("by_url", {}).get("buckets", [])
     if by_url:
         lines.append("## By URL")

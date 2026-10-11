@@ -147,7 +147,6 @@ async def blueteam_beacon_detect(params: BeaconDetectInput) -> str:
             f"**Insufficient data**: {len(hits)} events (need ≥{params.min_events}). "
             f"Expand the time window and retry.")
 
-    # Parse timestamps into epoch seconds
     timestamps: list[float] = []
     for h in hits:
         ts = h.get("_source", {}).get("@timestamp", "")
