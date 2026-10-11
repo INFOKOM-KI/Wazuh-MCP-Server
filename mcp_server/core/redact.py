@@ -436,7 +436,7 @@ def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
             _REDACT_MEMO.move_to_end(memo_key)
             return cached
 
-        # Layer 1: Credential stripping (ALWAYS)
+        # Layer 1: Credential stripping (never bypassed)
         data = _apply_credential_layer(data)
 
         # Apply enabled layers in order; append to _STRING_REDACTION_LAYERS to add one.
