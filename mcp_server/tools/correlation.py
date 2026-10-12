@@ -742,7 +742,7 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
     )
 
     # DEGRADATION DETECTION - surface total Indexer failure so the LLM
-    # agent is never told "NONE / 0 triggers" when the Indexer was simply down.
+    # agent is never told "NONE / 0 triggers" when the Indexer was down.
     engine_a_degraded = (params.engine_a_enabled and engine_a_query_failures == 3)
     engine_b_degraded = (params.engine_b_enabled and engine_b_query_failures == 3)
     if params.engine_a_enabled and not params.engine_b_enabled and engine_a_degraded:

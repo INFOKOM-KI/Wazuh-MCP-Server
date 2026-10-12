@@ -1580,6 +1580,12 @@ transport it.
   installs it only when `BLUETEAM_INSTALL_MARKITDOWN=1` (no torch, no model downloads):
   `pip install "markitdown[pdf,docx,pptx,xlsx,xls,outlook]"`. Local formats only — URLs,
   `.zip`, `.epub`, audio and YouTube are held out of v1.
+- Optional, SetFit incident labeling (`blueteam_incident_label`, `BLUETEAM_LAYA_BACKEND=setfit`):
+  `setup.sh` installs it only when `BLUETEAM_INSTALL_SETFIT=1` (CPU torch + `setfit>=1.1,<2`), the
+  pip line carrying `pyarrow<26`, `numpy<2` and `scipy<1.14`. `setfit` imports `datasets` at
+  module top level, and pyarrow 26.0.0 refuses numpy<2 at import (`pyarrow requires NumPy 2.0 or
+  newer`) while declaring no numpy dependency, so a floating pyarrow passes pip and then fails the
+  `import setfit` probe that `setup.sh` exits 1 on. Weights stay vendored and pinned by `setup.sh`.
 - pypdf PDF text + metadata (`blueteam_pdf_extract`, and `blueteam_rag_ingest(source="pdf")`):
   a plain dependency, no opt-in flag, no torch, no model download. Install plain `pypdf`,
   **never** `pypdf[image]` — the `[image]` extra pulls Pillow, which is the package that

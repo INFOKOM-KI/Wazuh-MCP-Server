@@ -68,4 +68,10 @@ printf x >> "$TMP/m2/sub/w.bin"
   || { echo "FAIL setup.sh hash rule changed - resync this test"; exit 1; }
 echo "ok  laya hash"
 
+# setfit imports datasets at module top level and pyarrow 26.0.0 rejects numpy<2 at
+# import while declaring no numpy dependency, so no pip metadata warns about it.
+grep -q 'pyarrow<26' "$SETUP" \
+  || { echo "FAIL setup.sh setfit block lost the pyarrow<26 pin"; exit 1; }
+echo "ok  dependency pins"
+
 echo "all checks passed"

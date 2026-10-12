@@ -43,7 +43,7 @@ def register_custom_models() -> int:
     Idempotent and non-fatal by design: called from ``RerankConfig.validate()``, which
     runs during ``init_config()`` at import time. A registration failure must therefore
     degrade to the existing fail-closed registry error, never to a startup crash on a
-    host that simply has no fastembed. Returns the number registered by this call.
+    host with no fastembed. Returns the number registered by this call.
     """
     try:
         from fastembed.common.model_description import ModelSource

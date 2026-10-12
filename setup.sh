@@ -300,7 +300,11 @@ if [[ "${BLUETEAM_INSTALL_SETFIT:-0}" == "1" || "${BLUETEAM_INSTALL_SETFIT:-0}" 
   echo "[+] Installing CPU torch + $SETFIT_PIP_SPEC for SetFit labeling..."
   "$INSTALL_DIR/venv/bin/pip" install --quiet torch \
     --index-url https://download.pytorch.org/whl/cpu
-  "$INSTALL_DIR/venv/bin/pip" install --quiet "$SETFIT_PIP_SPEC"
+  # setfit imports datasets at module top level, and pyarrow 26.0.0 refuses numpy<2 at
+  # import ("pyarrow requires NumPy 2.0 or newer") while declaring no numpy dependency,
+  # so pip reports no conflict with the Marker pin. numpy/scipy keep scipy>=1.14 visible.
+  "$INSTALL_DIR/venv/bin/pip" install --quiet \
+    "$SETFIT_PIP_SPEC" "pyarrow<26" "numpy<2" "scipy<1.14"
   # Same import-cost probe as Laya: transformers is a transitive dependency and
   # probes TF/Flax unless the env stops it.
   if ! USE_TF=0 USE_FLAX=0 "$INSTALL_DIR/venv/bin/python3" -c "import setfit; print('setfit ok')"; then

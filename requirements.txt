@@ -22,8 +22,8 @@ aiosqlite>=0.20,<1.0
 #             breaking startup. Transitive via fastembed.
 uvicorn>=0.31.1,<1.0.0
 pyyaml>=6.0.1,<7.0.0
-numpy<2
-# numpy>=1.26,<3.0
+# Capped below 2 for marker/surya (see the Marker block); 1.26 is the verified stack.
+numpy>=1.26,<2
 
 # PY-TOON (Token-Oriented Object Notation) for the opt-in response_format="toon"
 # on high-volume tools. Never the default: the in-process graph orchestrators
@@ -130,20 +130,25 @@ yara-x>=1.20.0,<2.0.0
 # setup.sh and never fetched at call time.
 
 # SetFit incident labeling (blueteam_incident_label, backend=setfit). Also opt-in,
-# for the same reason: torch in the venv is the cost the onnx default avoids. The
-# runtime is one install; training additionally needs datasets + optuna (see
-# scripts/train_setfit_labeler.py).
+# for the same reason: torch in the venv is the cost the onnx default avoids.
+# Training additionally needs optuna (see scripts/train_setfit_labeler.py).
 # pip install torch --index-url https://download.pytorch.org/whl/cpu
-# pip install "setfit>=1.1,<2"
-# setfit pulls sentence-transformers, which pulls scikit-learn and huggingface_hub.
-# Resolve against the Marker pins above (numpy<2 / scipy<1.14) in a staging venv
-# before enabling both extras in one environment.
+# pip install "setfit>=1.1,<2" "pyarrow<26" "numpy<2" "scipy<1.14"
+# setfit pulls sentence-transformers (scikit-learn, huggingface_hub) and imports
+# datasets at module top level, so pyarrow rides the import path of `import setfit`.
+# pyarrow 26.0.0 refuses numpy<2 at import while declaring no numpy dependency, so pip
+# cannot see the collision with the Marker pins and the failure lands on the import.
+# setup.sh carries the same trio on its setfit pip line.
 
 # Dev dependencies (install with: pip install -r requirements.txt on venv environtment variable)
 pytest>=7.0
 pytest-asyncio>=0.21
 httpx[http2]>=0.27.0,<0.29.0
-datasets<3.0.0
+# Imported by scripts/train_setfit_labeler.py and transitively by `import setfit`.
+# datasets leaves pyarrow unbounded at every major, so the ceiling below is required
+# (see the SetFit block above).
+datasets>=2.15.0,<3.0.0
+pyarrow<26
 
 # stix2 is NOT a runtime dependency and must not become one. blueteam_stix_export writes
 # plain STIX 2.1 JSON by hand (mcp_server/core/stix_objects.py), and the tool has to keep

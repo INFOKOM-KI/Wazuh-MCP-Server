@@ -291,7 +291,7 @@ async def _resolve_agg_fields(fields: list[str],
 def _srcip_should_clauses(srcip: str, *, full_log: bool = True,
                           extra_paths: tuple = ()) -> dict:
     """``bool.should`` matching one source IP across every candidate path.
-    Unmapped paths simply do not match, so the clause is safe on any mapping.
+    Unmapped paths do not match, so the clause is safe on any mapping.
     """
     should = [{"match": {path: srcip.strip()}} for path in _SRCIP_FIELD_PATHS]
     should += [{"match": {path: srcip.strip()}} for path in extra_paths]
