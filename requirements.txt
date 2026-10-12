@@ -22,7 +22,8 @@ aiosqlite>=0.20,<1.0
 #             breaking startup. Transitive via fastembed.
 uvicorn>=0.31.1,<1.0.0
 pyyaml>=6.0.1,<7.0.0
-numpy>=1.26,<3.0
+numpy<2
+# numpy>=1.26,<3.0
 
 # PY-TOON (Token-Oriented Object Notation) for the opt-in response_format="toon"
 # on high-volume tools. Never the default: the in-process graph orchestrators
