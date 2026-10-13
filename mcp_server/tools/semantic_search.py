@@ -5,7 +5,7 @@ Semantic search - BM25 lexical ranking over Wazuh rule descriptions.
 Zero external dependencies. Pure Python BM25 implementation.
 """
 from __future__ import annotations
-import json, math, re
+import asyncio, json, math, re
 from typing import Optional, Literal
 from collections import defaultdict
 from pydantic import BaseModel, ConfigDict, Field
@@ -155,7 +155,7 @@ async def _try_load_live_corpus():
                 "groups": ",".join(r.get("groups", [])) if r.get("groups") else "",
             })
         _bm25_corpus = live_corpus
-        _bm25_index = _build_bm25_from_corpus(live_corpus)
+        _bm25_index = await asyncio.to_thread(_build_bm25_from_corpus, live_corpus)
     except Exception:
         _bm25_corpus = _STATIC_RULE_CORPUS
         _bm25_index = _build_bm25_from_corpus(_STATIC_RULE_CORPUS)
@@ -251,7 +251,8 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
     if params.rerank:
         m = min(max(params.top_k, params.rerank_candidates),
                 len(_bm25_corpus), config.rerank.max_candidates)
-        hits = _bm25_index.score(params.query)[:m]
+        # Offload here too, so no BM25 call can run on the loop thread.
+        hits = (await asyncio.to_thread(_bm25_index.score, params.query))[:m]
         if hits:
             indices = [i for i, _ in hits]
             bm25_scores = [s for _, s in hits]
@@ -270,7 +271,7 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
             results = []
             rerank_status = "empty"
     else:
-        results = _bm25_index.score(params.query)[:params.top_k]
+        results = (await asyncio.to_thread(_bm25_index.score, params.query))[:params.top_k]
 
     if params.response_format == "json":
         matches = []
@@ -376,14 +377,15 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
         ]
         corpus.append(" ".join(parts))
 
-    bm25_alerts = _BM25(corpus)
+    # ~7 s of CPU at the 50k scan cap: running this inline starves the event loop.
+    bm25_alerts = await asyncio.to_thread(_BM25, corpus)
     reranked = False
     rerank_status = None
     bm25_map = None
     if params.rerank:
         m = min(max(params.top_k, params.rerank_candidates),
                 len(corpus), config.rerank.max_candidates)
-        hits = bm25_alerts.score(params.query)[:m]
+        hits = (await asyncio.to_thread(bm25_alerts.score, params.query))[:m]
         if hits:
             indices = [i for i, _ in hits]
             bm25_scores = [s for _, s in hits]
@@ -401,7 +403,7 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
             results = []
             rerank_status = "empty"
     else:
-        results = bm25_alerts.score(params.query)[:params.top_k]
+        results = (await asyncio.to_thread(bm25_alerts.score, params.query))[:params.top_k]
     # Redact before any field is returned - same pipeline as every other data tool.
     redacted_docs = _redact_alert_data(all_docs)
 
