@@ -46,10 +46,12 @@ alert context, and it only finds a tool whose description contains the vocabular
 nothing in the shortlist fits, fall back to the tables below rather than rephrasing until something
 appears. Read `rerank_engine` in the response (`bm25` is the expected routing path: the
 cross-encoder is off for routing, and the 2026-09-22 measurements on the 22 labelled prompts show
-why. BM25 puts an acceptable tool in the top 3 for 13/22 (10/16 Indonesian) and inside the top 10
-for all 22. The multilingual `bge-reranker-base` drops that to 7/22 and the Indonesian-specific
-`madebyaris/rerank-indonesia` to 9/22, so the cheaper, language-matched model is both faster and
-more accurate (782 ms median against 4.05 s) and still behind enriched BM25. On the 10 natural
+why. At that revision BM25 put an acceptable tool in the top 3 for 13/22 (10/16 Indonesian) and
+inside the top 10 for all 22. The multilingual `bge-reranker-base` dropped that to 7/22 and the
+Indonesian-specific `madebyaris/rerank-indonesia` to 9/22, so the cheaper, language-matched model
+is both faster and more accurate (782 ms median against 4.05 s) and still behind enriched BM25.
+The current BM25 baseline is higher: 15/22 top-3 (12/16 Indonesian, 3/6 English) and 8/22 top-1.
+The cross-encoder rows were not re-run, so do not compare them against that figure. On the 10 natural
 Indonesian questions the two rankers tie at 9/10, which puts the whole gap in the 12 templated
 report prompts, where the router's hand-written synonym map ("report" -> aggregate/timeline) beats
 any cross-encoder. It stays on for `blueteam_rag_query`), and use `mode="buckets"` when you want to

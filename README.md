@@ -143,14 +143,18 @@ semantic search reranks, prompt routing does not. A 2026-09-21 measurement on 22
 with the cross-encoder, at 2.97 s median / 9.67 s p95 per call; direct scoring showed the model
 rates English pairs confidently (`+1.17` vs `-10.19` for a correct/incorrect tool) and Indonesian
 pairs flat and negative (`-3` to `-9`, wrong winner).
-Three rerankers were measured on HEAD against the same 22 labelled prompts
-(`tests/bench_rerank_routing.py`):
+Three rerankers were measured at the 2026-09-22 corpus revision against the same 22 labelled
+prompts (`tests/bench_rerank_routing.py`). The two cross-encoder rows have not been re-run:
 
 | ranker | Indonesian top-3 | English top-3 | All top-3 | median per call |
 |---|---|---|---|---|
-| BM25 only (no rerank) | 10/16 | 3/6 | 13/22 | 2 ms |
+| BM25 only (no rerank), that revision | 10/16 | 3/6 | 13/22 | 2 ms |
 | `BAAI/bge-reranker-base` | 7/16 | 0/6 | 7/22 | 4.05 s |
 | `madebyaris/rerank-indonesia` | 9/16 | 0/6 | 9/22 | 0.78 s |
+
+Current BM25 baseline, re-measured 2026-10-13 on current HEAD and corpus: **15/22 top-3, 8/22
+top-1, English 3/6, Indonesian 12/16, median 2 ms.** The corpus moved under the table above, so do
+not read the two together as a same-revision head-to-head.
 
 Routing stays BM25-only. The Indonesian-specific cross-encoder is five times faster than the
 multilingual one and much closer to BM25, but still behind it, and the entire gap sits in the 12
@@ -521,10 +525,12 @@ alert context, and it only finds a tool whose description contains the vocabular
 nothing in the shortlist fits, fall back to the tables below rather than rephrasing until something
 appears. Read `rerank_engine` in the response (`bm25` is the expected routing path: the
 cross-encoder is off for routing, and the 2026-09-22 measurements on the 22 labelled prompts show
-why. BM25 puts an acceptable tool in the top 3 for 13/22 (10/16 Indonesian) and inside the top 10
-for all 22. The multilingual `bge-reranker-base` drops that to 7/22 and the Indonesian-specific
-`madebyaris/rerank-indonesia` to 9/22, so the cheaper, language-matched model is both faster and
-more accurate (782 ms median against 4.05 s) and still behind enriched BM25. On the 10 natural
+why. At that revision BM25 put an acceptable tool in the top 3 for 13/22 (10/16 Indonesian) and
+inside the top 10 for all 22. The multilingual `bge-reranker-base` dropped that to 7/22 and the
+Indonesian-specific `madebyaris/rerank-indonesia` to 9/22, so the cheaper, language-matched model
+is both faster and more accurate (782 ms median against 4.05 s) and still behind enriched BM25.
+The current BM25 baseline is higher: 15/22 top-3 (12/16 Indonesian, 3/6 English) and 8/22 top-1.
+The cross-encoder rows were not re-run, so do not compare them against that figure. On the 10 natural
 Indonesian questions the two rankers tie at 9/10, which puts the whole gap in the 12 templated
 report prompts, where the router's hand-written synonym map ("report" -> aggregate/timeline) beats
 any cross-encoder. It stays on for `blueteam_rag_query`), and use `mode="buckets"` when you want to
