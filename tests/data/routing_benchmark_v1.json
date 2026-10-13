@@ -1,0 +1,2339 @@
+{
+  "version": "v1",
+  "created": "2026-10-13",
+  "router": "blueteam_prompt_route, production defaults (BM25, rerank=false)",
+  "legacy_benchmark": "tests/bench_rerank_routing.py (22 prompts, 15/22 top-3) is retained unchanged as the fast regression guard and is NOT part of this file",
+  "labeling_rules": [
+    "An acceptable tool is one whose own docstring and input contract answer the request, not one whose name reads similarly.",
+    "Several tools are listed when more than one genuinely answers, for example a tool and its bulk or paginated variant.",
+    "Metered RapidAPI tools (blueteam_ioc_search, blueteam_ioc_search_bulk, blueteam_ip_intel_bulk, blueteam_breach_check) are never the only acceptable tool, because the scheduled budget refuses them.",
+    "Opt-in tools are labelled where the request matches their capability, but every opt-in intent also accepts a non-opt-in tool when the documented degrade path uses one."
+  ],
+  "split_rule": "Explicit per record in the split field. Records sharing a pair value always share a split, so a wording variant cannot leak between development and held-out evaluation. Pairs were rebalanced once, before any router was measured, to reach roughly 60 percent development: 9 held pairs moved to development, recorded in this file rather than recomputed, so the split cannot drift.",
+  "low_confidence_threshold": 5,
+  "label_review": {
+    "reviewed": "2026-10-13",
+    "method": "Read every Indonesian prompt beside its English partner after the first held-out run. Prompt wording and labels were NOT changed: v1 results stay as measured, and any wording change goes into a new version.",
+    "labels_confirmed_correct": "All 170 records. Thirteen held-out pairs scored English-correct and Indonesian-incorrect, and in every one the acceptable set still answers the request. The misses are router recall, not label error.",
+    "naturalness_findings": [
+      {
+        "ids": ["ip-003-id"],
+        "issue": "'menghubungi rumah' is a literal calque of 'phone home'.",
+        "proposed": "'menghubungi server C2 secara berkala' or 'callback berkala'",
+        "impact": "Development split only, so it did not affect any held-out number."
+      },
+      {
+        "ids": ["wm-005-id"],
+        "issue": "'Daftarkan' means register or subscribe, not list.",
+        "proposed": "'Tampilkan daftar decoder yang dimuat manager'",
+        "impact": "Held out. The router missed on the shared token 'manager', not on the verb."
+      },
+      {
+        "ids": ["ov-003-id"],
+        "issue": "'dokumen peringatan mentah' reads as paperwork; the request is about alert records.",
+        "proposed": "'data peringatan mentah'",
+        "impact": "Held out. The miss came from the alias map turning 'dokumen' into 'document pdf'."
+      },
+      {
+        "ids": ["gh-006-id"],
+        "issue": "'area startup' is non-idiomatic for a persistence check.",
+        "proposed": "'mekanisme persistensi' or 'proses startup'",
+        "impact": "Held out. The router matched on 'area' and 'attacker' instead."
+      }
+    ],
+    "idiom_check": "Six Indonesian prompts use English technical borrowings on purpose (korpus, netblock, playbook, threat hunt, deployment, decoder, false positive), matching how Indonesian SOC teams write. These are not translation defects."
+  },
+  "records": [
+    {
+      "id": "ov-001-en",
+      "pair": "ov-001",
+      "lang": "en",
+      "intent": "overview_timeline",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "How many alerts came in over the last 24 hours, and what is the severity split?",
+      "acceptable": [
+        "wazuh_alert_aggregate_analysis"
+      ],
+      "rationale": "The zero-doc full-index summary returns total volume and severity bands without pulling documents."
+    },
+    {
+      "id": "ov-001-id",
+      "pair": "ov-001",
+      "lang": "id",
+      "intent": "overview_timeline",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Berapa jumlah peringatan dalam 24 jam terakhir, dan bagaimana sebaran tingkat keparahannya?",
+      "acceptable": [
+        "wazuh_alert_aggregate_analysis"
+      ],
+      "rationale": "Same aggregate summary; the tool takes an Indonesian phrasing without translation."
+    },
+    {
+      "id": "ov-002-en",
+      "pair": "ov-002",
+      "lang": "en",
+      "intent": "overview_timeline",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Show me alert volume per hour across the last 3 days",
+      "acceptable": [
+        "wazuh_alert_timeline"
+      ],
+      "rationale": "Time-bucketed date_histogram breakdown is exactly the per-hour series requested."
+    },
+    {
+      "id": "ov-002-id",
+      "pair": "ov-002",
+      "lang": "id",
+      "intent": "overview_timeline",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Tampilkan volume peringatan per jam selama 3 hari terakhir",
+      "acceptable": [
+        "wazuh_alert_timeline"
+      ],
+      "rationale": "Per-hour bucketed series."
+    },
+    {
+      "id": "ov-003-en",
+      "pair": "ov-003",
+      "lang": "en",
+      "intent": "overview_timeline",
+      "type": "operational",
+      "split": "held",
+      "split_note": "held out: the pagination contract is the only distinguishing signal, so it is the honest test of whether the router reads beyond the noun",
+      "prompt": "I need to page through yesterday's raw alert documents, more than one page worth",
+      "acceptable": [
+        "blueteam_wazuh_indexer_search",
+        "blueteam_wazuh_alerts"
+      ],
+      "rationale": "Both read alert documents; indexer_search is the cursor-paginated Indexer path and wazuh_alerts is the same read with a local-file fallback."
+    },
+    {
+      "id": "ov-003-id",
+      "pair": "ov-003",
+      "lang": "id",
+      "intent": "overview_timeline",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Saya perlu menelusuri dokumen peringatan mentah kemarin, lebih dari satu halaman",
+      "acceptable": [
+        "blueteam_wazuh_indexer_search",
+        "blueteam_wazuh_alerts"
+      ],
+      "rationale": "Same paginated document read."
+    },
+    {
+      "id": "ov-004-en",
+      "pair": "ov-004",
+      "lang": "en",
+      "intent": "overview_timeline",
+      "type": "edge_case",
+      "split": "dev",
+      "prompt": "Run a custom OpenSearch aggregation over the alert index to get a terms breakdown on rule groups",
+      "acceptable": [
+        "wazuh_alert_dsl_query"
+      ],
+      "rationale": "Raw DSL aggregation is only exposed through the DSL query tool; no other tool accepts an aggregation body."
+    },
+    {
+      "id": "ov-004-id",
+      "pair": "ov-004",
+      "lang": "id",
+      "intent": "overview_timeline",
+      "type": "edge_case",
+      "split": "dev",
+      "prompt": "Jalankan agregasi OpenSearch khusus di indeks peringatan untuk rincian terms pada grup aturan",
+      "acceptable": [
+        "wazuh_alert_dsl_query"
+      ],
+      "rationale": "Raw DSL aggregation."
+    },
+    {
+      "id": "ov-005-en",
+      "pair": "ov-005",
+      "lang": "en",
+      "intent": "overview_timeline",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "What fields does the Wazuh index actually carry before I write a query against it?",
+      "acceptable": [
+        "blueteam_index_schema"
+      ],
+      "rationale": "Field-name and type discovery from the index mapping is this tool's whole purpose."
+    },
+    {
+      "id": "ov-005-id",
+      "pair": "ov-005",
+      "lang": "id",
+      "intent": "overview_timeline",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Field apa saja yang benar-benar ada di indeks Wazuh sebelum saya menulis kueri?",
+      "acceptable": [
+        "blueteam_index_schema"
+      ],
+      "rationale": "Index field discovery."
+    },
+    {
+      "id": "ip-001-en",
+      "pair": "ip-001",
+      "lang": "en",
+      "intent": "ip_triage",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Give me the full picture on 203.0.113.42 for the last 24 hours",
+      "acceptable": [
+        "blueteam_threat_card"
+      ],
+      "rationale": "The threat card is the one-call full picture for a single source IP."
+    },
+    {
+      "id": "ip-001-id",
+      "pair": "ip-001",
+      "lang": "id",
+      "intent": "ip_triage",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Beri saya gambaran lengkap tentang 203.0.113.42 selama 24 jam terakhir",
+      "acceptable": [
+        "blueteam_threat_card"
+      ],
+      "rationale": "Single-IP full picture."
+    },
+    {
+      "id": "ip-002-en",
+      "pair": "ip-002",
+      "lang": "en",
+      "intent": "ip_triage",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "What did this IP do step by step, which rule led to which?",
+      "acceptable": [
+        "blueteam_attack_chain"
+      ],
+      "rationale": "Rule-to-rule transition analysis is the kill-chain progression tool."
+    },
+    {
+      "id": "ip-002-id",
+      "pair": "ip-002",
+      "lang": "id",
+      "intent": "ip_triage",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Apa yang IP ini lakukan langkah demi langkah, aturan mana yang berlanjut ke aturan mana?",
+      "acceptable": [
+        "blueteam_attack_chain"
+      ],
+      "rationale": "Rule-to-rule progression."
+    },
+    {
+      "id": "ip-003-en",
+      "pair": "ip-003",
+      "lang": "en",
+      "intent": "ip_triage",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Is this IP calling home on a timer? The connections look evenly spaced",
+      "acceptable": [
+        "blueteam_beacon_detect"
+      ],
+      "rationale": "Evenly spaced callbacks are inter-arrival time analysis, which is the beacon detector's contract."
+    },
+    {
+      "id": "ip-003-id",
+      "pair": "ip-003",
+      "lang": "id",
+      "intent": "ip_triage",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Apakah IP ini menghubungi rumah secara berkala? Koneksinya terlihat berjarak merata",
+      "acceptable": [
+        "blueteam_beacon_detect"
+      ],
+      "rationale": "Periodic callback detection."
+    },
+    {
+      "id": "ip-004-en",
+      "pair": "ip-004",
+      "lang": "en",
+      "intent": "ip_triage",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Compare what these two source IPs are doing, side by side",
+      "acceptable": [
+        "blueteam_wazuh_alert_compare"
+      ],
+      "rationale": "Two-IP side-by-side alert profile comparison."
+    },
+    {
+      "id": "ip-004-id",
+      "pair": "ip-004",
+      "lang": "id",
+      "intent": "ip_triage",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Bandingkan apa yang dilakukan dua IP sumber ini, berdampingan",
+      "acceptable": [
+        "blueteam_wazuh_alert_compare"
+      ],
+      "rationale": "Two-IP comparison."
+    },
+    {
+      "id": "ip-005-en",
+      "pair": "ip-005",
+      "lang": "en",
+      "intent": "ip_triage",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Are the attacks from this host speeding up compared to the previous window?",
+      "acceptable": [
+        "wazuh_attack_velocity"
+      ],
+      "rationale": "Adjacent-window comparison for acceleration is the velocity tool, not the timeline tool."
+    },
+    {
+      "id": "ip-005-id",
+      "pair": "ip-005",
+      "lang": "id",
+      "intent": "ip_triage",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Apakah serangan dari host ini makin cepat dibanding jendela sebelumnya?",
+      "acceptable": [
+        "wazuh_attack_velocity"
+      ],
+      "rationale": "Adjacent-window acceleration."
+    },
+    {
+      "id": "ti-001-en",
+      "pair": "ti-001",
+      "lang": "en",
+      "intent": "threat_intel",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Is 203.0.113.42 known bad? Check everything we have on it",
+      "acceptable": [
+        "blueteam_threat_intel_aggregate",
+        "blueteam_unified_threat_score"
+      ],
+      "rationale": "Both fan out across the configured providers for one indicator; the aggregate returns the provider set and the score tool returns a single number."
+    },
+    {
+      "id": "ti-001-id",
+      "pair": "ti-001",
+      "lang": "id",
+      "intent": "threat_intel",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Apakah 203.0.113.42 dikenal berbahaya? Periksa semua yang kita punya tentang IP itu",
+      "acceptable": [
+        "blueteam_threat_intel_aggregate",
+        "blueteam_unified_threat_score"
+      ],
+      "rationale": "Multi-provider enrichment for one indicator."
+    },
+    {
+      "id": "ti-002-en",
+      "pair": "ti-002",
+      "lang": "en",
+      "intent": "threat_intel",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Is that address just an internet scanner or does it actually attack people?",
+      "acceptable": [
+        "greynoise_ip_context"
+      ],
+      "rationale": "Scanner-versus-targeted distinction is GreyNoise's contract and no other provider makes that call."
+    },
+    {
+      "id": "ti-002-id",
+      "pair": "ti-002",
+      "lang": "id",
+      "intent": "threat_intel",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Apakah alamat itu hanya pemindai internet atau benar-benar menyerang?",
+      "acceptable": [
+        "greynoise_ip_context"
+      ],
+      "rationale": "Scanner classification."
+    },
+    {
+      "id": "ti-003-en",
+      "pair": "ti-003",
+      "lang": "en",
+      "intent": "threat_intel",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Check this indicator against our own MISP instance and show me which events it appears in",
+      "acceptable": [
+        "blueteam_misp_ioc_lookup"
+      ],
+      "rationale": "Own-instance restSearch returning attributes and events is only available through the MISP tool."
+    },
+    {
+      "id": "ti-003-id",
+      "pair": "ti-003",
+      "lang": "id",
+      "intent": "threat_intel",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Periksa indikator ini di instance MISP milik kami dan tunjukkan event mana saja yang memuatnya",
+      "acceptable": [
+        "blueteam_misp_ioc_lookup"
+      ],
+      "rationale": "Own MISP instance lookup."
+    },
+    {
+      "id": "ti-004-en",
+      "pair": "ti-004",
+      "lang": "en",
+      "intent": "threat_intel",
+      "type": "operational",
+      "split": "held",
+      "prompt": "I have 25 URLs from the phishing report, check all of them against a malware URL database at once",
+      "acceptable": [
+        "urlhaus_lookup_bulk",
+        "urlhaus_lookup"
+      ],
+      "rationale": "URLhaus is the malware URL database; the bulk variant takes the list in one call."
+    },
+    {
+      "id": "ti-004-id",
+      "pair": "ti-004",
+      "lang": "id",
+      "intent": "threat_intel",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Saya punya 25 URL dari laporan phishing, periksa semuanya sekaligus ke basis data URL malware",
+      "acceptable": [
+        "urlhaus_lookup_bulk",
+        "urlhaus_lookup"
+      ],
+      "rationale": "Bulk URL reputation."
+    },
+    {
+      "id": "ti-005-en",
+      "pair": "ti-005",
+      "lang": "en",
+      "intent": "threat_intel",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Fingerprint the TLS handshake of that C2 host so we can hunt for the same server elsewhere",
+      "acceptable": [
+        "jarm_fingerprint"
+      ],
+      "rationale": "Active TLS server fingerprinting is the JARM tool; no provider-based tool returns a TLS fingerprint."
+    },
+    {
+      "id": "ti-005-id",
+      "pair": "ti-005",
+      "lang": "id",
+      "intent": "threat_intel",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Ambil sidik jari TLS handshake host C2 itu supaya kami bisa berburu server yang sama di tempat lain",
+      "acceptable": [
+        "jarm_fingerprint"
+      ],
+      "rationale": "TLS fingerprinting."
+    },
+    {
+      "id": "cc-001-en",
+      "pair": "cc-001",
+      "lang": "en",
+      "intent": "correlation_campaigns",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Run the 3-Sum APT correlation over the last 24 hours",
+      "acceptable": [
+        "three_sum_correlation"
+      ],
+      "rationale": "3-Sum across the three alert categories is only this tool."
+    },
+    {
+      "id": "cc-001-id",
+      "pair": "cc-001",
+      "lang": "id",
+      "intent": "correlation_campaigns",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Jalankan korelasi APT 3-Sum untuk 24 jam terakhir",
+      "acceptable": [
+        "three_sum_correlation"
+      ],
+      "rationale": "3-Sum correlation."
+    },
+    {
+      "id": "cc-002-en",
+      "pair": "cc-002",
+      "lang": "en",
+      "intent": "correlation_campaigns",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Which attacker hosts look like they belong to the same group? I want the clusters and the hubs",
+      "acceptable": [
+        "blueteam_attack_graph"
+      ],
+      "rationale": "Campaign clusters, hubs and bridges come from the attacker relationship graph."
+    },
+    {
+      "id": "cc-002-id",
+      "pair": "cc-002",
+      "lang": "id",
+      "intent": "correlation_campaigns",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Host penyerang mana yang tampak berasal dari kelompok yang sama? Saya mau klaster dan hub-nya",
+      "acceptable": [
+        "blueteam_attack_graph"
+      ],
+      "rationale": "Attacker graph clusters and hubs."
+    },
+    {
+      "id": "cc-003-en",
+      "pair": "cc-003",
+      "lang": "en",
+      "intent": "correlation_campaigns",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Is today's volume abnormal for this time of day, or is this within the usual range?",
+      "acceptable": [
+        "blueteam_baseline_drift"
+      ],
+      "rationale": "Z-score drift against a historical baseline; a plain aggregate cannot say whether a number is abnormal."
+    },
+    {
+      "id": "cc-003-id",
+      "pair": "cc-003",
+      "lang": "id",
+      "intent": "correlation_campaigns",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Apakah volume hari ini tidak normal untuk jam ini, atau masih dalam rentang biasanya?",
+      "acceptable": [
+        "blueteam_baseline_drift"
+      ],
+      "rationale": "Baseline drift."
+    },
+    {
+      "id": "cc-004-en",
+      "pair": "cc-004",
+      "lang": "en",
+      "intent": "correlation_campaigns",
+      "type": "operational",
+      "split": "held",
+      "prompt": "A new cluster appeared overnight and an old one grew. What changed in the campaign picture?",
+      "acceptable": [
+        "blueteam_campaign_watch"
+      ],
+      "rationale": "New-cluster and cluster-growth detection over time is campaign evolution, not a single-window graph."
+    },
+    {
+      "id": "cc-004-id",
+      "pair": "cc-004",
+      "lang": "id",
+      "intent": "correlation_campaigns",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Muncul klaster baru semalam dan satu klaster lama membesar. Apa yang berubah pada gambaran kampanye?",
+      "acceptable": [
+        "blueteam_campaign_watch"
+      ],
+      "rationale": "Campaign evolution."
+    },
+    {
+      "id": "cl-001-en",
+      "pair": "cl-001",
+      "lang": "en",
+      "intent": "clustering_labeling",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Group the source IPs from this window by behaviour and tell me how noisy the window is",
+      "acceptable": [
+        "blueteam_alert_cluster"
+      ],
+      "rationale": "HDBSCAN over srcip entities returns clusters plus the noise ratio."
+    },
+    {
+      "id": "cl-001-id",
+      "pair": "cl-001",
+      "lang": "id",
+      "intent": "clustering_labeling",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Kelompokkan IP sumber pada jendela ini berdasarkan perilaku dan beri tahu seberapa bising jendelanya",
+      "acceptable": [
+        "blueteam_alert_cluster"
+      ],
+      "rationale": "Entity clustering with noise ratio."
+    },
+    {
+      "id": "cl-002-en",
+      "pair": "cl-002",
+      "lang": "en",
+      "intent": "clustering_labeling",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Which ATT&CK phase is this alert? Label it for me.",
+      "acceptable": [
+        "blueteam_incident_label"
+      ],
+      "rationale": "Single-alert tactic labelling."
+    },
+    {
+      "id": "cl-002-id",
+      "pair": "cl-002",
+      "lang": "id",
+      "intent": "clustering_labeling",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Peringatan ini masuk fase ATT&CK yang mana? Beri label untuk saya.",
+      "acceptable": [
+        "blueteam_incident_label"
+      ],
+      "rationale": "Single-alert tactic label."
+    },
+    {
+      "id": "cl-003-en",
+      "pair": "cl-003",
+      "lang": "en",
+      "intent": "clustering_labeling",
+      "type": "paraphrase",
+      "split": "held",
+      "prompt": "Has this IP always looked like this, or did its behaviour shift since we last fitted the clusters?",
+      "acceptable": [
+        "blueteam_cluster_lineage",
+        "blueteam_alert_cluster_assign"
+      ],
+      "rationale": "Lineage tracks a cluster across fits and flags behaviour shifts; assignment places one entity in the stored fit."
+    },
+    {
+      "id": "cl-003-id",
+      "pair": "cl-003",
+      "lang": "id",
+      "intent": "clustering_labeling",
+      "type": "paraphrase",
+      "split": "held",
+      "prompt": "Apakah IP ini selalu seperti ini, atau perilakunya bergeser sejak klaster terakhir di-fit?",
+      "acceptable": [
+        "blueteam_cluster_lineage",
+        "blueteam_alert_cluster_assign"
+      ],
+      "rationale": "Lineage or stored-fit assignment."
+    },
+    {
+      "id": "fc-001-en",
+      "pair": "fc-001",
+      "lang": "en",
+      "intent": "forecasting",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Given this IP's tactic history, what is it likely to try next?",
+      "acceptable": [
+        "blueteam_tactic_forecast"
+      ],
+      "rationale": "Next-tactic prediction from a tactic-transition model."
+    },
+    {
+      "id": "fc-001-id",
+      "pair": "fc-001",
+      "lang": "id",
+      "intent": "forecasting",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Melihat riwayat taktik IP ini, kemungkinan selanjutnya ia mencoba apa?",
+      "acceptable": [
+        "blueteam_tactic_forecast"
+      ],
+      "rationale": "Next-tactic prediction."
+    },
+    {
+      "id": "fc-002-en",
+      "pair": "fc-002",
+      "lang": "en",
+      "intent": "forecasting",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "How many alerts should I expect in the next 24 hourly buckets?",
+      "acceptable": [
+        "blueteam_volume_forecast"
+      ],
+      "rationale": "Per-bucket alert count forecast; the tactic model predicts phases, not volumes."
+    },
+    {
+      "id": "fc-002-id",
+      "pair": "fc-002",
+      "lang": "id",
+      "intent": "forecasting",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Berapa peringatan yang seharusnya saya perkirakan pada 24 bucket per jam berikutnya?",
+      "acceptable": [
+        "blueteam_volume_forecast"
+      ],
+      "rationale": "Per-bucket volume forecast."
+    },
+    {
+      "id": "fc-003-en",
+      "pair": "fc-003",
+      "lang": "en",
+      "intent": "forecasting",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Which netblocks and countries are the most likely places the next observed source will come from?",
+      "acceptable": [
+        "blueteam_source_forecast",
+        "blueteam_attack_forecast"
+      ],
+      "rationale": "Source-layer candidate ranking; the combined tool returns the same layer alongside the tactic layer."
+    },
+    {
+      "id": "fc-003-id",
+      "pair": "fc-003",
+      "lang": "id",
+      "intent": "forecasting",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Netblock dan negara mana yang paling mungkin menjadi asal sumber teramati berikutnya?",
+      "acceptable": [
+        "blueteam_source_forecast",
+        "blueteam_attack_forecast"
+      ],
+      "rationale": "Observed-source candidate ranking."
+    },
+    {
+      "id": "cve-001-en",
+      "pair": "cve-001",
+      "lang": "en",
+      "intent": "cve_vulnerability",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Pull the NVD record for CVE-2024-3400, I need the description and CVSS",
+      "acceptable": [
+        "blueteam_cve_lookup"
+      ],
+      "rationale": "Raw NVD record retrieval."
+    },
+    {
+      "id": "cve-001-id",
+      "pair": "cve-001",
+      "lang": "id",
+      "intent": "cve_vulnerability",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Ambil rekaman NVD untuk CVE-2024-3400, saya perlu deskripsi dan CVSS-nya",
+      "acceptable": [
+        "blueteam_cve_lookup"
+      ],
+      "rationale": "NVD record retrieval."
+    },
+    {
+      "id": "cve-002-en",
+      "pair": "cve-002",
+      "lang": "en",
+      "intent": "cve_vulnerability",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Should we patch this one this week or can it wait? Give me the decision band",
+      "acceptable": [
+        "blueteam_cve_ssvc"
+      ],
+      "rationale": "SSVC Deployer tree returns the Act/Attend/Track band, which is the decision the question asks for."
+    },
+    {
+      "id": "cve-002-id",
+      "pair": "cve-002",
+      "lang": "id",
+      "intent": "cve_vulnerability",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Haruskah kami menambal yang ini minggu ini atau bisa menunggu? Beri saya band keputusannya",
+      "acceptable": [
+        "blueteam_cve_ssvc"
+      ],
+      "rationale": "SSVC decision band."
+    },
+    {
+      "id": "cve-003-en",
+      "pair": "cve-003",
+      "lang": "en",
+      "intent": "cve_vulnerability",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Is anyone actually exploiting this in the wild, and does a public exploit exist?",
+      "acceptable": [
+        "blueteam_cve_kev",
+        "blueteam_cve_poc",
+        "blueteam_cve_score"
+      ],
+      "rationale": "KEV answers in-the-wild exploitation, the PoC tool answers public exploit availability, and the composite score folds both in."
+    },
+    {
+      "id": "cve-003-id",
+      "pair": "cve-003",
+      "lang": "id",
+      "intent": "cve_vulnerability",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Apakah ada yang benar-benar mengeksploitasi ini di lapangan, dan apakah sudah ada eksploit publiknya?",
+      "acceptable": [
+        "blueteam_cve_kev",
+        "blueteam_cve_poc",
+        "blueteam_cve_score"
+      ],
+      "rationale": "KEV, PoC availability, or the composite score."
+    },
+    {
+      "id": "cve-004-en",
+      "pair": "cve-004",
+      "lang": "en",
+      "intent": "cve_vulnerability",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Scan our package manifest and tell me which dependencies have known vulnerabilities",
+      "acceptable": [
+        "blueteam_dependency_scan"
+      ],
+      "rationale": "Manifest to OSV lookup is only this tool."
+    },
+    {
+      "id": "cve-004-id",
+      "pair": "cve-004",
+      "lang": "id",
+      "intent": "cve_vulnerability",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Pindai manifes paket kami dan beri tahu dependensi mana yang punya kerentanan dikenal",
+      "acceptable": [
+        "blueteam_dependency_scan"
+      ],
+      "rationale": "Dependency manifest scan."
+    },
+    {
+      "id": "eb-001-en",
+      "pair": "eb-001",
+      "lang": "en",
+      "intent": "email_breach_domain",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Which email addresses are being targeted most often in our alerts?",
+      "acceptable": [
+        "wazuh_email_lookup",
+        "wazuh_compromised_emails_analysis"
+      ],
+      "rationale": "Email lookup ranks the most frequently seen addresses; the compromised-emails tool correlates them with attacker IPs."
+    },
+    {
+      "id": "eb-001-id",
+      "pair": "eb-001",
+      "lang": "id",
+      "intent": "email_breach_domain",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Alamat email mana yang paling sering menjadi sasaran di peringatan kami?",
+      "acceptable": [
+        "wazuh_email_lookup",
+        "wazuh_compromised_emails_analysis"
+      ],
+      "rationale": "Most-targeted email ranking."
+    },
+    {
+      "id": "eb-002-en",
+      "pair": "eb-002",
+      "lang": "en",
+      "intent": "email_breach_domain",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Someone's credentials showed up in an infostealer dump. Check this address against stealer logs",
+      "acceptable": [
+        "stealer_log_check"
+      ],
+      "rationale": "HudsonRock stealer-log membership is a different source from a breach catalogue."
+    },
+    {
+      "id": "eb-002-id",
+      "pair": "eb-002",
+      "lang": "id",
+      "intent": "email_breach_domain",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Kredensial seseorang muncul di dump infostealer. Periksa alamat ini di log stealer",
+      "acceptable": [
+        "stealer_log_check"
+      ],
+      "rationale": "Stealer-log lookup."
+    },
+    {
+      "id": "eb-003-en",
+      "pair": "eb-003",
+      "lang": "en",
+      "intent": "email_breach_domain",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Generate the typosquat domains someone would register to phish our staff",
+      "acceptable": [
+        "blueteam_domain_permute"
+      ],
+      "rationale": "Lookalike generation, not a lookup of an existing domain."
+    },
+    {
+      "id": "eb-003-id",
+      "pair": "eb-003",
+      "lang": "id",
+      "intent": "email_breach_domain",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Buatkan domain typosquat yang mungkin didaftarkan orang untuk memancing staf kami",
+      "acceptable": [
+        "blueteam_domain_permute"
+      ],
+      "rationale": "Lookalike domain generation."
+    },
+    {
+      "id": "eb-004-en",
+      "pair": "eb-004",
+      "lang": "en",
+      "intent": "email_breach_domain",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Who registered that domain and when does it expire?",
+      "acceptable": [
+        "blueteam_whois_lookup"
+      ],
+      "rationale": "RDAP registration lookup; crt.sh answers certificate history instead."
+    },
+    {
+      "id": "eb-004-id",
+      "pair": "eb-004",
+      "lang": "id",
+      "intent": "email_breach_domain",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Siapa yang mendaftarkan domain itu dan kapan kedaluwarsanya?",
+      "acceptable": [
+        "blueteam_whois_lookup"
+      ],
+      "rationale": "Registration lookup."
+    },
+    {
+      "id": "gh-001-en",
+      "pair": "gh-001",
+      "lang": "en",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Which countries are the attacks coming from this week?",
+      "acceptable": [
+        "blueteam_wazuh_geo_distribution"
+      ],
+      "rationale": "Top attacking countries by alert volume."
+    },
+    {
+      "id": "gh-001-id",
+      "pair": "gh-001",
+      "lang": "id",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Serangan minggu ini datang dari negara mana saja?",
+      "acceptable": [
+        "blueteam_wazuh_geo_distribution"
+      ],
+      "rationale": "Top countries by volume."
+    },
+    {
+      "id": "gh-002-en",
+      "pair": "gh-002",
+      "lang": "en",
+      "intent": "geo_host_forensics",
+      "type": "edge_case",
+      "split": "dev",
+      "prompt": "A lot of volume but is it concentrated in a few cities, or spread out? I want countries ranked by alerts per source IP",
+      "acceptable": [
+        "blueteam_wazuh_geo_concentration"
+      ],
+      "rationale": "Alerts per source IP is the concentration ratio, which the distribution tool does not compute."
+    },
+    {
+      "id": "gh-002-id",
+      "pair": "gh-002",
+      "lang": "id",
+      "intent": "geo_host_forensics",
+      "type": "edge_case",
+      "split": "dev",
+      "prompt": "Volumenya besar tapi apakah terpusat di beberapa kota, atau menyebar? Saya mau negara diperingkat berdasarkan peringatan per IP sumber",
+      "acceptable": [
+        "blueteam_wazuh_geo_concentration"
+      ],
+      "rationale": "Alerts-per-source-IP concentration."
+    },
+    {
+      "id": "gh-003-en",
+      "pair": "gh-003",
+      "lang": "en",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Did any monitored file change on the web server? Show me the FIM events",
+      "acceptable": [
+        "blueteam_wazuh_syscheck"
+      ],
+      "rationale": "File Integrity Monitoring events come from the syscheck query tool."
+    },
+    {
+      "id": "gh-003-id",
+      "pair": "gh-003",
+      "lang": "id",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Apakah ada berkas termonitor yang berubah di server web? Tunjukkan event FIM-nya",
+      "acceptable": [
+        "blueteam_wazuh_syscheck"
+      ],
+      "rationale": "FIM events."
+    },
+    {
+      "id": "gh-004-en",
+      "pair": "gh-004",
+      "lang": "en",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Someone may have dropped a backdoor on the nginx box. Check the site for a webshell",
+      "acceptable": [
+        "blueteam_check_webshell"
+      ],
+      "rationale": "URL signature scan for webshells; the web log reader only reads logs."
+    },
+    {
+      "id": "gh-004-id",
+      "pair": "gh-004",
+      "lang": "id",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Seseorang mungkin menanam backdoor di server nginx. Periksa situsnya untuk webshell",
+      "acceptable": [
+        "blueteam_check_webshell"
+      ],
+      "rationale": "Webshell signature scan."
+    },
+    {
+      "id": "gh-005-en",
+      "pair": "gh-005",
+      "lang": "en",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Read the auth log and show failed sudo attempts",
+      "acceptable": [
+        "blueteam_read_auth_log",
+        "blueteam_sudo_history",
+        "blueteam_failed_logins"
+      ],
+      "rationale": "Auth-log reading covers sudo and PAM events, and the sudo history tool is the same log filtered to sudo."
+    },
+    {
+      "id": "gh-005-id",
+      "pair": "gh-005",
+      "lang": "id",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Baca auth log dan tunjukkan percobaan sudo yang gagal",
+      "acceptable": [
+        "blueteam_read_auth_log",
+        "blueteam_sudo_history",
+        "blueteam_failed_logins"
+      ],
+      "rationale": "Auth log or sudo history."
+    },
+    {
+      "id": "gh-006-en",
+      "pair": "gh-006",
+      "lang": "en",
+      "intent": "geo_host_forensics",
+      "type": "paraphrase",
+      "split": "held",
+      "prompt": "Is there anything unexpected in the startup area? Attackers like to leave things there",
+      "acceptable": [
+        "blueteam_list_cron_jobs",
+        "blueteam_find_suid_files",
+        "blueteam_check_ssh_authorized_keys"
+      ],
+      "rationale": "Persistence lives in cron, SUID binaries and authorized_keys, and the prompt does not name which."
+    },
+    {
+      "id": "gh-006-id",
+      "pair": "gh-006",
+      "lang": "id",
+      "intent": "geo_host_forensics",
+      "type": "paraphrase",
+      "split": "held",
+      "prompt": "Ada yang tidak wajar di area startup? Penyerang suka meninggalkan sesuatu di sana",
+      "acceptable": [
+        "blueteam_list_cron_jobs",
+        "blueteam_find_suid_files",
+        "blueteam_check_ssh_authorized_keys"
+      ],
+      "rationale": "Persistence surface tools."
+    },
+    {
+      "id": "wm-001-en",
+      "pair": "wm-001",
+      "lang": "en",
+      "intent": "wazuh_manager_config",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Which agents have not checked in recently?",
+      "acceptable": [
+        "blueteam_wazuh_agents_summary",
+        "blueteam_wazuh_agents"
+      ],
+      "rationale": "Agent status summary answers it directly; the agent list supports the same question with filters and pagination."
+    },
+    {
+      "id": "wm-001-id",
+      "pair": "wm-001",
+      "lang": "id",
+      "intent": "wazuh_manager_config",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Agen mana yang belum melapor baru-baru ini?",
+      "acceptable": [
+        "blueteam_wazuh_agents_summary",
+        "blueteam_wazuh_agents"
+      ],
+      "rationale": "Agent status."
+    },
+    {
+      "id": "wm-002-en",
+      "pair": "wm-002",
+      "lang": "en",
+      "intent": "wazuh_manager_config",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Show me the XML of the local rules file we load on the manager",
+      "acceptable": [
+        "blueteam_wazuh_get_rule_file_content",
+        "blueteam_wazuh_get_rule_files"
+      ],
+      "rationale": "Rule file content returns the XML; the file list is the index that leads to it."
+    },
+    {
+      "id": "wm-002-id",
+      "pair": "wm-002",
+      "lang": "id",
+      "intent": "wazuh_manager_config",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Tunjukkan XML berkas aturan lokal yang kami muat di manager",
+      "acceptable": [
+        "blueteam_wazuh_get_rule_file_content",
+        "blueteam_wazuh_get_rule_files"
+      ],
+      "rationale": "Rule file XML."
+    },
+    {
+      "id": "wm-003-en",
+      "pair": "wm-003",
+      "lang": "en",
+      "intent": "wazuh_manager_config",
+      "type": "operational",
+      "split": "held",
+      "prompt": "How did this agent score on its hardening checks, and which checks failed?",
+      "acceptable": [
+        "blueteam_wazuh_get_agent_sca",
+        "blueteam_wazuh_get_sca_policy_checks",
+        "blueteam_wazuh_list_sca_policies"
+      ],
+      "rationale": "SCA scan results, per-check detail and the policy list are three views of the same question."
+    },
+    {
+      "id": "wm-003-id",
+      "pair": "wm-003",
+      "lang": "id",
+      "intent": "wazuh_manager_config",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Bagaimana skor agen ini pada pemeriksaan hardening, dan pemeriksaan mana yang gagal?",
+      "acceptable": [
+        "blueteam_wazuh_get_agent_sca",
+        "blueteam_wazuh_get_sca_policy_checks",
+        "blueteam_wazuh_list_sca_policies"
+      ],
+      "rationale": "SCA results."
+    },
+    {
+      "id": "wm-004-en",
+      "pair": "wm-004",
+      "lang": "en",
+      "intent": "wazuh_manager_config",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Check the manager's own logs for errors, I think something broke",
+      "acceptable": [
+        "blueteam_wazuh_manager_logs",
+        "blueteam_wazuh_get_security_events"
+      ],
+      "rationale": "Manager logs carry the errors; security events carry the manager's own audit stream."
+    },
+    {
+      "id": "wm-004-id",
+      "pair": "wm-004",
+      "lang": "id",
+      "intent": "wazuh_manager_config",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Periksa log manager sendiri untuk error, sepertinya ada yang rusak",
+      "acceptable": [
+        "blueteam_wazuh_manager_logs",
+        "blueteam_wazuh_get_security_events"
+      ],
+      "rationale": "Manager log inspection."
+    },
+    {
+      "id": "ic-001-en",
+      "pair": "ic-001",
+      "lang": "en",
+      "intent": "investigation_case",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Open a case for this incident so we have a durable record",
+      "acceptable": [
+        "blueteam_case_create"
+      ],
+      "rationale": "Case creation is the durable record; nothing else mints a case."
+    },
+    {
+      "id": "ic-001-id",
+      "pair": "ic-001",
+      "lang": "id",
+      "intent": "investigation_case",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Buka kasus untuk insiden ini supaya ada rekaman yang tetap",
+      "acceptable": [
+        "blueteam_case_create"
+      ],
+      "rationale": "Case creation."
+    },
+    {
+      "id": "ic-002-en",
+      "pair": "ic-002",
+      "lang": "en",
+      "intent": "investigation_case",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Run the whole investigation on this IP end to end, the full workflow",
+      "acceptable": [
+        "blueteam_investigation_workflow",
+        "blueteam_investigate_ip"
+      ],
+      "rationale": "The workflow is the end-to-end langgraph run; investigate_ip is the single-IP three-step subset."
+    },
+    {
+      "id": "ic-002-id",
+      "pair": "ic-002",
+      "lang": "id",
+      "intent": "investigation_case",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Jalankan seluruh investigasi untuk IP ini dari awal sampai akhir, alur lengkapnya",
+      "acceptable": [
+        "blueteam_investigation_workflow",
+        "blueteam_investigate_ip"
+      ],
+      "rationale": "End-to-end workflow."
+    },
+    {
+      "id": "ic-003-en",
+      "pair": "ic-003",
+      "lang": "en",
+      "intent": "investigation_case",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Have we looked at this IP before, and what did we decide?",
+      "acceptable": [
+        "blueteam_investigation_history",
+        "blueteam_memory_recall"
+      ],
+      "rationale": "Prior-verdict recall exists in both stores; the history tool reads the JSONL record and memory_recall reads the opt-in structured store."
+    },
+    {
+      "id": "ic-003-id",
+      "pair": "ic-003",
+      "lang": "id",
+      "intent": "investigation_case",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Apakah kita pernah menyelidiki IP ini, dan apa keputusan kita?",
+      "acceptable": [
+        "blueteam_investigation_history",
+        "blueteam_memory_recall"
+      ],
+      "rationale": "Prior verdict."
+    },
+    {
+      "id": "ic-004-en",
+      "pair": "ic-004",
+      "lang": "en",
+      "intent": "investigation_case",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Record that we closed out this IP as a false positive",
+      "acceptable": [
+        "blueteam_mark_investigated",
+        "blueteam_case_add_verdict"
+      ],
+      "rationale": "Both write a verdict; the first writes the JSONL history and the second writes it against a case."
+    },
+    {
+      "id": "ic-004-id",
+      "pair": "ic-004",
+      "lang": "id",
+      "intent": "investigation_case",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Catat bahwa kami menutup IP ini sebagai false positive",
+      "acceptable": [
+        "blueteam_mark_investigated",
+        "blueteam_case_add_verdict"
+      ],
+      "rationale": "Verdict recording."
+    },
+    {
+      "id": "de-001-en",
+      "pair": "de-001",
+      "lang": "en",
+      "intent": "documents_evidence",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Pull the text and the document metadata out of this vendor advisory PDF",
+      "acceptable": [
+        "blueteam_pdf_extract"
+      ],
+      "rationale": "Text plus /Info metadata from a digital text layer is the pypdf extraction path."
+    },
+    {
+      "id": "de-001-id",
+      "pair": "de-001",
+      "lang": "id",
+      "intent": "documents_evidence",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Ambil teks dan metadata dokumen dari PDF advisory vendor ini",
+      "acceptable": [
+        "blueteam_pdf_extract"
+      ],
+      "rationale": "Digital PDF text and metadata."
+    },
+    {
+      "id": "de-002-en",
+      "pair": "de-002",
+      "lang": "en",
+      "intent": "documents_evidence",
+      "type": "edge_case",
+      "split": "dev",
+      "prompt": "This PDF is a scan with no text layer, I need the contents as markdown",
+      "acceptable": [
+        "blueteam_document_convert"
+      ],
+      "rationale": "An image-only PDF needs the OCR path; the pure-Python extractor returns nothing readable for it."
+    },
+    {
+      "id": "de-002-id",
+      "pair": "de-002",
+      "lang": "id",
+      "intent": "documents_evidence",
+      "type": "edge_case",
+      "split": "dev",
+      "prompt": "PDF ini hasil pindai tanpa lapisan teks, saya butuh isinya sebagai markdown",
+      "acceptable": [
+        "blueteam_document_convert"
+      ],
+      "rationale": "Scanned PDF conversion."
+    },
+    {
+      "id": "de-003-en",
+      "pair": "de-003",
+      "lang": "en",
+      "intent": "documents_evidence",
+      "type": "paraphrase",
+      "split": "held",
+      "prompt": "Turn the spreadsheet the vendor sent into something I can read in chat",
+      "acceptable": [
+        "blueteam_markitdown_convert",
+        "blueteam_document_convert"
+      ],
+      "rationale": "Office and data files convert through MarkItDown; the Marker converter also accepts them but is the heavier path."
+    },
+    {
+      "id": "de-003-id",
+      "pair": "de-003",
+      "lang": "id",
+      "intent": "documents_evidence",
+      "type": "paraphrase",
+      "split": "held",
+      "prompt": "Ubah spreadsheet yang dikirim vendor menjadi sesuatu yang bisa saya baca di chat",
+      "acceptable": [
+        "blueteam_markitdown_convert",
+        "blueteam_document_convert"
+      ],
+      "rationale": "Office or data file conversion."
+    },
+    {
+      "id": "rp-001-en",
+      "pair": "rp-001",
+      "lang": "en",
+      "intent": "reporting_intelligence",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Write the daily SOC report for TangerangKota-CSIRT covering the last 24 hours",
+      "acceptable": [
+        "wazuh_alert_aggregate_analysis",
+        "wazuh_alert_timeline",
+        "blueteam_curated_threat_report"
+      ],
+      "rationale": "The report family is documented as aggregate plus timeline plus the curated report; any of the three is an acceptable first hop."
+    },
+    {
+      "id": "rp-001-id",
+      "pair": "rp-001",
+      "lang": "id",
+      "intent": "reporting_intelligence",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Buat laporan SOC harian untuk TangerangKota-CSIRT mencakup 24 jam terakhir",
+      "acceptable": [
+        "wazuh_alert_aggregate_analysis",
+        "wazuh_alert_timeline",
+        "blueteam_curated_threat_report"
+      ],
+      "rationale": "Daily report family."
+    },
+    {
+      "id": "rp-002-en",
+      "pair": "rp-002",
+      "lang": "en",
+      "intent": "reporting_intelligence",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Find prior rules that match credential dumping so I know which rule IDs to query next",
+      "acceptable": [
+        "blueteam_semantic_search"
+      ],
+      "rationale": "Rule-description retrieval by natural language is the semantic search tool; it exists to be used before querying alerts."
+    },
+    {
+      "id": "rp-002-id",
+      "pair": "rp-002",
+      "lang": "id",
+      "intent": "reporting_intelligence",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Cari aturan yang cocok dengan credential dumping supaya saya tahu rule ID mana yang harus dikueri selanjutnya",
+      "acceptable": [
+        "blueteam_semantic_search"
+      ],
+      "rationale": "Rule retrieval."
+    },
+    {
+      "id": "rp-003-en",
+      "pair": "rp-003",
+      "lang": "en",
+      "intent": "reporting_intelligence",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "I do not know which tool fits this request, help me find it",
+      "acceptable": [
+        "blueteam_prompt_route"
+      ],
+      "rationale": "The prompt router is the tool whose stated purpose is exactly this meta request."
+    },
+    {
+      "id": "rp-003-id",
+      "pair": "rp-003",
+      "lang": "id",
+      "intent": "reporting_intelligence",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Saya tidak tahu tool mana yang cocok untuk permintaan ini, bantu saya menemukannya",
+      "acceptable": [
+        "blueteam_prompt_route"
+      ],
+      "rationale": "Tool routing meta request."
+    },
+    {
+      "id": "rp-004-en",
+      "pair": "rp-004",
+      "lang": "en",
+      "intent": "reporting_intelligence",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Hunt for encrypted command and control traffic using one of our named hunt queries",
+      "acceptable": [
+        "blueteam_threat_hunt",
+        "wazuh_alert_dsl_query"
+      ],
+      "rationale": "Named hunt templates live in the threat hunt tool; the DSL tool is the free-form escape hatch."
+    },
+    {
+      "id": "rp-004-id",
+      "pair": "rp-004",
+      "lang": "id",
+      "intent": "reporting_intelligence",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Berburu trafik command and control terenkripsi memakai salah satu kueri hunt yang kami punya",
+      "acceptable": [
+        "blueteam_threat_hunt",
+        "wazuh_alert_dsl_query"
+      ],
+      "rationale": "Named hunt template."
+    },
+    {
+      "id": "rp-005-en",
+      "pair": "rp-005",
+      "lang": "en",
+      "intent": "reporting_intelligence",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Pull every indicator out of this incident write-up so I can put them in a case",
+      "acceptable": [
+        "blueteam_extract_iocs"
+      ],
+      "rationale": "Structured IOC extraction from free text is this tool; the lifecycle store queries IOCs that are already stored."
+    },
+    {
+      "id": "rp-005-id",
+      "pair": "rp-005",
+      "lang": "id",
+      "intent": "reporting_intelligence",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Tarik semua indikator dari tulisan insiden ini supaya bisa saya masukkan ke kasus",
+      "acceptable": [
+        "blueteam_extract_iocs"
+      ],
+      "rationale": "IOC extraction."
+    },
+    {
+      "id": "rp-006-en",
+      "pair": "rp-006",
+      "lang": "en",
+      "intent": "reporting_intelligence",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Package the confirmed indicators into a bundle another CSIRT can import, TLP amber",
+      "acceptable": [
+        "blueteam_stix_export"
+      ],
+      "rationale": "STIX 2.1 bundle production for a peer CSIRT; it is disabled unless egress is enabled, which is a configuration answer rather than a wrong pick."
+    },
+    {
+      "id": "rp-006-id",
+      "pair": "rp-006",
+      "lang": "id",
+      "intent": "reporting_intelligence",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Kemas indikator yang sudah terkonfirmasi menjadi bundel yang bisa diimpor CSIRT lain, TLP amber",
+      "acceptable": [
+        "blueteam_stix_export"
+      ],
+      "rationale": "STIX export."
+    },
+    {
+      "id": "ya-001-en",
+      "pair": "ya-001",
+      "lang": "en",
+      "intent": "detection_engineering_yara",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Draft a YARA rule from the pattern we are seeing in these alerts",
+      "acceptable": [
+        "blueteam_yara_rule_generate"
+      ],
+      "rationale": "Alert-pattern to YARA draft."
+    },
+    {
+      "id": "ya-001-id",
+      "pair": "ya-001",
+      "lang": "id",
+      "intent": "detection_engineering_yara",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Susun draf aturan YARA dari pola yang kami lihat pada peringatan ini",
+      "acceptable": [
+        "blueteam_yara_rule_generate"
+      ],
+      "rationale": "YARA draft from an alert pattern."
+    },
+    {
+      "id": "ya-002-en",
+      "pair": "ya-002",
+      "lang": "en",
+      "intent": "detection_engineering_yara",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Check this rule compiles and that the atoms are not too short before we stage it",
+      "acceptable": [
+        "blueteam_yara_rule_validate",
+        "blueteam_yara_rule_save"
+      ],
+      "rationale": "Compilation plus short-atom findings is the validator; saving is the staging step that requires a validated rule."
+    },
+    {
+      "id": "ya-002-id",
+      "pair": "ya-002",
+      "lang": "id",
+      "intent": "detection_engineering_yara",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Periksa apakah aturan ini bisa dikompilasi dan atomnya tidak terlalu pendek sebelum kami simpan",
+      "acceptable": [
+        "blueteam_yara_rule_validate",
+        "blueteam_yara_rule_save"
+      ],
+      "rationale": "Rule validation or staging."
+    },
+    {
+      "id": "sg-001-en",
+      "pair": "sg-001",
+      "lang": "en",
+      "intent": "detection_engineering_sigma",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Write a Sigma rule for the logon pattern in this alert window",
+      "acceptable": [
+        "blueteam_sigma_rule_generate"
+      ],
+      "rationale": "Sigma draft from an alert pattern."
+    },
+    {
+      "id": "sg-001-id",
+      "pair": "sg-001",
+      "lang": "id",
+      "intent": "detection_engineering_sigma",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Tulis aturan Sigma untuk pola logon pada jendela peringatan ini",
+      "acceptable": [
+        "blueteam_sigma_rule_generate"
+      ],
+      "rationale": "Sigma draft."
+    },
+    {
+      "id": "sg-002-en",
+      "pair": "sg-002",
+      "lang": "en",
+      "intent": "detection_engineering_sigma",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Turn this Sigma rule into an OpenSearch Dashboards alerting monitor",
+      "acceptable": [
+        "blueteam_sigma_rule_convert"
+      ],
+      "rationale": "Conversion to a Dashboards monitor output format is only this tool; validation does not emit artifacts."
+    },
+    {
+      "id": "sg-002-id",
+      "pair": "sg-002",
+      "lang": "id",
+      "intent": "detection_engineering_sigma",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Ubah aturan Sigma ini menjadi monitor alerting di OpenSearch Dashboards",
+      "acceptable": [
+        "blueteam_sigma_rule_convert"
+      ],
+      "rationale": "Sigma to OpenSearch artifact conversion."
+    },
+    {
+      "id": "rr-001-en",
+      "pair": "rr-001",
+      "lang": "en",
+      "intent": "local_case_rag",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Have we closed anything that looks like this before?",
+      "acceptable": [
+        "blueteam_rag_query",
+        "blueteam_investigation_history"
+      ],
+      "rationale": "The RAG corpus answers 'have we seen this'; the investigation history answers the narrower 'this IP was investigated'."
+    },
+    {
+      "id": "rr-001-id",
+      "pair": "rr-001",
+      "lang": "id",
+      "intent": "local_case_rag",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Apakah kita pernah menutup kasus yang mirip dengan ini sebelumnya?",
+      "acceptable": [
+        "blueteam_rag_query",
+        "blueteam_investigation_history"
+      ],
+      "rationale": "Prior similar case."
+    },
+    {
+      "id": "rr-002-en",
+      "pair": "rr-002",
+      "lang": "en",
+      "intent": "local_case_rag",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "I edited a few cases and added a new false positive this morning, make the search index reflect that",
+      "acceptable": [
+        "blueteam_rag_ingest"
+      ],
+      "rationale": "The index is derived and does not notice edits, so it has to be rebuilt; this is the ingest tool's contract."
+    },
+    {
+      "id": "rr-002-id",
+      "pair": "rr-002",
+      "lang": "id",
+      "intent": "local_case_rag",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Saya mengedit beberapa kasus dan menambah false positive baru pagi ini, buat indeks pencariannya mencerminkan itu",
+      "acceptable": [
+        "blueteam_rag_ingest"
+      ],
+      "rationale": "Index rebuild after case edits."
+    },
+    {
+      "id": "rs-001-en",
+      "pair": "rs-001",
+      "lang": "en",
+      "intent": "resources",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "How many times was each tool called, and how slow is the server today?",
+      "acceptable": [
+        "blueteam_metrics"
+      ],
+      "rationale": "Per-tool call counts and latency are the server telemetry snapshot."
+    },
+    {
+      "id": "rs-001-id",
+      "pair": "rs-001",
+      "lang": "id",
+      "intent": "resources",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Berapa kali setiap tool dipanggil, dan seberapa lambat server hari ini?",
+      "acceptable": [
+        "blueteam_metrics"
+      ],
+      "rationale": "Server telemetry."
+    },
+    {
+      "id": "rs-002-en",
+      "pair": "rs-002",
+      "lang": "en",
+      "intent": "resources",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Which rule IDs belong to the authentication_failed group?",
+      "acceptable": [
+        "blueteam_wazuh_get_rules",
+        "blueteam_wazuh_get_groups"
+      ],
+      "rationale": "Rule taxonomy by group is available as an MCP resource with the get_rules and get_groups tools as the tool equivalents."
+    },
+    {
+      "id": "rs-002-id",
+      "pair": "rs-002",
+      "lang": "id",
+      "intent": "resources",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Rule ID mana saja yang termasuk grup authentication_failed?",
+      "acceptable": [
+        "blueteam_wazuh_get_rules",
+        "blueteam_wazuh_get_groups"
+      ],
+      "rationale": "Rule taxonomy by group."
+    },
+    {
+      "id": "ov-006-en",
+      "pair": "ov-006",
+      "lang": "en",
+      "intent": "overview_timeline",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Write every alert from the last week to a JSONL file on the server so I can analyse it offline",
+      "acceptable": [
+        "blueteam_wazuh_export"
+      ],
+      "rationale": "Scroll-export to JSONL on the server is distinct from fetching pages into the conversation."
+    },
+    {
+      "id": "ov-006-id",
+      "pair": "ov-006",
+      "lang": "id",
+      "intent": "overview_timeline",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Tulis semua peringatan seminggu terakhir ke berkas JSONL di server supaya bisa saya analisis offline",
+      "acceptable": [
+        "blueteam_wazuh_export"
+      ],
+      "rationale": "JSONL scroll export."
+    },
+    {
+      "id": "ip-006-en",
+      "pair": "ip-006",
+      "lang": "en",
+      "intent": "ip_triage",
+      "type": "paraphrase",
+      "split": "held",
+      "prompt": "Condense everything this source IP did into a short digest I can paste into a ticket",
+      "acceptable": [
+        "blueteam_wazuh_alert_summarize",
+        "blueteam_threat_card"
+      ],
+      "rationale": "The summarizer produces the compact digest; the threat card is the fuller one-call picture."
+    },
+    {
+      "id": "ip-006-id",
+      "pair": "ip-006",
+      "lang": "id",
+      "intent": "ip_triage",
+      "type": "paraphrase",
+      "split": "held",
+      "prompt": "Ringkas semua yang dilakukan IP sumber ini menjadi digest singkat yang bisa saya tempel ke tiket",
+      "acceptable": [
+        "blueteam_wazuh_alert_summarize",
+        "blueteam_threat_card"
+      ],
+      "rationale": "Compact per-IP digest."
+    },
+    {
+      "id": "ti-006-en",
+      "pair": "ti-006",
+      "lang": "en",
+      "intent": "threat_intel",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Is this file hash a known malware payload?",
+      "acceptable": [
+        "urlhaus_hash_lookup",
+        "blueteam_lookup_hash_virustotal"
+      ],
+      "rationale": "Both are hash reputation lookups against different corpora, and either answers the question."
+    },
+    {
+      "id": "ti-006-id",
+      "pair": "ti-006",
+      "lang": "id",
+      "intent": "threat_intel",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Apakah hash berkas ini payload malware yang dikenal?",
+      "acceptable": [
+        "urlhaus_hash_lookup",
+        "blueteam_lookup_hash_virustotal"
+      ],
+      "rationale": "Hash reputation."
+    },
+    {
+      "id": "cc-005-en",
+      "pair": "cc-005",
+      "lang": "en",
+      "intent": "correlation_campaigns",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "What should I look at next for this indicator?",
+      "acceptable": [
+        "blueteam_pivot_suggest"
+      ],
+      "rationale": "Next-step suggestion driven by the attack graph is this tool's contract."
+    },
+    {
+      "id": "cc-005-id",
+      "pair": "cc-005",
+      "lang": "id",
+      "intent": "correlation_campaigns",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Apa yang sebaiknya saya periksa selanjutnya untuk indikator ini?",
+      "acceptable": [
+        "blueteam_pivot_suggest"
+      ],
+      "rationale": "Next pivot suggestion."
+    },
+    {
+      "id": "gh-007-en",
+      "pair": "gh-007",
+      "lang": "en",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Map the attack origins for the board slide, I want coordinates and city level",
+      "acceptable": [
+        "blueteam_wazuh_geo_heatmap",
+        "blueteam_wazuh_geo_distribution"
+      ],
+      "rationale": "Coordinate and city-level heatmap data is the heatmap tool; the distribution tool gives country totals instead."
+    },
+    {
+      "id": "gh-007-id",
+      "pair": "gh-007",
+      "lang": "id",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Petakan asal serangan untuk slide rapat, saya mau koordinat dan tingkat kota",
+      "acceptable": [
+        "blueteam_wazuh_geo_heatmap",
+        "blueteam_wazuh_geo_distribution"
+      ],
+      "rationale": "Geo heatmap data."
+    },
+    {
+      "id": "gh-008-en",
+      "pair": "gh-008",
+      "lang": "en",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Which of our hosts still have outstanding security patches?",
+      "acceptable": [
+        "blueteam_wazuh_vulnerabilities",
+        "blueteam_check_updates"
+      ],
+      "rationale": "Indexed vulnerability scan results cover the fleet; the update check covers the local host."
+    },
+    {
+      "id": "gh-008-id",
+      "pair": "gh-008",
+      "lang": "id",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Host kami mana yang masih punya tambalan keamanan tertunda?",
+      "acceptable": [
+        "blueteam_wazuh_vulnerabilities",
+        "blueteam_check_updates"
+      ],
+      "rationale": "Vulnerability or update status."
+    },
+    {
+      "id": "rp-007-en",
+      "pair": "rp-007",
+      "lang": "en",
+      "intent": "reporting_intelligence",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Give me the report-like summary filtered to only critical severity alerts from Indonesia",
+      "acceptable": [
+        "blueteam_curated_threat_report",
+        "wazuh_alert_dsl_query"
+      ],
+      "rationale": "The curated report takes the geo and severity filters; the DSL tool can express the same aggregation by hand."
+    },
+    {
+      "id": "rp-007-id",
+      "pair": "rp-007",
+      "lang": "id",
+      "intent": "reporting_intelligence",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Beri saya ringkasan bergaya laporan yang hanya menampilkan peringatan tingkat kritis dari Indonesia",
+      "acceptable": [
+        "blueteam_curated_threat_report",
+        "wazuh_alert_dsl_query"
+      ],
+      "rationale": "Filtered report."
+    },
+    {
+      "id": "ic-005-en",
+      "pair": "ic-005",
+      "lang": "en",
+      "intent": "investigation_case",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Attach these indicators to the case I opened yesterday",
+      "acceptable": [
+        "blueteam_case_add_iocs",
+        "blueteam_case_get"
+      ],
+      "rationale": "Case IOC attachment, with the case fetch as the read that confirms the case."
+    },
+    {
+      "id": "ic-005-id",
+      "pair": "ic-005",
+      "lang": "id",
+      "intent": "investigation_case",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Lampirkan indikator ini ke kasus yang saya buka kemarin",
+      "acceptable": [
+        "blueteam_case_add_iocs",
+        "blueteam_case_get"
+      ],
+      "rationale": "Case IOC attach."
+    },
+    {
+      "id": "rp-008-en",
+      "pair": "rp-008",
+      "lang": "en",
+      "intent": "reporting_intelligence",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Run the alert-driven hunting and investigation playbook for this window",
+      "acceptable": [
+        "blueteam_playbook_run",
+        "blueteam_investigation_workflow"
+      ],
+      "rationale": "Named playbook execution is the playbook runner; the investigation workflow is the fixed end-to-end graph."
+    },
+    {
+      "id": "rp-008-id",
+      "pair": "rp-008",
+      "lang": "id",
+      "intent": "reporting_intelligence",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Jalankan playbook hunting dan investigasi berbasis peringatan untuk jendela ini",
+      "acceptable": [
+        "blueteam_playbook_run",
+        "blueteam_investigation_workflow"
+      ],
+      "rationale": "Playbook execution."
+    },
+    {
+      "id": "eb-005-en",
+      "pair": "eb-005",
+      "lang": "en",
+      "intent": "email_breach_domain",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Are there alerts mentioning that particular domain?",
+      "acceptable": [
+        "wazuh_domain_lookup"
+      ],
+      "rationale": "Searching alerts for a domain is this tool; the registration and certificate tools answer different questions."
+    },
+    {
+      "id": "eb-005-id",
+      "pair": "eb-005",
+      "lang": "id",
+      "intent": "email_breach_domain",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Apakah ada peringatan yang menyebut domain tertentu itu?",
+      "acceptable": [
+        "wazuh_domain_lookup"
+      ],
+      "rationale": "Domain search across alerts."
+    },
+    {
+      "id": "rs-003-en",
+      "pair": "rs-003",
+      "lang": "en",
+      "intent": "resources",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Which server telemetry is available as an MCP resource rather than a tool call?",
+      "acceptable": [
+        "blueteam_metrics"
+      ],
+      "rationale": "The telemetry resource and its tool equivalent are the same data; the tool is the answer when the client cannot read resources."
+    },
+    {
+      "id": "rs-003-id",
+      "pair": "rs-003",
+      "lang": "id",
+      "intent": "resources",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Telemetri server mana yang tersedia sebagai resource MCP, bukan sebagai pemanggilan tool?",
+      "acceptable": [
+        "blueteam_metrics"
+      ],
+      "rationale": "Telemetry resource equivalent."
+    },
+    {
+      "id": "cc-006-en",
+      "pair": "cc-006",
+      "lang": "en",
+      "intent": "correlation_campaigns",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Which source IPs does 3-Sum already auto-suppress, so I do not chase them?",
+      "acceptable": [
+        "blueteam_false_positive_kb",
+        "blueteam_false_positive_tracker"
+      ],
+      "rationale": "The knowledge base lists the suppressed IOCs; the tracker counts how often a rule was marked false-positive."
+    },
+    {
+      "id": "cc-006-id",
+      "pair": "cc-006",
+      "lang": "id",
+      "intent": "correlation_campaigns",
+      "type": "operational",
+      "split": "held",
+      "prompt": "IP sumber mana yang sudah otomatis ditekan 3-Sum, supaya saya tidak mengejarnya?",
+      "acceptable": [
+        "blueteam_false_positive_kb",
+        "blueteam_false_positive_tracker"
+      ],
+      "rationale": "False-positive knowledge base."
+    },
+    {
+      "id": "cl-004-en",
+      "pair": "cl-004",
+      "lang": "en",
+      "intent": "clustering_labeling",
+      "type": "operational",
+      "split": "held",
+      "prompt": "This entity does not look like the others in the window, where does it sit relative to the stored clusters?",
+      "acceptable": [
+        "blueteam_alert_cluster_assign",
+        "blueteam_alert_cluster"
+      ],
+      "rationale": "Placement against a stored fit is assignment; fitting a new set is the cluster tool."
+    },
+    {
+      "id": "cl-004-id",
+      "pair": "cl-004",
+      "lang": "id",
+      "intent": "clustering_labeling",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Entitas ini tidak mirip yang lain di jendela, di mana posisinya terhadap klaster tersimpan?",
+      "acceptable": [
+        "blueteam_alert_cluster_assign",
+        "blueteam_alert_cluster"
+      ],
+      "rationale": "Stored-fit assignment."
+    },
+    {
+      "id": "wm-005-en",
+      "pair": "wm-005",
+      "lang": "en",
+      "intent": "wazuh_manager_config",
+      "type": "operational",
+      "split": "held",
+      "prompt": "List the decoders the manager has loaded",
+      "acceptable": [
+        "blueteam_wazuh_get_decoders"
+      ],
+      "rationale": "Decoder inventory."
+    },
+    {
+      "id": "wm-005-id",
+      "pair": "wm-005",
+      "lang": "id",
+      "intent": "wazuh_manager_config",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Daftarkan decoder yang sudah dimuat manager",
+      "acceptable": [
+        "blueteam_wazuh_get_decoders"
+      ],
+      "rationale": "Decoder inventory."
+    },
+    {
+      "id": "ti-007-en",
+      "pair": "ti-007",
+      "lang": "en",
+      "intent": "threat_intel",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Run the indicator through our aggregated provider check and also look it up directly in ThreatFox",
+      "acceptable": [
+        "threatfox_ioc_search",
+        "blueteam_threat_intel_aggregate"
+      ],
+      "rationale": "Direct provider search versus the multi-provider aggregate; the prompt names both and either is defensible as the first hop."
+    },
+    {
+      "id": "ti-007-id",
+      "pair": "ti-007",
+      "lang": "id",
+      "intent": "threat_intel",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Jalankan indikator lewat pemeriksaan provider agregat kami dan cari juga langsung di ThreatFox",
+      "acceptable": [
+        "threatfox_ioc_search",
+        "blueteam_threat_intel_aggregate"
+      ],
+      "rationale": "Direct provider search or the aggregate."
+    },
+    {
+      "id": "gh-009-en",
+      "pair": "gh-009",
+      "lang": "en",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Show me which ports are listening on that server and which process owns them",
+      "acceptable": [
+        "blueteam_list_listening_ports"
+      ],
+      "rationale": "Listening ports with the owning process is this tool's contract."
+    },
+    {
+      "id": "gh-009-id",
+      "pair": "gh-009",
+      "lang": "id",
+      "intent": "geo_host_forensics",
+      "type": "operational",
+      "split": "dev",
+      "prompt": "Tunjukkan port mana yang listening di server itu dan proses mana pemiliknya",
+      "acceptable": [
+        "blueteam_list_listening_ports"
+      ],
+      "rationale": "Listening ports with owning process."
+    },
+    {
+      "id": "ov-007-en",
+      "pair": "ov-007",
+      "lang": "en",
+      "intent": "overview_timeline",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Focus on the beaconing cluster only and give me a sample of those alerts",
+      "acceptable": [
+        "wazuh_alert_focused_crawl"
+      ],
+      "rationale": "Surgical deep-dive into a specific alert cluster is the focused crawl's contract."
+    },
+    {
+      "id": "ov-007-id",
+      "pair": "ov-007",
+      "lang": "id",
+      "intent": "overview_timeline",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Fokus hanya pada klaster beaconing dan beri saya sampel peringatannya",
+      "acceptable": [
+        "wazuh_alert_focused_crawl"
+      ],
+      "rationale": "Focused alert crawl."
+    },
+    {
+      "id": "ip-007-en",
+      "pair": "ip-007",
+      "lang": "en",
+      "intent": "ip_triage",
+      "type": "edge_case",
+      "split": "dev",
+      "prompt": "Order this IP's activity by kill-chain phase and tell me which ATT&CK techniques we saw",
+      "acceptable": [
+        "blueteam_stix_killchain",
+        "blueteam_attack_chain"
+      ],
+      "rationale": "Kill-chain ordering from the STIX graph is the stix_killchain tool; the attack chain tool orders rule transitions instead."
+    },
+    {
+      "id": "ip-007-id",
+      "pair": "ip-007",
+      "lang": "id",
+      "intent": "ip_triage",
+      "type": "edge_case",
+      "split": "dev",
+      "prompt": "Urutkan aktivitas IP ini berdasarkan fase kill-chain dan sebutkan teknik ATT&CK yang kami lihat",
+      "acceptable": [
+        "blueteam_stix_killchain",
+        "blueteam_attack_chain"
+      ],
+      "rationale": "Kill-chain phase ordering."
+    },
+    {
+      "id": "de-004-en",
+      "pair": "de-004",
+      "lang": "en",
+      "intent": "documents_evidence",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Convert the IR playbook PDF into a corpus the retrieval tool can search",
+      "acceptable": [
+        "blueteam_rag_ingest",
+        "blueteam_document_convert"
+      ],
+      "rationale": "Server-side advisory PDF ingest into the RAG corpus is the ingest tool; a plain conversion is the document converter."
+    },
+    {
+      "id": "de-004-id",
+      "pair": "de-004",
+      "lang": "id",
+      "intent": "documents_evidence",
+      "type": "operational",
+      "split": "held",
+      "prompt": "Ubah PDF playbook IR menjadi korpus yang bisa dicari oleh tool retrieval",
+      "acceptable": [
+        "blueteam_rag_ingest",
+        "blueteam_document_convert"
+      ],
+      "rationale": "PDF to searchable corpus."
+    },
+    {
+      "id": "cve-005-en",
+      "pair": "cve-005",
+      "lang": "en",
+      "intent": "cve_vulnerability",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Does this vulnerability map to any techniques, and who is known to use them?",
+      "acceptable": [
+        "blueteam_cve_attack_mapping"
+      ],
+      "rationale": "CVE to ATT&CK techniques plus the groups that use them is this tool."
+    },
+    {
+      "id": "cve-005-id",
+      "pair": "cve-005",
+      "lang": "id",
+      "intent": "cve_vulnerability",
+      "type": "paraphrase",
+      "split": "dev",
+      "prompt": "Apakah kerentanan ini memetakan ke teknik tertentu, dan siapa yang dikenal memakainya?",
+      "acceptable": [
+        "blueteam_cve_attack_mapping"
+      ],
+      "rationale": "CVE to ATT&CK mapping."
+    },
+    {
+      "id": "fc-004-en",
+      "pair": "fc-004",
+      "lang": "en",
+      "intent": "forecasting",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Fit a model of how this deployment behaves so prediction has something to work from",
+      "acceptable": [
+        "blueteam_tactic_forecast",
+        "blueteam_volume_forecast"
+      ],
+      "rationale": "Training a model is the mode the forecast tools expose alongside prediction."
+    },
+    {
+      "id": "fc-004-id",
+      "pair": "fc-004",
+      "lang": "id",
+      "intent": "forecasting",
+      "type": "edge_case",
+      "split": "held",
+      "prompt": "Latih model perilaku deployment ini supaya prediksi punya dasar",
+      "acceptable": [
+        "blueteam_tactic_forecast",
+        "blueteam_volume_forecast"
+      ],
+      "rationale": "Model fitting."
+    }
+  ]
+}
