@@ -125,7 +125,11 @@ _ID_EN_ALIASES: dict[str, str] = {
     "sertifikatnya": "certificate tls",
     "surel": "email",
     "akun": "account",
-    "klaster": "cluster nodes",
+    # Indonesian 'klaster' means a cluster of alerts or entities, never a Wazuh Manager
+    # cluster node. The plural is deliberate: blueteam_wazuh_get_cluster_nodes carries
+    # the singular in its own name, so an expansion of "cluster nodes" outranked every
+    # alert-clustering tool for an alert-clustering request.
+    "klaster": "clusters",
     "simpul": "cluster nodes",
     "basis": "database",
     "sistem": "system host",

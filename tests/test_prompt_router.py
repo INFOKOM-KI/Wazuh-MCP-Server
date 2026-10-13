@@ -341,6 +341,44 @@ def test_labelled_prompt_recall_floor():
     )
 
 
+def test_klaster_means_alert_clusters_not_manager_nodes():
+    """Indonesian 'klaster' is a cluster of alerts or entities, never a Manager node.
+
+    It used to expand to "cluster nodes", which scored the Wazuh Manager tool at 11.635
+    against 5.519 for the expected tool on prompt cc-002-id, so an alert-clustering
+    request and a Manager-cluster request were not distinguishable. The expansion is
+    shared, so both directions are asserted: alert-clustering requests must avoid the
+    Manager tool, and an explicit Manager request must still reach it.
+    """
+    router = _register_and_reset()
+    manager_tool = "blueteam_wazuh_get_cluster_nodes"
+
+    alert_prompts = (
+        "Host penyerang mana yang tampak berasal dari kelompok yang sama? "
+        "Saya mau klaster dan hub-nya",
+        "klaster baru muncul semalam dan satu klaster lama membesar",
+        "Fokus hanya pada klaster beaconing",
+        "klaster tersimpan",
+    )
+    for prompt in alert_prompts:
+        ranked = [row["tool"] for row in router.route(prompt, top_k=3)]
+        assert manager_tool not in ranked, (
+            f"an alert-clustering prompt reached the Manager cluster-node tool: "
+            f"{prompt!r} -> {ranked}"
+        )
+
+    manager_prompts = (
+        "List the Wazuh Manager cluster nodes",
+        "show cluster nodes status",
+    )
+    for prompt in manager_prompts:
+        ranked = [row["tool"] for row in router.route(prompt, top_k=3)]
+        assert ranked and ranked[0] == manager_tool, (
+            f"an explicit Manager cluster-node prompt did not reach the Manager tool: "
+            f"{prompt!r} -> {ranked}"
+        )
+
+
 if __name__ == "__main__":
     import sys
     import traceback
