@@ -1604,8 +1604,9 @@ transport it.
 - Before merge: `python3 check_guardrails.py --strict` must exit 0, and logging stays on stderr.
 
 ---
-### Sponsored by
+### Sponsored by:
 **[Kiyararouter](https://kiyararouter.web.id)**
 *Every model. One beautiful API.*
 
 Kiyararouter is the modern OpenAI-compatible gateway for teams building with AI. Connect once, ship faster, and stay flexible.
+<img width="1672" height="941" alt="image" src="https://github.com/user-attachments/assets/f9ac45bc-1576-452f-9494-0d90dafbf81b" />
