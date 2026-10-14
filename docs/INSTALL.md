@@ -158,10 +158,10 @@ sudo nano /opt/blue-team-mcp/config.env
 
 ### 6.1 Correct format
 
-This file is *sourced* by the shell wrapper, so use shell syntax with `export`:
+This file is *sourced* by the shell wrapper, so use shell syntax without `export`:
 
 ```bash
-export VARIABLE_NAME="value"
+VARIABLE_NAME="value..."
 ```
 
 Commented lines are inactive. To change an existing example, remove the leading `#` and replace the value. Empty variable values do not automatically make an integration functional.
