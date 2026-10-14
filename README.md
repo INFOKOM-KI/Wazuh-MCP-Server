@@ -6,11 +6,11 @@
 
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
-A defensive MCP server for Claude Desktop / any MCP client — the blue-team counterpart to
+A defensive MCP server for Claude Desktop / any MCP client, the blue-team counterpart to
 offensive tooling. **160 tools + 4 resources** (134 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, local case RAG, host forensics, and opt-in HDBSCAN clustering + ATT&CK incident
-labeling. Read-only by default.
+labeling. The inbound API key defaults to the read-only `wazuh:read` scope.
 
 **Programmer**: `NAuliajati` (`csirt[at]tangerangkota[.]go[.]id`)
 
@@ -28,8 +28,8 @@ main.py -> mcp_server/  (package)
                  └─ tools/         64 tool modules
 ```
 
-Every tool call flows through a single pipeline in the `@blueteam_tool` decorator — the three
-most-connected nodes in the code graph:
+Every tool call flows through a single pipeline in the `@blueteam_tool` decorator, whose three
+most-connected nodes are:
 
 ```
 audit (_audit_log) -> call -> redact (_redact_alert_data) -> truncate (_truncate_if_needed)
@@ -46,7 +46,7 @@ as failures, so an outage on one upstream fails fast instead of stacking retries
 | Transport | Use case |
 |-----------|----------|
 | `stdio` | Local subprocess / SSH pipe (default) |
-| `streamable_http` | Remote HTTP service (`http://<host>:<port>/mcp`) — requires `MCP_API_KEY` beyond `127.0.0.1` (bind guard enforced) |
+| `streamable_http` | Remote HTTP service (`http://<host>:<port>/mcp`). Requires `MCP_API_KEY` beyond `127.0.0.1` (bind guard enforced) |
 
 ---
 
@@ -60,18 +60,18 @@ sudo bash setup.sh                    # deps, venv, wrapper at /opt/blue-team-mc
 export WAZUH_INDEXER_URL="https://<host>:9200"
 export WAZUH_INDEXER_USER="admin"
 export WAZUH_INDEXER_PASSWORD="<indexer-password>"
-export WAZUH_API_URL="https://<host>:55000"      # optional — Manager API tools
+export WAZUH_API_URL="https://<host>:55000"      # optional: Manager API tools
 export WAZUH_API_USER="wazuh-wui"
 export WAZUH_API_PASSWORD="<api-password>"
-export CROWDSEC_API_KEY="<key>"                  # optional — threat intel (free)
+export CROWDSEC_API_KEY="<key>"                  # optional: threat intel (free)
 # inbound auth for the HTTP transport (REQUIRED when binding beyond 127.0.0.1)
 export MCP_API_KEY="btm_<43-char-base64>"        # generate: python3 -c "import secrets; print('btm_' + secrets.token_urlsafe(32))"
-export MCP_API_KEY_SCOPES="wazuh:read wazuh:write"   # optional — default wazuh:read (read-only)
+export MCP_API_KEY_SCOPES="wazuh:read wazuh:write"   # optional: default wazuh:read (read-only)
 
 # run (stdio)
 mcp-server-blueteam
 
-# or remote HTTP (MCP_API_KEY is mandatory here — the server refuses to bind otherwise)
+# or remote HTTP (MCP_API_KEY is mandatory here; the server refuses to bind otherwise)
 MCP_TRANSPORT=streamable_http MCP_HOST=0.0.0.0 MCP_PORT=8001 \
   MCP_API_KEY="btm_<43-char-base64>" mcp-server-blueteam
 ```
@@ -95,19 +95,19 @@ Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_conf
 ## Configuration
 
 Credentials come from environment variables, validated at startup. Every threat-intel key is
-optional — tools degrade gracefully without them.
+optional; tools degrade gracefully without them.
 
 | Area | Variables | Notes |
 |------|-----------|-------|
-| Wazuh Indexer | `WAZUH_INDEXER_URL` / `_USER` / `_PASSWORD` | OpenSearch (9200) — alert/event data |
-| Wazuh Manager | `WAZUH_API_URL` / `_USER` / `_PASSWORD` | Manager API (55000) — rules/agents/config |
+| Wazuh Indexer | `WAZUH_INDEXER_URL` / `_USER` / `_PASSWORD` | OpenSearch (9200): alert/event data |
+| Wazuh Manager | `WAZUH_API_URL` / `_USER` / `_PASSWORD` | Manager API (55000): rules/agents/config |
 | TLS | `WAZUH_INDEXER_VERIFY_SSL`, `WAZUH_API_VERIFY_SSL` | default `true` |
 | Threat intel | `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `RAPIDAPI_KEY`, `HUDSONROCK_API_KEY` | 9 providers + RapidAPI + HudsonRock; all optional |
 | RapidAPI budget | `BLUETEAM_RAPIDAPI_MONTHLY_CAP`, `BLUETEAM_RAPIDAPI_BUDGET`, `BLUETEAM_RAPIDAPI_BUDGET_HOURS`, `BLUETEAM_RAPIDAPI_CACHE`, `BLUETEAM_RAPIDAPI_RAW_WHOIS`, `BLUETEAM_RAPIDAPI_MIN_INTERVAL`, `RAPIDAPI_CACHE_TTL` | one account-wide pool (default 100/month) shared by every RapidAPI product. Budget defaults to 0, so every RapidAPI call is refused until an operator arms a window. `MIN_INTERVAL` paces requests across all of them (default 0.25s; set 7.0 where the plan requires one lookup per 7s) |
 | MISP | `MISP_URL`, `MISP_API_KEY`, `MISP_VERIFYCERT`, `MISP_CACHE_TTL`, `MISP_MIN_INTERVAL`, `MISP_MAX_CONCURRENT`, `MISP_TIMEOUT` | internal sharing instance; read-only key. `MISP_URL` without `MISP_API_KEY` fails startup. `VERIFYCERT` defaults `true` and is scoped to the MISP pool only |
-| Outbound lookup spacing | `NETRA_MIN_INTERVAL`, `ARGUS_MIN_INTERVAL`, `SANGFOR_MIN_INTERVAL` | seconds between upstream lookups — default `30`/`30`/`5` |
-| Outbound HTTP timeout | `HTTP_TIMEOUT` | seconds per upstream request — default `30`. Netra overrides it per request at 90s because its fan-out measured ~34s. A timeout counts as a breaker failure, so a budget below real latency trips the breaker for that upstream |
-| ATT&CK STIX bundle | `MITRE_ATTACK_STIX`, `BLUETEAM_STIX_CACHE`, `BLUETEAM_STIX_MAX_AGE_DAYS`, `BLUETEAM_STIX_MAX_MB`, `BLUETEAM_STIX_RETRY_S` | `https://` URL or a local path (no `file://`/`ftp://`), cache path (default `/var/log/blue-team-mcp/mitre_enterprise_attack.json`), refresh TTL (7 days), fetch cap (100 MB — the corpus is 40 MB), retry after a failed first load (60s). A failed refresh keeps the last good bundle |
+| Outbound lookup spacing | `NETRA_MIN_INTERVAL`, `ARGUS_MIN_INTERVAL`, `SANGFOR_MIN_INTERVAL` | seconds between upstream lookups, default `30`/`30`/`5` |
+| Outbound HTTP timeout | `HTTP_TIMEOUT` | seconds per upstream request, default `30`. Netra overrides it per request at 90s because its fan-out measured ~34s. A timeout counts as a breaker failure, so a budget below real latency trips the breaker for that upstream |
+| ATT&CK STIX bundle | `MITRE_ATTACK_STIX`, `BLUETEAM_STIX_CACHE`, `BLUETEAM_STIX_MAX_AGE_DAYS`, `BLUETEAM_STIX_MAX_MB`, `BLUETEAM_STIX_RETRY_S` | `https://` URL or a local path (no `file://`/`ftp://`), cache path (default `/var/log/blue-team-mcp/mitre_enterprise_attack.json`), refresh TTL (7 days), fetch cap (100 MB; the corpus is 40 MB), retry after a failed first load (60s). A failed refresh keeps the last good bundle |
 | STIX 2.1 egress | `BLUETEAM_STIX_EGRESS_ENABLED`, `BLUETEAM_STIX_IDENTITY_NAME`, `BLUETEAM_STIX_IDENTITY_SECTORS`, `BLUETEAM_STIX_IDENTITY_CONTACT`, `BLUETEAM_STIX_DEFAULT_TLP`, `BLUETEAM_STIX_NAMESPACE`, `BLUETEAM_STIX_MARKINGS_FILE` | the only egress path: `blueteam_stix_export` writes a shareable bundle. Off by default; on, it also needs `IDENTITY_NAME` and a non-empty `BLUETEAM_OWNED_DOMAINS` (fail-closed, see Security & Privacy). `DEFAULT_TLP` defaults `AMBER`. `NAMESPACE` aligns UUIDv5 ids with a peer. `MARKINGS_FILE` adds markings this repo does not ship (TLP:CLEAR, TLP:AMBER+STRICT) |
 | Redaction | `BLUETEAM_REDACTION_POLICY`, `BLUETEAM_OWNED_DOMAINS`, `BLUETEAM_REDACT_*` | see Security & Privacy |
 | Forensic gate | `BLUETEAM_ALLOW_FORENSIC_BYPASS`, `BLUETEAM_FORENSIC_TOKEN` | default `false` / empty |
@@ -119,7 +119,7 @@ optional — tools degrade gracefully without them.
 | Investigation memory (opt-in, off by default) | `BLUETEAM_MEM_ENABLED`, `BLUETEAM_MEM_DB`, `BLUETEAM_MEM_MAX_UNITS_PER_SUBJECT`, `BLUETEAM_MEM_TTL` | Subject-scoped prior analyst decisions: verdict, who recorded it, how often, and when. Written by `blueteam_mark_investigated` after the history append succeeds, read by `blueteam_memory_recall`. `ENABLED=true` requires an absolute `DB` path or startup raises, and `setup.sh` never defaults the path. `MAX_UNITS_PER_SUBJECT` (default `50`) is enforced at write time and never evicts a fresh row. `TTL` defaults to 90 days from the last confirmation, extended up to four times by repeat confirmations, and `0` keeps units forever; only workflow-class decisions and tainted reasons expire, an analyst verdict never does. Free-text reasons are stored tainted. |
 | RAG retrieval flags (all opt-in, all off) | `BLUETEAM_RERANK_NORMALIZE`, `BLUETEAM_RAG_PARENT_CHILD`, `BLUETEAM_RAG_QUERY_NORMALIZE` | `RERANK_NORMALIZE` rescales cross-encoder output onto `[0,1]` and moves the lexical blend after the reranker, which is what lets `VECTOR_WEIGHT` reorder the result; scope is the fusion path only, so `min_rerank_score` on `blueteam_rag_fp_validate` stays a **logit floor** at either setting. `PARENT_CHILD` returns a whole-document parent in place of the chunks that matched, adding `child_count` and `matched_seq`; the reranker then sees only the first `CHUNK_CHARS` runes of that parent. `QUERY_NORMALIZE` folds full-width characters to ASCII before retrieval and is a no-op on ASCII. Implemented and unit-tested; **not quality-evaluated**, so enabling one is an evaluation decision, not a default. |
 | Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
-| Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder — no torch, no second model resident. `BACKEND=laya` and `BACKEND=setfit` each require `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin, and the SetFit pin is verified before its pickled head is loaded). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya`/`setfit` (already-softmaxed distributions) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya\|setfit>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`; SetFit uses its trained truncation. `MAX_CONCURRENCY` defaults `1` |
+| Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder: no torch, no second model resident. `BACKEND=laya` and `BACKEND=setfit` each require `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin, and the SetFit pin is verified before its pickled head is loaded). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya`/`setfit` (already-softmaxed distributions) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya\|setfit>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`; SetFit uses its trained truncation. `MAX_CONCURRENCY` defaults `1` |
 | CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
 | Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **134 tools registered** instead of 160: `160 - 23 - 3 = 134`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
@@ -184,17 +184,17 @@ query distributions, so a fixed floor deletes good matches. `BLUETEAM_RERANK_MAX
 bounded identically.
 
 ### Local Case RAG (`blueteam_rag_*`)
-A local retrieval corpus over the SOC's own history — `case_store` records, confirmed
-false-positive reasons and converted IR playbooks — plus a deterministic false-positive check.
+A local retrieval corpus over the SOC's own history: `case_store` records, confirmed
+false-positive reasons and converted IR playbooks, plus a deterministic false-positive check.
 Embeddings are computed in-process by ONNX (`fastembed.TextEmbedding`, no torch, no hosted
 embedding API), stored in SQLite, and never transmitted.
-- `blueteam_rag_ingest` — rebuild a corpus label. Derived labels (`cases`, `false_positives`, `pdf`) are
+- `blueteam_rag_ingest`: rebuild a corpus label. Derived labels (`cases`, `false_positives`, `pdf`) are
   rebuilt from their source of truth, so **re-run it after editing cases or marking new FPs**.
   `source="pdf"` reads a server-side PDF and chunks it page by page, so the text never passes
   through the model context and `BLUETEAM_CHARACTER_LIMIT` does not apply.
-- `blueteam_rag_query` — vector recall (default 100 candidates) then the optional cross-encoder,
+- `blueteam_rag_query`: vector recall (default 100 candidates) then the optional cross-encoder,
   returning scores plus corpus stats so a stale index is visible.
-- `blueteam_rag_fp_validate` — verdict ladder over registry lookups and corpus matches:
+- `blueteam_rag_fp_validate`: verdict ladder over registry lookups and corpus matches:
   `suppressed_exact`, `conflicting_state`, `likely_true_positive`, `likely_false_positive`,
   `insufficient_evidence`, `validation_incomplete`. Advisory only, never writes, and
   `evidence.confidence` is always `not_computed`.
@@ -222,15 +222,15 @@ index.
 
 ### 3-Sum APT Correlation
 `three_sum_correlation` runs two engines plus unified scoring:
-- **Engine A** — MITRE-driven multi-IoC risk thresholding. Alerts classify by `rule.mitre.tactic`
+- **Engine A**: MITRE-driven multi-IoC risk thresholding. Alerts classify by `rule.mitre.tactic`
   (via `MITRE_TACTIC_TO_CATEGORY`) and `rule.mitre.id` (resolved through the ATT&CK STIX bundle),
   scored as `rule.level × tactic weight`, and gated by a **≥2-category chained-attack rule**
   (`threshold_score` default 35).
-- **Engine B** — 3-source volumetric Z-score (MAD + shoulder-check) flagging simultaneous spikes.
+- **Engine B**: 3-source volumetric Z-score (MAD + shoulder-check) flagging simultaneous spikes.
 - Plus multi-resolution (1h/24h/7d), unified severity scoring, and Indexer degradation detection.
 
 ### Threat Intelligence
-9 providers — CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise, AbuseIPDB, VirusTotal, Netra, Argus —
+9 providers: CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise, AbuseIPDB, VirusTotal, Netra, Argus,
 with a unified `blueteam_threat_intel_aggregate` (concurrent fan-out) and a weighted
 `blueteam_unified_threat_score`. Plus `stealer_log_check` (HudsonRock) and `jarm_fingerprint`
 (TLS fingerprint for C2/malware attribution, no API key), and 4 RapidAPI tools
@@ -249,7 +249,7 @@ of the four and use the quota-free providers instead.
 `blueteam_misp_ioc_lookup` queries your own MISP instance over `POST /attributes/restSearch`
 (read-only). It is not part of `blueteam_threat_intel_aggregate`: the aggregate covers the six
 public providers, MISP is operator-owned, and the two can legitimately disagree. No `pymisp`
-dependency — the tool reuses `_api_call` plus the shared TTL cache and rate limiter. Community
+dependency; the tool reuses `_api_call` plus the shared TTL cache and rate limiter. Community
 free text (`comment`, galaxy descriptions) is stripped before the result reaches the model.
 
 ### Alert Enrichment
@@ -259,7 +259,7 @@ free text (`comment`, galaxy descriptions) is stripped before the result reaches
 ### Vulnerability Management
 CVE triage and remediation: NVD/EPSS/KEV/PoC enrichment (`blueteam_cve_*`), SSVC action
 bands (`blueteam_cve_ssvc`), dependency-manifest scanning against OSV
-(`blueteam_dependency_scan`), and vendor patch guidance (`blueteam_cve_advisory` — MSRC /
+(`blueteam_dependency_scan`), and vendor patch guidance (`blueteam_cve_advisory`: MSRC /
 Red Hat / Ubuntu). The LangGraph workflow runs this chain in its `vuln` step and folds
 vendor advisories into exported reports.
 
@@ -328,7 +328,7 @@ per-cluster radii; `blueteam_alert_cluster_assign` places one entity into that f
 `blueteam_incident_label` names the ATT&CK tactic an alert or text resembles and derives its
 A/B/C category from the same mapping 3-Sum uses.
 What makes clustering cheap: the feature vector is the aggregation the 3-Sum engine already
-runs — 16 MITRE tactic level sums plus `score_a`/`score_b`/`score_c`/`total` — so there is no
+runs: 16 MITRE tactic level sums plus `score_a`/`score_b`/`score_c`/`total`, so there is no
 embedding model, no new taxonomy and no extra Indexer work beyond the profile query. What
 makes labeling cheap: the default `onnx` backend reuses the RAG embedder's ONNX session, so the
 marginal cost is one embedding per call after a one-time 32-phrase anchor build.
@@ -344,7 +344,7 @@ structural facts to expect:
   counters). A fit can succeed on partial data and is still persisted as an operator snapshot;
   `insufficient_data` or `not_observed` with `_degraded: true` means unknown, not empty.
 - **A label is a resemblance, not an attribution.** `status="uncertain"` means no tactic
-  reached the confidence floor — a result, not an error. The full score vector is returned so a
+  reached the confidence floor, a result, not an error. The full score vector is returned so a
   human can calibrate the floor on labelled data. `scored=false` means the backend exposes no
   probabilities and the model's bare choice is reported as unscored, never with an invented
   confidence.
@@ -355,13 +355,13 @@ member IP lists in cluster output (use `_assign` for one entity), and no stored 
 **A campaign means one window.** `blueteam_alert_cluster` groups entities that resemble each
 other *in the window you asked for*. Cluster ids are scoped to a fit, so the same campaign can
 carry a different id after a refit; cross-window campaign identity is not implemented. To persist
-one today, create a case for the cluster (`blueteam_case_create`) — that is a deliberate choice to
+one today, create a case for the cluster (`blueteam_case_create`). That is a deliberate choice to
 avoid a new store with its own lifecycle.
 
 **The label vocabulary is baked, not fetched.** `mcp_server/label/mitre_tactics_generated.py` is
 generated offline from the ATT&CK bundle by `python3 bake_mitre_tactics.py --bundle <path>`
 (`--fetch` to download first, `--check` to report drift without writing). The runtime imports that
-module: no STIX parse, no startup I/O, no network. The vocabulary is a **union** — STIX ships 15
+module: no STIX parse, no startup I/O, no network. The vocabulary is a **union**: STIX ships 15
 `x-mitre-tactic` objects while this deployment scores 16 names, because the production ruleset
 still emits the pre-v18 `Defense Evasion`, which v18 split into `Stealth` + `Defense Impairment`. A
 bake that trusted upstream alone would drop that name and the criteria guard would raise at import.
@@ -371,17 +371,17 @@ Never edit the generated file by hand; regenerate it and let `git diff` show the
 Threads are capped at 2 by default (`OMP_NUM_THREADS`, inherited by MKL/OpenBLAS/NumExpr) and
 `BLUETEAM_LAYA_MAX_CONCURRENCY` defaults to 1, because three model pools share the CPU: the
 cross-encoder reranker (`bge-reranker-base`, ~1 GB, on by default), the RAG embedder
-(`bge-small-en-v1.5`, ONNX), and — only when `BLUETEAM_LAYA_BACKEND=laya` or `=setfit` — CPU torch
-plus the vendored weights. The `onnx` labeler adds no model: it borrows the RAG embedder.
+(`bge-small-en-v1.5`, ONNX), and CPU torch
+plus the vendored weights only when `BLUETEAM_LAYA_BACKEND=laya` or `=setfit`. The `onnx` labeler adds no model: it borrows the RAG embedder.
 
 **Measured budget (owner decision, 2026-09-24).** Warm label latency p95 ≤ **300 ms** per call on
 the target host, and **no new resident model above 250 MB marginal RSS** measured in a process
 that has already loaded the reranker. The `onnx` backend meets both by construction: it reuses the
 embedder that is already resident. The first call also builds the ONNX session and embeds 32
 taxonomy phrases, so the anchors are prewarmed on a daemon thread at startup instead of being paid
-by the first analyst. `BLUETEAM_LAYA_BACKEND=laya` and `=setfit` are **unsupported by policy** —
+by the first analyst. `BLUETEAM_LAYA_BACKEND=laya` and `=setfit` are **unsupported by policy**:
 CPU torch plus weights exceed the envelope (the SetFit body is smaller, the torch runtime alone is
-not) — so the code and its tests stay as an escape hatch and are not advertised in the report
+not), so the code and its tests stay as an escape hatch and are not advertised in the report
 prompts; enabling either is an explicit operator exemption, not a tuning knob. Their sanctioned use
 is offline: `laya` labels the calibration corpus, and `scripts/train_setfit_labeler.py` trains the
 SetFit student while `onnx` serves requests.
@@ -396,7 +396,7 @@ MITRE CAR (`analytics/*.yaml`), Atomic Red Team (`atomics/T*/T*.yaml`) and Splun
 (`datasets/attack_techniques/T*/*/*.yml`) into rows the calibration harness reads, with the STIX
 bundle as the technique→tactic oracle. It needs `--stix`, at least one source directory, and no
 network. Two invariants that make the score mean something: a technique lands in exactly one of
-train/val/test, and `rule.mitre.*` is omitted by default because those fields state the answer —
+train/val/test, and `rule.mitre.*` is omitted by default because those fields state the answer;
 `--with-rule-mitre` emits the leaky variant so the accuracy delta can be measured. Multi-tactic
 techniques are dropped: the tool is single-label. The projected descriptions are synthetic text,
 so the corpus complements, never replaces, analyst-adjudicated alerts exported by
@@ -406,8 +406,8 @@ one tactic, production-shaped text or a description-only alert (`rule.id`, `rule
 with the backend, model SHA, `criteria_version`, floor and temperature. Then run
 `scripts/calibrate_labeler.py --backend onnx|laya|setfit`
 over the result and apply the suggested floor and temperature. `--gate` makes that run exit 2 when the
-suggested point misses the provisional thresholds — macro-F1 0.80, selective accuracy 0.90,
-coverage 0.60, ECE 0.10 — and `--split test` scores the held-out split, so a regression fails
+suggested point misses the provisional thresholds (macro-F1 0.80, selective accuracy 0.90,
+coverage 0.60, ECE 0.10), and `--split test` scores the held-out split, so a regression fails
 CI instead of writing a report nobody reads.
 
 There is no hosted CI for this: the corpus and the weights stay on the stage host, so the gate runs
@@ -427,9 +427,9 @@ from cron and the exit code is the failure signal.
 
 `streamable_http` is protected by a pre-shared API key in `mcp_server/core/server_auth.py`:
 
-- `MCP_API_KEY` — format `btm_<43-char-urlsafe-base64>` (47 chars). Stored only as a SHA-256
+- `MCP_API_KEY`: format `btm_<43-char-urlsafe-base64>` (47 chars). Stored only as a SHA-256
   digest, compared with `hmac.compare_digest` (constant-time).
-- `MCP_API_KEY_SCOPES` — default `wazuh:read` (read-only). Add `wazuh:write` to enable the 17
+- `MCP_API_KEY_SCOPES`: default `wazuh:read` (read-only). Add `wazuh:write` to enable the 17
   write tools (`blueteam_fail2ban_unban`, `blueteam_case_*` ×3, `blueteam_set_owned_domains`,
   `blueteam_mark_investigated`, `blueteam_wazuh_export`, `blueteam_export_report`,
   `blueteam_stix_export`, `blueteam_rag_ingest`, `blueteam_capture_traffic`,
@@ -444,7 +444,7 @@ from cron and the exit code is the failure signal.
   configured; when a key is set it is enforced on every request.
 - **JSON depth guard** (`parse_json_body_safe`): every POST body is capped at 1 MB
   (`MAX_BODY_BYTES`) and rejected if nesting exceeds 100 levels (`MAX_JSON_DEPTH`) *before*
-  `json.loads` runs — blocks the stack-exhaustion DoS from deeply nested JSON-RPC payloads.
+  `json.loads` runs, which blocks the stack-exhaustion DoS from deeply nested JSON-RPC payloads.
 - **Inbound rate limiter** (`SlidingWindowRateLimiter`): per-client-IP sliding-window cap
   (`BLUETEAM_HTTP_RATE_LIMIT`, requests/min, default `0` = disabled) → `429` on excess. Distinct
   from `BLUETEAM_RATE_LIMIT`, which gates destructive tools (fail2ban unban, tcpdump capture)
@@ -452,7 +452,7 @@ from cron and the exit code is the failure signal.
 - **Origin validation** (`_origin_allowed`): an `Origin` header must be a loopback origin or in
   `BLUETEAM_ALLOWED_ORIGINS` (comma-separated exact origins), else `403`. Blocks browser-based
   DNS-rebinding / localhost-exfiltration. Requests without an `Origin` header (non-browser
-  clients) are unaffected. The middleware is always installed — rate limiting + origin validation
+  clients) are unaffected. The middleware is always installed; rate limiting + origin validation
   apply even on an auth-less loopback bind.
 
 ### Redaction policy
@@ -461,19 +461,19 @@ Three-state policy (`BLUETEAM_REDACTION_POLICY`, default **`protect_victim`**):
 
 | Policy | Behavior |
 |--------|----------|
-| `full` | Shape-based masking of emails, private IPs, all domains, paths, user-agents — conservative fallback when `protect_victim` has no owned domains |
+| `full` | Shape-based masking of emails, private IPs, all domains, paths, user-agents; conservative fallback when `protect_victim` has no owned domains |
 | `protect_victim` | Mask only victim-owned indicators (owned domains, private IPs, identities); attacker IOCs stay visible. Recommended for SOC triage. |
-| `raw` | Layer-1 credential strip only — hard-gated behind `BLUETEAM_ALLOW_FORENSIC_BYPASS=true` + `BLUETEAM_FORENSIC_TOKEN` |
+| `raw` | Layer-1 credential strip only; hard-gated behind `BLUETEAM_ALLOW_FORENSIC_BYPASS=true` + `BLUETEAM_FORENSIC_TOKEN` |
 
 Layer 1 (credential stripping) applies in **all** states and is never bypassable. The
 attacker-IOC registry (`core/attacker_registry.py`) exempts confirmed attacker indicators from
-shape-based masking — never from Layer 1.
+shape-based masking, never from Layer 1.
 
 Two-tier unmasking on top of the policy:
-- **Tier 1 — `reveal_owned=true`** — reveals only owned `*.tangerangkota.go.id` assets to the LLM,
+- **Tier 1 (`reveal_owned=true`)**: reveals only owned `*.tangerangkota.go.id` assets to the LLM,
   and unmask owned-domain bucket keys in the aggregation tools (including
   `wazuh_alert_dsl_query`). Never expands beyond `BLUETEAM_OWNED_DOMAINS`.
-- **Tier 2 — `bypass_redaction=true` + `forensic_token`** — writes raw data **to disk**; the LLM
+- **Tier 2 (`bypass_redaction=true` + `forensic_token`)**: writes raw data **to disk**; the LLM
   receives only the file path, never the raw content.
 
 Set `BLUETEAM_OWNED_DOMAINS` to your org's domains (comma-separated, e.g. `tangerangkota.go.id`).
@@ -484,14 +484,14 @@ Inspect with `blueteam_owned_domains`; update at runtime with `blueteam_set_owne
 
 ## SOC Analysis Prompt (copy-paste for your LLM)
 
-A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two output formats —
+A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two output formats:
 **Markdown** (inline) and **DOCX** (requires `officecli`, `blueteam_export_report`).
 
 > Canonical source of truth: [`resource/skill/soc-analysis.md`](resource/skill/soc-analysis.md).
-> This block is a copy of that skill's body — update the skill, not this block, when the toolset changes.
+> This block is a copy of that skill's body; update the skill, not this block, when the toolset changes.
 
 ````markdown
-# blue_team_mcp — SOC Analysis Skill
+# blue_team_mcp: SOC Analysis Skill
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
@@ -502,7 +502,7 @@ how to read the results, and what NOT to do.
 ## 0. First-call protocol (CRITICAL)
 
 The client shows tools as **uninspected** on first use. The
-first `tool_invoke` returns only the tool signature + docstring — **this is not
+first `tool_invoke` returns only the tool signature + docstring: **this is not
 an error and not a hallucination**. It is the MCP inspection handshake.
 
 Correct pattern, every time:
@@ -537,7 +537,7 @@ any cross-encoder. It stays on for `blueteam_rag_query`), and use `mode="buckets
 see how it split the sentence into tokens. When the analyst's question is vague, ask them one clarifying question rather than routing a
 guess.
 
-Choose the tool by what the analyst wants — never invent tools.
+Choose the tool by what the analyst wants. Never invent tools.
 
 ### Triage (single IP)
 | Want | Tool |
@@ -559,15 +559,15 @@ Choose the tool by what the analyst wants — never invent tools.
 |---|---|
 | 6 providers concurrently | `blueteam_threat_intel_aggregate(indicator)` |
 | CrowdSec reputation | `crowdsec_ip_reputation(ip)` |
-| Argus (aggregated sources) | `argus_ip_lookup(ip)` — renders **every** provider in the response with no hardcoded provider or field names, so a changed response shape still renders. Report comments are counted (`N text value(s), not expanded`), never printed; `response_format="json"` returns the verbatim payload when you need the comment text |
+| Argus (aggregated sources) | `argus_ip_lookup(ip)`: renders **every** provider in the response with no hardcoded provider or field names, so a changed response shape still renders. Report comments are counted (`N text value(s), not expanded`), never printed; `response_format="json"` returns the verbatim payload when you need the comment text |
 | GreyNoise scanner check | `greynoise_ip_context(ip)` |
 | OTX pulse | `otx_lookup(indicator)` |
 | URLhaus hash/URL | `urlhaus_hash_lookup` / `urlhaus_lookup` |
-| Netra | `netra_ip_analysis(ip)` — 30s spaced, **90s** per-request budget because its multi-source fan-out legitimately takes ~34s |
+| Netra | `netra_ip_analysis(ip)`: 30s spaced, **90s** per-request budget because its multi-source fan-out legitimately takes ~34s |
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
-| AbuseIPDB IP reputation | **no standalone tool** — AbuseIPDB runs inside `blueteam_unified_threat_score` (weight 0.30). Do not call a `*_abuseipdb` tool; it is not registered. |
+| AbuseIPDB IP reputation | **no standalone tool**: AbuseIPDB runs inside `blueteam_unified_threat_score` (weight 0.30). Do not call a `*_abuseipdb` tool; it is not registered. |
 | RapidAPI (one shared budget) | `blueteam_ip_intel_bulk(ips=[...])` for 1-50 IPs in **one** request; `blueteam_ioc_search(ip)` for a single IP; `blueteam_ioc_search_bulk(ips=[...])` for 1-25 IPs one request each; `blueteam_breach_check(email)`. All four draw on one account-wide pool that is **closed unless the operator armed it**, and none of them cost quota at the six-provider aggregate |
-| MISP (own instance) | `blueteam_misp_ioc_lookup(value)` — read-only `restSearch` against your MISP. Returns the attributes an indicator appears in, plus tag names; `comment` and galaxy free text are stripped by an allowlist before you see them. Needs `MISP_URL` + `MISP_API_KEY`: when unset the tool raises at call time, so report "MISP not configured", never "no results". A header reading `Capability probe: version probe skipped` is a restricted version endpoint, not a failed lookup |
+| MISP (own instance) | `blueteam_misp_ioc_lookup(value)`: read-only `restSearch` against your MISP. Returns the attributes an indicator appears in, plus tag names; `comment` and galaxy free text are stripped by an allowlist before you see them. Needs `MISP_URL` + `MISP_API_KEY`: when unset the tool raises at call time, so report "MISP not configured", never "no results". A header reading `Capability probe: version probe skipped` is a restricted version endpoint, not a failed lookup |
 
 **The RapidAPI budget, read this before calling any RapidAPI tool.** Every RapidAPI product draws on ONE account-wide pool of `BLUETEAM_RAPIDAPI_MONTHLY_CAP` requests (default 100/month), and the guard is fail-closed: `BLUETEAM_RAPIDAPI_BUDGET` defaults to 0, so a call is refused with `Budget closed` until an operator arms a window (`BLUETEAM_RAPIDAPI_BUDGET_HOURS`, default 8h, which expires on its own). The month-to-date counter and the arm window both survive a server restart once `BLUETEAM_RAPIDAPI_CACHE` points at a file, so a restart is not a way to arm the next window. A refusal is not an outage and not a retry prompt: report it once, then continue with the quota-free providers.
 - Prefer `blueteam_ip_intel_bulk(ips=[...])`: N IPs cost **one** request, 1-50 per call, duplicates collapsed, and the cache key ignores order so re-running the same set inside the TTL is free.
@@ -595,7 +595,7 @@ or does not support the indicator type is excluded from the ratio and stays in
 aggregate hit the same entry: a response is cached for 15 minutes and requests are spaced by
 a one-second minimum interval, so repeated lookups of the same IP inside that window are
 served from the cache, not the provider. A 404 is GreyNoise having no community record: in
-the aggregate it arrives as `tags: ["no_data"]`, no `risk_level` and no vote — an absence of
+the aggregate it arrives as `tags: ["no_data"]`, no `risk_level` and no vote, an absence of
 signal, never a clean verdict. A 429 stays `error_kind: "rate_limited"` and is neither
 cached nor retried without a `Retry-After`.
 
@@ -603,7 +603,7 @@ Netra and Argus lookups are spaced 30s apart, Sangfor 5s (`NETRA_MIN_INTERVAL` /
 `ARGUS_MIN_INTERVAL` / `SANGFOR_MIN_INTERVAL`); the RapidAPI tools are spaced by
 `BLUETEAM_RAPIDAPI_MIN_INTERVAL` (default 0.25s; set 7.0 where the plan allows one lookup
 per 7s) from one shared limiter, so `blueteam_ioc_search_bulk` and parallel single calls
-both obey it. Enriching N IPs costs N×interval — batch
+both obey it. Enriching N IPs costs N×interval; batch
 only the IPs the analysis actually needs, and don't re-query an IP you already have.
 
 Netra also gets a 90s per-request budget (the rest of the server runs on
@@ -630,17 +630,17 @@ enrich it with exploitation data the Indexer does not carry:
 `blueteam_cve_score` fans out NVD + EPSS + KEV + PoC in one call and returns a
 0-100 score with a severity label. KEV membership forces CRITICAL.
 `blueteam_cve_ssvc` walks the CISA Deployer SSVC tree and returns an action band
-with an explainable rationale — `Act` means patch now, `Track` means schedule.
+with an explainable rationale: `Act` means patch now, `Track` means schedule.
 `blueteam_cve_advisory` returns MSRC / Red Hat / Ubuntu patch guidance
 (RHSA / USN IDs). `blueteam_dependency_scan` parses a manifest and maps every
-package to live CVEs via OSV — feed the returned `cve_ids` to the tools above.
+package to live CVEs via OSV; feed the returned `cve_ids` to the tools above.
 No API key required (optional `NVD_API_KEY` / `GITHUB_TOKEN` raise rate limits).
 
 The investigation workflow auto-extracts CVEs from alert text (and, when given
 `dependency_manifest`, discovers more via `blueteam_dependency_scan`), enriches
 each with score + SSVC + attack mapping in its `vuln` step, and feeds the
 techniques into `three_sum_correlation` Engine A as a `vuln_boost` category
-signal — a KEV-listed CVE lands at ~8-10 in its ATT&CK category, never a hard
+signal: a KEV-listed CVE lands at ~8-10 in its ATT&CK category, never a hard
 gate. SSVC stays advisory metadata, never a correlation input.
 
 ### Correlation / APT detection
@@ -655,17 +655,17 @@ gate. SSVC stays advisory metadata, never a correlation input.
 | FP knowledge base | `blueteam_false_positive_kb()` |
 | Known-noise check (local corpus) | `blueteam_rag_fp_validate(srcip, description)` |
 
-> ATT&CK tactic names follow the installed bundle release — `Stealth` and `Defense Impairment`
+> ATT&CK tactic names follow the installed bundle release: `Stealth` and `Defense Impairment`
 > replaced `Defense Evasion` in ATT&CK v18. Map a tactic to its 3-Sum category by meaning, not by
 > exact string match, and report the tactic as the alert spells it. If a `blueteam_stix_*` call
 > returns a STIX load error, report ATT&CK enrichment as unavailable for that pass, note it in the
-> report, and continue with the remaining tools — do not retry in a loop. A missing `rule.mitre.id`
+> report, and continue with the remaining tools; do not retry in a loop. A missing `rule.mitre.id`
 > on the alerts is the more common cause and it is worth reporting on its own.
 >
 > `blueteam_stix_killchain` names the case in JSON: `status: "ok"` (chain built),
-> `status: "no_mitre_data"` (no `rule.mitre.id` in the window — the analysis was skipped, not
+> `status: "no_mitre_data"` (no `rule.mitre.id` in the window; the analysis was skipped, not
 > failed; `techniques` and `tactics_seen` are empty), or `status: "error"` with an `error` (the
-> Indexer query itself failed — report the error, never an empty chain). `blueteam_attack_graph`
+> Indexer query itself failed; report the error, never an empty chain). `blueteam_attack_graph`
 > carries `stix_fetch_errors` in its analysis when a STIX technique lookup failed, so an empty
 > chain and a failed lookup stay distinguishable.
 
@@ -704,13 +704,13 @@ that an entity is malicious.
   all-zero or constant series returns `insufficient_data` before any fit.
 - `blueteam_incident_label` needs `BLUETEAM_LAYA_ENABLED=true`. The default `onnx`
   backend reuses the RAG embedder and costs no extra memory. The `laya` and `setfit`
-  backends are **unsupported by policy** — CPU torch plus weights exceed the agreed 250 MB /
-  300 ms budget — so do not ask the operator to enable either. If a call reports one as the active
+  backends are **unsupported by policy**: CPU torch plus weights exceed the agreed 250 MB /
+  300 ms budget, so do not ask the operator to enable either. If a call reports one as the active
   backend, treat that as an operator exemption and say so in the report rather than presenting it
   as normal. Their sanctioned use is offline: the Laya checkpoint labels the calibration corpus,
   and `scripts/train_setfit_labeler.py` trains the SetFit student, while `onnx` serves requests.
 - While a flag is off the tool raises an enable hint. That hint is a configuration
-  answer, not a failure — report it and stop, do not retry.
+  answer, not a failure; report it and stop, do not retry.
 
 Reading the output:
 
@@ -720,11 +720,11 @@ Reading the output:
 - `uncertain` is a result. `status="uncertain"` means no tactic reached the confidence
   floor: the honest answer for mixed or unscorable text. The full score vector is
   attached so a human can calibrate; **do not lower the floor to force a label**.
-  `scored=false` means the backend exposes no probabilities — report the model's bare
+  `scored=false` means the backend exposes no probabilities; report the model's bare
   choice as unscored and never invent a confidence number for it.
 - `noise` (`-1`) from a cluster fit is a result too: those entities resemble nothing in
   the window. `novelty=true` on an assignment means the entity fell outside every stored
-  cluster radius, so the stored fit no longer describes the current traffic — evidence for
+  cluster radius, so the stored fit no longer describes the current traffic, evidence for
   an operator-run refit, never an automatic one.
 - **`status` and `_degraded` are orthogonal.** `status` describes the clustering result;
   `_degraded: true` says the Indexer fetch behind it was incomplete (`fetch` carries the counters).
@@ -830,7 +830,7 @@ not an internal crash. Give it a target and re-invoke.
 
 Pass `check_false_positive=true` to consult the local corpus before enrichment. A
 `suppressed_exact` or `conflicting_state` verdict short-circuits the run and **no report is
-generated** — correct for an alert an analyst already closed, surprising if you expected one.
+generated**, which is correct for an alert an analyst already closed and surprising if you expected one.
 Any other verdict is recorded in `fp_validation` and the investigation continues.
 
 ### Local case RAG (opt-in, needs `BLUETEAM_RAG_ENABLED` + `BLUETEAM_RAG_DB`)
@@ -846,7 +846,7 @@ Any other verdict is recorded in `fp_validation` and the investigation continues
 
 Read the `verdict` before acting on it. `suppressed_exact`, `conflicting_state` and
 `likely_true_positive` are authoritative (registry lookups, no model). `likely_false_positive` is
-**advisory** — confirm the matched cases describe the same activity. `insufficient_evidence` means
+**advisory**: confirm the matched cases describe the same activity. `insufficient_evidence` means
 the corpus was searched and came up short; `validation_incomplete` means it was **never searched**
 (store down, model failed, node timed out) and those two are not interchangeable. `evidence.confidence`
 is always `not_computed`; there is no calibrated probability in this pipeline, so never quote one.
@@ -857,7 +857,7 @@ Registry hits carry provenance. The rationale names the source that registered t
 source the tool reports; never upgrade an automated hit into "an analyst confirmed this".
 
 Nothing here auto-closes an alert. Record the decision with `blueteam_mark_investigated`.
-Re-run `blueteam_rag_ingest` after editing cases, marking new false positives, or replacing a PDF —
+Re-run `blueteam_rag_ingest` after editing cases, marking new false positives, or replacing a PDF;
 the index is derived and does not notice edits on its own.
 
 ### Investigation memory (opt-in, needs `BLUETEAM_MEM_ENABLED` + `BLUETEAM_MEM_DB`)
@@ -887,7 +887,7 @@ Ranking is a vector recall plus an optional term-weighted lexical blend, then an
 cross-encoder rerank. `vector_weight` defaults to `1.0` (vector only); set it to `0.3` when an exact
 indicator matters more than paraphrase, since the lexical leg scores bigrams and IOC-shaped tokens
 above surrounding prose. No stage applies a score threshold: a top-ranked hit means "ranked above
-the alternatives". Read `rerank_engine` to see which leg produced the order — `hybrid` means the
+the alternatives". Read `rerank_engine` to see which leg produced the order: `hybrid` means the
 lexical blend ran, `vector` means it did not.
 
 Three opt-in flags change this ranking, all off by default. `BLUETEAM_RERANK_NORMALIZE` rescales the
@@ -950,21 +950,21 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | Malware / integrity | `blueteam_rootkit_scan`, `blueteam_lynis_audit`, `blueteam_hash_file`, `blueteam_check_updates` |
 | System state | `blueteam_system_health`, `blueteam_check_open_firewall` |
 | Packet capture | `blueteam_capture_traffic` |
-| Playbook / PDF conversion | `blueteam_document_convert(path)` — Marker (scanned-PDF OCR): playbook / advisory PDF → markdown/JSON/html/chunks (`page_range` for docs longer than the response cap; `mode="table"` → JSON) |
-| Digital PDF → text + metadata | `blueteam_pdf_extract(path)` — pypdf (no torch, no opt-in install): text and `/Info` metadata with per-page headers, `page_range`, and `extraction_mode="layout"` for table-heavy advisories. Digital text layers only; pages over 32 MB decompressed are skipped with a reason |
-| Office / data file → markdown | `blueteam_markitdown_convert(path)` — MarkItDown (no OCR, no torch): docx / pptx / xlsx / xls / msg / html / csv / json / xml / digital PDF → markdown. Image-only PDFs return an error — route those to `blueteam_document_convert` |
+| Playbook / PDF conversion | `blueteam_document_convert(path)`. Marker (scanned-PDF OCR): playbook / advisory PDF → markdown/JSON/html/chunks (`page_range` for docs longer than the response cap; `mode="table"` → JSON) |
+| Digital PDF → text + metadata | `blueteam_pdf_extract(path)`. pypdf (no torch, no opt-in install): text and `/Info` metadata with per-page headers, `page_range`, and `extraction_mode="layout"` for table-heavy advisories. Digital text layers only; pages over 32 MB decompressed are skipped with a reason |
+| Office / data file → markdown | `blueteam_markitdown_convert(path)`. MarkItDown (no OCR, no torch): docx / pptx / xlsx / xls / msg / html / csv / json / xml / digital PDF → markdown. Image-only PDFs return an error; route those to `blueteam_document_convert` |
 
 All document tools accept one file up to `BLUETEAM_MAX_INPUT_FILE_MB` (default 1 GB). Responses stay capped at `BLUETEAM_CHARACTER_LIMIT`. `blueteam_pdf_extract` and `blueteam_rag_ingest(source="pdf")` read pages in bounded batches; the MarkItDown and Marker converters buffer the document and are bounded by the response cap only, not by a 1 GB memory guarantee.
 
-`blueteam_check_webshell(url)` only accepts **public** hosts by default — any URL whose
+`blueteam_check_webshell(url)` only accepts **public** hosts by default. Any URL whose
 host resolves to a private / loopback / link-local / CGNAT address is rejected. To scan a
 webshell on **your own infrastructure** (e.g. `subdomain.tangerangkota.go.id` resolving to
 RFC1918), the operator must add that domain to `ALLOWED_INTERNAL_DOMAINS` on the server.
 Every hop is resolved once and IP-pinned (`curl --resolve`), so DNS-rebinding and
 redirect-to-internal are both blocked. If a URL is rejected, report "host is non-public /
-not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't retry the URL.
+not allowlisted; operator must add it to ALLOWED_INTERNAL_DOMAINS", don't retry the URL.
 
-### Extended toolbox (long tail — don't invent names)
+### Extended toolbox (long tail, don't invent names)
 
 | Tool | What it does |
 |---|---|
@@ -1021,7 +1021,7 @@ not allowlisted — operator must add it to ALLOWED_INTERNAL_DOMAINS", don't ret
 
 | URI | What it provides |
 |---|---|
-| `wazuh://rules/taxonomy` | Wazuh rule taxonomy — rule IDs grouped by category/groups |
+| `wazuh://rules/taxonomy` | Wazuh rule taxonomy: rule IDs grouped by category/groups |
 | `wazuh://mitre/attack` | MITRE ATT&CK tactic/technique mapping (feeds 3-Sum Engine A) |
 | `metrics://prometheus` | Server telemetry (tool-call counters, timings) in Prometheus text format |
 | `metrics://prometheus/json` | Same telemetry as a JSON snapshot |
@@ -1034,13 +1034,13 @@ not a server outage.
 
 ## 2. Standard investigation workflows
 
-### Workflow A — IP triage (fast, 2 calls)
+### Workflow A: IP triage (fast, 2 calls)
 ```
 1. blueteam_threat_card(srcip="X", since="24h")
 2. blueteam_threat_intel_aggregate(indicator="X")   # if intel missing from card
 ```
 
-### Workflow B — deep dive (forensic)
+### Workflow B: deep dive (forensic)
 ```
 1. blueteam_wazuh_alert_summarize(srcip="X", since="7d")
 2. blueteam_attack_chain(srcip="X", since="7d")
@@ -1049,7 +1049,7 @@ not a server outage.
 5. blueteam_investigation_workflow(srcip="X", window="7d", use_attack_graph=true)
 ```
 
-### Workflow C — campaign hunt (APT)
+### Workflow C: campaign hunt (APT)
 ```
 1. three_sum_correlation(time_window_minutes=10080, response_format="json")
 2. blueteam_attack_graph(window_days=30, top_n=20)
@@ -1057,7 +1057,7 @@ not a server outage.
 4. blueteam_campaign_watch()   # diff vs previous snapshot
 ```
 
-### Workflow D — compromised email
+### Workflow D: compromised email
 ```
 1. wazuh_email_lookup(top_n=20, since="7d", reveal_owned=true)
 2. wazuh_compromised_emails_analysis(emails=["<top emails>"], enrich_with_netra=false)
@@ -1065,7 +1065,7 @@ not a server outage.
 4. stealer_log_check(email="<official dinas email>")
 ```
 
-### Workflow E — vulnerability triage (manifest → patch)
+### Workflow E: vulnerability triage (manifest → patch)
 ```
 1. blueteam_dependency_scan(raw_text="<paste requirements.txt / package.json / pom.xml>", response_format="json")
 2. blueteam_cve_score(cve_id="<top CVE>")          # or blueteam_cve_ssvc for an action band
@@ -1073,7 +1073,7 @@ not a server outage.
 4. blueteam_cve_advisory(cve_id="<top CVE>")       # vendor patch guidance (RHSA / USN)
 ```
 
-### Workflow F — detection engineering (webshell / sample → YARA)
+### Workflow F: detection engineering (webshell / sample → YARA)
 ```
 1. blueteam_check_webshell(url="https://<host>/<file>.php")   # or blueteam_hash_file(path)
 2. blueteam_yara_rule_generate(mode="file", file_path="/opt/samples/<file>", self_scan=true)
@@ -1090,7 +1090,7 @@ sample; check `alert_field_coverage` and get an artifact before deploying. A rul
 the staging directory is not loaded by Wazuh until an operator promotes it by hand to
 `wazuh-rules-dev`.
 
-### Workflow G — detection engineering (alert pattern → Sigma → OpenSearch)
+### Workflow G: detection engineering (alert pattern → Sigma → OpenSearch)
 ```
 1. blueteam_sigma_rule_generate(mode="alert", srcip="X", since="24h")   # or mode="text"
 2. # read coverage, unmapped_fields, field_coverage, existing_rules before continuing
@@ -1108,16 +1108,16 @@ Sigma → native Wazuh XML is out of scope for this server.
 
 Four things to check, in this order:
 
-1. `coverage` — `draft` came from logs or text, so review the modifiers. `no-values`
+1. `coverage`: `draft` came from logs or text, so review the modifiers. `no-values`
    means nothing usable was harvested: the detection block holds a placeholder and the
    rule matches nothing. Never deploy it.
-2. `unmapped_fields` (finding `SG9`) — the index does not know those fields, so the
+2. `unmapped_fields` (finding `SG9`): the index does not know those fields, so the
    query can never match. Fix the field names before converting. The built-in map covers
    Windows Security and Sysmon eventdata (`SubjectUserName`, `ProcessName`, `IpAddress`,
    `Channel`, and similar); a Windows field outside that set still lands in this list.
-3. `field_coverage` all zero — the deployment's decoders do not populate the harvested
+3. `field_coverage` all zero: the deployment's decoders do not populate the harvested
    fields, so the draft was built from nothing.
-4. `existing_rules` — Manager rules that already cover this description. Decide whether
+4. `existing_rules`: Manager rules that already cover this description. Decide whether
    new detection logic is actually needed.
 
 A converted query is a starting point, not a finished detection. A `cidr` modifier
@@ -1132,7 +1132,7 @@ names the configured index. Inspect the `index` field before importing into Dash
 Conversion needs the optional pySigma dependency (`BLUETEAM_INSTALL_SIGMA=1`). Without it
 the convert tool returns an install hint, and generate/validate/save keep working.
 
-### Workflow H — advisory PDF → retrievable corpus (opt-in, needs the RAG store)
+### Workflow H: advisory PDF → retrievable corpus (opt-in, needs the RAG store)
 ```
 1. blueteam_pdf_extract(path="/opt/advisories/cisa-aa24.pdf")   # read it once; check metadata + page count
 2. blueteam_rag_ingest(source="pdf", path="/opt/advisories/cisa-aa24.pdf", label="cisa_aa24")
@@ -1146,17 +1146,17 @@ has to fit in the response cap. The label defaults to `pdf:<filename stem>` and 
 every call, so re-ingest after replacing the file.
 
 Which converter:
-- `blueteam_pdf_extract` — digital PDF, text + `/Info` metadata. Start here.
-- `blueteam_markitdown_convert` — office/data (docx/pptx/xlsx/xls/msg/html/csv/json/xml).
-- `blueteam_document_convert` — scanned or image-only PDF. Marker OCR, CPU torch, slow.
+- `blueteam_pdf_extract`: digital PDF, text + `/Info` metadata. Start here.
+- `blueteam_markitdown_convert`: office/data (docx/pptx/xlsx/xls/msg/html/csv/json/xml).
+- `blueteam_document_convert`: scanned or image-only PDF. Marker OCR, CPU torch, slow.
 
 A PDF with no text layer fails with a typed error naming `blueteam_document_convert`; that is
 the signal to switch converters, not to retry. Pages whose decompressed content stream
-exceeds 32 MB are listed under `Skipped pages` with a reason — report them, don't guess at
+exceeds 32 MB are listed under `Skipped pages` with a reason; report them, don't guess at
 their contents. Drop the file under `BLUETEAM_ALLOWED_PATHS` before any of this; URLs are
 rejected.
 
-### Workflow I — share confirmed indicators with a peer CSIRT (STIX 2.1)
+### Workflow I: share confirmed indicators with a peer CSIRT (STIX 2.1)
 ```
 1. blueteam_extract_iocs(text=alert_data, response_format="json")            # or the case's IOC list
 2. blueteam_ioc_lifecycle(kind="ip", since_days=7, response_format="json")    # what the store already knows
@@ -1174,16 +1174,16 @@ Importing it into the peer's MISP or OpenCTI is the operator's step.
 
 Three settings decide whether it runs:
 
-- `BLUETEAM_STIX_EGRESS_ENABLED=true` — otherwise the tool is disabled.
-- `BLUETEAM_STIX_IDENTITY_NAME` — a bundle with no producer Identity is not shareable.
-- `BLUETEAM_OWNED_DOMAINS` non-empty — without it, victim domains cannot be told apart from
+- `BLUETEAM_STIX_EGRESS_ENABLED=true`: otherwise the tool is disabled.
+- `BLUETEAM_STIX_IDENTITY_NAME`: a bundle with no producer Identity is not shareable.
+- `BLUETEAM_OWNED_DOMAINS` non-empty: without it, victim domains cannot be told apart from
   attacker domains, so the tool refuses instead of guessing.
 
 What it never shares: RFC1918 / loopback / link-local / CGNAT / reserved addresses (including
 IPv4-mapped IPv6 such as `::ffff:10.0.0.5`), owned domains and their subdomains, internal TLDs,
 single-label hostnames (asset names), emails, non-http URLs, and URLs carrying credentials.
 Excluded values are itemised in `dropped` with a reason. **A dropped value is out of the bundle,
-not masked** — do not paste one back in, and never describe one as "anonymised". A second gate
+not masked**. Do not paste one back in, and never describe one as "anonymised". A second gate
 re-runs the serialized bundle through the `protect_victim` pipeline; if it still changes, the
 export is refused, so an internal path or hostname inside `description` blocks the write instead
 of leaking. Pass `include_bundle=true` only for a small bundle you are handing straight to a MISP
@@ -1192,7 +1192,7 @@ API; larger bundles are written to disk and summarised, never truncated inline.
 Deterministic ids (`UUIDv5` over the indicator pattern) mean re-exporting the same indicator
 yields the same `indicator--` id, so the peer deduplicates instead of accumulating copies.
 
-### Workflow J — window shape, then phase label (opt-in)
+### Workflow J: window shape, then phase label (opt-in)
 ```
 1. blueteam_alert_cluster(mode="fit", time_window_minutes=1440, response_format="json")
    # read entity_count, noise_ratio, and each cluster's medoid + top_tactics
@@ -1211,14 +1211,14 @@ yields the same `indicator--` id, so the peer deduplicates instead of accumulati
 ```
 
 Use this when the question is "what kinds of activity are in this window" (step 1) and "what
-phase does this alert look like" (step 3). Step 3 needs one alert, not a window — pass the alert
+phase does this alert look like" (step 3). Step 3 needs one alert, not a window; pass the alert
 you are actually investigating, not a sample of the window.
 
 Two orderings matter. Clustering first: the fit is over the same scores step 5 returns, so a
 label read before the window shape has no context to sit in. RAG last: it answers "seen this
 before", which is only a useful question once you can name what you are looking at.
 
-If either flag is off, skip the workflow instead of substituting another tool — there is no
+If either flag is off, skip the workflow instead of substituting another tool; there is no
 lexical fallback for a cluster or a label.
 
 ## 3. Redaction & the forensic token (read before touching PII)
@@ -1237,17 +1237,17 @@ excluded from these fields. Policies:
 
 - `full` (default): mask emails, private IPs, all domains, paths, identities.
 - `protect_victim`: mask **only** victim-owned indicators (owned domains), keep
-  attacker IOCs/payload intact. **Requires `BLUETEAM_OWNED_DOMAINS` set** —
+  attacker IOCs/payload intact. **Requires `BLUETEAM_OWNED_DOMAINS` set**;
   otherwise the server silently falls back to `full`.
 - `raw`: Layer-1 strip only. **Hard-gated** behind `BLUETEAM_ALLOW_FORENSIC_BYPASS`
   AND `BLUETEAM_FORENSIC_TOKEN`.
 
 The runtime owned-domains set (used by `protect_victim`) is viewable/settable
-at runtime via `blueteam_owned_domains` / `blueteam_set_owned_domains` — the
+at runtime via `blueteam_owned_domains` / `blueteam_set_owned_domains`; the
 env var `BLUETEAM_OWNED_DOMAINS` only sets the initial value.
 
 **Forensic token rule**: the token lives in the *server's* env
-(`BLUETEAM_FORENSIC_TOKEN`) — you cannot read it. To use `raw` or full unmask,
+(`BLUETEAM_FORENSIC_TOKEN`); you cannot read it. To use `raw` or full unmask,
 the operator must pass it as a parameter:
 
 ```json
@@ -1256,7 +1256,7 @@ the operator must pass it as a parameter:
 
 If the operator set a token but you don't know its value, the call returns
 `"raw/forensic bypass requires the operator forensic token"`. That is **correct
-behavior** — ask the operator for the token value, or have them pass it in the
+behavior**; ask the operator for the token value, or have them pass it in the
 prompt. Do NOT claim the env var is broken.
 
 To partially unmask owned domains without `raw`, use `reveal_owned=true` +
@@ -1294,7 +1294,7 @@ JSON and TOON keep the `truncated: true` envelope.
 
 **One deliberate exception: `blueteam_subnet_calc`.** It returns its output unmasked, because
 Layer 3 would rewrite the network and broadcast addresses the analyst asked for (`10.0.0.0/24` →
-`10.***.***.0/24`). It reads nothing — no Indexer, Manager, filesystem or store — so it can only
+`10.***.***.0/24`). It reads nothing (no Indexer, Manager, filesystem or store), so it can only
 return addresses you supplied; a rejected value is never echoed back, only its position and a
 reason; and the audit log still records through the full pipeline. Do not read its unmasked output
 as a policy change for any other tool.
@@ -1303,12 +1303,12 @@ as a policy change for any other tool.
 
 `three_sum_correlation` has two engines:
 
-- **Engine A** — per-IP weighted risk across MITRE categories:
+- **Engine A**: per-IP weighted risk across MITRE categories:
   - A = recon/resource-dev/discovery (weakest)
   - B = initial-access/exec/priv-esc/defense-evasion/credential-access/lateral-move (mid)
   - C = persistence/collection/C2/exfiltration/impact (strongest)
   - An IP triggers only when **≥2 categories** AND weighted score ≥ threshold.
-- **Engine B** — volumetric Z-score across all 3 sources simultaneously
+- **Engine B**: volumetric Z-score across all 3 sources simultaneously
   (default Z ≥ 2.5; the 7-day window runs at 2.0).
 
 Final severity is **volume-based**, not the per-IP score:
@@ -1316,7 +1316,7 @@ Final severity is **volume-based**, not the per-IP score:
 
 | unified_score | severity | action |
 |---|---|---|
-| 0 | NONE | — |
+| 0 | NONE | none |
 | 1–2 | LOW | watch |
 | 3–5 | MEDIUM | investigate |
 | 6–8 | HIGH | active IR |
@@ -1324,7 +1324,7 @@ Final severity is **volume-based**, not the per-IP score:
 
 Key reads from the `stats` block:
 - `multi_category_count` = IPs in ≥2 categories (this gates triggering).
-- `intersection_count` = IPs in **all 3** (A∩B∩C) — rarest, highest confidence,
+- `intersection_count` = IPs in **all 3** (A∩B∩C): rarest, highest confidence,
   triage immediately **regardless of score**.
 - `triggers_count` = IPs that actually passed the gate (actionable set).
 - Always `multi_category_count >= intersection_count`.
@@ -1341,7 +1341,7 @@ Conservative production defaults (validated): `time_window_minutes=10080`,
 `z_score_threshold=2.5`. Note the 7-day tier loosens to `z_score_threshold=2.0`.
 Do not lower below these without production telemetry evidence.
 
-## 5. Error handling — what each error actually means
+## 5. Error handling: what each error actually means
 
 | Error | Meaning | Correct action |
 |---|---|---|
@@ -1370,8 +1370,8 @@ Do not lower below these without production telemetry evidence.
 | `"Marker conversion failed: ... fast_layout server failed to become healthy ... operator torchvision::nms does not exist"` | torchvision's compiled `_C` extension did not load: the venv's torch/torchvision versions do not match, so Marker's surya subprocess crashes at import | on the host, reinstall the pinned CPU pair: `pip install "torch==2.14.0" "torchvision==0.29.0" --index-url https://download.pytorch.org/whl/cpu`, then check `python -c "import torch, torchvision; torch.ops.torchvision.nms"` and restart `blue-team-mcp.service` |
 
 A failing tool raises, so the MCP client marks the result `isError: true`. Provider
-error text is a diagnostic — never a result. Threat-intel providers fail
-**independently**: a missing API key never blocks the rest of the aggregation — it
+error text is a diagnostic, never a result. Threat-intel providers fail
+**independently**: a missing API key never blocks the rest of the aggregation; it
 appears in the `errors[]` list. Read it and say so in the report.
 
 ### 5a. Circuit breaker recovery workflow
@@ -1408,27 +1408,27 @@ closes. If it fails, the timer resets.
    60s timeout + second 5 attempts).
 
 3. **Stop calling that pool.** Every call while the breaker is open returns
-   `CircuitOpenError` instantly — zero network I/O. Calling again does nothing
+   `CircuitOpenError` instantly; zero network I/O. Calling again does nothing
    and wastes tokens. Wait at least 60 seconds from the last error before
    retrying.
 
 4. **Use tools that don't hit the dead backend.** Breakers are per upstream, so
    this is usually free: if the Indexer breaker is open, switch to threat-intel
-   tools, and vice versa. Only same-host callers are affected — if Netra's host
+   tools, and vice versa. Only same-host callers are affected: if Netra's host
    breaker is open, the other providers on it are too.
 
 5. **The breaker is self-healing.** Once the backend recovers, the next
    half-open trial succeeds and the breaker closes automatically. There is no
-   manual reset command — just wait and retry.
+   manual reset command; just wait and retry.
 
 **What NOT to do:**
 - Don't call `blueteam_breach_check` repeatedly when the breaker is open:
   each call fails instantly with the same error. A `Budget closed` refusal
   behaves the same way and will not clear on its own, so report it and stop.
-- Don't restart the server hoping to clear the breaker — breakers are
+- Don't restart the server hoping to clear the breaker; breakers are
   in-memory per pool. Restarting an MCP server mid-session is worse than
   waiting (it breaks the JSON-RPC channel).
-- Don't report "all tools broken" — name the specific pool and what tools
+- Don't report "all tools broken"; name the specific pool and what tools
   still work.
 
 **Circuit breaker state by pool (see `mcp_server/core/http_client.py`):**
@@ -1445,7 +1445,7 @@ closes. If it fails, the timer resets.
 
 The forensic token (`BLUETEAM_FORENSIC_TOKEN`) is a shared secret between the
 server operator and the server. The LLM cannot read server environment
-variables — it must receive the token explicitly.
+variables; it must receive the token explicitly.
 
 **Escalation ladder (least → most privileged):**
 
@@ -1473,7 +1473,7 @@ Level 1b: Identity-layer unmask (token required)
 Level 2: Full forensic unmask (token required)
   → redaction_policy="raw", forensic_token="<token>"
   → ONLY Layer 1 credentials stay masked.
-  → Everything else — emails, IPs, domains, paths, UAs — RAW.
+  → Everything else (emails, IPs, domains, paths, UAs): RAW.
   → Requires BOTH BLUETEAM_ALLOW_FORENSIC_BYPASS=true on server
     AND the operator to pass the token value.
 ```
@@ -1491,12 +1491,12 @@ Error: "raw/forensic bypass requires the operator forensic token
 2. **Report to the operator exactly what you need:**
    > "To unmask full alert data (raw policy), pass `forensic_token=<value>`
    > as a parameter. The token was set on the server's
-   > `BLUETEAM_FORENSIC_TOKEN` env var — I cannot read it. If you provide
+   > `BLUETEAM_FORENSIC_TOKEN` env var; I cannot read it. If you provide
    > the value, I will include it in tool calls. Alternatively, I can use
    > `reveal_owned=true` with `redaction_policy='protect_victim'` which
    > needs no token and partially unmasks owned domains."
 
-3. **Offer the lower-privilege alternative immediately** — `reveal_owned=true`
+3. **Offer the lower-privilege alternative immediately**: `reveal_owned=true`
    often answers the same question without the escalation.
 
 4. **Never guess the token.** It's validated server-side; wrong values produce
@@ -1508,7 +1508,7 @@ Error: "raw/forensic bypass requires the operator forensic token
    {"forensic_token": "<value>", "redaction_policy": "raw", "reveal_owned": true}
    ```
 
-The token is a single string — same value for all tools. The operator can
+The token is a single string; the same value for all tools. The operator can
 provide it once at session start and you reuse it across calls.
 
 ## 6. Output conventions
@@ -1525,13 +1525,13 @@ provide it once at session start and you reuse it across calls.
   that starts with `{` is the JSON error envelope (missing encoder, or over the
   character cap), never TOON data.
 - Export a finished report to DOCX/XLSX/PPTX with `blueteam_export_report`
-  (officecli) — markdown/JSON are the in-session formats; officecli is for
+  (officecli): markdown/JSON are the in-session formats; officecli is for
   deliverables.
 - Never claim a tool "succeeded" without evidence of execution. If a tool needs
-  a live credential and fails, state "not verified — requires valid key/cluster".
+  a live credential and fails, state "not verified; requires valid key/cluster".
 - **Redacted-but-real protocol**: for PII-adjacent data (citizen IP, email),
   don't print raw values beyond operational need; partial-mask in shared docs.
-- This server is **defensive only** — no tool auto-blocks IPs. Recommend
+- This server is **defensive only**; no tool auto-blocks IPs. Recommend
   "add to watchlist / manual firewall block" and never claim auto-mitigation.
 
 ## 7. Golden rules (hard)
@@ -1541,13 +1541,13 @@ provide it once at session start and you reuse it across calls.
 3. Never claim a clean verdict from a degraded/missing-credential run.
 4. Forensic token must be **passed as a param**; you can't read server env.
 5. `reveal_owned=true` ≠ `raw`; use the least-privileged unmask that answers the question.
-6. Don't invent tools — §1 lists the common surface and the Extended toolbox
+6. Don't invent tools; §1 lists the common surface and the Extended toolbox
    covers the long tail. For anything else, verify the exact name via the
    tool's signature before calling.
 7. STIX sharing is egress, not enrichment. `blueteam_stix_export` stays off unless
    the operator enabled it; a value listed in `dropped` is out of the bundle, so
    never re-add one and never call the result "anonymised". You cannot send a
-   bundle — produce it, report `path`, `sha256`, `tlp`, and let the operator
+   bundle; produce it, report `path`, `sha256`, `tlp`, and let the operator
 transport it.
 8. A label is never a verdict. `blueteam_incident_label` says what an alert
    resembles; `status="uncertain"` and `scored=false` mean "not enough signal",
@@ -1584,7 +1584,7 @@ transport it.
   them at install time.
 - Optional, MarkItDown office/data → markdown (`blueteam_markitdown_convert`): `setup.sh`
   installs it only when `BLUETEAM_INSTALL_MARKITDOWN=1` (no torch, no model downloads):
-  `pip install "markitdown[pdf,docx,pptx,xlsx,xls,outlook]"`. Local formats only — URLs,
+  `pip install "markitdown[pdf,docx,pptx,xlsx,xls,outlook]"`. Local formats only: URLs,
   `.zip`, `.epub`, audio and YouTube are held out of v1.
 - Optional, SetFit incident labeling (`blueteam_incident_label`, `BLUETEAM_LAYA_BACKEND=setfit`):
   `setup.sh` installs it only when `BLUETEAM_INSTALL_SETFIT=1` (CPU torch + `setfit>=1.1,<2`), the
@@ -1594,7 +1594,7 @@ transport it.
   `import setfit` probe that `setup.sh` exits 1 on. Weights stay vendored and pinned by `setup.sh`.
 - pypdf PDF text + metadata (`blueteam_pdf_extract`, and `blueteam_rag_ingest(source="pdf")`):
   a plain dependency, no opt-in flag, no torch, no model download. Install plain `pypdf`,
-  **never** `pypdf[image]` — the `[image]` extra pulls Pillow, which is the package that
+  **never** `pypdf[image]`; the `[image]` extra pulls Pillow, which is the package that
   fights Marker's `pillow<11` pin above. Text and `/Info` metadata only.
 
 ---
@@ -1604,7 +1604,7 @@ transport it.
 - Before merge: `python3 check_guardrails.py --strict` must exit 0, and logging stays on stderr.
 
 ---
-### 🤝💸💎 Sponsored by
+### Sponsored by
 **[Kiyararouter](https://kiyararouter.web.id)**
 *Every model. One beautiful API.*
 
