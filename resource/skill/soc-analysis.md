@@ -147,6 +147,9 @@ enrich it with exploitation data the Indexer does not carry:
 | CVE → ATT&CK techniques + groups | `blueteam_cve_attack_mapping(cve_id)` |
 | Vendor remediation (MSRC/RedHat/Ubuntu) | `blueteam_cve_advisory(cve_id)` |
 | Scan a dependency manifest for CVEs | `blueteam_dependency_scan(raw_text="<requirements.txt / package.json / pom.xml>")` |
+| One-call catalog record (CVSS + KEV + EPSS + PoC + fix + SSVC) | `blueteam_cve_now_lookup(vulnerability_id)` |
+| Newest entries for a technology or ecosystem | `blueteam_cve_now_feed(tech=[...], ecosystem=[...], filter_name="critical")` |
+| Alert → candidate CVEs, direct vs technology-based | `blueteam_cve_now_attack_correlate(alert=<alert object>)` |
 
 `blueteam_cve_score` fans out NVD + EPSS + KEV + PoC in one call and returns a
 0-100 score with a severity label. KEV membership forces CRITICAL.
@@ -156,6 +159,66 @@ with an explainable rationale: `Act` means patch now, `Track` means schedule.
 (RHSA / USN IDs). `blueteam_dependency_scan` parses a manifest and maps every
 package to live CVEs via OSV; feed the returned `cve_ids` to the tools above.
 No API key required (optional `NVD_API_KEY` / `GITHUB_TOKEN` raise rate limits).
+
+The three cve.now tools above read cve.now, a free catalog that needs no key and
+publishes no quota. `blueteam_cve_now_lookup` returns in one call what the NVD +
+EPSS + KEV + PoC chain returns in four; keep the NVD-backed tools when NVD itself
+has to be the authority. `blueteam_cve_now_feed` lists the newest entries for a
+technology or ecosystem, and takes no time window, so it cannot answer "what was
+published during this incident".
+
+`blueteam_cve_now_attack_correlate` assesses one alert. It classifies the observed
+behaviour first, then tests every candidate CVE against that behaviour, the asset's
+installed versions, and the CVE's own product and class. Read two fields.
+
+`match_basis` says where the candidates came from: `alert_cve` (the alert named a
+CVE in a structured field), `tech_feed` (technology match), `unmapped` (neither;
+the groups appear in `unmapped_groups`).
+
+`relationship` on each candidate says how strong the link is, and the levels are
+not interchangeable:
+
+| relationship | meaning |
+|---|---|
+| `confirmed_cve_reference` | the alert carries the CVE id; a reference, not proof of exploitation |
+| `attack_specific_match` | the request names the exact plugin **and** targets a file the CVE text documents |
+| `vulnerability_exposure` | the asset runs an affected version, with no attack evidence |
+| `contextual_candidate` | product or class overlap only |
+| `no_supported_match` | nothing connects the CVE to the activity |
+
+`product_identity` on each candidate shows the evidence level: `exact_component`,
+`exact_product`, `product_family`, `platform`, `none`. A WordPress-level match is not
+a match for a specific plugin: an upload to `/wp-content/plugins/wp-scraper/import.php`
+names `wp-scraper`, while `/wp-content/plugins/x/upload.php` names nothing.
+
+Identity alone still does not promote. `attack_specific_match` also needs the request
+to target a file the CVE text names (`endpoint_evidence.matched`). CVE-2025-69129
+documents no endpoint, so even a request to the `wp-scraper` directory stays
+`contextual_candidate`. Hyphen and underscore are not folded: `wp-scraper` equals
+`wp_scraper` only because `PLUGIN_SLUG_ALIASES` declares it, and the alias is recorded
+as evidence.
+
+A technology match alone cannot leave `contextual_candidate`. KEV status and public
+exploit code never raise a relationship on their own; they are context. The
+`assessment` block answers the rest: `vulnerable_software_confirmed` is `unknown`
+unless a version check ran, and `successful_exploitation_established` is `false`.
+It stays false: an alert records an attempt or an observation, never a confirmed
+compromise. Post-exploitation signals are reported separately in
+`post_exploitation_indicators` (`observed`, `linked_candidate`, `correlation_scope:
+same_alert`) and are still indicators. `evidence_attributes` keeps the three apart:
+`observed_target_product` comes from the request path, `installed_product` only from
+package inventory, `affected_version` only from the range comparison. A URL never
+proves installation. Package inventory covers OS packages only, so an application
+component missing from it leaves `installed_product` null and exposure `unknown`,
+never `false`. Report what the assessment states, never a stronger claim.
+
+Version checks use `packages` passed to the tool, or `use_inventory=true` to read
+`wazuh-states-inventory-packages-*` locally. Package versions stay on the server.
+Attack classification is keyword-based over `rule.description`, `rule.groups` and
+the allowlisted `data.*` fields, so an uninformative rule yields no class. cve.now
+publishes no CWE field; `cwe` is always null rather than guessed. If cve.now is
+unreachable the tool answers with an `unavailable` envelope: the alert analysis
+stands, and a missing answer is not a negative finding.
 
 The investigation workflow auto-extracts CVEs from alert text (and, when given
 `dependency_manifest`, discovers more via `blueteam_dependency_scan`), enriches
@@ -592,6 +655,16 @@ not a server outage.
 2. blueteam_cve_score(cve_id="<top CVE>")          # or blueteam_cve_ssvc for an action band
 3. blueteam_cve_attack_mapping(cve_id="<top CVE>") # MITRE techniques → 3-Sum Engine A
 4. blueteam_cve_advisory(cve_id="<top CVE>")       # vendor patch guidance (RHSA / USN)
+5. blueteam_cve_now_attack_correlate(alert=<the alert>)   # no manifest? start here
+   # read match_basis: alert_cve = the alert's CVE, tech_feed = candidates only
+```
+
+### Workflow E2: alert → CVE assessment (no manifest)
+```
+1. blueteam_alert_summarize(<alert>)                       # what happened
+2. blueteam_cve_now_attack_correlate(alert=<the alert>, use_inventory=true)
+   # read relationship + assessment; inventory is local, versions are not uploaded
+3. blueteam_cve_now_lookup(vulnerability_id="<top candidate>", response_format="json")
 ```
 
 ### Workflow F: detection engineering (webshell / sample → YARA)
@@ -1081,3 +1154,12 @@ transport it.
 11. Registry hits carry provenance. Quote the source the tool names: only
     `manual`/`verdict`/`analyst` is an analyst confirmation, while `engine_a` or
     `enrichment` is an automated lead that still needs corroboration.
+12. A technology match is not an exploitation finding.
+    `blueteam_cve_now_attack_correlate` reports `relationship` per candidate: only
+    `confirmed_cve_reference` means the alert names the CVE, `attack_specific_match`
+    means the request names that exact plugin and targets a file the CVE documents, and
+    `contextual_candidate` is a lead. A platform match (WordPress) is not a plugin
+    match, and plugin identity without a documented endpoint is not exploitation. Never write "the attacker exploited CVE-X"
+    from either of the last two, never upgrade
+    `assessment.successful_exploitation_established` past `no` without host
+    evidence, and never read an empty candidate list as proof the host is safe.

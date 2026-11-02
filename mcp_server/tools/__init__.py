@@ -84,6 +84,7 @@ def register_all_tools() -> None:
         ("cve_enrichment",         "cve_enrichment",         False),  # 6 tools - CVE enrichment (NVD/EPSS/KEV/PoC/score/SSVC)
         ("dependency_scan",          "dependency_scan",          False),  # 1 tool - manifest -> OSV -> CVE scan
         ("vendor_advisory",          "vendor_advisory",          False),  # 1 tool - MSRC / Red Hat / Ubuntu advisories
+        ("cve_now",                  "cve_enrichment",           False),  # 3 tools - cve.now catalog/feed/attack->CVE correlation
         ("asset_context",           "asset_context",           False),  # 1 tool - CMDB asset context
         ("index_schema",             "index_schema",             False),  # 1 tool - index field schema explorer
         ("stealer_log",              "stealer_log",              False),  # 1 tool - HudsonRock stealer log check

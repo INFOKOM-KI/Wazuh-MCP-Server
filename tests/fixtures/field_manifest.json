@@ -164,6 +164,9 @@
     "data.dstip": {
       "class": "template_native"
     },
+    "data.dstport": {
+      "class": "template_native"
+    },
     "data.dstuser": {
       "class": "template_native"
     },
@@ -300,6 +303,9 @@
       "rationale": "Second source IP emitted by some decoders; keyword search and siem/semantic/stix lookup."
     },
     "data.srcuser": {
+      "class": "template_native"
+    },
+    "data.status": {
       "class": "template_native"
     },
     "data.url": {

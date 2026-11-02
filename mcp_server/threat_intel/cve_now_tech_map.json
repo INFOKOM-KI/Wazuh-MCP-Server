@@ -1,0 +1,120 @@
+{
+  "_meta": {
+    "purpose": "Exact-token map from Wazuh alert fields to cve.now technology slugs.",
+    "policy": "Match only whole field values. A group token that merely resembles a product name (mysql_login_fail, nginx_error, docker_drop) is not a technology statement and stays unmapped. A prefixed token (nextjs_probe) is added only when the token and the rule description both name the product.",
+    "validation_level": "Ruleset definitions from the deployed 600-699 namespace plus the stock PHP rules shipped in the same directory. No production Indexer telemetry exists in this environment, so no mapping here is production-verified.",
+    "verified_on": "2026-11-02",
+    "verified_against": [
+      "/home/auli/wazuh-rules-dev/wazuh-rules-v1/600-webapp_rules.xml",
+      "/home/auli/wazuh-rules-dev/wazuh-rules-v1/606-network_rules.xml",
+      "/home/auli/wazuh-rules-dev/wazuh-rules-v1/606-network_rules_v1.2.xml",
+      "/home/auli/wazuh-rules-dev/wazuh-rules-v1/621-react2shell-rules.xml",
+      "/home/auli/wazuh-rules-dev/wazuh-rules-v1/632-php-payload_rules.xml",
+      "/home/auli/wazuh-rules-dev/wazuh-rules-v1/php_post_get_malicious.xml"
+    ],
+    "not_verified_against_production": "No live Indexer is reachable from this workspace and none may be contacted. Run `python scripts/cve_now_tech_map_audit.py --days 30 --json` from an environment with authorized Indexer access and reconcile the report before treating tech-based correlation as production-verified.",
+    "audit": {
+      "command": "export WAZUH_INDEXER_URL=... WAZUH_INDEXER_USER=... WAZUH_INDEXER_PASSWORD=... WAZUH_INDEXER_VERIFY_SSL=true; python scripts/cve_now_tech_map_audit.py --days 30 --json > cve-now-audit.json",
+      "dry_run": "python scripts/cve_now_tech_map_audit.py --dry-run --json  (no network, no credentials)",
+      "requests": "POST {index}/_search with size:0 and a GET {index}/_field_caps probe. No document bodies, no writes, no script or pipeline clause.",
+      "buckets": {
+        "confirmed": "token is in this map and was observed",
+        "in_map_not_observed": "token is in this map and did not appear in the window",
+        "unmapped_needs_review": "a whole segment of the group name equals a slug; a human decides",
+        "unmapped_log_source_only": "only the decoder or log path names the slug; this is where the log was written, not what the rule is about",
+        "unmapped_no_signal": "no technology signal at all"
+      },
+      "rule": "A group is added only when the name itself names a technology and the sampled rules are about that product. Log source alone never justifies a mapping, and a production hit never raises correlation confidence: tech matches stay `candidate`.",
+      "status": "not run: no Indexer in this environment"
+    },
+    "group_provenance": {
+      "wordpress": {
+        "slug": "wordpress",
+        "validation": "ruleset-definition",
+        "evidence": [
+          {"file": "600-webapp_rules.xml", "rules": ["600001", "600002", "600003", "600004"],
+           "observed": "Descriptions name WordPress: access pattern, wp-login.php brute force, XML-RPC brute force, directory listing."},
+          {"file": "606-network_rules.xml", "rules": ["606013", "606014", "606020"],
+           "observed": "WordPress external login attempt rules."}
+        ]
+      },
+      "nextjs": {
+        "slug": "nextjs",
+        "validation": "ruleset-definition",
+        "evidence": [
+          {"file": "621-react2shell-rules.xml", "rules": ["621006", "621007", "621008"],
+           "observed": "Descriptions say 'Next.js internal path access', 'Multiple Next.js internal path accesses'."}
+        ]
+      },
+      "nextjs_probe": {
+        "slug": "nextjs",
+        "validation": "ruleset-definition",
+        "evidence": [
+          {"file": "621-react2shell-rules.xml", "rules": ["621001", "621002"],
+           "observed": "CVE-2025-55182 exploitation rules; descriptions name 'React Server Component/Next.js Server Action' and 'Next.js Server Action'."}
+        ]
+      },
+      "nextjs_rce_payload": {
+        "slug": "nextjs",
+        "validation": "ruleset-definition",
+        "evidence": [
+          {"file": "621-react2shell-rules.xml", "rules": ["621003"],
+           "observed": "Description: 'RCE Payload Detection (React2Shell/Next.js): Command Execution dalam Request Body/Data'."}
+        ]
+      },
+      "nextjs_exploit": {
+        "slug": "nextjs",
+        "validation": "ruleset-definition",
+        "evidence": [
+          {"file": "621-react2shell-rules.xml", "rules": ["621004"],
+           "observed": "Description: 'EKPLOITASI RCE (Next.js Server) Terdeteksi'."}
+        ]
+      },
+      "php": {
+        "slug": "php",
+        "validation": "ruleset-definition",
+        "evidence": [
+          {"file": "632-php-payload_rules.xml", "rules": ["632005", "31544"],
+           "observed": "Descriptions: 'Encoded PHP script injection attempt via GET', 'PHP webshell upload/execution attempt via POST'."},
+          {"file": "php_post_get_malicious.xml", "rules": ["31539", "31544"],
+           "observed": "Same PHP injection and webshell-upload detections."}
+        ]
+      }
+    },
+    "ambiguous_kept_unmapped": {
+      "react2shell": "Carried alone on 621009/621010 (Turbopack/Webpack dev endpoints) and beside nextjs on 621006-621008. It names an exploit family that covers React Server Components and Next.js, which are separate cve.now slugs, so picking one would be a guess.",
+      "mysql_login_fail": "612015 lives in 612-mariadb_rules.xml and describes a 'MySQL failed login attempt'. The group says MySQL, the file says MariaDB, and cve.now has both slugs. Either mapping would guess which product the deployment runs.",
+      "windows_iis": "604121 names Windows IIS explicitly, but cve.now has no IIS slug, so there is no supported target. Mapping it to microsoft-exchange would be wrong.",
+      "linux": "604079-604081 are webshell detections that carry an OS tag. linux-kernel is a kernel slug; an OS tag is not a kernel claim.",
+      "php2shell": "A webshell payload class, not a PHP version or product.",
+      "payload_obfuscation": "621005 matches obfuscated JS bodies; no product is named.",
+      "nginx_error": "An event-type token, and it appears only in a local draft (php2shell/wazuh-rulesnya/existing_rules_old.xml), not in the deployed ruleset.",
+      "nextjs_action": "Appears only in vuln-research/wazuh-nextjs-react2shell-rules.xml, which is not part of the deployed 600-699 ruleset."
+    },
+    "cve_now_slugs": 36,
+    "cve_now_ecosystems": 9
+  },
+  "groups": {
+    "nextjs": "nextjs",
+    "nextjs_probe": "nextjs",
+    "nextjs_rce_payload": "nextjs",
+    "nextjs_exploit": "nextjs",
+    "php": "php",
+    "wordpress": "wordpress"
+  },
+  "field_markers": {
+    "decoder.name": {},
+    "location_prefix": {
+      "/var/log/nginx": "nginx",
+      "/var/log/apache2": "apache-httpd",
+      "/var/log/httpd": "apache-httpd"
+    },
+    "url_contains": {
+      "/wp-content/": "wordpress",
+      "/wp-admin/": "wordpress",
+      "/wp-login.php": "wordpress",
+      "/xmlrpc.php": "wordpress",
+      "/_next/": "nextjs"
+    }
+  }
+}

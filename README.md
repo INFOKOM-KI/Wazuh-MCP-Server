@@ -7,7 +7,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client, the blue-team counterpart to
-offensive tooling. **160 tools + 4 resources** (134 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
+offensive tooling. **163 tools + 4 resources** (137 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, local case RAG, host forensics, and opt-in HDBSCAN clustering + ATT&CK incident
 labeling. The inbound API key defaults to the read-only `wazuh:read` scope.
@@ -23,9 +23,9 @@ main.py -> mcp_server/  (package)
                  ├─ core/          HTTP client, redaction, audit, config, attack graph, IOC store
                  ├─ wazuh/         Indexer (OpenSearch) + Manager API (JWT auth)
                  ├─ correlation/   3-Sum engine (pure computation, MITRE-driven)
-                 ├─ threat_intel/  CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise + shared cache
+                 ├─ threat_intel/  CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise, cve.now + shared cache
                  ├─ agents/        LangGraph investigation + playbook workflows
-                 └─ tools/         64 tool modules
+                 └─ tools/         65 tool modules
 ```
 
 Every tool call flows through a single pipeline in the `@blueteam_tool` decorator, whose three
@@ -121,7 +121,7 @@ optional; tools degrade gracefully without them.
 | Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
 | Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder: no torch, no second model resident. `BACKEND=laya` and `BACKEND=setfit` each require `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin, and the SetFit pin is verified before its pickled head is loaded). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya`/`setfit` (already-softmaxed distributions) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya\|setfit>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`; SetFit uses its trained truncation. `MAX_CONCURRENCY` defaults `1` |
 | CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **134 tools registered** instead of 160: `160 - 23 - 3 = 134`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **137 tools registered** instead of 163: `163 - 23 - 3 = 137`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
@@ -262,6 +262,20 @@ bands (`blueteam_cve_ssvc`), dependency-manifest scanning against OSV
 (`blueteam_dependency_scan`), and vendor patch guidance (`blueteam_cve_advisory`: MSRC /
 Red Hat / Ubuntu). The LangGraph workflow runs this chain in its `vuln` step and folds
 vendor advisories into exported reports.
+
+The `blueteam_cve_now_*` tools add the cve.now catalog: one call returns the record the
+four NVD-backed tools return separately (`blueteam_cve_now_lookup`), newest entries per
+technology or ecosystem (`blueteam_cve_now_feed`), and alert-to-CVE correlation
+(`blueteam_cve_now_attack_correlate`). cve.now needs no key. It is a free service with
+no published quota or SLA, so every call degrades to `cve_context.status: "unavailable"`
+instead of failing the analysis. The correlation tool classifies the observed behaviour
+first, then tests each candidate CVE against it, the asset's installed versions, and the
+CVE's own product and class. `relationship` is one of `confirmed_cve_reference`,
+`attack_specific_match`, `vulnerability_exposure`, `contextual_candidate` or
+`no_supported_match`; a technology match alone cannot leave `contextual_candidate`, and
+`successful_exploitation_established` stays `no` unless host evidence says otherwise.
+Version checks use `packages` passed to the call, or `use_inventory=true` to read the
+agent's package inventory from the local Indexer. Package versions are never uploaded.
 
 ### Investigation, Graphs & Workflows
 `blueteam_investigate_ip`, `blueteam_attack_graph` (networkx clusters + PageRank),
@@ -626,6 +640,9 @@ enrich it with exploitation data the Indexer does not carry:
 | CVE → ATT&CK techniques + groups | `blueteam_cve_attack_mapping(cve_id)` |
 | Vendor remediation (MSRC/RedHat/Ubuntu) | `blueteam_cve_advisory(cve_id)` |
 | Scan a dependency manifest for CVEs | `blueteam_dependency_scan(raw_text="<requirements.txt / package.json / pom.xml>")` |
+| One-call catalog record (CVSS + KEV + EPSS + PoC + fix + SSVC) | `blueteam_cve_now_lookup(vulnerability_id)` |
+| Newest entries for a technology or ecosystem | `blueteam_cve_now_feed(tech=[...], ecosystem=[...], filter_name="critical")` |
+| Alert → candidate CVEs, direct vs technology-based | `blueteam_cve_now_attack_correlate(alert=<alert object>)` |
 
 `blueteam_cve_score` fans out NVD + EPSS + KEV + PoC in one call and returns a
 0-100 score with a severity label. KEV membership forces CRITICAL.
@@ -635,6 +652,66 @@ with an explainable rationale: `Act` means patch now, `Track` means schedule.
 (RHSA / USN IDs). `blueteam_dependency_scan` parses a manifest and maps every
 package to live CVEs via OSV; feed the returned `cve_ids` to the tools above.
 No API key required (optional `NVD_API_KEY` / `GITHUB_TOKEN` raise rate limits).
+
+The three cve.now tools above read cve.now, a free catalog that needs no key and
+publishes no quota. `blueteam_cve_now_lookup` returns in one call what the NVD +
+EPSS + KEV + PoC chain returns in four; keep the NVD-backed tools when NVD itself
+has to be the authority. `blueteam_cve_now_feed` lists the newest entries for a
+technology or ecosystem, and takes no time window, so it cannot answer "what was
+published during this incident".
+
+`blueteam_cve_now_attack_correlate` assesses one alert. It classifies the observed
+behaviour first, then tests every candidate CVE against that behaviour, the asset's
+installed versions, and the CVE's own product and class. Read two fields.
+
+`match_basis` says where the candidates came from: `alert_cve` (the alert named a
+CVE in a structured field), `tech_feed` (technology match), `unmapped` (neither;
+the groups appear in `unmapped_groups`).
+
+`relationship` on each candidate says how strong the link is, and the levels are
+not interchangeable:
+
+| relationship | meaning |
+|---|---|
+| `confirmed_cve_reference` | the alert carries the CVE id; a reference, not proof of exploitation |
+| `attack_specific_match` | the request names the exact plugin **and** targets a file the CVE text documents |
+| `vulnerability_exposure` | the asset runs an affected version, with no attack evidence |
+| `contextual_candidate` | product or class overlap only |
+| `no_supported_match` | nothing connects the CVE to the activity |
+
+`product_identity` on each candidate shows the evidence level: `exact_component`,
+`exact_product`, `product_family`, `platform`, `none`. A WordPress-level match is not
+a match for a specific plugin: an upload to `/wp-content/plugins/wp-scraper/import.php`
+names `wp-scraper`, while `/wp-content/plugins/x/upload.php` names nothing.
+
+Identity alone still does not promote. `attack_specific_match` also needs the request
+to target a file the CVE text names (`endpoint_evidence.matched`). CVE-2025-69129
+documents no endpoint, so even a request to the `wp-scraper` directory stays
+`contextual_candidate`. Hyphen and underscore are not folded: `wp-scraper` equals
+`wp_scraper` only because `PLUGIN_SLUG_ALIASES` declares it, and the alias is recorded
+as evidence.
+
+A technology match alone cannot leave `contextual_candidate`. KEV status and public
+exploit code never raise a relationship on their own; they are context. The
+`assessment` block answers the rest: `vulnerable_software_confirmed` is `unknown`
+unless a version check ran, and `successful_exploitation_established` is `false`.
+It stays false: an alert records an attempt or an observation, never a confirmed
+compromise. Post-exploitation signals are reported separately in
+`post_exploitation_indicators` (`observed`, `linked_candidate`, `correlation_scope:
+same_alert`) and are still indicators. `evidence_attributes` keeps the three apart:
+`observed_target_product` comes from the request path, `installed_product` only from
+package inventory, `affected_version` only from the range comparison. A URL never
+proves installation. Package inventory covers OS packages only, so an application
+component missing from it leaves `installed_product` null and exposure `unknown`,
+never `false`. Report what the assessment states, never a stronger claim.
+
+Version checks use `packages` passed to the tool, or `use_inventory=true` to read
+`wazuh-states-inventory-packages-*` locally. Package versions stay on the server.
+Attack classification is keyword-based over `rule.description`, `rule.groups` and
+the allowlisted `data.*` fields, so an uninformative rule yields no class. cve.now
+publishes no CWE field; `cwe` is always null rather than guessed. If cve.now is
+unreachable the tool answers with an `unavailable` envelope: the alert analysis
+stands, and a missing answer is not a negative finding.
 
 The investigation workflow auto-extracts CVEs from alert text (and, when given
 `dependency_manifest`, discovers more via `blueteam_dependency_scan`), enriches
@@ -1071,6 +1148,16 @@ not a server outage.
 2. blueteam_cve_score(cve_id="<top CVE>")          # or blueteam_cve_ssvc for an action band
 3. blueteam_cve_attack_mapping(cve_id="<top CVE>") # MITRE techniques → 3-Sum Engine A
 4. blueteam_cve_advisory(cve_id="<top CVE>")       # vendor patch guidance (RHSA / USN)
+5. blueteam_cve_now_attack_correlate(alert=<the alert>)   # no manifest? start here
+   # read match_basis: alert_cve = the alert's CVE, tech_feed = candidates only
+```
+
+### Workflow E2: alert → CVE assessment (no manifest)
+```
+1. blueteam_alert_summarize(<alert>)                       # what happened
+2. blueteam_cve_now_attack_correlate(alert=<the alert>, use_inventory=true)
+   # read relationship + assessment; inventory is local, versions are not uploaded
+3. blueteam_cve_now_lookup(vulnerability_id="<top candidate>", response_format="json")
 ```
 
 ### Workflow F: detection engineering (webshell / sample → YARA)
@@ -1560,6 +1647,15 @@ transport it.
 11. Registry hits carry provenance. Quote the source the tool names: only
     `manual`/`verdict`/`analyst` is an analyst confirmation, while `engine_a` or
     `enrichment` is an automated lead that still needs corroboration.
+12. A technology match is not an exploitation finding.
+    `blueteam_cve_now_attack_correlate` reports `relationship` per candidate: only
+    `confirmed_cve_reference` means the alert names the CVE, `attack_specific_match`
+    means the request names that exact plugin and targets a file the CVE documents, and
+    `contextual_candidate` is a lead. A platform match (WordPress) is not a plugin
+    match, and plugin identity without a documented endpoint is not exploitation. Never write "the attacker exploited CVE-X"
+    from either of the last two, never upgrade
+    `assessment.successful_exploitation_established` past `no` without host
+    evidence, and never read an empty candidate list as proof the host is safe.
 ````
 
 ---
