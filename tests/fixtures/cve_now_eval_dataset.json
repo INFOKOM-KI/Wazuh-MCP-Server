@@ -1,0 +1,453 @@
+{
+ "_meta": {
+  "purpose": "Technology and attack-classification evaluation for the cve.now assessment engine.",
+  "provenance": "alert rule id, groups and description copied verbatim from the deployed 600-699 ruleset in /home/auli/wazuh-rules-dev/wazuh-rules-v1",
+  "context": "samples marked ruleset+synthetic-context add a synthetic location or data.url; everything else is rule text only",
+  "labels": "ruleset-analyst: the expectation was written by reading the rule, not from Wazuh telemetry",
+  "not_production_telemetry": true,
+  "created": "2026-11-02"
+ },
+ "samples": [
+  {
+   "id": "wp-recon",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 600001",
+   "alert": {
+    "rule": {
+     "id": "600001",
+     "groups": [
+      "attack",
+      "wordpress",
+      "recon",
+      "backdoor",
+      "suspicious_wp"
+     ],
+     "description": "Suspicious WordPress access pattern detected"
+    }
+   },
+   "expected": {
+    "attack_class": "recon",
+    "technologies": [
+     {
+      "technology": "wordpress",
+      "role": "target_application",
+      "target": true
+     }
+    ]
+   }
+  },
+  {
+   "id": "wp-brute",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 600002",
+   "alert": {
+    "rule": {
+     "id": "600002",
+     "groups": [
+      "attack",
+      "wordpress",
+      "bruteforce"
+     ],
+     "description": "Possible WordPress brute-force attempt on wp-login.php"
+    }
+   },
+   "expected": {
+    "attack_class": "brute_force",
+    "technologies": [
+     {
+      "technology": "wordpress",
+      "role": "target_application",
+      "target": true
+     }
+    ]
+   }
+  },
+  {
+   "id": "wp-xmlrpc",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 600003",
+   "alert": {
+    "rule": {
+     "id": "600003",
+     "groups": [
+      "attack",
+      "wordpress",
+      "bruteforce"
+     ],
+     "description": "Possible WordPress brute-force via XML-RPC"
+    }
+   },
+   "expected": {
+    "attack_class": "brute_force",
+    "technologies": [
+     {
+      "technology": "wordpress",
+      "role": "target_application",
+      "target": true
+     }
+    ]
+   }
+  },
+  {
+   "id": "wp-ext-login",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 606013",
+   "alert": {
+    "rule": {
+     "id": "606013",
+     "groups": [
+      "authentication",
+      "external_login",
+      "wordpress"
+     ],
+     "description": "External login attempt detected from IP: $(previous_output)"
+    }
+   },
+   "expected": {
+    "attack_class": "brute_force",
+    "technologies": [
+     {
+      "technology": "wordpress",
+      "role": "target_application",
+      "target": true
+     }
+    ]
+   }
+  },
+  {
+   "id": "wp-failed-login",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 606014",
+   "alert": {
+    "rule": {
+     "id": "606014",
+     "groups": [
+      "authentication",
+      "wordpress",
+      "external_login",
+      "failed_login"
+     ],
+     "description": "Failed external login attempt from IP: 203.0.113.9 - Status: 403"
+    }
+   },
+   "expected": {
+    "attack_class": "brute_force",
+    "technologies": [
+     {
+      "technology": "wordpress",
+      "role": "target_application",
+      "target": true
+     }
+    ]
+   }
+  },
+  {
+   "id": "wp-login-nginx",
+   "source": "ruleset+synthetic-context",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 600002",
+   "alert": {
+    "rule": {
+     "id": "600002",
+     "groups": [
+      "attack",
+      "wordpress",
+      "bruteforce"
+     ],
+     "description": "Possible WordPress brute-force attempt on wp-login.php"
+    },
+    "location": "/var/log/nginx/access.log"
+   },
+   "expected": {
+    "attack_class": "brute_force",
+    "technologies": [
+     {
+      "technology": "wordpress",
+      "role": "target_application",
+      "target": true
+     },
+     {
+      "technology": "nginx",
+      "role": "log_source",
+      "target": false
+     }
+    ]
+   }
+  },
+  {
+   "id": "nextjs-rce-1",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 621001",
+   "alert": {
+    "rule": {
+     "id": "621001",
+     "groups": [
+      "react2shell",
+      "nextjs_probe"
+     ],
+     "description": "RCE (CVE-2025-55182): Upaya eksploitasi React Server Component/Next.js Server Action terdeteksi"
+    }
+   },
+   "expected": {
+    "attack_class": "rce",
+    "technologies": [
+     {
+      "technology": "nextjs",
+      "role": "target_framework",
+      "target": true
+     },
+     {
+      "technology": "react",
+      "role": "target_framework",
+      "target": true
+     }
+    ]
+   }
+  },
+  {
+   "id": "nextjs-rce-2",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 621002",
+   "alert": {
+    "rule": {
+     "id": "621002",
+     "groups": [
+      "react2shell",
+      "nextjs_probe"
+     ],
+     "description": "EKPLOITASI RCE (CVE-2025-55182) Next.js Server Action Terdeteksi"
+    }
+   },
+   "expected": {
+    "attack_class": "rce",
+    "technologies": [
+     {
+      "technology": "nextjs",
+      "role": "target_framework",
+      "target": true
+     }
+    ]
+   }
+  },
+  {
+   "id": "nextjs-rce-4",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 621004",
+   "alert": {
+    "rule": {
+     "id": "621004",
+     "groups": [
+      "react2shell",
+      "nextjs_exploit"
+     ],
+     "description": "EKPLOITASI RCE (Next.js Server) Terdeteksi"
+    }
+   },
+   "expected": {
+    "attack_class": "rce",
+    "technologies": [
+     {
+      "technology": "nextjs",
+      "role": "target_framework",
+      "target": true
+     }
+    ]
+   }
+  },
+  {
+   "id": "aspnet-ext",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 604102",
+   "alert": {
+    "rule": {
+     "id": "604102",
+     "groups": [
+      "webshell",
+      "asp_extension"
+     ],
+     "description": "ASP.NET extended extension access detected (cer/asa/config/ashx/asmx/axd/cshtm)"
+    }
+   },
+   "expected": {
+    "attack_class": null,
+    "technologies": [
+     {
+      "technology": "aspnet",
+      "role": "runtime",
+      "target": false
+     }
+    ]
+   }
+  },
+  {
+   "id": "php-encoded",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 632005",
+   "alert": {
+    "rule": {
+     "id": "632005",
+     "groups": [
+      "web",
+      "web_attack",
+      "webshell",
+      "injection",
+      "php"
+     ],
+     "description": "Web Attack: Encoded PHP script injection attempt via GET"
+    }
+   },
+   "expected": {
+    "attack_class": null,
+    "technologies": [
+     {
+      "technology": "php",
+      "role": "runtime",
+      "target": false
+     }
+    ]
+   }
+  },
+  {
+   "id": "php-upload",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 31544",
+   "alert": {
+    "rule": {
+     "id": "31544",
+     "groups": [
+      "web",
+      "web_attack",
+      "webshell",
+      "php",
+      "upload"
+     ],
+     "description": "Web Attack: PHP webshell upload/execution attempt via POST"
+    }
+   },
+   "expected": {
+    "attack_class": "file_upload",
+    "technologies": [
+     {
+      "technology": "php",
+      "role": "runtime",
+      "target": false
+     }
+    ]
+   }
+  },
+  {
+   "id": "php-plugin-url",
+   "source": "ruleset+synthetic-context",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 31544",
+   "alert": {
+    "rule": {
+     "id": "31544",
+     "groups": [
+      "web",
+      "web_attack",
+      "webshell",
+      "php",
+      "upload"
+     ],
+     "description": "Web Attack: PHP webshell upload/execution attempt via POST"
+    },
+    "data": {
+     "url": "/wp-content/plugins/wp-scraper/import.php"
+    }
+   },
+   "expected": {
+    "attack_class": "file_upload",
+    "technologies": [
+     {
+      "technology": "php",
+      "role": "runtime",
+      "target": false
+     },
+     {
+      "technology": "wordpress",
+      "role": "target_application",
+      "target": true
+     }
+    ]
+   }
+  },
+  {
+   "id": "mysql-fail",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 612015",
+   "alert": {
+    "rule": {
+     "id": "612015",
+     "groups": [
+      "mysql_login_fail",
+      "authentication_failures"
+     ],
+     "description": "MySQL failed login attempt by user app from 203.0.113.9"
+    }
+   },
+   "expected": {
+    "attack_class": "brute_force",
+    "technologies": [
+     {
+      "technology": "mysql",
+      "role": "infrastructure",
+      "target": false
+     }
+    ]
+   }
+  },
+  {
+   "id": "webshell-linux",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 604080",
+   "alert": {
+    "rule": {
+     "id": "604080",
+     "groups": [
+      "linux",
+      "auditd"
+     ],
+     "description": "[Command execution (audit.exe)]: Possible web shell attack detected"
+    }
+   },
+   "expected": {
+    "attack_class": null,
+    "technologies": []
+   }
+  },
+  {
+   "id": "webshell-scan",
+   "source": "ruleset",
+   "label_source": "ruleset-analyst",
+   "origin": "wazuh-rules-dev/wazuh-rules-v1 rule 605001",
+   "alert": {
+    "rule": {
+     "id": "605001",
+     "groups": [
+      "multiple_attempts",
+      "suspicious_ua"
+     ],
+     "description": "Multiple webshell scanning attempts from same IP"
+    }
+   },
+   "expected": {
+    "attack_class": "recon",
+    "technologies": []
+   }
+  }
+ ]
+}

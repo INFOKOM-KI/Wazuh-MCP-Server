@@ -33,14 +33,18 @@ from mcp_server.threat_intel.cve_now import (
     correlate_alert,
     feed,
     lookup,
-    map_alert_tech,
     normalize_id,
     strip_promo,
     valid_ecosystems,
     valid_tech,
 )
+from mcp_server.threat_intel.cve_now_tech import (
+    LIMITATIONS as TECH_LIMITATIONS,
+    identify_technologies,
+)
 from mcp_server.threat_intel.cve_now_assess import (
     LIMITATIONS as ASSESS_LIMITATIONS,
+    search_terms_for,
     RELATIONSHIP_ORDER,
     assess_candidate,
     classify_attack,
@@ -151,6 +155,24 @@ class CveNowCorrelateInput(BaseModel):
             "(read-only, one query). Off by default; never leaves this host."
         ),
     )
+    discovery_mode: Literal["fast", "extended"] = Field(
+        default="fast",
+        description=(
+            "fast: one search page plus one component query, for routine triage. "
+            "extended: up to four pages for historical discovery. Both report the same "
+            "coverage metadata."
+        ),
+    )
+    max_pages: int | None = Field(
+        default=None, ge=1, le=5,
+        description="Override the page budget. fast defaults to 1, extended to 4.")
+    analyst_assessment: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "An analyst's own CVE association, kept separate from engine results: "
+            "{cve_id, rationale, evidence[], validation_status}. Never promotes a candidate."
+        ),
+    )
     limit: int = Field(default=5, ge=1, le=10)
     include_details: bool = Field(
         default=False, description="Fetch the full cve.now record for the top candidate.")
@@ -168,6 +190,18 @@ class CveNowCorrelateInput(BaseModel):
     def validate_input(self):
         if not self.alert and not self.tech:
             raise ValueError("supply an alert document or an explicit tech list")
+        if self.analyst_assessment is not None:
+            raw = self.analyst_assessment
+            if normalize_id(str(raw.get("cve_id") or "")) is None:
+                raise ValueError("analyst_assessment.cve_id must be a CVE, GHSA or OSV id")
+            if not str(raw.get("rationale") or "").strip():
+                raise ValueError("analyst_assessment.rationale is required")
+            status = raw.get("validation_status", "unverified")
+            if status not in ("unverified", "corroborated", "rejected"):
+                raise ValueError("validation_status must be unverified, corroborated or rejected")
+            exploitation = raw.get("exploitation_status")
+            if exploitation not in (None, "not_established", "evidence_of_non_exploitation"):
+                raise ValueError("exploitation_status must be not_established or evidence_of_non_exploitation")
         if self.alert and len(json.dumps(self.alert, default=str)) > _MAX_ALERT_BYTES:
             raise ValueError(f"alert document exceeds {_MAX_ALERT_BYTES} bytes; pass a trimmed alert")
         return self
@@ -200,8 +234,10 @@ async def _agent_packages(agent_id: str) -> tuple[list[dict], str]:
 
 _ASSESS_FIELDS = ("relationship", "strength", "attack_class", "vulnerability_class",
                   "cwe", "cwe_note", "severity_source", "public_exploit", "product_identity",
-                  "product_plugin", "endpoint_evidence", "version_check", "evidence_attributes",
-                  "evidence", "contradictions", "missing", "confidence_explanation")
+                  "product_plugin", "product_compatibility", "record_families", "metadata_missing",
+                  "discovery_relevance", "assessment_relevance", "endpoint_evidence",
+                  "version_check", "evidence_attributes", "evidence", "contradictions",
+                  "missing", "confidence_explanation")
 
 
 def _merge_assessment(candidate: dict, result: dict) -> dict:
@@ -217,10 +253,19 @@ def _merge_assessment(candidate: dict, result: dict) -> dict:
     return merged
 
 
+_COMPATIBILITY_ORDER = {"compatible": 0, "unknown": 1, "incompatible": 2}
+_STRENGTH_ORDER = {"strong": 3, "moderate": 2, "low": 1, "none": 0}
+
+
 def _assessment_order(candidate: dict):
+    """Relationship, then product compatibility, then version, then evidence.
+
+    CVSS is the last tie-breaker, so a high score never outranks a compatible product.
+    """
     return (RELATIONSHIP_ORDER.index(candidate["relationship"]),
+            _COMPATIBILITY_ORDER.get(candidate.get("product_compatibility"), 1),
             0 if candidate["version_check"]["status"] == "in_range" else 1,
-            0 if candidate.get("kev") else 1,
+            -_STRENGTH_ORDER.get(candidate.get("strength"), 0),
             -(candidate.get("cvss") or 0))
 
 
@@ -415,8 +460,14 @@ def _render_correlation(result: dict) -> str:
     if technologies:
         rendered = []
         for entry in technologies:
-            evidence = ", ".join(f"{e['source']}={e['value']}" for e in entry.get("evidence") or [])
-            rendered.append(f"{entry['tech']} ({evidence})" if evidence else entry["tech"])
+            parts = []
+            for item in entry.get("evidence") or []:
+                if "source" in item:
+                    parts.append(f"{item['source']}={item.get('value')}")
+                else:
+                    parts.append(f"{item.get('field')}={item.get('matched')}"
+                                 f"[{item.get('classification')}]")
+            rendered.append(f"{entry['tech']} ({', '.join(parts)})" if parts else entry["tech"])
         lines.append(f"**Technologies**: {_join(rendered, 10)}")
     if result.get("unmapped_groups"):
         lines.append(f"**Unmapped groups**: {_join(result['unmapped_groups'], 20)}")
@@ -482,6 +533,33 @@ def _render_correlation(result: dict) -> str:
 
     lines.append(f"Source: cve.now - {CVE_NOW_HOME}")
     return "\n".join(lines)
+
+
+def _analyst_block(raw: dict | None) -> list[dict]:
+    """An analyst's association, kept out of engine candidates by construction."""
+    if not raw:
+        return []
+    return [{
+        "cve_id": normalize_id(str(raw.get("cve_id") or "")),
+        "assessment_source": "analyst",
+        "relationship": "analyst_assessment",
+        "rationale": str(raw.get("rationale") or "")[:2000],
+        "evidence": [str(item)[:300] for item in (raw.get("evidence") or [])][:10],
+        "validation_status": raw.get("validation_status") or "unverified",
+        "exploitation_status": raw.get("exploitation_status"),
+        "promoted": False,
+    }]
+
+
+def _with_analyst(payload: dict, analyst: list[dict]) -> dict:
+    assessment = payload.setdefault("assessment", {})
+    if analyst and analyst[0].get("exploitation_status"):
+        assessment["exploitation_status"] = analyst[0]["exploitation_status"]
+        assessment["exploitation_status_source"] = "analyst"
+    else:
+        assessment.setdefault("exploitation_status", "not_established")
+        assessment["exploitation_status_source"] = "engine"
+    return payload
 
 
 @mcp.tool(
@@ -641,7 +719,18 @@ async def blueteam_cve_now_attack_correlate(params: CveNowCorrelateInput) -> str
     alert = params.alert or {}
     context = extract_alert_context(alert)
     attack = classify_attack(context)
-    technologies, unmapped = map_alert_tech(alert) if alert else ([], [])
+    identified = identify_technologies(alert) if alert else {
+        "technologies": [], "discovery": [], "ambiguous": [],
+        "unmapped_mentions": [], "unmapped_groups": []}
+    technologies, unmapped = identified["discovery"], identified["unmapped_groups"]
+    terms = search_terms_for(attack.get("attack_class"))
+    target_families = [entry["technology"] for entry in identified["technologies"]
+                       if entry["kind"] in ("cms", "framework")
+                       and entry["classification"] in ("explicit_target", "inferred_pattern",
+                                                       "inferred_runtime")]
+    # Identity comes from the attacked software only; a log source may feed discovery
+    # but must not stand in for the target product.
+    identity_slugs = [entry["tech"] for entry in technologies if entry.get("target")]
     if params.tech:
         known = {entry["tech"] for entry in technologies}
         for slug in params.tech:
@@ -654,6 +743,21 @@ async def blueteam_cve_now_attack_correlate(params: CveNowCorrelateInput) -> str
     asset_source = "input" if packages else "none"
     if not packages and params.use_inventory:
         packages, asset_source = await _agent_packages(str(context["agent"]["id"] or ""))
+    analyst = _analyst_block(params.analyst_assessment)
+    availability = {
+        "attack_evidence": bool(attack.get("attack_class")),
+        "technology_evidence": bool(technologies),
+        "asset_inventory": asset_source,
+        "vulnerability_inventory": "not_queried_by_this_tool",
+        "application_inventory": "not_available",
+    }
+    discovery_block = {
+        "attack_pattern": attack.get("attack_class"),
+        "query_terms": terms,
+        "technologies": [entry["tech"] for entry in technologies],
+        "identity_slugs": identity_slugs,
+        "technology_roles": {entry["tech"]: entry.get("role") for entry in technologies},
+    }
     asset = {"source": asset_source, "packages_count": len(packages),
              "packages_sample": packages[:5],
              "coverage": {
@@ -665,7 +769,7 @@ async def blueteam_cve_now_attack_correlate(params: CveNowCorrelateInput) -> str
              }}
 
     direct = alert_cve_ids(alert) if alert else []
-    if not direct and not technologies:
+    if not direct and not technologies and not terms:
         payload = {
             "match_basis": "unmapped",
             "confidence": "none",
@@ -677,14 +781,21 @@ async def blueteam_cve_now_attack_correlate(params: CveNowCorrelateInput) -> str
             "attack": attack,
             "asset": asset,
             "assessment": summarize([], attack, asset_source),
+            "technology_evidence": identified["technologies"],
+            "ambiguous_technologies": identified["ambiguous"],
+            "unmapped_technology_mentions": identified["unmapped_mentions"],
+            "analyst_assessments": analyst,
+            "evidence_availability": availability,
+            "discovery": discovery_block,
             "limitations": [
-                "No CVE id in a structured alert field and no mappable technology, "
-                "so no correlation was attempted.",
+                "No CVE id in a structured alert field, no mappable technology and no "
+                "searchable attack pattern, so no correlation was attempted.",
                 "A missing mapping is a coverage gap in the mapping table, not a "
                 "statement that the alert is unrelated to any vulnerability.",
             ] + ASSESS_LIMITATIONS,
             "source": CVE_NOW_HOME,
         }
+        payload = _with_analyst(payload, analyst)
         if params.response_format == "json":
             return json.dumps(payload, indent=2, default=str)
         return _render_correlation(payload)
@@ -723,10 +834,13 @@ async def blueteam_cve_now_attack_correlate(params: CveNowCorrelateInput) -> str
                 "exposure": record.get("exposure"),
                 "why": "the alert carries this CVE id in a structured field",
             }
-            result = assess_candidate(record, context, attack, tech_slugs, packages, direct=True)
+            result = assess_candidate(record, context, attack, identity_slugs, packages,
+                                      direct=True, target_families=target_families)
             candidates.append(_merge_assessment(base, result))
 
         candidates.sort(key=_assessment_order)
+        for position, candidate in enumerate(candidates, 1):
+            candidate["display_priority"] = position
         payload = {
             "match_basis": "alert_cve",
             "confidence": "direct",
@@ -738,6 +852,12 @@ async def blueteam_cve_now_attack_correlate(params: CveNowCorrelateInput) -> str
             "attack": attack,
             "asset": asset,
             "assessment": summarize(candidates, attack, asset_source),
+            "technology_evidence": identified["technologies"],
+            "ambiguous_technologies": identified["ambiguous"],
+            "unmapped_technology_mentions": identified["unmapped_mentions"],
+            "analyst_assessments": analyst,
+            "evidence_availability": availability,
+            "discovery": discovery_block,
             "coverage": {
                 "source": "cve.now",
                 "catalog_records_found": sum(1 for record in records.values() if record),
@@ -753,16 +873,22 @@ async def blueteam_cve_now_attack_correlate(params: CveNowCorrelateInput) -> str
             ] + ASSESS_LIMITATIONS,
             "source": CVE_NOW_HOME,
         }
+        payload = _with_analyst(payload, analyst)
         if params.response_format == "json":
             return _truncate_if_needed(json.dumps(payload, indent=2, default=str))
         return _truncate_if_needed(_render_correlation(payload))
 
     component = (context.get("target") or {}).get("plugin")
     try:
+        page_budget = params.max_pages if params.max_pages is not None else (
+            4 if params.discovery_mode == "extended" else 1)
         result = await correlate_alert(alert, technologies=technologies,
                                        limit=params.limit,
                                        include_details=params.include_details,
-                                       component=component)
+                                       component=component, max_pages=page_budget,
+                                       terms=terms, context=context, attack=attack,
+                                       packages=packages, target_families=target_families,
+                                       identity_slugs=identity_slugs)
     except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError,
             CircuitOpenError, CveNowError) as error:
         return _unavailable("blueteam_cve_now_attack_correlate", error, params.response_format)
@@ -772,8 +898,12 @@ async def blueteam_cve_now_attack_correlate(params: CveNowCorrelateInput) -> str
     for candidate in result.get("candidates") or []:
         record = detail if (detail and detail.get("id") == candidate.get("id")) else candidate
         assessed.append(_merge_assessment(
-            candidate, assess_candidate(record, context, attack, tech_slugs, packages)))
+            candidate, assess_candidate(record, context, attack, identity_slugs, packages,
+                                        target_families=target_families)))
     assessed.sort(key=_assessment_order)
+    assessed = assessed[:params.limit]
+    for position, candidate in enumerate(assessed, 1):
+        candidate["display_priority"] = position
 
     result["candidates"] = assessed
     result["alert_context"] = context
@@ -781,6 +911,22 @@ async def blueteam_cve_now_attack_correlate(params: CveNowCorrelateInput) -> str
     result["asset"] = asset
     result["target_identity"] = {"plugin": component}
     result["assessment"] = summarize(assessed, attack, asset_source)
+    result["technology_evidence"] = identified["technologies"]
+    result["ambiguous_technologies"] = identified["ambiguous"]
+    result["unmapped_technology_mentions"] = identified["unmapped_mentions"]
+    result["analyst_assessments"] = analyst
+    result["evidence_availability"] = availability
+    if isinstance(result.get("coverage"), dict):
+        result["coverage"]["displayed_count"] = len(assessed)
+    result["rejected_candidates"] = [
+        {"id": c["id"], "relationship": c["relationship"],
+         "product_compatibility": c.get("product_compatibility"),
+         "contradictions": c.get("contradictions") or []}
+        for c in result.get("candidates") or [] if c["relationship"] == "no_supported_match"]
+    result["discovery"] = discovery_block
+    if isinstance(result.get("coverage"), dict):
+        result["coverage"]["discovery_mode"] = params.discovery_mode
+    _with_analyst(result, analyst)
     result["limitations"] = list(result.get("limitations") or []) + ASSESS_LIMITATIONS
 
     if params.response_format == "json":

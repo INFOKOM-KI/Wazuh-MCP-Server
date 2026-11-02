@@ -59,7 +59,9 @@ DATA_CONTEXT_FIELDS = (
 # Highest priority first. A rule that matches both "code execution" and "sqli"
 # reports rce as the primary class and keeps every token as evidence.
 ATTACK_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ssti", ("template injection", "ssti", "jinja2", "jinja", "twig", "freemarker", "velocity template")),
     ("deserialization", ("deserial", "ysoserial", "pickle", "java serial")),
+    ("idor", ("insecure direct object", "idor", "object reference")),
     ("command_injection", ("command injection", "cmd injection", "os command", "shell injection", "/bin/sh", "cmd.exe")),
     ("sql_injection", ("sql injection", "sqli", "sql_inject", "union select", "sqlmap")),
     ("xss", ("cross-site scripting", "cross site scripting", "xss", "<script")),
@@ -67,18 +69,24 @@ ATTACK_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("path_traversal", ("path traversal", "directory traversal", "../", "%2e%2e", "..%2f")),
     ("file_inclusion", ("local file inclusion", "remote file inclusion", "lfi", "rfi")),
     ("file_upload", ("file upload", "upload/execution", "webshell upload", "unrestricted upload")),
-    ("auth_bypass", ("authentication bypass", "auth bypass", "login bypass", "improper authentication", "unauthorized access")),
+    ("auth_bypass", ("authentication bypass", "auth bypass", "login bypass", "improper authentication",
+                     "unauthorized access", "authorization bypass")),
+    ("misconfiguration", ("misconfiguration", "misconfigured", "exposed admin", "default credential",
+                          "unauthenticated access")),
     ("brute_force", ("brute-force", "brute force", "failed login", "login attempt", "password guessing", "credential stuffing")),
     ("rce", ("remote code execution", "rce", "arbitrary code execution", "code execution")),
     ("privesc", ("privilege escalation", "privesc", "sudo", "setuid")),
-    ("recon", ("scan", "recon", "probe", "enumeration", "directory listing")),
+    ("recon", ("scan", "scans", "scanning", "recon", "probe", "probing", "enumeration",
+               "directory listing")),
     ("malware", ("malware", "trojan", "ransomware", "miner", "mirai", "backdoor")),
     ("post_exploitation", ("persistence", "lateral movement", "credential dump", "cron job")),
 )
 
 # Same vocabulary applied to the CVE record's own text.
 VULN_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ssti", ("template injection", "ssti", "server-side template")),
     ("deserialization", ("deserial", "pickle", "ysoserial")),
+    ("idor", ("insecure direct object", "idor", "authorization bypass")),
     ("command_injection", ("command injection", "os command injection", "shell injection")),
     ("sql_injection", ("sql injection", "sqli")),
     ("xss", ("cross-site scripting", "xss")),
@@ -87,6 +95,7 @@ VULN_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("file_inclusion", ("file inclusion", "lfi", "rfi")),
     ("file_upload", ("unrestricted file upload", "arbitrary file upload", "file upload")),
     ("auth_bypass", ("authentication bypass", "auth bypass", "improper authentication", "missing authentication")),
+    ("misconfiguration", ("misconfiguration", "security misconfiguration", "default credential")),
     ("privesc", ("privilege escalation", "improper privilege management")),
     ("rce", ("remote code execution", "arbitrary code execution", "code execution", "execute arbitrary")),
     ("info_disclosure", ("information disclosure", "information exposure", "file disclosure")),
@@ -97,6 +106,8 @@ VULN_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
 # Which CVE classes can produce which observed behaviour. A pair not listed is a
 # mismatch, not a contradiction: the alert may simply be a different attack.
 CLASS_COMPATIBILITY: dict[str, set[str]] = {
+    "ssti": {"ssti", "rce", "info_disclosure"},
+    "idor": {"idor", "auth_bypass", "info_disclosure"},
     "sql_injection": {"sql_injection"},
     "xss": {"xss"},
     "ssrf": {"ssrf"},
@@ -105,8 +116,10 @@ CLASS_COMPATIBILITY: dict[str, set[str]] = {
     "file_upload": {"file_upload", "rce", "command_injection"},
     "command_injection": {"command_injection", "rce", "deserialization"},
     "deserialization": {"deserialization", "rce", "command_injection"},
-    "rce": {"rce", "command_injection", "deserialization", "file_inclusion", "file_upload", "auth_bypass"},
+    "rce": {"rce", "command_injection", "deserialization", "file_inclusion", "file_upload",
+            "auth_bypass"},
     "auth_bypass": {"auth_bypass", "privesc", "rce"},
+    "misconfiguration": {"misconfiguration", "auth_bypass", "info_disclosure"},
     "privesc": {"privesc", "auth_bypass"},
     "csrf": {"csrf"},
     "info_disclosure": {"info_disclosure", "path_traversal"},
@@ -147,6 +160,41 @@ PLUGIN_SLUG_ALIASES: dict[str, dict[str, str]] = {
 
 # A file name in the CVE text is the only endpoint evidence cve.now publishes.
 DOCUMENTED_FILE_RE = re.compile(r"\b([a-z0-9_-]{2,}\.php)\b", re.I)
+
+# Search phrases for each attack pattern. Fixed vocabulary, never alert prose: the
+# only text that leaves the host is one of these strings plus a sanitized slug.
+ATTACK_SEARCH_TERMS: dict[str, tuple[str, ...]] = {
+    "rce": ("remote code execution",),
+    "command_injection": ("command injection",),
+    "sql_injection": ("sql injection",),
+    "xss": ("cross-site scripting",),
+    "ssrf": ("server-side request forgery",),
+    "path_traversal": ("path traversal",),
+    "file_inclusion": ("file inclusion",),
+    "file_upload": ("arbitrary file upload",),
+    "auth_bypass": ("authentication bypass",),
+    "deserialization": ("deserialization",),
+    "ssti": ("server-side template injection",),
+    "idor": ("insecure direct object reference",),
+    "privesc": ("privilege escalation",),
+    "info_disclosure": ("information disclosure",),
+    "csrf": ("cross-site request forgery",),
+    "misconfiguration": ("security misconfiguration",),
+}
+
+# No search phrase on purpose:
+#   brute_force        credential guessing is a technique; the CVEs are product-specific.
+#   recon              scanning finds no CVE of its own; the technology query covers it.
+#   malware            payload families are not catalogued as vulnerabilities.
+#   post_exploitation  no CVE class exists for "already inside".
+
+
+def search_terms_for(attack_class: str | None) -> list[str]:
+    """Phrases a cve.now search can use for this behaviour, empty when unspecific."""
+    if not attack_class:
+        return []
+    return list(ATTACK_SEARCH_TERMS.get(attack_class, ()))
+
 
 RELATIONSHIP_ORDER = ("confirmed_cve_reference", "attack_specific_match",
                       "vulnerability_exposure", "contextual_candidate",
@@ -237,7 +285,10 @@ def classify_attack(context: dict) -> dict:
     be traced to the word that caused it.
     """
     rule = context.get("rule") or {}
-    parts = [str(rule.get("description") or "")] + [str(g) for g in rule.get("groups") or []]
+    # Join groups with commas: a space would let "webshell" + "injection" read as
+    # "shell injection" and classify a PHP upload rule as command injection.
+    parts = [str(rule.get("description") or ""), ",".join(
+        str(g) for g in rule.get("groups") or [])]
     data = context.get("data") or {}
     parts.extend(str(data[key]) for key in ("data.url", "data.command") if key in data)
     result = _classify(" ".join(parts), ATTACK_CLASSES)
@@ -335,6 +386,44 @@ def product_identity(record: dict, context: dict, technologies: list[str]) -> di
     return {"level": "none", "plugin": None, "evidence": []}
 
 
+def _family_matcher():
+    """Catalogue names for CMS and framework kinds, plus the matcher.
+
+    Imported at call time: cve_now_tech imports this module, so a module-level import
+    would close the cycle.
+    """
+    from mcp_server.threat_intel.cve_now_tech import CATALOG, _match
+    names = {name: entry for name, entry in CATALOG.items()
+             if entry["kind"] in ("cms", "framework")}
+    return names, _match
+
+
+def product_families(text: str) -> list[str]:
+    """Catalogue platforms named in a piece of text."""
+    if not text:
+        return []
+    names, match = _family_matcher()
+    lowered = text.lower()
+    return sorted({name for name, entry in names.items()
+                   if any(match(lowered, token) for token in entry["names"])})
+
+
+def record_families(record: dict) -> list[str]:
+    summary = record.get("summary")
+    summary_text = summary.get("text") if isinstance(summary, dict) else summary
+    products = " ".join(str(entry.get("product") or entry.get("vendor") or "")
+                        for entry in record.get("affected") or [])
+    return product_families(" ".join(str(part) for part in (
+        record.get("title"), summary_text, products) if part))
+
+
+def product_compatibility(target_families: list[str], cve_families: list[str]) -> str:
+    """compatible when the platforms overlap, incompatible when they are disjoint."""
+    if not target_families or not cve_families:
+        return "unknown"
+    return "compatible" if set(target_families) & set(cve_families) else "incompatible"
+
+
 def _parse_version(value: str) -> tuple[int, ...] | None:
     match = _VERSION_RE.match(str(value).strip())
     if not match:
@@ -400,7 +489,9 @@ def _exploit_state(record: dict) -> dict:
     """Normalise both shapes: a projected record and a raw upstream record."""
     exploit = record.get("exploitation") or {}
     kev = record.get("kev")
-    if isinstance(kev, bool):
+    if kev is None:
+        kev_listed = None            # not published, not "not listed"
+    elif isinstance(kev, bool):
         kev_listed = kev
     else:
         kev_listed = bool((kev or {}).get("listed"))
@@ -412,6 +503,10 @@ def _exploit_state(record: dict) -> dict:
     exploitdb = exploit.get("exploitdb_ids") or (exploit.get("exploitDb") or {}).get("ids") or []
     return {"kev": kev_listed, "metasploit": len(metasploit), "nuclei": len(nuclei),
             "exploitdb": len(exploitdb), "public_poc": exploit.get("public_poc_count") or 0}
+
+
+def _missing_metadata(cvss, kev) -> list[str]:
+    return [name for name, value in (("cvss", cvss), ("kev", kev)) if value is None]
 
 
 def _version_check(record: dict, packages: list[dict]) -> dict:
@@ -438,11 +533,14 @@ def _version_check(record: dict, packages: list[dict]) -> dict:
 
 
 def assess_candidate(record: dict, context: dict, attack: dict, technologies: list[str],
-                     packages: list[dict], *, direct: bool = False) -> dict:
+                     packages: list[dict], *, direct: bool = False,
+                     target_families: list[str] | None = None) -> dict:
     """Test one CVE against the observed attack and classify the relationship."""
     vuln = classify_vulnerability(record)
     identity = product_identity(record, context, technologies)
     strong_identity = identity["level"] in ("exact_product", "exact_component")
+    families = record_families(record)
+    compatibility = product_compatibility(list(target_families or []), families)
     endpoint = endpoint_evidence(record, context)
     version = _version_check(record, packages)
     exploit = _exploit_state(record)
@@ -471,18 +569,25 @@ def assess_candidate(record: dict, context: dict, attack: dict, technologies: li
     else:
         missing.append(version["reason"])
 
+    if compatibility == "incompatible":
+        contradictions.append(
+            f"product:{','.join(families)} is not the alert target "
+            f"({','.join(target_families or [])})")
+
     if endpoint["matched"]:
         evidence.append(f"endpoint:{endpoint['matched'][0]} named in the CVE and requested")
     else:
         missing.append("no documented endpoint in the CVE text")
 
-    if exploit["kev"]:
+    if exploit["kev"] is True:
         evidence.append("kev:listed")
     if exploit["metasploit"] or exploit["nuclei"] or exploit["public_poc"]:
         evidence.append("exploit:public-code-exists")
 
     if direct:
         relationship = "confirmed_cve_reference"
+    elif compatibility == "incompatible":
+        relationship = "no_supported_match"
     elif (strong_identity and compatible is True and version["status"] != "not_in_range"
           and endpoint["matched"]):
         relationship = "attack_specific_match"
@@ -505,9 +610,23 @@ def assess_candidate(record: dict, context: dict, attack: dict, technologies: li
         "cvss": (record.get("severity") or {}).get("cvss") or record.get("cvss"),
         "severity_source": (record.get("severity") or {}).get("source"),
         "kev": exploit["kev"],
+        "metadata_missing": _missing_metadata(
+            (record.get("severity") or {}).get("cvss") or record.get("cvss"), exploit["kev"]),
         "exposure": record.get("exposure"),
         "public_exploit": {"metasploit": exploit["metasploit"], "nuclei": exploit["nuclei"],
                            "exploitdb": exploit["exploitdb"], "pocs": exploit["public_poc"]},
+        "product_compatibility": compatibility,
+        "record_families": families,
+        "discovery_relevance": ("explicit_cve" if direct else
+                                "component" if identity["level"] == "exact_component" else
+                                "exact_product" if identity["level"] == "exact_product" else
+                                "technology" if identity["level"] != "none" else
+                                "attack_pattern" if compatible is True else "none"),
+        "assessment_relevance": {"confirmed_cve_reference": "high",
+                                 "attack_specific_match": "high",
+                                 "vulnerability_exposure": "medium",
+                                 "contextual_candidate": "low",
+                                 "no_supported_match": "none"}[relationship],
         "product_identity": identity["level"],
         "product_plugin": identity["plugin"],
         "product_evidence": identity["evidence"],
@@ -614,6 +733,8 @@ def summarize(candidates: list[dict], attack: dict, packages_source: str) -> dic
         "version_evidence": {"candidates": len(supported), "package_present": len(checked),
                              "in_range": len(in_range)},
         "successful_exploitation_established": exploitation["successful_exploitation_established"],
+        "exploitation_status": "not_established",  # analyst input may set the negative case
+
         "post_exploitation_indicators": exploitation["post_exploitation_indicators"],
         "exploitation_basis": exploitation["exploitation_basis"],
         "exploitation_note": (

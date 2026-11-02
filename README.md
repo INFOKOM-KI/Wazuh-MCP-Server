@@ -7,7 +7,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client, the blue-team counterpart to
-offensive tooling. **163 tools + 4 resources** (137 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
+offensive tooling. **164 tools + 4 resources** (138 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, local case RAG, host forensics, and opt-in HDBSCAN clustering + ATT&CK incident
 labeling. The inbound API key defaults to the read-only `wazuh:read` scope.
@@ -25,7 +25,7 @@ main.py -> mcp_server/  (package)
                  ├─ correlation/   3-Sum engine (pure computation, MITRE-driven)
                  ├─ threat_intel/  CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise, cve.now + shared cache
                  ├─ agents/        LangGraph investigation + playbook workflows
-                 └─ tools/         68 tool modules
+                 └─ tools/         69 tool modules
 ```
 
 Every tool call flows through a single pipeline in the `@blueteam_tool` decorator, whose three
@@ -121,7 +121,7 @@ optional; tools degrade gracefully without them.
 | Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
 | Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder: no torch, no second model resident. `BACKEND=laya` and `BACKEND=setfit` each require `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin, and the SetFit pin is verified before its pickled head is loaded). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya`/`setfit` (already-softmaxed distributions) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya\|setfit>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`; SetFit uses its trained truncation. `MAX_CONCURRENCY` defaults `1` |
 | CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **137 tools registered** instead of 163: `163 - 23 - 3 = 137`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **138 tools registered** instead of 164: `164 - 23 - 3 = 138`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
@@ -707,6 +707,59 @@ never `false`. Report what the assessment states, never a stronger claim.
 
 Version checks use `packages` passed to the tool, or `use_inventory=true` to read
 `wazuh-states-inventory-packages-*` locally. Package versions stay on the server.
+That index covers OS packages only; a WordPress plugin or npm dependency missing from
+it leaves exposure `unknown`, never `false`.
+
+`technology_evidence` lists every technology the alert actually names, with the field
+that named it (`rule.description`, `rule.groups`, `data.url`, `decoder.name`,
+`location`) and its classification. `ambiguous_technologies` holds platforms named in a
+list ("Joomla, Drupal or WordPress"); those never seed discovery. A technology with no
+cve.now slug appears under `unmapped_technology_mentions` with `status:
+identified_no_slug`, `identity: unresolved` and cve_lookup `no_slug`; it was identified, it
+is not forced onto a nearby slug, and it is not reported as unidentified.
+
+Discovery is attack-pattern first. The class classified from the alert maps to a fixed
+phrase ("arbitrary file upload", "sql injection", "server-side template injection", ...)
+that is combined with the technology filter and the plugin slug when one exists. An alert
+with a pattern and no mapped technology still searches; `discovery_sources` says which
+inputs were used, and `query_terms` lists the phrase. `evidence_availability` reports attack,
+technology, asset, vulnerability and application evidence independently: missing inventory
+never blocks discovery, and exposure stays `unknown`.
+
+`product_compatibility` compares the platform the alert identifies with the platform the CVE
+names: `incompatible` means the candidate is `no_supported_match` and appears under
+`rejected_candidates`, not as a lead. `display_priority` orders candidates by relationship,
+then compatibility, then version, then evidence; CVSS breaks ties only.
+
+The pattern query runs without a technology restriction: a `.php` path is only a
+`runtime_hint` and never narrows it. A verified technology adds a `/feed?tech=` source and a
+component slug adds a targeted search; each candidate keeps `discovery_sources`, and
+`coverage.sources` reports every source's status separately. The feed is not an exhaustive
+catalog, and it is skipped only when *specific* candidates (direct reference, attack-specific,
+exposure, or exact product identity) fill the display; class-only leads do not suppress it. Feed
+records keep `cvss` and `kev` null (`metadata_missing`); that affects display order, never
+relationship. `discovery.technology_roles` marks a log source as `log_source`; identity for
+promotion uses target roles only. Servers also carry `target_relationship`: only
+`explicit_vulnerability_target` and `explicit_exploitation_target` count as targets, so
+"server returned" or "access log" stays context.
+
+`coverage` reports `total_matches`, `retrieved_count`, `displayed_count`, `has_more`,
+`truncated`, `pagination_complete`, `pages_fetched` and `discovery_mode`. `fast` fetches one
+page plus one component query; `extended` fetches up to four pages for historical discovery. A candidate that did not fit the
+display limit was not evaluated, so never read `displayed_count < total_matches` as a
+negative result.
+
+`analyst_assessments` holds associations an analyst supplied. They carry
+`assessment_source: analyst`, a rationale and a `validation_status`, and never enter
+`candidates`. `assessment.exploitation_status` is `not_established`; only an analyst
+assessment may set `evidence_of_non_exploitation`, and
+`successful_exploitation_established` stays `false` either way.
+
+`blueteam_wazuh_vulnerability_health` separates findings from readiness: `findings_state`
+is `findings_present` or `observed_no_findings`, and `state` is `operational`, `unverified`,
+`degraded`, `unavailable` or `not_configured`. Zero findings with VD `enabled`,
+`index-status`, a populated package inventory and full agent coverage is an observation.
+Zero findings without Manager access is `unverified`, not degraded and not clean.
 Attack classification is keyword-based over `rule.description`, `rule.groups` and
 the allowlisted `data.*` fields, so an uninformative rule yields no class. cve.now
 publishes no CWE field; `cwe` is always null rather than guessed. If cve.now is
@@ -1017,7 +1070,7 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | Want | Tool |
 |---|---|
 | Geo distribution / heatmap / concentration | `blueteam_wazuh_geo_distribution`, `blueteam_wazuh_geo_heatmap`, `blueteam_wazuh_geo_concentration` |
-| FIM / compliance / vulns | `blueteam_wazuh_syscheck` (add `syscheck_field` + `syscheck_value` to filter any template FIM leaf, `changed_attribute` for a specific hash or permission change, `by_field` to group by a leaf, `include_diff` for sampled diffs), `blueteam_wazuh_compliance`, `blueteam_wazuh_vulnerabilities` |
+| FIM / compliance / vulns | `blueteam_wazuh_syscheck` (add `syscheck_field` + `syscheck_value` to filter any template FIM leaf, `changed_attribute` for a specific hash or permission change, `by_field` to group by a leaf, `include_diff` for sampled diffs), `blueteam_wazuh_compliance`, `blueteam_wazuh_vulnerabilities`, `blueteam_wazuh_vulnerability_health` (is the VD pipeline writing at all: `operational` / `degraded` / `unavailable` / `not_configured`) |
 | Webshell scan | `blueteam_check_webshell(url)` |
 | Fail2ban state | `blueteam_fail2ban_status`, `blueteam_fail2ban_jail_status`, `blueteam_fail2ban_unban` |
 | Process / connection / user inventory | `blueteam_list_processes`, `blueteam_list_connections`, `blueteam_list_listening_ports`, `blueteam_list_users`, `blueteam_list_cron_jobs`, `blueteam_who_is_logged_in`, `blueteam_last_logins` |

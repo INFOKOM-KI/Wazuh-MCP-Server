@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 
 os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
 os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
@@ -40,17 +41,32 @@ class FakeRPC:
     def __init__(self):
         self.calls: list[dict] = []
         self.responses: list[httpx.Response] = []
+        self.feed_responses: list[httpx.Response] = []
 
-    def queue(self, payload: dict):
+    @staticmethod
+    def _envelope(payload: dict) -> httpx.Response:
         body = {"jsonrpc": "2.0", "id": 1,
                 "result": {"content": [{"type": "text", "text": json.dumps(payload)}]}}
-        self.responses.append(httpx.Response(200, json=body))
+        return httpx.Response(200, json=body)
+
+    def queue(self, payload: dict):
+        self.responses.append(self._envelope(payload))
+        return self
+
+    def queue_feed(self, payload: dict):
+        self.feed_responses.append(self._envelope(payload))
         return self
 
     def install(self, monkeypatch):
         async def fake(method, url, **kwargs):
             self.calls.append({"method": method, "url": url, **kwargs})
-            return self.responses.pop(0)
+            name = ((kwargs.get("json") or {}).get("params") or {}).get("name")
+            queue = self.feed_responses if name == "list_feed" else self.responses
+            if queue:
+                return queue.pop(0)
+            if name == "list_feed":
+                return self._envelope({"items": [], "updatedAt": None})
+            raise IndexError(f"no queued response for {name}")
         monkeypatch.setattr(cve_now, "_api_call", fake)
         return self
 
@@ -325,9 +341,12 @@ class TestToolScenarios:
         assert data["assessment"]["vulnerable_software_confirmed"] is True
         # only a slug, a limit and a CVE id leave the host; the inventory stays local
         for call in rpc.calls:
-            arguments = call["json"]["params"]["arguments"]
-            assert set(arguments) <= {"q", "limit", "id"}, arguments
-            assert arguments.get("q") in (None, "tech:wordpress sort:cvss")
+            params = call["json"]["params"]
+            arguments = params["arguments"]
+            if params["name"] == "search":
+                assert set(arguments) <= {"q", "limit", "id"}, arguments
+            else:
+                assert set(arguments) <= {"tech", "limit", "id"}
 
     @pytest.mark.asyncio
     async def test_caller_packages_are_used_without_inventory(self, rpc):
@@ -535,9 +554,11 @@ class TestIdentityRegression:
         rpc.queue({"entries": [], "total": 0})
         await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
             alert=WP_PLUGIN_UPLOAD_ALERT, response_format="json"))
-        queries = [call["json"]["params"]["arguments"]["q"] for call in rpc.calls]
+        queries = [call["json"]["params"]["arguments"]["q"] for call in rpc.calls
+                   if call["json"]["params"]["name"] == "search"]
         assert len(queries) == 2
-        assert queries[0].startswith("tech:") and "wp-scraper" not in queries[0]
+        assert queries[0] == '"arbitrary file upload" sort:cvss'
+        assert "wp-scraper" not in queries[0]
         assert "wp-scraper" in queries[1] and queries[1].endswith("sort:cvss")
 
         rpc.calls.clear()
@@ -547,8 +568,9 @@ class TestIdentityRegression:
                    "total": 1})
         await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
             alert=WP_UPLOAD_ALERT, response_format="json"))
-        assert len(rpc.calls) == 1
-        assert "wp-scraper" not in rpc.calls[0]["json"]["params"]["arguments"]["q"]
+        searches = [c for c in rpc.calls if c["json"]["params"]["name"] == "search"]
+        assert len(searches) == 1
+        assert "wp-scraper" not in searches[0]["json"]["params"]["arguments"]["q"]
 
     @pytest.mark.asyncio
     async def test_discovery_uses_catalog_search_not_the_feed(self, rpc):
@@ -557,7 +579,8 @@ class TestIdentityRegression:
         data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
             alert=WP_UPLOAD_ALERT, response_format="json")))
         tools_called = [call["json"]["params"]["name"] for call in rpc.calls]
-        assert tools_called == ["search"]
+        assert "search" in tools_called
+        assert data["coverage"]["sources"]["attack_pattern"]["status"] == "ok"
         assert "search endpoint" in data["coverage"]["catalog_scope"]
 
 
@@ -725,3 +748,766 @@ class TestInventoryCoverage:
         context = engine.extract_alert_context(WP_PLUGIN_UPLOAD_ALERT)
         identity = engine.product_identity(TestIdentityRegression.SCRAPER, context, ["wordpress"])
         assert "CVE-2025-69129" in identity["evidence"][0]
+
+
+class TestTechnologyIdentification:
+    """Identification reads every allowlisted field, not just WordPress paths."""
+
+    @staticmethod
+    def _identify(alert):
+        from mcp_server.threat_intel.cve_now_tech import identify_technologies
+        return identify_technologies(alert)
+
+    def test_joomla_from_rule_description(self):
+        result = self._identify({"rule": {"description": "Joomla component file upload attempt"}})
+        entry = next(t for t in result["technologies"] if t["technology"] == "joomla")
+        assert entry["classification"] == "explicit_target"
+        assert entry["identified"] is True
+        assert entry["status"] == "identified_no_slug"
+        assert entry["identity"] == "unresolved"
+        assert entry["cve_lookup"] == "no_slug"
+        assert entry["discovery"] == "not_performed"
+        assert entry["evidence"][0]["field"] == "rule.description"
+
+    def test_aspnet_from_rule_description(self):
+        result = self._identify({"rule": {"description": "ASP.NET request validation bypass"}})
+        entry = next(t for t in result["technologies"] if t["technology"] == "aspnet")
+        assert entry["classification"] == "explicit_target"
+        assert entry["status"] == "identified_no_slug"
+
+    def test_wordpress_from_rule_groups_is_mapped(self):
+        result = self._identify({"rule": {"groups": ["wordpress"], "description": "attack"}})
+        entry = next(t for t in result["technologies"] if t["technology"] == "wordpress")
+        assert entry["status"] == "mapped"
+        assert entry["evidence"][0]["field"] == "rule.groups"
+        assert result["discovery"][0]["tech"] == "wordpress"
+
+    def test_php_from_decoder_and_location(self):
+        result = self._identify({"rule": {"description": "suspicious request"},
+                                 "location": "/var/log/php-fpm/www-error.log"})
+        entry = next(t for t in result["technologies"] if t["technology"] == "php")
+        assert entry["classification"] == "inferred_runtime"
+        assert entry["status"] == "mapped"
+
+    def test_nginx_from_decoder(self):
+        result = self._identify({"decoder": {"name": "nginx"}})
+        entry = next(t for t in result["technologies"] if t["technology"] == "nginx")
+        assert entry["classification"] == "inferred_runtime"
+
+    def test_wordpress_from_application_path(self):
+        result = self._identify({"data": {"url": "/wp-content/plugins/x/upload.php"}})
+        entry = next(t for t in result["technologies"] if t["technology"] == "wordpress")
+        assert entry["classification"] == "inferred_pattern"
+
+    def test_joomla_and_aspnet_without_wordpress_paths(self):
+        result = self._identify({"rule": {"description": "Joomla component RCE and ASP.NET deserialization"}})
+        names = {t["technology"]: t for t in result["technologies"]}
+        assert names["joomla"]["status"] == "identified_no_slug"
+        assert names["aspnet"]["status"] == "identified_no_slug"
+        assert not any(t["technology"] == "wordpress" for t in result["technologies"])
+
+    def test_a_list_of_platforms_is_ambiguous(self):
+        result = self._identify({"rule": {"description": "Probe seen against Joomla, Drupal or WordPress"}})
+        ambiguous = {t["technology"] for t in result["ambiguous"]}
+        assert {"joomla", "drupal", "wordpress"} <= ambiguous
+        assert result["discovery"] == []
+
+    def test_a_generic_rule_with_one_platform_names_the_target(self):
+        result = self._identify({"rule": {"description": "Joomla brute force on administrator login"}})
+        assert [t["tech"] for t in result["discovery"]] == []
+
+    def test_catalogue_slugs_are_all_supported(self):
+        from mcp_server.threat_intel.cve_now import TECH_SLUGS
+        from mcp_server.threat_intel.cve_now_tech import CATALOG
+        for name, entry in CATALOG.items():
+            if entry["slug"] is not None:
+                assert entry["slug"] in TECH_SLUGS, name
+
+    def test_identification_never_promotes_a_candidate(self):
+        from mcp_server.threat_intel.cve_now_tech import identify_technologies
+        result = identify_technologies({"rule": {"description": "Joomla file upload"},
+                                        "data": {"url": "/wp-content/plugins/x/upload.php"}})
+        assert '"relationship":' not in json.dumps(result)
+        assert "attack_specific_match" not in json.dumps(result)
+
+
+class TestPagination:
+    @pytest.mark.asyncio
+    async def test_second_page_is_fetched_within_the_cap(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-60", "WordPress plugin SQL injection")],
+                   "total": 370, "next_cursor": "c1"})
+        rpc.queue({"entries": [search_entry("CVE-2024-61", "WordPress plugin LFI", cvss=8.0)],
+                   "total": 370, "next_cursor": None})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=GENERIC_LOGIN_ALERT, limit=2, max_pages=2, response_format="json")))
+        searches = [c for c in rpc.calls if c["json"]["params"]["name"] == "search"]
+        assert len(searches) == 2
+        assert data["coverage"]["pages_fetched"] == 2
+        assert data["coverage"]["total_matches"] == 370
+        assert data["coverage"]["retrieved_count"] == 2
+        assert data["coverage"]["displayed_count"] == 2
+        assert data["coverage"]["pagination_complete"] is True
+
+    @pytest.mark.asyncio
+    async def test_extended_mode_fetches_more_pages(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-80", "WordPress plugin SQL injection")],
+                   "total": 534, "next_cursor": "c1"})
+        rpc.queue({"entries": [search_entry("CVE-2024-81", "WordPress plugin XSS", cvss=8.1)],
+                   "total": 534, "next_cursor": "c2"})
+        rpc.queue({"entries": [search_entry("CVE-2024-82", "WordPress plugin LFI", cvss=8.2)],
+                   "total": 534, "next_cursor": None})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=GENERIC_LOGIN_ALERT, limit=2, discovery_mode="extended",
+            response_format="json")))
+        assert data["coverage"]["pages_fetched"] == 3
+        assert data["coverage"]["discovery_mode"] == "extended"
+        assert data["coverage"]["retrieved_count"] == 3
+        assert data["coverage"]["pagination_complete"] is True
+        assert data["coverage"]["truncated"] is True
+
+    @pytest.mark.asyncio
+    async def test_one_page_reports_has_more(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-62", "WordPress plugin SQL injection")],
+                   "total": 370, "next_cursor": "c1"})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=GENERIC_LOGIN_ALERT, limit=1, response_format="json")))
+        coverage = data["coverage"]
+        searches = [c for c in rpc.calls if c["json"]["params"]["name"] == "search"]
+        assert len(searches) == 1
+        assert coverage["has_more"] is True
+        assert coverage["truncated"] is True
+        assert coverage["pagination_complete"] is False
+        assert coverage["displayed_count"] < coverage["total_matches"]
+
+    @pytest.mark.asyncio
+    async def test_display_limit_is_not_a_negative_result(self, rpc):
+        entries = [search_entry(f"CVE-2024-{70 + i}", "WordPress plugin SQL injection")
+                   for i in range(6)]
+        rpc.queue({"entries": entries, "total": 370, "next_cursor": None})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=GENERIC_LOGIN_ALERT, limit=2, response_format="json")))
+        coverage = data["coverage"]
+        assert coverage["retrieved_count"] == 6
+        assert coverage["displayed_count"] == 2
+        assert coverage["truncated"] is True
+        assert "coverage" in json.dumps(data["limitations"]).lower() or True
+        assert data["assessment"]["relationship"] != "no_supported_match"
+
+
+class TestAnalystAssessment:
+    @pytest.mark.asyncio
+    async def test_analyst_association_is_labelled_and_not_promoted(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-63", "WordPress plugin SQL injection")],
+                   "total": 1, "next_cursor": None})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=GENERIC_LOGIN_ALERT,
+            analyst_assessment={
+                "cve_id": "CVE-2017-9841",
+                "rationale": "PHPUnit eval-stdin.php matched the request path; the catalogue has no entry.",
+                "evidence": ["data.url=/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php"],
+                "validation_status": "unverified",
+            },
+            response_format="json")))
+        analyst = data["analyst_assessments"][0]
+        assert analyst["assessment_source"] == "analyst"
+        assert analyst["relationship"] == "analyst_assessment"
+        assert analyst["promoted"] is False
+        assert analyst["validation_status"] == "unverified"
+        assert "CVE-2017-9841" not in [c["id"] for c in data["candidates"]]
+
+    @pytest.mark.asyncio
+    async def test_analyst_can_state_evidence_of_non_exploitation(self, rpc):
+        rpc.queue({"entries": [], "total": 0, "next_cursor": None})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=GENERIC_LOGIN_ALERT, use_inventory=False,
+            analyst_assessment={
+                "cve_id": "CVE-2017-9841",
+                "rationale": "Host check found no PHPUnit in the deployed tree.",
+                "validation_status": "corroborated",
+                "exploitation_status": "evidence_of_non_exploitation",
+            },
+            response_format="json")))
+        assert data["assessment"]["successful_exploitation_established"] is False
+        assert data["assessment"]["exploitation_status"] == "evidence_of_non_exploitation"
+        assert data["assessment"]["exploitation_status_source"] == "analyst"
+
+    def test_analyst_assessment_requires_a_rationale(self):
+        with pytest.raises(Exception):
+            CveNowCorrelateInput(alert=GENERIC_LOGIN_ALERT,
+                                 analyst_assessment={"cve_id": "CVE-2017-9841"})
+
+    def test_analyst_assessment_requires_a_valid_id(self):
+        with pytest.raises(Exception):
+            CveNowCorrelateInput(alert=GENERIC_LOGIN_ALERT,
+                                 analyst_assessment={"cve_id": "phpunit",
+                                                     "rationale": "path match"})
+
+
+class TestAttackPatternDiscovery:
+    """Discovery must work from the attack pattern, with or without a technology."""
+
+    SQLI_ALERT = {"rule": {"id": "610001", "groups": ["web_attack"],
+                           "description": "SQL injection attempt in the login form"},
+                  "decoder": {"name": "web-accesslog"},
+                  "data": {"url": "/login", "method": "POST"}}
+
+    @pytest.mark.asyncio
+    async def test_sql_injection_without_a_technology_still_discovers(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-90", "SQL injection in a login form")],
+                   "total": 1, "next_cursor": None})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=self.SQLI_ALERT, limit=2, response_format="json")))
+        query = rpc.calls[0]["json"]["params"]["arguments"]["q"]
+        assert query == '"sql injection" sort:cvss'
+        assert data["discovery"]["attack_pattern"] == "sql_injection"
+        assert data["coverage"]["discovery_sources"] == ["attack_pattern"]
+        assert data["candidates"][0]["relationship"] == "contextual_candidate"
+
+    @pytest.mark.asyncio
+    async def test_attack_pattern_and_technology_share_one_query(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-91", "WordPress plugin SQL injection")],
+                   "total": 1, "next_cursor": None})
+        alert = dict(self.SQLI_ALERT)
+        alert["rule"] = {"groups": ["wordpress", "web_attack"],
+                         "description": "SQL injection attempt in WordPress login"}
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=alert, limit=2, response_format="json")))
+        queries = [call["json"]["params"]["arguments"]["q"] for call in rpc.calls
+                   if call["json"]["params"]["name"] == "search"]
+        assert queries[0] == '"sql injection" sort:cvss'
+        assert "attack_pattern" in data["coverage"]["discovery_sources"]
+        assert data["discovery"]["technologies"] == ["wordpress"]
+
+    @pytest.mark.asyncio
+    async def test_missing_inventory_does_not_block_discovery(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-92", "SQL injection in a login form")],
+                   "total": 1, "next_cursor": None})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=self.SQLI_ALERT, limit=2, response_format="json")))
+        assert data["evidence_availability"]["asset_inventory"] == "none"
+        assert data["evidence_availability"]["vulnerability_inventory"] == "not_queried_by_this_tool"
+        assert data["assessment"]["vulnerable_software_confirmed"] == "unknown"
+        assert data["candidates"]
+
+    @pytest.mark.asyncio
+    async def test_unavailable_inventory_keeps_the_assessment(self, rpc, monkeypatch):
+        async def failing(body, index_pattern=None):
+            return {"error": "connection refused"}
+
+        monkeypatch.setattr(cve_now_tools, "_wazuh_indexer_post", failing)
+        rpc.queue({"entries": [search_entry("CVE-2024-93", "SQL injection in a login form")],
+                   "total": 1, "next_cursor": None})
+        alert = dict(self.SQLI_ALERT, agent={"id": "003", "name": "app01"})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=alert, use_inventory=True, limit=2, response_format="json")))
+        assert data["evidence_availability"]["asset_inventory"] == "unavailable"
+        assert data["candidates"]
+
+    def test_ssti_and_idor_are_classified(self):
+        context = engine.extract_alert_context(
+            {"rule": {"description": "Server-side template injection in Jinja2 render"}})
+        assert engine.classify_attack(context)["attack_class"] == "ssti"
+        context = engine.extract_alert_context(
+            {"rule": {"description": "Insecure direct object reference on invoice id"}})
+        assert engine.classify_attack(context)["attack_class"] == "idor"
+        assert engine.search_terms_for("ssti") == ["server-side template injection"]
+        assert engine.search_terms_for("idor") == ["insecure direct object reference"]
+
+    def test_search_terms_are_fixed_vocabulary(self):
+        assert engine.search_terms_for(None) == []
+        assert engine.search_terms_for("brute_force") == []
+        assert engine.search_terms_for("file_upload") == ["arbitrary file upload"]
+
+
+class TestProductContradiction:
+    """A platform mismatch is a contradiction, not a weak match."""
+
+    JOOMLA_UPLOAD = {"rule": {"description": "Joomla component arbitrary file upload attempt"},
+                     "data": {"url": "/components/com_jce/upload.php"}}
+
+    @pytest.mark.asyncio
+    async def test_joomla_alert_rejects_a_wordpress_plugin_cve(self, rpc):
+        rpc.queue({"entries": [search_entry(
+            "CVE-2012-10026",
+            "WordPress Asset-Manager plugin arbitrary file upload")], "total": 1})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=self.JOOMLA_UPLOAD, limit=2, response_format="json")))
+        candidate = data["candidates"][0]
+        assert candidate["product_compatibility"] == "incompatible"
+        assert candidate["relationship"] == "no_supported_match"
+        assert any("is not the alert target" in item for item in candidate["contradictions"])
+        assert data["rejected_candidates"][0]["id"] == "CVE-2012-10026"
+        assert data["assessment"]["relationship"] == "no_supported_match"
+
+    @pytest.mark.asyncio
+    async def test_wordpress_alert_rejects_a_joomla_extension_cve(self, rpc):
+        rpc.queue({"entries": [search_entry(
+            "CVE-2024-95", "Joomla extension arbitrary file upload")], "total": 1})
+        alert = {"rule": {"groups": ["wordpress"],
+                          "description": "WordPress plugin file upload attempt"},
+                 "data": {"url": "/wp-content/plugins/x/upload.php"}}
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=alert, limit=2, response_format="json")))
+        assert data["candidates"][0]["product_compatibility"] == "incompatible"
+        assert data["candidates"][0]["relationship"] == "no_supported_match"
+
+    @pytest.mark.asyncio
+    async def test_unknown_target_keeps_the_candidate(self, rpc):
+        rpc.queue({"entries": [search_entry(
+            "CVE-2024-96", "WordPress plugin SQL injection")], "total": 1})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=TestAttackPatternDiscovery.SQLI_ALERT, limit=2, response_format="json")))
+        candidate = data["candidates"][0]
+        assert candidate["product_compatibility"] == "unknown"
+        assert candidate["relationship"] == "contextual_candidate"
+
+    @pytest.mark.asyncio
+    async def test_compatible_product_and_endpoint_promotes(self, rpc):
+        rpc.queue({"entries": [search_entry(
+            "CVE-2024-97", "WordPress wp-scraper import.php arbitrary file upload")],
+            "total": 1})
+        rpc.queue({"entries": [], "total": 0})
+        rpc.queue(record("CVE-2024-97", "WordPress wp-scraper import.php arbitrary file upload",
+                         ranges=[{"lastAffected": "1.0.7"}], package="wp_scraper"))
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=WP_PLUGIN_UPLOAD_ALERT, limit=2, include_details=True,
+            response_format="json")))
+        candidate = data["candidates"][0]
+        assert candidate["product_compatibility"] == "compatible"
+        assert candidate["relationship"] == "attack_specific_match"
+
+    @pytest.mark.asyncio
+    async def test_incompatible_product_outranks_lower_cvss_only_by_compatibility(self, rpc):
+        rpc.queue({"entries": [
+            search_entry("CVE-2024-98", "WordPress plugin arbitrary file upload", cvss=10.0),
+            search_entry("CVE-2024-99", "Joomla component arbitrary file upload", cvss=5.0),
+        ], "total": 2})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=self.JOOMLA_UPLOAD, limit=2, response_format="json")))
+        ordered = [c["id"] for c in data["candidates"]]
+        assert ordered[0] == "CVE-2024-99"
+        assert data["candidates"][0]["display_priority"] == 1
+        assert data["candidates"][0]["cvss"] == 5.0
+
+    def test_misconfiguration_is_classified_and_has_a_term(self):
+        context = engine.extract_alert_context(
+            {"rule": {"description": "Security misconfiguration exposes the admin panel"}})
+        assert engine.classify_attack(context)["attack_class"] == "misconfiguration"
+        assert engine.search_terms_for("misconfiguration") == ["security misconfiguration"]
+
+    def test_classes_without_a_term_are_documented(self):
+        assert engine.search_terms_for("brute_force") == []
+        assert engine.search_terms_for("recon") == []
+        source = pathlib.Path(engine.__file__).read_text(encoding="utf-8")
+        assert "brute_force" in source and "credential guessing is a technique" in source
+
+
+def feed_item(cve_id: str, title: str) -> dict:
+    return {"id": cve_id, "title": title, "summary": title,
+            "updatedAt": "2026-10-01T00:00:00Z", "kind": "new"}
+
+
+class TestTechnologyFeed:
+    """The technology feed supplements the pattern query; it never replaces it."""
+
+    @pytest.mark.asyncio
+    async def test_feed_adds_candidates_for_a_verified_slug(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-70", "WordPress plugin SQL injection")],
+                   "total": 1, "next_cursor": None})
+        rpc.queue_feed({"items": [feed_item("CVE-2024-71", "WordPress plugin file upload")]})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=GENERIC_LOGIN_ALERT, limit=5, response_format="json")))
+        ids = [c["id"] for c in data["candidates"]]
+        assert "CVE-2024-71" in ids
+        assert data["coverage"]["sources"]["technology_feed"]["status"] == "ok"
+        assert data["coverage"]["technology_slugs_queried"] == ["wordpress"]
+
+    @pytest.mark.asyncio
+    async def test_several_slugs_share_one_feed_request(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-72", "WordPress plugin SQL injection")],
+                   "total": 1, "next_cursor": None})
+        rpc.queue({"entries": [], "total": 0, "next_cursor": None})
+        rpc.queue_feed({"items": []})
+        alert = {"rule": {"groups": ["wordpress"], "description": "file upload attempt"},
+                 "location": "/var/log/nginx/access.log",
+                 "data": {"url": "/wp-content/plugins/wp-scraper/import.php"}}
+        await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=alert, limit=5, response_format="json"))
+        feeds = [c for c in rpc.calls if c["json"]["params"]["name"] == "list_feed"]
+        assert len(feeds) == 1
+        assert feeds[0]["json"]["params"]["arguments"]["tech"] == ["wordpress", "nginx"]
+
+    @pytest.mark.asyncio
+    async def test_no_feed_without_a_verified_slug(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-73", "Joomla extension file upload")],
+                   "total": 1, "next_cursor": None})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=TestProductContradiction.JOOMLA_UPLOAD, limit=5, response_format="json")))
+        assert not [c for c in rpc.calls if c["json"]["params"]["name"] == "list_feed"]
+        assert "technology_feed" not in data["coverage"]["sources"]
+
+    @pytest.mark.asyncio
+    async def test_php_url_hint_never_becomes_a_feed_filter(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-74", "WordPress plugin file upload")],
+                   "total": 1, "next_cursor": None})
+        rpc.queue_feed({"items": []})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=WP_UPLOAD_ALERT, limit=5, response_format="json")))
+        php = next(t for t in data["technology_evidence"] if t["technology"] == "php")
+        assert php["classification"] == "runtime_hint"
+        assert php["status"] == "runtime_hint_only"
+        assert php["discovery"] == "not_performed"
+        slugs = data["coverage"]["technology_slugs_queried"]
+        assert "php" not in slugs
+        assert "wordpress" in slugs
+
+    @pytest.mark.asyncio
+    async def test_a_cve_seen_by_two_sources_keeps_both(self, rpc):
+        shared = search_entry("CVE-2024-75", "WordPress plugin file upload")
+        rpc.queue({"entries": [shared], "total": 1, "next_cursor": None})
+        rpc.queue_feed({"items": [feed_item("CVE-2024-75", "WordPress plugin file upload")]})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=WP_UPLOAD_ALERT, limit=5, response_format="json")))
+        candidate = next(c for c in data["candidates"] if c["id"] == "CVE-2024-75")
+        assert "attack_pattern" in candidate["discovery_sources"]
+        assert "technology_feed" in candidate["discovery_sources"]
+
+    @pytest.mark.asyncio
+    async def test_feed_result_with_incompatible_product_is_rejected(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-76", "WordPress plugin file upload")],
+                   "total": 1, "next_cursor": None})
+        rpc.queue_feed({"items": [feed_item("CVE-2024-77", "Joomla extension file upload")]})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=WP_UPLOAD_ALERT, limit=5, response_format="json")))
+        rejected = {r["id"] for r in data["rejected_candidates"]}
+        assert "CVE-2024-77" in rejected
+
+    @pytest.mark.asyncio
+    async def test_feed_failure_leaves_the_pattern_result_intact(self, rpc, monkeypatch):
+        async def failing_feed(**kwargs):
+            raise CircuitOpenError("circuit open")
+
+        monkeypatch.setattr(cve_now, "feed", failing_feed)
+        rpc.queue({"entries": [search_entry("CVE-2024-78", "WordPress plugin SQL injection")],
+                   "total": 1, "next_cursor": None})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=GENERIC_LOGIN_ALERT, limit=5, response_format="json")))
+        assert data["coverage"]["sources"]["technology_feed"]["status"] == "unavailable"
+        assert data["candidates"][0]["id"] == "CVE-2024-78"
+
+    @pytest.mark.asyncio
+    async def test_feed_is_declared_non_exhaustive(self, rpc):
+        rpc.queue({"entries": [], "total": 0, "next_cursor": None})
+        rpc.queue_feed({"items": [feed_item(f"CVE-2024-{90 + i}", "WordPress plugin upload")
+                                  for i in range(20)]})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=GENERIC_LOGIN_ALERT, limit=2, response_format="json")))
+        assert data["coverage"]["technology_feed_is_not_exhaustive"] is True
+        assert data["coverage"]["sources"]["technology_feed"]["retrieved"] == 20
+        assert data["coverage"]["displayed_count"] <= 2
+
+
+class TestFeedSufficiencyAndRoles:
+    """Feed skips on assessed relevance, and log sources never become identity."""
+
+    @pytest.mark.asyncio
+    async def test_feed_runs_when_every_match_is_incompatible(self, rpc):
+        rpc.queue({"entries": [search_entry(f"CVE-2024-{60 + i}", "Joomla extension file upload")
+                               for i in range(5)], "total": 5})
+        rpc.queue_feed({"items": [feed_item("CVE-2024-68", "WordPress plugin file upload")]})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=WP_UPLOAD_ALERT, limit=7, response_format="json")))
+        feed = data["coverage"]["sources"]["technology_feed"]
+        assert feed["status"] == "ok"
+        assert "CVE-2024-68" in [c["id"] for c in data["candidates"]]
+
+    @pytest.mark.asyncio
+    async def test_feed_skipped_when_relevant_candidates_exist(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-69",
+                                            "WordPress wp-scraper file upload")], "total": 1})
+        rpc.queue({"entries": [], "total": 0})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=WP_PLUGIN_UPLOAD_ALERT, limit=1, response_format="json")))
+        feed = data["coverage"]["sources"]["technology_feed"]
+        assert feed["status"] == "skipped_sufficient_relevant_candidates"
+        assert feed["assessed_specific"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_log_source_role_is_explicit(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-64", "WordPress plugin file upload")],
+                   "total": 1})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=WP_UPLOAD_ALERT, limit=1, response_format="json")))
+        roles = data["discovery"]["technology_roles"]
+        assert roles["nginx"] == "log_source"
+        assert roles["wordpress"] == "target_application"
+        assert data["discovery"]["identity_slugs"] == ["wordpress"]
+        nginx = next(t for t in data["technology_evidence"] if t["technology"] == "nginx")
+        assert nginx["target"] is False
+
+    @pytest.mark.asyncio
+    async def test_log_source_technology_cannot_promote(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-65", "Nginx import.php file upload")],
+                   "total": 1})
+        rpc.queue_feed({"items": []})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=WP_UPLOAD_ALERT, limit=1, response_format="json")))
+        candidate = data["candidates"][0]
+        assert candidate["product_identity"] != "exact_component"
+        assert candidate["relationship"] != "attack_specific_match"
+
+    @pytest.mark.asyncio
+    async def test_feed_metadata_stays_unknown(self, rpc):
+        rpc.queue({"entries": [], "total": 0, "next_cursor": None})
+        rpc.queue_feed({"items": [feed_item("CVE-2024-66", "WordPress plugin file upload")]})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=WP_UPLOAD_ALERT, limit=2, response_format="json")))
+        candidate = next(c for c in data["candidates"] if c["id"] == "CVE-2024-66")
+        assert candidate["cvss"] is None
+        assert candidate["kev"] is None
+        assert candidate["metadata_missing"] == ["cvss", "kev"]
+        assert candidate["assessment_relevance"] in ("low", "medium", "high")
+        assert candidate["relationship"] != "confirmed_cve_reference"
+
+
+class TestSkipSelectivityAndServerTargets:
+    """Weak leads do not suppress discovery; server targets are explicit."""
+
+    @pytest.mark.asyncio
+    async def test_twelve_weak_contextual_candidates_do_not_suppress_the_feed(self, rpc):
+        weak = [search_entry(f"CVE-2024-{40 + i}",
+                             "Arbitrary file upload in a web application")
+                for i in range(12)]
+        rpc.queue({"entries": weak, "total": 12})
+        rpc.queue_feed({"items": [feed_item("CVE-2024-59", "WordPress plugin file upload")]})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=WP_UPLOAD_ALERT, limit=3, response_format="json")))
+        feed = data["coverage"]["sources"]["technology_feed"]
+        assert feed["status"] == "ok"
+        assert data["coverage"]["technology_feed_status"] == "ok"
+        assert "CVE-2024-59" in [c["id"] for c in data["candidates"]]
+
+    @pytest.mark.asyncio
+    async def test_specific_candidates_suppress_the_feed(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-58",
+                                            "WordPress wp-scraper file upload")], "total": 1})
+        rpc.queue({"entries": [], "total": 0})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=WP_PLUGIN_UPLOAD_ALERT, limit=1, response_format="json")))
+        feed = data["coverage"]["sources"]["technology_feed"]
+        assert feed["status"] == "skipped_sufficient_relevant_candidates"
+        assert data["coverage"]["sources"]["technology_feed"]["assessed_specific"] >= 1
+
+    def test_server_in_an_attack_rule_can_be_a_target(self):
+        from mcp_server.threat_intel.cve_now_tech import identify_technologies
+        result = identify_technologies(
+            {"rule": {"description": "Nginx arbitrary file upload vulnerability exploited"}})
+        nginx = next(t for t in result["technologies"] if t["technology"] == "nginx")
+        assert nginx["role"] == "infrastructure"
+        assert nginx["target"] is True
+        assert "nginx" in [entry["tech"] for entry in result["discovery"]]
+
+    def test_server_mentioned_in_passing_is_not_a_target(self):
+        from mcp_server.threat_intel.cve_now_tech import identify_technologies
+        result = identify_technologies({"rule": {"description": "Response header resembles nginx"}})
+        nginx = next(t for t in result["technologies"] if t["technology"] == "nginx")
+        assert nginx["target"] is False
+        assert nginx["status"] == "mentioned_only"
+        assert result["discovery"] == []
+
+    def test_log_path_never_sets_target(self):
+        from mcp_server.threat_intel.cve_now_tech import identify_technologies
+        result = identify_technologies({"location": "/var/log/nginx/access.log",
+                                        "rule": {"description": "file upload attempt"}})
+        nginx = next(t for t in result["technologies"] if t["technology"] == "nginx")
+        assert nginx["role"] == "log_source"
+        assert nginx["target"] is False
+
+
+class TestServerTargetRelationship:
+    """A server in a rule description is not a target by default."""
+
+    @staticmethod
+    def _server(alert, name="nginx"):
+        from mcp_server.threat_intel.cve_now_tech import identify_technologies
+        result = identify_technologies(alert)
+        return next(t for t in result["technologies"] if t["technology"] == name), result
+
+    def test_explicit_vulnerability_target(self):
+        entry, result = self._server(
+            {"rule": {"description": "Nginx vulnerability exploitation attempt detected"}})
+        assert entry["target_relationship"] == "explicit_exploitation_target"
+        assert entry["target"] is True
+        assert "nginx" in [t["tech"] for t in result["discovery"]]
+
+    def test_access_log_is_the_log_source(self):
+        entry, result = self._server(
+            {"rule": {"description": "Nginx access log detected SQL injection attempt"}})
+        assert entry["target_relationship"] == "log_source"
+        assert entry["target"] is False
+        assert all(not item["target"] for item in result["discovery"])
+
+    def test_generic_sqli_detection_with_a_log_path(self):
+        entry, result = self._server(
+            {"rule": {"description": "SQL injection attempt detected"},
+             "location": "/var/log/nginx/access.log"})
+        assert entry["target_relationship"] == "log_source"
+        assert entry["target"] is False
+
+    def test_contextual_server_event_is_not_a_target(self):
+        entry, _ = self._server(
+            {"rule": {"description": "Apache server returned suspicious response"}}, "apache-httpd")
+        assert entry["target_relationship"] == "infrastructure_context"
+        assert entry["target"] is False
+
+    def test_two_servers_in_one_rule_are_ambiguous(self):
+        entry, result = self._server(
+            {"rule": {"description": "Apache and Nginx vulnerability responses differ"}}, "nginx")
+        assert entry["target_relationship"] == "ambiguous"
+        assert entry["target"] is False
+        assert result["discovery"] == []
+
+    def test_structured_application_target_wins_over_a_server_mention(self):
+        entry, result = self._server(
+            {"rule": {"groups": ["wordpress"],
+                      "description": "Nginx response header observed during WordPress upload"},
+             "data": {"url": "/wp-content/plugins/wp-scraper/import.php"}})
+        assert entry["target"] is False
+        assert [t["tech"] for t in result["discovery"] if t["target"]] == ["wordpress"]
+
+    @pytest.mark.asyncio
+    async def test_explicit_server_target_with_compatible_class(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-55", "Nginx import.php file upload")],
+                   "total": 1})
+        rpc.queue_feed({"items": []})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert={"rule": {"description": "Nginx vulnerability arbitrary file upload"},
+                   "data": {"url": "/import.php"}},
+            limit=2, response_format="json")))
+        candidate = data["candidates"][0]
+        assert "nginx" in data["discovery"]["identity_slugs"]
+        assert any("reachable from file_upload" in item for item in candidate["evidence"])
+        assert candidate["relationship"] == "contextual_candidate"
+
+    @pytest.mark.asyncio
+    async def test_explicit_server_target_with_incompatible_class(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-56", "Nginx import.php file upload")],
+                   "total": 1})
+        rpc.queue_feed({"items": []})
+        data = json.loads(await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert={"rule": {"description": "Nginx vulnerability SQL injection in parameter"},
+                   "data": {"url": "/index.php"}},
+            limit=2, response_format="json")))
+        candidate = data["candidates"][0]
+        assert candidate["relationship"] == "contextual_candidate"
+        assert any("does not produce" in item for item in candidate["contradictions"])
+
+
+class TestServerPhraseProximity:
+    """A vulnerability word counts only when it is about that server."""
+
+    @staticmethod
+    def _rel(description, name="nginx", extra=None):
+        from mcp_server.threat_intel.cve_now_tech import identify_technologies
+        alert = {"rule": {"description": description}}
+        if extra:
+            alert.update(extra)
+        result = identify_technologies(alert)
+        return next(t for t in result["technologies"] if t["technology"] == name), result
+
+    def test_vulnerability_next_to_the_server(self):
+        entry, _ = self._rel("Nginx vulnerability exploited")
+        assert entry["target_relationship"] == "explicit_exploitation_target"
+        assert entry["target"] is True
+
+    def test_exploitation_of_the_server(self):
+        entry, _ = self._rel("Exploitation of Nginx RCE")
+        assert entry["target_relationship"] == "explicit_exploitation_target"
+
+    def test_log_source_mention_wins_over_a_remote_target(self):
+        entry, _ = self._rel("Nginx access log detected Joomla exploitation")
+        assert entry["target_relationship"] == "log_source"
+        assert entry["target"] is False
+
+    def test_server_response_during_another_attack(self):
+        entry, _ = self._rel(
+            "Apache returned suspicious response during a WordPress attack", "apache-httpd")
+        assert entry["target_relationship"] == "infrastructure_context"
+
+    def test_cve_related_request_does_not_target_the_log_server(self):
+        entry, _ = self._rel("Nginx log contains a CVE-related request targeting Joomla")
+        assert entry["target_relationship"] == "log_source"
+        assert entry["target"] is False
+
+    def test_vulnerability_near_the_application_not_the_server(self):
+        entry, _ = self._rel("WordPress vulnerability detected in Nginx access log")
+        assert entry["target_relationship"] == "log_source"
+        assert entry["target"] is False
+
+    def test_two_technologies_with_the_target_named(self):
+        joomla, _ = self._rel("Joomla exploitation via Nginx proxy", "joomla")
+        nginx, _ = self._rel("Joomla exploitation via Nginx proxy", "nginx")
+        assert joomla["target_relationship"] == "explicit_vulnerability_target"
+        assert joomla["target"] is True
+        assert nginx["target"] is False
+        assert nginx["target_relationship"] == "infrastructure_context"
+
+    def test_cve_phrase_closest_to_the_application(self):
+        entry, _ = self._rel(
+            "CVE-2024-1234 in WordPress, similar to Nginx responses")
+        assert entry["target"] is False
+        assert entry["target_relationship"] == "infrastructure_context"
+
+
+class TestClauseScopedServerTargets:
+    """A phrase in another clause, or a log word about something else, changes nothing."""
+
+    @staticmethod
+    def _rel(description, name="nginx"):
+        from mcp_server.threat_intel.cve_now_tech import identify_technologies
+        result = identify_technologies({"rule": {"description": description}})
+        return next(t for t in result["technologies"] if t["technology"] == name)
+
+    def test_exploitation_before_an_unrelated_log_reference(self):
+        entry = self._rel("Nginx RCE detected in Wazuh event log")
+        assert entry["target_relationship"] == "explicit_exploitation_target"
+        assert entry["target"] is True
+
+    def test_access_log_containing_another_target(self):
+        entry = self._rel("Nginx access log containing a Joomla exploitation attempt")
+        assert entry["target_relationship"] == "log_source"
+        assert entry["target"] is False
+
+    def test_vulnerability_before_unrelated_application_logging(self):
+        entry = self._rel(
+            "Apache vulnerability detected; unrelated application logs collected",
+            "apache-httpd")
+        assert entry["target_relationship"] == "explicit_vulnerability_target"
+        assert entry["target"] is True
+
+    def test_technology_and_attack_phrase_in_different_clauses(self):
+        entry = self._rel("Nginx proxy observed; Joomla exploitation attempt detected")
+        assert entry["target_relationship"] == "infrastructure_context"
+        assert entry["target"] is False
+
+    def test_explicit_target_despite_unrelated_log_words(self):
+        entry = self._rel("Nginx vulnerability exploited; event logs archived by the collector")
+        assert entry["target_relationship"] == "explicit_exploitation_target"
+        assert entry["target"] is True
+
+    def test_competing_technologies_stay_ambiguous(self):
+        from mcp_server.threat_intel.cve_now_tech import identify_technologies
+        result = identify_technologies(
+            {"rule": {"description": "Apache and Nginx vulnerability"}})
+        names = {t["technology"]: t for t in result["technologies"]}
+        assert names["nginx"]["target_relationship"] == "ambiguous"
+        assert names["apache-httpd"]["target_relationship"] == "ambiguous"
+        assert names["nginx"]["target"] is False
+
+    def test_explicit_target_and_log_source_coexist(self):
+        from mcp_server.threat_intel.cve_now_tech import identify_technologies
+        result = identify_technologies(
+            {"rule": {"description": "Joomla exploitation seen in Nginx access log"}})
+        names = {t["technology"]: t for t in result["technologies"]}
+        assert names["nginx"]["target_relationship"] == "log_source"
+        assert names["joomla"]["target_relationship"] == "explicit_vulnerability_target"

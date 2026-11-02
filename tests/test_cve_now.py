@@ -87,6 +87,15 @@ class FakeRPC:
     def install(self, monkeypatch) -> "FakeRPC":
         async def fake(method, url, **kwargs):
             self.calls.append({"method": method, "url": url, **kwargs})
+            name = ((kwargs.get("json") or {}).get("params") or {}).get("name")
+            if name == "list_feed":
+                if self.responses:
+                    head = self.responses[0].json()["result"]["content"][0]["text"]
+                    if "items" in json.loads(head):
+                        return self.responses.pop(0)
+                body = {"jsonrpc": "2.0", "id": 1, "result": {"content": [
+                    {"type": "text", "text": json.dumps({"items": [], "updatedAt": None})}]}}
+                return httpx.Response(200, json=body)
             return self.responses.pop(0)
         monkeypatch.setattr(cve_now, "_api_call", fake)
         return self

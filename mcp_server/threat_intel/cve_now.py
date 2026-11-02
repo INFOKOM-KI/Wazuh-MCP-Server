@@ -352,23 +352,30 @@ async def feed(*, tech: list[str] | None = None,
 _COMPONENT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,39}$")
 
 
-async def search_tech(tech: list[str], limit: int, component: str | None = None) -> dict:
+async def search_tech(tech: list[str], limit: int, component: str | None = None,
+                      cursor: str | None = None, terms: list[str] | None = None) -> dict:
     """Return catalog entries for one or more technology slugs, highest CVSS first.
 
     ``component`` is a plugin or theme directory name taken from the alert path and
     matched against the catalog by free text. It is restricted to a slug alphabet,
     so no query operator or alert prose can reach the upstream query language.
     """
-    query = f"tech:{','.join(tech)}"
+    parts = [f'"{term}"' for term in (terms or []) if term]
+    if tech:
+        parts.append(f"tech:{','.join(tech)}")
     if component and _COMPONENT_RE.match(component.lower()):
-        query += f" {component.lower()}"
-    query += " sort:cvss"
-    raw = await _rpc("search", {"q": query, "limit": limit}, ttl=TTL_SEARCH)
+        parts.append(component.lower())
+    parts.append("sort:cvss")
+    query = " ".join(parts)
+    arguments = {"q": query, "limit": limit}
+    if cursor:
+        arguments["cursor"] = cursor
+    raw = await _rpc("search", arguments, ttl=TTL_SEARCH)
     entries = [project_search_entry(entry) for entry in raw.get("entries") or []]
     return {
         "entries": entries,
         "total": raw.get("total"),
-        "truncated": bool(raw.get("next_cursor")),
+        "next_cursor": raw.get("next_cursor"),
     }
 
 
@@ -442,6 +449,16 @@ def map_alert_tech(alert: dict) -> tuple[list[dict], list[str]]:
     return technologies, _cap(unmapped, 20)
 
 
+def _merge_entry(merged: dict[str, dict], entry: dict, source: str) -> None:
+    """Add an entry once, keeping every discovery source that surfaced it."""
+    existing = merged.get(entry.get("id"))
+    if existing is None:
+        merged[entry["id"]] = {**entry, "discovery_sources": [source]}
+        return
+    if source not in existing["discovery_sources"]:
+        existing["discovery_sources"].append(source)
+
+
 def _rank_key(entry: dict):
     return (
         1 if entry.get("kev") else 0,
@@ -466,7 +483,12 @@ CANDIDATE_DISCLAIMER = (
 
 async def correlate_alert(alert: dict, technologies: list[dict], *,
                           limit: int = 5, include_details: bool = False,
-                          component: str | None = None) -> dict:
+                          component: str | None = None, max_pages: int = 1,
+                          terms: list[str] | None = None,
+                          context: dict | None = None, attack: dict | None = None,
+                          packages: list[dict] | None = None,
+                          target_families: list[str] | None = None,
+                          identity_slugs: list[str] | None = None) -> dict:
     """Rank cve.now entries for the technologies mapped from an alert.
 
     The result is a candidate list. Nothing here checks whether the host runs the
@@ -474,16 +496,101 @@ async def correlate_alert(alert: dict, technologies: list[dict], *,
     its whole catalog, so an old CVE can outrank a fresh one.
     """
     slugs = [entry["tech"] for entry in technologies]
-    result = await search_tech(slugs, min(limit * 4, 40))
-    entries = list(result["entries"])
+    page_size = min(limit * 4, 40)
+    # Attack pattern first, with no technology restriction: a .php hint or a missing
+    # slug must not narrow the catalog. Technology only leads when no pattern exists.
+    primary_terms = list(terms or [])
+    primary_slugs = [] if primary_terms else slugs
+    primary_source = "attack_pattern" if primary_terms else "catalog_search"
+
+    merged: dict[str, dict] = {}
+    sources: dict[str, dict] = {}
+    total_matches = 0
+    pages_fetched = 0
+    cursor = None
+
+    if primary_terms or primary_slugs:
+        result = await search_tech(primary_slugs, page_size, terms=primary_terms)
+        total_matches = result.get("total") or len(result["entries"])
+        cursor = result.get("next_cursor")
+        pages_fetched = 1
+        for entry in result["entries"]:
+            _merge_entry(merged, entry, primary_source)
+        while cursor and pages_fetched < max(1, min(max_pages, 5)):
+            more = await search_tech(primary_slugs, page_size, cursor=cursor,
+                                     terms=primary_terms)
+            pages_fetched += 1
+            total_matches = more.get("total") or total_matches
+            cursor = more.get("next_cursor")
+            for entry in more["entries"]:
+                _merge_entry(merged, entry, primary_source)
+        sources[primary_source] = {
+            "status": "ok", "query_terms": primary_terms,
+            "technologies": primary_slugs, "total_matches": total_matches,
+            "retrieved": len(merged), "pages_fetched": pages_fetched,
+            "pagination_complete": not cursor}
+
     if component:
-        # One targeted query: a niche plugin CVE will not outrank a CVSS-10 platform
-        # CVE in the broad search, so identity matching needs its own lookup.
-        targeted = await search_tech(slugs, 10, component=component)
-        targeted_ids = {entry["id"] for entry in targeted["entries"]}
-        entries = list(targeted["entries"]) + [
-            entry for entry in entries if entry["id"] not in targeted_ids]
-    ranked = sorted(entries, key=_rank_key, reverse=True)[:limit]
+        # A niche plugin CVE will not outrank a platform CVE in the pattern query, so
+        # identity matching gets its own lookup, still without a technology filter.
+        targeted = await search_tech([], 10, component=component, terms=terms)
+        for entry in targeted["entries"]:
+            _merge_entry(merged, entry, "component_search")
+        sources["component_search"] = {"status": "ok", "component": component,
+                                       "retrieved": len(targeted["entries"])}
+
+    # Sufficiency is judged on assessed relevance, not raw hit count: ten
+    # incompatible CVEs are not a reason to skip the feed.
+    relevant = len(merged)
+    specific = len(merged)
+    if context is not None and attack is not None:
+        from mcp_server.threat_intel.cve_now_assess import assess_candidate
+        relevant = 0
+        specific = 0
+        for entry in merged.values():
+            provisional = assess_candidate(entry, context, attack,
+                                           list(identity_slugs or []),
+                                           list(packages or []),
+                                           target_families=target_families)
+            if provisional["relationship"] == "no_supported_match":
+                continue
+            relevant += 1
+            # Class-only matches are leads. The feed is skipped only when specific
+            # evidence fills the display.
+            if provisional["relationship"] in ("confirmed_cve_reference",
+                                               "attack_specific_match",
+                                               "vulnerability_exposure"):
+                specific += 1
+            elif (provisional["product_compatibility"] == "compatible"
+                  and provisional["product_identity"] in ("exact_product", "exact_component")):
+                specific += 1
+
+    if slugs and specific < limit:
+        try:
+            feed_result = await feed(tech=slugs, limit=min(limit * 4, 20))
+            added = 0
+            for item in feed_result.get("items") or []:
+                before = len(merged)
+                _merge_entry(merged, {**item, "cvss": None, "kev": None,
+                                      "modified": item.get("updated_at")},
+                             "technology_feed")
+                added += len(merged) - before
+            sources["technology_feed"] = {"status": "ok", "technologies": slugs,
+                                          "retrieved": added}
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.ConnectError,
+                CircuitOpenError, CveNowError) as error:
+            sources["technology_feed"] = {"status": "unavailable",
+                                          "reason": str(error)[:160]}
+    elif slugs:
+        sources["technology_feed"] = {"status": "skipped_sufficient_relevant_candidates",
+                                      "technologies": slugs, "retrieved": 0,
+                                      "assessed_relevant": relevant,
+                                      "assessed_specific": specific}
+
+    # When the caller will assess and re-rank, hand back a wider raw set so a
+    # low-CVSS candidate with better evidence is not cut before it is looked at.
+    keep = len(merged) if context is not None else limit
+    ranked = sorted(merged.values(), key=_rank_key, reverse=True)[:keep]
 
     candidates = []
     for entry in ranked:
@@ -495,9 +602,13 @@ async def correlate_alert(alert: dict, technologies: list[dict], *,
             "relevance": _relevance(entry),
             "modified": entry.get("modified"),
             "url": entry.get("url"),
+            "discovery_sources": entry.get("discovery_sources") or [primary_source],
             "why": (
                 f"affects {', '.join(slugs)}; technology match only, "
                 "no alert evidence ties this CVE to the activity"
+                if slugs else
+                "matched by attack pattern only; no product identity ties this CVE "
+                "to the activity"
             ),
         })
 
@@ -522,6 +633,20 @@ async def correlate_alert(alert: dict, technologies: list[dict], *,
             "time_window": "none - the catalog is ranked in full, not filtered to the alert window",
             "catalog_scope": "search endpoint (catalog-wide, CVSS-sorted), not the newest-entries feed",
             "component_term": bool(component),
+            "query_terms": list(terms or []),
+            "discovery_sources": [name for name, block in sources.items()
+                                  if block.get("status") == "ok"],
+            "sources": sources,
+            "technology_slugs_queried": slugs,
+            "technology_feed_status": (sources.get("technology_feed") or {}).get("status"),
+            "total_matches": total_matches,
+            "retrieved_count": len(merged),
+            "displayed_count": len(ranked),
+            "has_more": bool(cursor) or total_matches > len(merged),
+            "truncated": total_matches > len(ranked),
+            "pagination_complete": not cursor,
+            "pages_fetched": pages_fetched,
+            "technology_feed_is_not_exhaustive": True,
         },
         "limitations": [
             CANDIDATE_DISCLAIMER,
