@@ -1115,6 +1115,8 @@ The scan answers only when a body was read: `verdict="UNKNOWN"` with
 - **`search_status` on `blueteam_cve_now_attack_correlate`**: `completed`, `incomplete`, or `not_performed`. `pagination_complete`, `has_more`, and `truncated` are `null` when no query was made. What to write: Treat `not_performed` as "no catalog query", not as a completed search with zero results.
 - **`document_population` and `active_response` on `blueteam_curated_threat_report`**: `deduplicated` means every aggregation excludes Active Response wrappers; `all_documents` means they are included. `active_response.wrapper_count` is the excluded count when available. What to write: State the population next to the totals.
 - **`active_response_wrappers_in_sample` on `blueteam_wazuh_alert_summarize`**: the sample includes this many Active Response wrapper documents. What to write: Say the digest counts them as documents and does not deduplicate.
+- **`coverage` and `ranking_population` on `blueteam_wazuh_geo_concentration`**: `coverage.alerts` is the window, `fields_resolved` and `unresolved` come from independent aggregations, and `ranking_population` describes only the returned rows. What to write: Quote both populations; a ranked table is a subset even when `unresolved` is non-zero.
+- **`window_complete` and `stop_reason` on forecast training**: `max_hits` means the oldest part of the window was not retrieved. What to write: Report the corpus as partial, raise `BLUETEAM_FORECAST_MAX_HITS` or narrow the window; never present the fit as covering the full window.
 
 ### Extended toolbox (long tail, don't invent names)
 
