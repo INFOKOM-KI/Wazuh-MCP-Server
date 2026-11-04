@@ -136,8 +136,13 @@ def test_eviction_order_is_total():
     subject = "srcip:203.0.113.167"
     first = _a_reason(subject, "oldest evidence")
     tied = [_a_reason(subject, f"tied evidence {index}") for index in range(3)]
-    for unit in tied:
-        _backdate(unit["unit_id"], 100)
+    # One shared timestamp: calling _backdate per row can cross a second boundary
+    # and make "tied" rows differ by last_seen, so unit_id never breaks the tie.
+    stamp = _stamp(100)
+    with memory_store._store() as conn:
+        conn.executemany(
+            "UPDATE units SET first_seen = ?, last_seen = ? WHERE unit_id = ?",
+            [(stamp, stamp, unit["unit_id"]) for unit in tied])
     _backdate(first["unit_id"], 200)
     order = memory_store._eviction_order(_subject_units(subject))
     ids = [unit["unit_id"] for unit in order]

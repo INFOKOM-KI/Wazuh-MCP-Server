@@ -5,7 +5,7 @@ Curated threat report - one-call filter -> aggregate -> enrich -> report pipelin
 """
 from __future__ import annotations
 import json, re, math, asyncio, os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Literal, Any
 from collections import Counter
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -27,7 +27,7 @@ from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 from mcp_server.threat_intel._cache import get_limiter
 from mcp_server.tools.alert_compare import (CuratedReportFilters, _build_curated_query,
-                                            _filter_field_bases)
+                                            _filter_field_bases, _DEDUP_PATTERNS)
 
 # Shared with argus_ip_lookup via the global limiter registry (same namespace).
 _argus_limiter = get_limiter("argus", max_concurrent=1, min_interval=ARGUS_MIN_INTERVAL)
@@ -131,7 +131,10 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
     group_base = {"srcip": "data.srcip", "domain": "data.domain",
                   "rule.id": "rule.id", "agent": "agent.name"}[params.group_by]
     resolved = await _resolve_agg_fields(sorted(set(_filter_field_bases(f)) | {group_base}))
-    clauses = _build_curated_query(since_iso, until_iso, f, resolved)
+    base_clauses = _build_curated_query(since_iso, until_iso, f, resolved)
+    dedup_rule_ids = [rule_id for rule_id, _path in _DEDUP_PATTERNS]
+    dedup_clause = {"bool": {"must_not": [{"terms": {"rule.id": dedup_rule_ids}}]}}
+    clauses = base_clauses + [dedup_clause] if params.deduplicate else base_clauses
 
     # Time-decay weighting via function_score gauss decay on @timestamp
     query_wrapper: dict = {"bool": {"must": clauses}}
@@ -199,29 +202,59 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
     geo_coverage_pct = round(total_with_geo / total_alerts * 100, 1) if total_alerts > 0 else 0.0
     entity_buckets = aggs.get(agg_name, {}).get("buckets", [])
     rule_buckets = aggs.get("top_rules", {}).get("buckets", [])
-    rule_buckets = aggs.get("top_rules", {}).get("buckets", [])
     agent_buckets = aggs.get("top_agents", {}).get("buckets", [])
     domain_buckets = aggs.get("top_domains", {}).get("buckets", [])
     severity = {b["key"]: b["doc_count"] for b in aggs.get("severity_bands", {}).get("buckets", [])}
 
-    # Deduplication: remove child alert wrapper counts
+    # `size` caps the returned terms buckets; `sum_other_doc_count` counts the
+    # documents left outside them. That is "top 50", not "50 total".
+    def _bucket_completeness(name: str) -> dict[str, int | bool]:
+        node = aggs.get(name) or {}
+        other = int(node.get("sum_other_doc_count") or 0)
+        return {"buckets_returned": len(node.get("buckets") or []),
+                "sum_other_doc_count": other,
+                "truncated": other > 0}
+
+    aggregation_completeness = {
+        "entities": _bucket_completeness(agg_name),
+        "top_rules": _bucket_completeness("top_rules"),
+        "top_agents": _bucket_completeness("top_agents"),
+        "top_domains": _bucket_completeness("top_domains"),
+        "note": ("sum_other_doc_count counts documents outside the returned top-N "
+                 "buckets; the displayed entity/rule/agent counts are not a total."),
+    }
+    aggregation_truncated = any(
+        aggregation_completeness[key]["truncated"]
+        for key in ("entities", "top_rules", "top_agents", "top_domains"))
+
+    # Deduplication is a query-level filter: every aggregation above uses the
+    # same clauses, so totals and buckets describe one document population.
     dedup_note = ""
+    dedup_applied: bool | None = None
+    wrapper_count: int | None = None
     if params.deduplicate:
-        dedup_body = {
+        dedup_applied = True
+        wrapper_query = {
             "size": 0,
-            "query": {"bool": {"must": clauses + [
-                {"terms": {"rule.id": ["606029", "651"]}},
+            "query": {"bool": {"must": base_clauses + [
+                {"terms": {"rule.id": dedup_rule_ids}},
             ]}},
             "aggs": {"total_children": {"value_count": {"field": "_id"}}},
         }
         try:
-            dedup_raw = await _wazuh_indexer_post(dedup_body)
-            child_count = (dedup_raw.get("aggregations", {})
-                          .get("total_children", {}).get("value", 0))
-            total_alerts = max(0, total_alerts - child_count)
-            dedup_note = f" ({child_count} Active Response wrappers deduplicated)"
-        except Exception:
-            dedup_note = ""
+            dedup_raw = await _wazuh_indexer_post(wrapper_query)
+            if "error" in dedup_raw:
+                raise RuntimeError(str(dedup_raw.get("error")))
+            wrapper_count = int((dedup_raw.get("aggregations", {})
+                                 .get("total_children", {}).get("value", 0)))
+            dedup_note = (f" ({wrapper_count} Active Response wrappers excluded "
+                          "from every aggregation)")
+        except Exception as exc:
+            # The filter still removed wrappers from the main query. Only the
+            # separate count is unavailable, so say that instead of implying
+            # the report includes them.
+            dedup_note = ("Active Response wrappers excluded from every aggregation; "
+                          f"wrapper count unavailable ({type(exc).__name__})")
 
     # Compare mode: run second query for previous period
     compare_data: dict[str, Any] = {}
@@ -234,6 +267,8 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             comp_until_iso = since_iso
 
             comp_clauses = _build_curated_query(comp_since_iso, comp_until_iso, f, resolved)
+            if params.deduplicate:
+                comp_clauses = comp_clauses + [dedup_clause]
             comp_body = {
                 "size": 0,
                 "query": {"bool": {"must": comp_clauses}},
@@ -387,6 +422,16 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             "top_agents": [{"name": b["key"], "count": b["doc_count"]} for b in agent_buckets],
             "top_domains": [{"domain": b["key"], "count": b["doc_count"]} for b in domain_buckets],
             "dedup_note": dedup_note if dedup_note else None,
+            "dedup_applied": dedup_applied,
+            "document_population": ("deduplicated" if params.deduplicate
+                                    else "all_documents"),
+            "active_response": {
+                "excluded": bool(params.deduplicate),
+                "wrapper_count": wrapper_count,
+                "rule_ids": dedup_rule_ids,
+            },
+            "aggregation_completeness": aggregation_completeness,
+            "aggregation_truncated": aggregation_truncated,
             "compare": compare_data if compare_data else None,
             "attackers": [
                 {
@@ -433,17 +478,34 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
         f"| Metric | Value |",
         f"|--------|-------|",
         f"| Total alerts matching filters | **{total_alerts:,}** |",
-        f"| Unique entities | **{len(entity_buckets)}** |",
+        f"| Unique entities | **{len(entity_buckets)}**{' (top N; more exist)' if aggregation_truncated else ''} |",
         f"| High-severity (L10+) | {severity.get('high', 0):,} |",
         f"| Medium-severity (L5-9) | {severity.get('medium', 0):,} |",
         f"| Low-severity (L1-4) | {severity.get('low', 0):,} |",
         f"| Unique rules triggered | {len(rule_buckets)} |",
         f"| Agents targeted | {len(agent_buckets)} |",
         f"| GeoIP coverage | {total_with_geo:,} of {total_alerts:,} ({geo_coverage_pct}%) |",
+        f"| Document population | {'Original alerts only (Active Response wrappers excluded)' if params.deduplicate else 'All documents (Active Response wrappers included)'} |",
         f"| Dedup note | {dedup_note or 'none'} |",
         f"| CrowdSec filter | {crowdsec_filter_note or 'none'} |",
         "",
     ]
+    if aggregation_truncated:
+        lines += [
+            "## ⚠️ Aggregation completeness",
+            "",
+            "The terms aggregations are capped at `max_entities`; the table and counts "
+            "below describe the returned buckets, not the whole window.",
+            "",
+            "| Dimension | Buckets returned | Documents in omitted buckets |",
+            "|-----------|------------------|------------------------------|",
+        ]
+        for label, key in (("Entities", "entities"), ("Rules", "top_rules"),
+                           ("Agents", "top_agents"), ("Domains", "top_domains")):
+            block = aggregation_completeness[key]
+            lines.append(f"| {label} | {block['buckets_returned']} | "
+                         f"{block['sum_other_doc_count']} |")
+        lines.append("")
     # Comparison delta table
     if compare_data and "error" not in compare_data:
         prev_total = compare_data.get("total_alerts", 0)
@@ -570,12 +632,15 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             lines.append("")
 
             async def _chain_for_ip(ip):
+                chain_bool = {"must": [
+                    {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
+                                             "format": "strict_date_optional_time"}}},
+                    _srcip_should_clauses(ip),
+                ]}
+                if params.deduplicate:
+                    chain_bool["must_not"] = [{"terms": {"rule.id": dedup_rule_ids}}]
                 cbody = {"size": 500, "sort": [{"@timestamp": {"order": "asc"}}],
-                    "query": {"bool": {"must": [
-                        {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
-                                                 "format": "strict_date_optional_time"}}},
-                        _srcip_should_clauses(ip),
-                    ]}},
+                    "query": {"bool": chain_bool},
                     "_source": ["@timestamp", "rule.id", "rule.description"]}
                 cr = await _wazuh_indexer_post(cbody)
                 if "error" in cr:

@@ -437,6 +437,9 @@ def _render_correlation(result: dict) -> str:
         lines.append("**Basis**: technology-based candidate match. Not exploitation evidence.")
     else:
         lines.append("**Basis**: no CVE in the alert and no technology mapping. Nothing was correlated.")
+    coverage = result.get("coverage") or {}
+    if coverage.get("time_window"):
+        lines.append(f"**Time window**: {coverage['time_window']}.")
     lines.append("")
 
     context = result.get("alert_context") or {}
@@ -710,6 +713,10 @@ async def blueteam_cve_now_attack_correlate(params: CveNowCorrelateInput) -> str
 
     3. *Direct vulnerability reference*:
        ``blueteam_cve_now_attack_correlate(alert={"data": {"vulnerability": {"cve": "CVE-2024-6387"}}})``
+
+    When no CVE id, technology, or attack pattern is available, ``match_basis`` is
+    ``unmapped`` and ``coverage.search_status`` is ``not_performed``. That is a
+    coverage gap, not a completed search with zero results.
     """
     _audit_log("blueteam_cve_now_attack_correlate",
                {"alert_keys": sorted(params.alert), "tech": params.tech,
@@ -757,6 +764,9 @@ async def blueteam_cve_now_attack_correlate(params: CveNowCorrelateInput) -> str
         "technologies": [entry["tech"] for entry in technologies],
         "identity_slugs": identity_slugs,
         "technology_roles": {entry["tech"]: entry.get("role") for entry in technologies},
+        "identified_without_catalog_mapping": [
+            entry["technology"] for entry in identified["technologies"]
+            if entry["status"] == "identified_no_slug"],
     }
     asset = {"source": asset_source, "packages_count": len(packages),
              "packages_sample": packages[:5],
@@ -777,6 +787,15 @@ async def blueteam_cve_now_attack_correlate(params: CveNowCorrelateInput) -> str
             "technologies": [],
             "unmapped_groups": unmapped,
             "candidates": [],
+            "coverage": {
+                "source": "cve.now",
+                "search_performed": False,
+                "search_status": "not_performed",
+                "catalog_matches": None,
+                "pagination_complete": None,
+                "has_more": None,
+                "truncated": None,
+            },
             "alert_context": context,
             "attack": attack,
             "asset": asset,

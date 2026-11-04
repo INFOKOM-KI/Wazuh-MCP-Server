@@ -676,7 +676,7 @@ not interchangeable:
 | `confirmed_cve_reference` | the alert carries the CVE id; a reference, not proof of exploitation |
 | `attack_specific_match` | the request names the exact plugin **and** targets a file the CVE text documents |
 | `vulnerability_exposure` | the asset runs an affected version, with no attack evidence |
-| `contextual_candidate` | product or class overlap only |
+| `contextual_candidate` | product overlap, compatible product family, or a documented endpoint; class overlap alone is not enough |
 | `no_supported_match` | nothing connects the CVE to the activity |
 
 `product_identity` on each candidate shows the evidence level: `exact_component`,
@@ -712,7 +712,10 @@ it leaves exposure `unknown`, never `false`.
 
 `technology_evidence` lists every technology the alert actually names, with the field
 that named it (`rule.description`, `rule.groups`, `data.url`, `decoder.name`,
-`location`) and its classification. `ambiguous_technologies` holds platforms named in a
+`location`) and its classification. Each entry carries `observation`
+(`request_pattern`, `rule_group`, `description`, `log_metadata`) and
+`installed_confirmation: not_established`; installation is only established by package
+inventory, never by a URL pattern. `ambiguous_technologies` holds platforms named in a
 list ("Joomla, Drupal or WordPress"); those never seed discovery. A technology with no
 cve.now slug appears under `unmapped_technology_mentions` with `status:
 identified_no_slug`, `identity: unresolved` and cve_lookup `no_slug`; it was identified, it
@@ -728,7 +731,9 @@ never blocks discovery, and exposure stays `unknown`.
 
 `product_compatibility` compares the platform the alert identifies with the platform the CVE
 names: `incompatible` means the candidate is `no_supported_match` and appears under
-`rejected_candidates`, not as a lead. `display_priority` orders candidates by relationship,
+`rejected_candidates`, not as a lead. Class overlap alone also cannot promote a CVE that
+names a different concrete product: when no product token, documented endpoint, or
+installed version links them, the candidate is `no_supported_match`. `display_priority` orders candidates by relationship,
 then compatibility, then version, then evidence; CVSS breaks ties only.
 
 The pattern query runs without a technology restriction: a `.php` path is only a
@@ -948,7 +953,7 @@ Reading the output:
 | Full langgraph workflow | `blueteam_investigation_workflow(srcip or alert_text or dependency_manifest)` |
 | Rebuild the local case corpus | `blueteam_rag_ingest(source="cases"\|"false_positives"\|"pdf"\|"text", texts, label, path)` |
 | Search prior cases / playbooks | `blueteam_rag_query(query, sources, rerank, vector_weight)` |
-| Comprehensive IP profile | `blueteam_investigate_ip(srcip)` |
+| Full IP profile | `blueteam_investigate_ip(srcip)` |
 | Record verdict | `blueteam_mark_investigated(...)` |
 | Case lifecycle | `blueteam_case_create`, `blueteam_case_get`, `blueteam_case_list`, `blueteam_case_add_iocs`, `blueteam_case_add_verdict` |
 | History | `blueteam_investigation_history` / `blueteam_investigation_summary` |
@@ -1093,6 +1098,23 @@ RFC1918), the operator must add that domain to `ALLOWED_INTERNAL_DOMAINS` on the
 Every hop is resolved once and IP-pinned (`curl --resolve`), so DNS-rebinding and
 redirect-to-internal are both blocked. If a URL is rejected, report "host is non-public /
 not allowlisted; operator must add it to ALLOWED_INTERNAL_DOMAINS", don't retry the URL.
+The scan answers only when a body was read: `verdict="UNKNOWN"` with
+`evidence_sufficient=false` means curl failed, the redirect was blocked, the status was
+4xx/5xx, or the body was empty. That is not `CLEAN`; retry or verify on the host.
+
+### Incomplete-result fields (read these before summarizing)
+
+- **`total_matching` vs `alerts_analyzed` on `blueteam_wazuh_alert_summarize`**: The window holds `total_matching`; the digest analyzed `alerts_analyzed`. `truncated=true` and `omitted_alerts>0` mark the smaller sample. What to write: Quote both numbers; the rule and IoC counts describe the sample. Raise `limit` or narrow the window before calling it complete.
+- **`aggregation_truncated`, `aggregation_completeness.*.sum_other_doc_count` on `blueteam_curated_threat_report`**: Terms aggregations returned only the top-N buckets; `sum_other_doc_count` counts documents outside them. What to write: Say "top N shown; M documents fall in further buckets". Describe the list as partial; `len(buckets)` is not the unique entity count.
+- **`dedup_applied` on `blueteam_curated_threat_report`**: `true` when the main query applied the wrapper filter. The separate count query only affects `active_response.wrapper_count`; if it fails, the filter still applies and the count is `null`. What to write: Report the `dedup_note`.
+- **`blocked` / `status` on `sangfor_blocklist_check`**: `blocked` is `true` or `false` only from an explicit endpoint boolean. `null` / `unknown` means the field was absent. What to write: Report unknown. An empty list covers available records only; it does not prove the IP was never blocked.
+- **`result` on `blueteam_mitre_lookup`**: Tactics resolve locally; technique ids resolve only from an ATT&CK STIX bundle already loaded by `blueteam_stix_analyze`. `unavailable` means no bundle is loaded; `technique_not_in_bundle` means the loaded bundle has no such id. What to write: Report it as unchecked; `unavailable` and `not_found` are different answers.
+- **`error` / `error_kind` on `blueteam_threat_intel_aggregate`**: A provider that returned a malformed body or a non-OK `query_status` is reported as `upstream_error`. What to write: Read `providers_ok/providers_total` and list the skipped providers; the IOC has no verdict from them.
+- **`tags: ["no_results"]` on ThreatFox**: no match is absence of data. `risk_level` and `is_malicious` are `null`, not `none`/`false`. What to write: Say "no ThreatFox match", not "clean".
+- **`Coverage` on `netra_ip_analysis`**: `complete`, `partial`, or `unavailable`. A partial score covers only the sources that answered. What to write: Quote the successful source count and do not call the IP clean.
+- **`search_status` on `blueteam_cve_now_attack_correlate`**: `completed`, `incomplete`, or `not_performed`. `pagination_complete`, `has_more`, and `truncated` are `null` when no query was made. What to write: Treat `not_performed` as "no catalog query", not as a completed search with zero results.
+- **`document_population` and `active_response` on `blueteam_curated_threat_report`**: `deduplicated` means every aggregation excludes Active Response wrappers; `all_documents` means they are included. `active_response.wrapper_count` is the excluded count when available. What to write: State the population next to the totals.
+- **`active_response_wrappers_in_sample` on `blueteam_wazuh_alert_summarize`**: the sample includes this many Active Response wrapper documents. What to write: Say the digest counts them as documents and does not deduplicate.
 
 ### Extended toolbox (long tail, don't invent names)
 
@@ -1104,11 +1126,11 @@ not allowlisted; operator must add it to ALLOWED_INTERNAL_DOMAINS", don't retry 
 | `blueteam_threat_hunt` | named DSL query templates per adversary technique |
 | `blueteam_semantic_search` | BM25 ranking over Wazuh rules/alerts; cross-encoder rerank (`bge-reranker-base`) is **on by default** for cross-lingual matching. Read `rerank_engine`: `bm25` means the rerank did not run and `rerank_status` says why |
 | `blueteam_prompt_route` | Natural-language prompt→tool router over all registered tools; rerank **off by default** for routing (BM25 13/22 against 9/22 for the best available cross-encoder). Pass the analyst's own wording (Indonesian or English) when unsure which tool fits |
-| `blueteam_mitre_lookup` | ATT&CK technique/group lookup |
+| `blueteam_mitre_lookup` | ATT&CK tactic name/TA id, or technique id when a STIX bundle is loaded. `unavailable` ≠ `not_found` |
 | `blueteam_asset_context` | CMDB asset criticality / owner |
 | `blueteam_subnet_calc(operation="split"\|"merge", cidr, prefix, ips, max_results)` | offline CIDR arithmetic. `split` turns one block into equal subnets (netmask, network, broadcast, usable hosts, first/last host); `merge` collapses an IP list into the smallest covering CIDR set and reports overlap removed plus any value it could not parse, by input position. No API, no rate limit, deterministic. Output is deliberately unmasked (a masked CIDR is not an answer); rejected values are never echoed |
 | `blueteam_false_positive_tracker(rule_id)` | rule_id → FP-summary cross-reference |
-| `sangfor_blocklist_check` / `sangfor_blocklist_list(ip=…, date_start, date_end, limit, offset)` | Sangfor firewall blocklist (list POSTs `{date_start,date_end,limit,offset,ip}` to `/blocklist`) |
+| `sangfor_blocklist_check` / `sangfor_blocklist_list(ip=…, date_start, date_end, limit, offset)` | Sangfor firewall blocklist (list POSTs `{date_start,date_end,limit,offset,ip}` to `/blocklist`). `blocked` is tri-state: `true`/`false` only from an explicit endpoint boolean, `null` = unknown |
 | `blueteam_baseline_profile` / `blueteam_calendar_heatmap` | day×hour scheduled-attack profiling |
 | `blueteam_extract_iocs` / `blueteam_ioc_lifecycle` | IOC extraction & lifecycle store (local, free) |
 | `blueteam_ip_intel_bulk(ips=[...])` | 1-50 IPs in one metered RapidAPI request, duplicates collapsed: the preferred path once the budget is armed. Private, loopback, link-local and CGNAT addresses are rejected before any request is sent |
@@ -1559,7 +1581,7 @@ closes. If it fails, the timer resets.
 
 5. **The breaker is self-healing.** Once the backend recovers, the next
    half-open trial succeeds and the breaker closes automatically. There is no
-   manual reset command; just wait and retry.
+   manual reset command; wait and retry.
 
 **What NOT to do:**
 - Don't call `blueteam_breach_check` repeatedly when the breaker is open:

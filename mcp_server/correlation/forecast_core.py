@@ -170,6 +170,8 @@ def fit_markov_chain(sequences: list[list[str]], alpha: float = 1.0,
     caller can report how thin a prediction is; the probability is never
     returned without that count available.
     """
+    if not math.isfinite(float(alpha)) or float(alpha) <= 0:
+        raise ValueError("alpha must be a positive finite number")
     n_sequences = len(sequences)
     n_transitions = sum(max(0, len(sequence) - 1) for sequence in sequences)
     if n_sequences < min_sequences or n_transitions < min_transitions:
@@ -389,8 +391,11 @@ VOLUME_KIND = "poisson_hmm"
 def poisson_logpmf(count: float, lam: float) -> float:
     """Log Poisson pmf. The count can arrive as a float from the store; the
     gamma function extends the factorial so no integer coercion is needed.
-    A non-positive lambda is a malformed model and maps to zero probability."""
-    if lam <= 0:
+    A non-positive or non-finite lambda is a malformed model and maps to zero
+    probability. A non-finite count cannot be emitted by any Poisson regime."""
+    if not math.isfinite(float(count)):
+        return float("-inf")
+    if not math.isfinite(float(lam)) or lam <= 0:
         return 0.0 if count == 0 else float("-inf")
     return -lam + count * math.log(lam) - math.lgamma(count + 1.0)
 
@@ -407,8 +412,8 @@ def fit_poisson_hmm(counts: list[int], n_components: int = 3, min_buckets: int =
     """
     if len(counts) < min_buckets:
         return _insufficient(len(counts), 0, min_buckets, 0, noun="buckets")
-    if any(count < 0 for count in counts):
-        raise ValueError("volume buckets must be non-negative counts")
+    if any(not math.isfinite(float(count)) or count < 0 for count in counts):
+        raise ValueError("volume buckets must be finite non-negative counts")
     if max(counts) == 0:
         return {"status": "insufficient_data", "n_buckets": len(counts),
                 "reason": "every bucket is zero; no regime can be identified"}
@@ -503,6 +508,9 @@ def predict_volume(model: dict, context_counts: list, horizon_buckets: int = 24)
     size = len(lambdas)
     if size < 2:
         return {"status": "unavailable", "reason": "stored model has no usable lambda vector"}
+    if any(not math.isfinite(value) or value <= 0 for value in lambdas):
+        return {"status": "unavailable",
+                "reason": "stored model has a non-finite or non-positive lambda"}
     if max(lambdas) - min(lambdas) <= 1e-9:
         return {"status": "unavailable",
                 "reason": "stored model has no distinguishable regimes "
@@ -553,8 +561,9 @@ def validate_model(model: dict) -> None:
         lambdas = model.get("lambdas")
         if not isinstance(lambdas, list) or len(lambdas) < 2:
             raise ValueError("volume model is missing a usable lambda vector")
-        if any(float(value) <= 0 for value in lambdas):
-            raise ValueError("volume model carries a non-positive lambda")
+        if any(not math.isfinite(float(value)) or float(value) <= 0
+               for value in lambdas):
+            raise ValueError("volume model carries a non-finite or non-positive lambda")
     elif list(model.get("tactics") or []) != list(TACTIC_ORDER):
         raise ValueError("tactic vocabulary mismatch")
 
@@ -565,6 +574,11 @@ def validate_model(model: dict) -> None:
     for name in ("startprob", "transmat"):
         if not isinstance(model.get(name), list) or not model[name]:
             raise ValueError(f"model is missing {name}")
+    if any(not math.isfinite(float(value)) for value in model["startprob"]):
+        raise ValueError("startprob carries a non-finite probability")
+    for row in model["transmat"]:
+        if not isinstance(row, list) or any(not math.isfinite(float(value)) for value in row):
+            raise ValueError("transmat carries a non-finite probability")
     if len(model["transmat"]) != n_states:
         raise ValueError("transmat state count does not match startprob")
     if kind == "markov" and n_states != size:

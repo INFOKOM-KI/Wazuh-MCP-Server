@@ -253,6 +253,8 @@ async def blueteam_wazuh_geo_concentration(params: GeoConcentrationInput) -> str
             "total_with_geo": {"value_count": {"field": geo_field}},
             "total_with_country": {"value_count": {"field": "GeoLocation.country_name"}},
             "total_alerts": {"value_count": {"field": "@timestamp"}},
+            # Exact missing count, independent of how many terms buckets fit.
+            "unresolved_alerts": {"missing": {"field": geo_field}},
         },
     }
     raw = await _wazuh_indexer_post(body)
@@ -267,8 +269,20 @@ async def blueteam_wazuh_geo_concentration(params: GeoConcentrationInput) -> str
     rows = rows[:params.top_n]
     resolved = (aggs.get("total_with_geo") or {}).get("value", 0)
     total = (aggs.get("total_alerts") or {}).get("value", 0)
-    unresolved = next((b["doc_count"] for b in buckets
-                       if b.get("key") == _UNRESOLVED), 0)
+    unresolved_node = aggs.get("unresolved_alerts")
+    if isinstance(unresolved_node, dict):
+        unresolved = int(unresolved_node.get("doc_count", 0) or 0)
+    else:
+        # Older/mocked responses may only carry the terms bucket.
+        unresolved = next((b["doc_count"] for b in buckets
+                           if b.get("key") == _UNRESOLVED), 0)
+    ranked_alerts = sum(int(row.get("alerts") or 0) for row in rows)
+    ranking_population = {
+        "rows_returned": len(rows),
+        "alerts_in_rows": ranked_alerts,
+        "unresolved_bucket_included": any(row.get("geo") == _UNRESOLVED for row in rows),
+        "note": ("ranking rows are a subset of the window after min_alerts and top_n"),
+    }
 
     if params.response_format == "json":
         return json.dumps({
@@ -279,6 +293,7 @@ async def blueteam_wazuh_geo_concentration(params: GeoConcentrationInput) -> str
             "truncated": truncated,
             "coverage": {"alerts": total, "fields_resolved": resolved,
                          "unresolved": unresolved},
+            "ranking_population": ranking_population,
             "ranking": rows,
         }, indent=2, ensure_ascii=False)
 
@@ -288,6 +303,8 @@ async def blueteam_wazuh_geo_concentration(params: GeoConcentrationInput) -> str
         f"**Candidates fetched**: {len(buckets):,}" + (" (truncated)" if truncated else ""),
         f"**GeoIP coverage**: {resolved:,} of {total:,} alerts resolved "
         f"({unresolved:,} unresolved)",
+        f"**Ranking population**: {len(rows):,} rows, {ranked_alerts:,} alerts"
+        + (" (includes the `(not resolved)` bucket)" if ranking_population["unresolved_bucket_included"] else ""),
         "",
         f"| {geo_label} | Alerts | Source IPs | Alerts/IP | Max Lvl | Top Rule |",
         "|---------|--------|-----------|-----------|---------|----------|",

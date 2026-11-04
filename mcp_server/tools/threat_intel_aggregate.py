@@ -26,7 +26,8 @@ from mcp_server import (mcp, CROWDSEC_API_KEY_ENV, OTX_API_KEY_ENV,
 from mcp_server.core.http_client import _api_call, _classify_api_error, _is_private_or_reserved
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.threat_intel.greynoise import _NO_DATA_MESSAGE, _greynoise_lookup
-from mcp_server.threat_intel.otx import _classify_indicator, _normalize_adversary
+from mcp_server.threat_intel.otx import (_classify_indicator, _normalize_adversary,
+                                         _normalize_str_list)
 
 logger = logging.getLogger("blue_team_mcp.threat_intel_aggregate")
 
@@ -108,6 +109,8 @@ async def _crowdsec_provider(indicator: str, ind_type: str) -> TIProviderResult:
     try:
         from mcp_server.threat_intel.crowdsec import _crowdsec_request
         r = await _crowdsec_request(f"/v2/smoke/{indicator}")
+        if not isinstance(r, dict):
+            raise ValueError("malformed CrowdSec response (not a JSON object)")
         rep = r.get("reputation", "unknown")
         score = {"malicious": 100, "suspicious": 60, "known": 30, "unknown": 10, "safe": 0}.get(rep, 10)
         risk = {"malicious": "high", "suspicious": "medium", "known": "low", "unknown": "low", "safe": "none"}.get(rep, "low")
@@ -134,11 +137,23 @@ async def _threatfox_provider(indicator: str, ind_type: str) -> TIProviderResult
     try:
         from mcp_server.threat_intel.threatfox import _threatfox_request
         r = await _threatfox_request(indicator, False)
-        items = r.get("data", [])
+        if not isinstance(r, dict):
+            raise ValueError("malformed ThreatFox response (not a JSON object)")
+        # Only these statuses are a decisive answer. An error status must never be
+        # read as "no matches" and then down-scored to a clean verdict.
+        if r.get("query_status") not in ("ok", "no_results"):
+            raise ValueError(f"ThreatFox returned query_status={r.get('query_status')!r}")
+        if "data" not in r:
+            raise ValueError("malformed ThreatFox response (data missing)")
+        items = r.get("data")
+        if not isinstance(items, list):
+            raise ValueError("malformed ThreatFox response (data is not a list)")
         if not items:
+            # No match is absence of data, not a clean verdict.
             return TIProviderResult(provider="threatfox", indicator=indicator,
-                                    indicator_type=ind_type, risk_level="none",
-                                    reputation_score=0, is_malicious=False)
+                                    indicator_type=ind_type, tags=["no_results"],
+                                    detail={"match_count": 0,
+                                            "query_status": "no_results"})
         conf = max((e.get("confidence_level", 0) for e in items), default=0)
         risk = "high" if conf >= 75 else "medium" if conf >= 50 else "low"
         return TIProviderResult(
@@ -163,18 +178,25 @@ async def _otx_provider(indicator: str, ind_type: str) -> TIProviderResult:
     try:
         from mcp_server.threat_intel.otx import _otx_request
         r = await _otx_request(indicator, "general")
-        pulse_info = r.get("pulse_info", {})
+        if not isinstance(r, dict) or not isinstance(r.get("pulse_info"), dict):
+            raise ValueError("malformed OTX response (pulse_info missing)")
+        pulse_info = r["pulse_info"]
         pulses = pulse_info.get("pulses", [])
+        if not isinstance(pulses, list):
+            raise ValueError("malformed OTX response (pulse_info.pulses is not a list)")
         count = pulse_info.get("count", 0)
+        if count and not pulses:
+            raise ValueError("malformed OTX response (pulse count without pulses)")
 
         # Enrich hashes with the malware section (sample detections, no pulses needed)
         malware_hits = []
         if ind_type == "file":
             try:
                 m = await _otx_request(indicator, "malware")
-                for sample in m.get("data", []):
+                samples = m.get("data", []) if isinstance(m, dict) else []
+                for sample in samples if isinstance(samples, list) else []:
                     if isinstance(sample, dict) and sample.get("hash"):
-                        malware_hits.append(sample.get("hash", "")[:12])
+                        malware_hits.append(str(sample.get("hash", ""))[:12])
             except Exception:
                 pass  # malware section optional
 
@@ -182,10 +204,18 @@ async def _otx_provider(indicator: str, ind_type: str) -> TIProviderResult:
             return TIProviderResult(provider="otx", indicator=indicator,
                                     indicator_type=ind_type, risk_level="none",
                                     reputation_score=0, is_malicious=False)
-        mf = list({m for p in pulses for m in p.get("malware_families", [])})[:5]
-        adv = list({_normalize_adversary(p.get("adversary")) for p in pulses if _normalize_adversary(p.get("adversary"))})[:5]
-        attack = list({a for p in pulses for a in p.get("attack_ids", [])})[:10]
-        industries = list({i for p in pulses for i in p.get("industries", [])})[:5]
+        mf = _normalize_str_list(
+            [m for p in pulses if isinstance(p, dict)
+             for m in (p.get("malware_families") or [])], 5)
+        adv = _normalize_str_list(
+            [_normalize_adversary(p.get("adversary")) for p in pulses
+             if isinstance(p, dict)], 5)
+        attack = _normalize_str_list(
+            [a for p in pulses if isinstance(p, dict)
+             for a in (p.get("attack_ids") or [])], 10, prefer_id=True)
+        industries = _normalize_str_list(
+            [i for p in pulses if isinstance(p, dict)
+             for i in (p.get("industries") or [])], 5)
         # Malicious if malware families/adversaries OR direct malware sample hits.
         is_mal = bool(mf or adv or malware_hits)
         risk = "high" if is_mal else "medium"
@@ -213,6 +243,8 @@ async def _greynoise_provider(indicator: str, ind_type: str) -> TIProviderResult
                                 error_kind="unsupported_type")
     try:
         raw = await _greynoise_lookup(indicator)
+        if not isinstance(raw, dict):
+            raise ValueError("malformed GreyNoise response (not a JSON object)")
         if raw.get("message") == _NO_DATA_MESSAGE:
             # No community data is an absence of signal, not a clean verdict.
             return TIProviderResult(
@@ -247,7 +279,12 @@ async def _abuseipdb_provider(indicator: str, ind_type: str) -> TIProviderResult
     try:
         h = {"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"}
         r = await _api_call("get", f"{ABUSEIPDB_BASE_URL}/check?ipAddress={indicator}&maxAgeInDays=90", headers=h)
-        d = r.json().get("data", {})
+        body = r.json()
+        if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
+            raise ValueError("malformed AbuseIPDB response (data missing)")
+        d = body["data"]
+        if "abuseConfidenceScore" not in d:
+            raise ValueError("malformed AbuseIPDB response (abuseConfidenceScore missing)")
         conf = d.get("abuseConfidenceScore", 0)
         risk = "high" if conf >= 75 else "medium" if conf >= 50 else "low" if conf >= 25 else "none"
         return TIProviderResult(
@@ -273,9 +310,14 @@ async def _virustotal_provider(indicator: str, ind_type: str) -> TIProviderResul
         vt_type = vt_types[ind_type]
         h = {"x-apikey": VIRUSTOTAL_API_KEY, "Accept": "application/json"}
         r = await _api_call("get", f"{VIRUSTOTAL_BASE_URL}/{vt_type}/{indicator}", headers=h)
-        d = r.json().get("data", {})
-        attrs = d.get("attributes", {})
-        stats = attrs.get("last_analysis_stats", {})
+        body = r.json()
+        if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
+            raise ValueError("malformed VirusTotal response (data missing)")
+        d = body["data"]
+        attrs = d.get("attributes") or {}
+        stats = attrs.get("last_analysis_stats")
+        if not isinstance(stats, dict):
+            raise ValueError("malformed VirusTotal response (last_analysis_stats missing)")
         mal = stats.get("malicious", 0)
         total = sum(stats.values()) or 1
         score = int(mal / total * 100)
@@ -323,6 +365,13 @@ def _aggregate(results: list[TIProviderResult]) -> TIQueryOutput:
         errors=errors,
         **coverage,
     )
+
+
+def _malicious_mark(is_malicious: bool | None) -> str:
+    """Render a tri-state vote without turning unknown into a negative."""
+    if is_malicious is None:
+        return "?"
+    return "✅" if is_malicious else "❌"
 
 
 # MCP Tool
@@ -393,7 +442,7 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput) -> 
             adv = ", ".join(r.adversaries[:2]) or ""
             detail = f"{mf} {adv}".strip() or "—"
             lines.append(f"| `{r.provider}` | {r.risk_level or '?'} | {r.reputation_score if r.reputation_score is not None else '?'} "
-                         f"| {'✅' if r.is_malicious else '❌'} | {detail[:40]} |")
+                         f"| {_malicious_mark(r.is_malicious)} | {detail[:40]} |")
 
     if output.errors:
         lines.append("")

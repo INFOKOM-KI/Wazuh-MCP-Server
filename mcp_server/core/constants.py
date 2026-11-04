@@ -10,6 +10,13 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Tuple, Optional
 
+# Active Response wrappers duplicate the alert that triggered them. One shared
+# definition feeds correlation dedup, curated-report filters, and digest counts.
+ACTIVE_RESPONSE_WRAPPER_RULES: Dict[str, str] = {
+    "606029": "data.parameters.alert.rule.id",  # Active Response wraps its trigger
+    "651": "data.parameters.alert.rule.id",     # Ossec agent-spawned alerts
+}
+
 # MITRE ATT&CK tactic -> 3-Sum category mapping
 MITRE_TACTIC_TO_CATEGORY: Dict[str, str] = {
     "Reconnaissance":          "A",

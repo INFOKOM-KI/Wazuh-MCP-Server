@@ -508,8 +508,14 @@ async def correlate_alert(alert: dict, technologies: list[dict], *,
     total_matches = 0
     pages_fetched = 0
     cursor = None
+    component_cursor = None
+    primary_search_performed = bool(primary_terms or primary_slugs)
+    search_performed = primary_search_performed
+    # No technology and no attack terms means no catalog query is made. Keep the
+    # shape the coverage block below reads instead of leaving `result` unbound.
+    result: dict = {"entries": [], "total": None, "next_cursor": None}
 
-    if primary_terms or primary_slugs:
+    if primary_search_performed:
         result = await search_tech(primary_slugs, page_size, terms=primary_terms)
         total_matches = result.get("total") or len(result["entries"])
         cursor = result.get("next_cursor")
@@ -534,10 +540,16 @@ async def correlate_alert(alert: dict, technologies: list[dict], *,
         # A niche plugin CVE will not outrank a platform CVE in the pattern query, so
         # identity matching gets its own lookup, still without a technology filter.
         targeted = await search_tech([], 10, component=component, terms=terms)
+        search_performed = True
+        component_cursor = targeted.get("next_cursor")
         for entry in targeted["entries"]:
             _merge_entry(merged, entry, "component_search")
-        sources["component_search"] = {"status": "ok", "component": component,
-                                       "retrieved": len(targeted["entries"])}
+        sources["component_search"] = {
+            "status": "ok", "component": component,
+            "retrieved": len(targeted["entries"]),
+            "total_matches": targeted.get("total"),
+            "pagination_complete": not component_cursor,
+            "pages_fetched": 1}
 
     # Sufficiency is judged on assessed relevance, not raw hit count: ten
     # incompatible CVEs are not a reason to skip the feed.
@@ -616,6 +628,18 @@ async def correlate_alert(alert: dict, technologies: list[dict], *,
     if include_details and candidates:
         detail = await lookup(candidates[0]["id"])
 
+    if not search_performed:
+        search_status = "not_performed"
+        pagination_complete = None
+        has_more = None
+        truncated = None
+    else:
+        incomplete = bool(cursor or component_cursor)
+        search_status = "incomplete" if incomplete else "completed"
+        pagination_complete = not incomplete
+        has_more = incomplete or total_matches > len(merged)
+        truncated = (total_matches > len(ranked)) if primary_search_performed else bool(component_cursor)
+
     return {
         "match_basis": "tech_feed",
         "confidence": "candidate",
@@ -629,7 +653,7 @@ async def correlate_alert(alert: dict, technologies: list[dict], *,
             "technologies_queried": slugs,
             "catalog_matches": result.get("total"),
             "returned": len(candidates),
-            "page_truncated": result.get("truncated"),
+            "page_truncated": bool(cursor) if primary_search_performed else None,
             "time_window": "none - the catalog is ranked in full, not filtered to the alert window",
             "catalog_scope": "search endpoint (catalog-wide, CVSS-sorted), not the newest-entries feed",
             "component_term": bool(component),
@@ -639,13 +663,15 @@ async def correlate_alert(alert: dict, technologies: list[dict], *,
             "sources": sources,
             "technology_slugs_queried": slugs,
             "technology_feed_status": (sources.get("technology_feed") or {}).get("status"),
+            "search_performed": search_performed,
+            "search_status": search_status,
             "total_matches": total_matches,
             "retrieved_count": len(merged),
             "displayed_count": len(ranked),
-            "has_more": bool(cursor) or total_matches > len(merged),
-            "truncated": total_matches > len(ranked),
-            "pagination_complete": not cursor,
-            "pages_fetched": pages_fetched,
+            "has_more": has_more,
+            "truncated": truncated,
+            "pagination_complete": pagination_complete,
+            "pages_fetched": pages_fetched + (1 if component else 0),
             "technology_feed_is_not_exhaustive": True,
         },
         "limitations": [

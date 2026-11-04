@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import mcp, THREATFOX_API_KEY_ENV, THREATFOX_BASE_URL, THREATFOX_CACHE_TTL
+from mcp_server.core.exceptions import ThreatIntelError
 from mcp_server.core.http_client import _api_call, _handle_api_error, _api_error_text, _is_private_or_reserved
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.threat_intel._cache import cache_get, cache_set, get_limiter
@@ -68,6 +69,14 @@ async def _threatfox_request(search_term: str, exact_match: bool = False) -> dic
         body = {"query": "search_ioc", "search_term": search_term, "exact_match": exact_match}
         resp = await _api_call("post", THREATFOX_BASE_URL, headers=headers, json=body)
         data = resp.json()
+    if not isinstance(data, dict):
+        # A JSON string/list is not a ThreatFox answer. Raising here keeps the
+        # caller from calling .get() on it and reporting a clean verdict.
+        raise ThreatIntelError(
+            "ThreatFox returned a non-object JSON body; the response is not usable.")
+    if "query_status" not in data:
+        raise ThreatIntelError(
+            "ThreatFox response has no query_status field; the response is not usable.")
     cache_set("threatfox", cache_key, data, THREATFOX_CACHE_TTL)
     return data
 
@@ -227,7 +236,7 @@ async def threatfox_ioc_search(params: ThreatFoxSearchInput) -> str:
 
     try:
         raw = await _threatfox_request(params.search_term, params.exact_match)
-    except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
+    except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError, ThreatIntelError) as e:
         _handle_api_error(e, context="threatfox_ioc_search")
 
     query_status = raw.get("query_status", "error")
@@ -324,17 +333,24 @@ async def threatfox_ioc_search_bulk(params: ThreatFoxBulkInput) -> str:
     async def _lookup_one(term: str) -> dict:
         try:
             raw = await _threatfox_request(term, params.exact_match)
+            status = raw.get("query_status", "error")
+            if status not in ("ok", "no_results"):
+                return {"search_term": term,
+                        "error": f"ThreatFox returned query_status={status!r}"}
             items = raw.get("data", [])
             if not isinstance(items, list):
-                items = []
+                return {"search_term": term,
+                        "error": "ThreatFox data is not a list"}
             return {
                 "search_term": term,
-                "query_status": raw.get("query_status", "error"),
+                "query_status": status,
                 "matches": len(items),
-                "malware": [e.get("malware_printable") or e.get("malware", "?") for e in items[:3]],
-                "confidence": max((e.get("confidence_level", 0) for e in items), default=0),
+                "malware": [e.get("malware_printable") or e.get("malware", "?")
+                            for e in items[:3] if isinstance(e, dict)],
+                "confidence": max((e.get("confidence_level", 0) for e in items
+                                   if isinstance(e, dict)), default=0),
             }
-        except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError) as e:
+        except (httpx.HTTPStatusError, httpx.TimeoutException, RuntimeError, ThreatIntelError) as e:
             return {"search_term": term, "error": _api_error_text(e, context=term)}
 
     results = await __import__("asyncio").gather(*[_lookup_one(t) for t in params.search_terms])
@@ -350,7 +366,8 @@ async def threatfox_ioc_search_bulk(params: ThreatFoxBulkInput) -> str:
         if "error" in r:
             lines.append(f"- **{r['search_term']}** - ⚠️ {r['error']}")
         elif r["matches"] == 0:
-            lines.append(f"- `{r['search_term']}` - clean")
+            lines.append(f"- `{r['search_term']}` - no matching IOCs "
+                         f"(status: `{r['query_status']}`)")
         else:
             lines.append(
                 f"- `{r['search_term']}` - {r['matches']} matches, "

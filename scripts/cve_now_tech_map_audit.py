@@ -252,7 +252,7 @@ async def run_audit(args) -> int:
     caps = await _wazuh_indexer_field_caps([args.field, *EVIDENCE_FIELDS], args.index)
     verified = bool(caps)
     if verified and args.field not in caps:
-        # An empty bucket list would read as "no groups", when the field is simply absent.
+        # An empty bucket list would read as "no groups", when the field is absent.
         print(f"{args.field} is not mapped in {args.index} - check --index/--field. "
               "The audit needs that field to say anything at all.", file=sys.stderr)
         return 1

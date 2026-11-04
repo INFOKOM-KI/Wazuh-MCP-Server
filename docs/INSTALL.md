@@ -644,7 +644,7 @@ export BLUETEAM_CMDB_FILE="/var/log/blue-team-mcp/cmdb_inventory.json"
 export BLUETEAM_AUTO_PROMOTE_IPS="false"
 ```
 
-TTL units are seconds: `7776000` = 90 days, `604800` = 7 days, and `2592000` = 30 days. Note that some stores contain IP addresses, investigation notes, or sensitive derived data. Restrict access and back up the data; retention and deletion policies must follow your organization's policies.
+TTL units are seconds: `7776000` = 90 days, `604800` = 7 days, and `2592000` = 30 days. Some stores contain IP addresses, investigation notes, or sensitive derived data. Restrict access and back up the data; retention and deletion policies must follow your organization's policies.
 
 `BLUETEAM_EXPORT_RETENTION_DAYS` controls retention of export artifacts where the relevant feature supports it; the default `0` means no automatic retention is requested through this setting. `BLUETEAM_AUTO_PROMOTE_IPS=false` preserves human review before IPs from high-confidence clusters are automatically registered. Do not change it to `true` without testing and operator approval. Define data-cleanup procedures explicitly.
 
@@ -795,7 +795,7 @@ export BLUETEAM_LAYA_MAX_LEN="1024"
 export BLUETEAM_LAYA_MAX_CONCURRENCY="1"
 ```
 
-- The `onnx` backend is designed to use the embedding model used by RAG; make sure the required artifacts are actually available.
+- The `onnx` backend uses the embedding model used by RAG; make sure the required artifacts are actually available.
 - The `laya` backend requires `BLUETEAM_INSTALL_LAYA=1`, local model weights, and a pinned hash.
 - The `setfit` backend requires `BLUETEAM_INSTALL_SETFIT=1`, local weights, and a pinned hash.
 - `BLUETEAM_LAYA_CONFIDENCE_FLOOR` is the confidence threshold; results below it are marked `uncertain` rather than being forced into a label.

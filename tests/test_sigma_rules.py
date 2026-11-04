@@ -181,7 +181,6 @@ def test_schema_check_rejects_non_mapping():
     assert doc is None and errors
 
 
-# Validate tool
 def test_validate_passes_good_rule():
     sr = _module()
     out = json.loads(_run(sr.blueteam_sigma_rule_validate(

@@ -13,6 +13,7 @@ NOTE: No ``from __future__ import annotations``. Deferred annotation
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field
@@ -408,6 +409,76 @@ class MitreLookupInput(BaseModel):
     tactic_or_technique: str = Field(..., max_length=128, description="MITRE ATT&CK tactic or technique ID/name to look up")
 
 
+_TECHNIQUE_ID_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$")
+
+
+def _tactic_category(name: str) -> Optional[str]:
+    lowered = (name or "").lower()
+    for tactic, category in MITRE_TACTIC_TO_CATEGORY.items():
+        if tactic.lower() == lowered:
+            return category
+    return None
+
+
+def _resolve_tactic(query: str) -> Optional[dict]:
+    """Match a tactic name, slug fragment, or TA id against the local catalogue."""
+    from mcp_server.label.mitre_tactics_generated import TACTICS
+
+    upper = query.upper()
+    matched = [entry for entry in TACTICS.values()
+               if upper == str(entry.get("external_id", "")).upper()
+               or upper in str(entry.get("name", "")).upper()]
+    if not matched:
+        return None
+    first = matched[0]
+    return {
+        "result": "tactic",
+        "tactic": {"name": first.get("name"),
+                   "external_id": first.get("external_id"),
+                   "category": _tactic_category(str(first.get("name")) or ""),
+                   "description": first.get("description")},
+        "matches": {str(entry.get("name")): _tactic_category(str(entry.get("name")) or "")
+                    for entry in matched},
+    }
+
+
+def _resolve_technique(query: str) -> dict:
+    """Resolve a technique id from the ATT&CK bundle already loaded in-process.
+
+    No fetch happens here: the tool is openWorldHint=False. If no STIX tool has
+    loaded the bundle, the result is ``unavailable``. Reporting ``not_found``
+    would read as "this alert has no MITRE relationship".
+    """
+    from mcp_server.tools import stix_correlation as stix
+
+    if stix._stix_error:
+        return {"result": "unavailable", "reason": stix._stix_error}
+    data = stix._stix_data
+    if data is None:
+        return {"result": "unavailable",
+                "reason": ("STIX bundle not loaded in this process. Load it with "
+                           "blueteam_stix_analyze (technique_id=...) or set "
+                           "MITRE_ATTACK_STIX and call that tool first.")}
+    for obj in data.get("by_type", {}).get("attack-pattern", []):
+        if stix._mitre_id(obj) != query:
+            continue
+        tactic = ""
+        for phase in obj.get("kill_chain_phases") or []:
+            if phase.get("kill_chain_name") == "mitre-attack":
+                tactic = str(phase.get("phase_name") or "").replace("-", " ")
+                break
+        return {"result": "technique",
+                "technique": {"id": query,
+                              "name": obj.get("name"),
+                              "tactic": tactic,
+                              "tactic_category": _tactic_category(tactic),
+                              "sub_technique": "." in query}}
+    return {"result": "technique_not_in_bundle",
+            "technique_id": query,
+            "reason": ("The loaded ATT&CK bundle has no attack-pattern with this "
+                       "external id; this is not evidence the id is invalid.")}
+
+
 # blueteam_mitre_lookup
 @mcp.tool(
     name="blueteam_mitre_lookup",
@@ -415,21 +486,38 @@ class MitreLookupInput(BaseModel):
                   "idempotentHint": True, "openWorldHint": False}
 )
 async def blueteam_mitre_lookup(params: MitreLookupInput) -> str:
-    """Look up a MITRE ATT&CK tactic or technique in the local mapping.
+    """Look up a MITRE ATT&CK tactic or technique in local knowledge.
+
+    Tactic names and TA ids resolve from the generated ATT&CK tactics catalogue.
+    Technique ids (``T1190``, ``T1499.003``) resolve from the ATT&CK STIX bundle
+    already loaded in this process by ``blueteam_stix_analyze``; the tool never
+    fetches the bundle itself. An unloaded bundle returns ``result=unavailable``,
+    not ``not_found``.
 
     Args:
-        params.tactic_or_technique: MITRE tactic or technique ID/name to look up
+        params.tactic_or_technique: Tactic name/TA id or technique id.
+
+    **Worked Examples**
+
+    1. ``blueteam_mitre_lookup(tactic_or_technique="initial access")``
+    2. ``blueteam_mitre_lookup(tactic_or_technique="TA0002")``
+    3. ``blueteam_mitre_lookup(tactic_or_technique="T1499.003")``
     """
     _audit_log("blueteam_mitre_lookup", {"query": params.tactic_or_technique})
     q = params.tactic_or_technique.strip().upper()
-    results: dict[str, str] = {}
-    for tactic, category in MITRE_TACTIC_TO_CATEGORY.items():
-        if q in tactic.upper() or q in category.upper():
-            results[tactic] = category
-    if not results:
-        return json.dumps({
-            "query": params.tactic_or_technique,
-            "result": "not_found",
-            "available_tactics": list(MITRE_TACTIC_TO_CATEGORY.keys()),
-        }, indent=2)
-    return json.dumps({"query": params.tactic_or_technique, "matches": results}, indent=2)
+
+    if _TECHNIQUE_ID_RE.match(q):
+        payload = _resolve_technique(q)
+        payload["query"] = params.tactic_or_technique
+        return json.dumps(payload, indent=2)
+
+    tactic = _resolve_tactic(params.tactic_or_technique.strip())
+    if tactic is not None:
+        tactic["query"] = params.tactic_or_technique
+        return json.dumps(tactic, indent=2)
+
+    return json.dumps({
+        "query": params.tactic_or_technique,
+        "result": "not_found",
+        "available_tactics": list(MITRE_TACTIC_TO_CATEGORY.keys()),
+    }, indent=2)

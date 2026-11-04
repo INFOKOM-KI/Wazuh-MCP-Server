@@ -12,9 +12,12 @@ import os
 os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
 os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
 
+import asyncio
 import time
+import httpx
 import pytest
 from mcp_server.core.exceptions import WazuhAuthError, ConfigurationError
+from mcp_server.wazuh import auth
 from mcp_server.wazuh.auth import WazuhAuthManager
 
 
@@ -59,49 +62,42 @@ class TestTokenBuffer:
 
         asyncio.run(_test())
 
-    def test_refreshes_when_near_expiry(self):
+    @staticmethod
+    def _failing_refresh(monkeypatch):
+        async def _post(*args, **kwargs):
+            raise httpx.ConnectError("test transport blocked")
+        monkeypatch.setattr(auth, "_api_call", _post)
+
+    def test_refreshes_when_near_expiry(self, monkeypatch):
         """Token with 30s remaining (below 60s buffer) SHOULD trigger refresh."""
         mgr = WazuhAuthManager(url="https://mgr:55000", username="u", password="p")
         mgr._token = "old-token"
         mgr._expiry = time.monotonic() + 30  # only 30s left
-        import asyncio
+        self._failing_refresh(monkeypatch)
 
-        async def _test():
-            # Refresh will fail (no real server), but it should TRY
-            try:
-                await mgr.get_token()
-            except WazuhAuthError:
-                pass  # expected - no real Wazuh Manager
+        with pytest.raises(WazuhAuthError):
+            asyncio.run(mgr.get_token())
+        assert mgr._token is None
 
-        asyncio.run(_test())
-
-    def test_refreshes_when_expired(self):
+    def test_refreshes_when_expired(self, monkeypatch):
         """Expired token triggers refresh."""
         mgr = WazuhAuthManager(url="https://mgr:55000", username="u", password="p")
         mgr._token = "expired-token"
         mgr._expiry = time.monotonic() - 60  # expired 60s ago
-        import asyncio
+        self._failing_refresh(monkeypatch)
 
-        async def _test():
-            try:
-                await mgr.get_token()
-            except WazuhAuthError:
-                pass  # expected
+        with pytest.raises(WazuhAuthError):
+            asyncio.run(mgr.get_token())
+        assert mgr._token is None
 
-        asyncio.run(_test())
-
-    def test_no_token_triggers_refresh(self):
-        """No cached token → must refresh."""
+    def test_no_token_triggers_refresh(self, monkeypatch):
+        """No cached token -> must refresh."""
         mgr = WazuhAuthManager(url="https://mgr:55000", username="u", password="p")
-        import asyncio
+        self._failing_refresh(monkeypatch)
 
-        async def _test():
-            try:
-                await mgr.get_token()
-            except WazuhAuthError:
-                pass
-
-        asyncio.run(_test())
+        with pytest.raises(WazuhAuthError):
+            asyncio.run(mgr.get_token())
+        assert mgr._token is None
 
 
 class TestTokenInvalidation:

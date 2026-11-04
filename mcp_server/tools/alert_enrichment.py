@@ -262,7 +262,10 @@ class NetraIpAnalysisInput(BaseModel):
     bypass_redaction: bool = Field(default=False, description="When true, skip PII/credential redaction")
 
 
-# Netra
+# Netra fans out to six upstream sources; a score from fewer is partial.
+_NETRA_EXPECTED_SOURCES = 6
+
+
 @mcp.tool(
     name="netra_ip_analysis",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
@@ -294,15 +297,29 @@ async def netra_ip_analysis(params: NetraIpAnalysisInput) -> str:
         ts = data.get("threat_score", {})
         ai = data.get("ai_insight", {})
         ipapi = data.get("ipapi", {}).get("results", {})
-        score = ts.get("score", 0)
-        level = ts.get("level", "?")
-        sources_ok = ts.get("sources_available", [])
-        sources_fail = ts.get("sources_failed", [])
+        score = ts.get("score")
+        level = ts.get("level") or "?"
+        sources_ok = ts.get("sources_available") if isinstance(ts.get("sources_available"), list) else []
+        sources_fail = ts.get("sources_failed") if isinstance(ts.get("sources_failed"), list) else []
+        if not sources_ok:
+            coverage = "unavailable"
+        elif sources_fail or len(sources_ok) + len(sources_fail) < _NETRA_EXPECTED_SOURCES:
+            coverage = "partial"
+        else:
+            coverage = "complete"
+        score_text = f"{score} ({level})" if score is not None and sources_ok else "not available"
         lines = [f"# Netra — {params.ip}", "",
-                 f"- **Score**: {score} ({level})",
+                 f"- **Score**: {score_text}",
+                 f"- **Coverage**: {coverage}",
                  f"- **Sources OK**: {', '.join(sources_ok) if sources_ok else 'none'}",
                  f"- **Sources Failed**: {', '.join(sources_fail) if sources_fail else 'none'}",
                  ""]
+        if coverage != "complete":
+            lines.append(
+                f"- **Partial coverage**: {len(sources_ok)} of {_NETRA_EXPECTED_SOURCES} "
+                "expected sources succeeded. The score describes only those sources "
+                "and is not a clean verdict.")
+            lines.append("")
         if ipapi:
             lines.append(f"- **ISP**: {ipapi.get('isp', '?')}")
             lines.append(f"- **Country**: {ipapi.get('country', '?')} ({ipapi.get('city', '?')})")
@@ -325,7 +342,9 @@ def _format_sangfor_blocklist_markdown(raw: Any) -> str:
     else:
         items = raw.get("data") or raw.get("entries") or []
     if not items:
-        return "# Sangfor Blocklist (0 IPs)\n\n_No entries in this window._"
+        return ("# Sangfor Blocklist (0 IPs)\n\n_No entries in this window. An empty "
+                "result only covers the available records; it is not proof the IP was "
+                "never blocked._")
     lines = ["| IP | ISP | Location | Block Mode | Wazuh | TIP | Overall |",
              "|----|-----|----------|------------|-------|-----|---------|"]
     for i in items[:50]:
@@ -380,10 +399,32 @@ async def sangfor_blocklist_check(params: SangforBlocklistCheckInput) -> str:
         raw = resp.json()
         if isinstance(raw, list):
             raw = {"blocked": len(raw) > 0, "entries": raw}
+        if not isinstance(raw, dict):
+            raw = {"entries": []}
+        blocked = raw.get("blocked")
+        if blocked is True:
+            status = "blocked"
+        elif blocked is False:
+            status = "not_blocked"
+        else:
+            # The /check contract is unverified, so an absent boolean stays unknown.
+            status = "unknown"
         if params.response_format == "json":
-            return _truncate_if_needed(json.dumps(raw, indent=2))
-        blocked = raw.get("blocked", False)
-        return _truncate_if_needed(f"# Sangfor Blocklist - {params.ip}\n\n- **Blocked**: {blocked}")
+            return _truncate_if_needed(json.dumps({
+                "ip": params.ip,
+                "blocked": blocked,
+                "status": status,
+                "entries": raw.get("entries") or raw.get("data") or [],
+                "note": ("The endpoint did not report an explicit blocked boolean, "
+                         "so the status is unknown."
+                         if status == "unknown" else None),
+            }, indent=2))
+        verdict = ("blocked" if blocked is True else
+                   "not blocked" if blocked is False else "unknown")
+        return _truncate_if_needed(
+            f"# Sangfor Blocklist - {params.ip}\n\n- **Blocked**: {verdict}" +
+            ("\n- **Note**: the endpoint returned no `blocked` field; this is not "
+             "evidence that the IP was never blocked." if status == "unknown" else ""))
     except Exception as e:
         _handle_api_error(e, context="sangfor")
 

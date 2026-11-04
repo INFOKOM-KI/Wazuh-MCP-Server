@@ -515,3 +515,22 @@ def test_tool_is_callable_through_the_decorator(tmp_path):
     _setup(tmp_path)
     out = _run(rag_kb.blueteam_rag_query(rag_kb.RagQueryInput(query="aaa brute force")))
     assert isinstance(out, str) and out
+
+
+def test_query_redacts_private_ips_and_credentials_at_retrieval(tmp_path):
+    """Ingestion stores the real text; the tool wrapper is the redaction boundary."""
+    _setup(tmp_path)
+    text = "Beacon from 192.168.10.5 with password=hunter2 to an internal host"
+    _run(_ingest(rag_kb.RagIngestInput(
+        source="text", label="ir_redact", texts=[text])))
+
+    query = rag_kb.RagQueryInput(
+        query="beacon internal", top_k=5, rerank=False,
+        sources=["ir_redact"], response_format="json")
+    raw = _run(_query(query))
+    assert "192.168.10.5" in raw
+    assert "hunter2" in raw
+
+    wrapped = _run(rag_kb.blueteam_rag_query(query))
+    assert "192.168.10.5" not in wrapped
+    assert "hunter2" not in wrapped

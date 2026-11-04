@@ -8,7 +8,8 @@ or ``logging``. All API/orchestration logic lives in ``engine.py`` and ``investi
 from __future__ import annotations
 import ipaddress
 from typing import Any
-from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY, MITRE_TACTIC_WEIGHTS
+from mcp_server.core.constants import (ACTIVE_RESPONSE_WRAPPER_RULES,
+                                      MITRE_TACTIC_TO_CATEGORY, MITRE_TACTIC_WEIGHTS)
 
 # Default thresholds (Aul Tunning;P)
 # threshold_score=35: with dynamic scoring (rule.level x MITRE tactic weight),
@@ -34,7 +35,7 @@ _MULTI_RES_TIERS: list[dict[str, Any]] = [
 _EXCLUDE_IP_FALLBACKS: set[str] = {"0.0.0.0", "unknown", ""}
 
 # Active Response wrapper rule IDs - these duplicate the underlying alert
-_DEDUP_WRAPPER_RULES: set[str] = {"606029", "651"}
+_DEDUP_WRAPPER_RULES: set[str] = set(ACTIVE_RESPONSE_WRAPPER_RULES)
 
 
 # MITRE ATT&CK -> 3-Sum dynamic classification (MCP-TAXONOMY-V2) (Aul Tunning;P)

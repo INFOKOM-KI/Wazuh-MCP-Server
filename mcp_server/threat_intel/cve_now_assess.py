@@ -13,7 +13,9 @@ The hierarchy this module enforces, strongest first:
   attack_specific_match    the attack text names the vulnerable component and the
                            vulnerability class matches the observed behaviour
   vulnerability_exposure   the asset runs a version inside the CVE's affected range
-  contextual_candidate     product or class overlap only
+  contextual_candidate     product overlap, compatible product family, or a
+                           documented endpoint; class overlap alone is not enough
+                           when the CVE names a different product
   no_supported_match       nothing above holds
 
 A technology match alone never leaves the contextual tier. A public exploit
@@ -104,7 +106,7 @@ VULN_CLASSES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 # Which CVE classes can produce which observed behaviour. A pair not listed is a
-# mismatch, not a contradiction: the alert may simply be a different attack.
+# mismatch, not a contradiction: the alert may be a different attack.
 CLASS_COMPATIBILITY: dict[str, set[str]] = {
     "ssti": {"ssti", "rce", "info_disclosure"},
     "idor": {"idor", "auth_bypass", "info_disclosure"},
@@ -423,6 +425,60 @@ def product_compatibility(target_families: list[str], cve_families: list[str]) -
         return "unknown"
     return "compatible" if set(target_families) & set(cve_families) else "incompatible"
 
+# Generic vulnerability prose, not product evidence. A CVE that names only these
+# words has no concrete product to compare against the alert.
+_PRODUCT_STOPWORDS = frozenset({
+    "remote", "code", "execution", "vulnerability", "arbitrary", "file", "upload",
+    "issue", "server", "web", "application", "plugin", "theme", "module", "component",
+    "service", "system", "software", "version", "before", "after", "allows", "allow",
+    "attacker", "authenticated", "unauthenticated", "user", "users", "via", "and",
+    "the", "for", "with", "from", "that", "this", "which", "could", "may", "might",
+    "can", "not", "does", "has", "have", "been", "being", "was", "were", "are", "is",
+    "in", "on", "of", "to", "a", "an", "or", "all", "its", "their", "there", "when",
+    "where", "who", "how", "why", "use", "using", "used", "affected", "impact",
+    "exploit", "exploitation", "attacks", "attack", "security", "path", "request",
+})
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _product_tokens(record: dict) -> set[str]:
+    """Concrete product tokens from the title, summary, and affected fields.
+    Generic vulnerability words are dropped so a class-only CVE stays class-only.
+    """
+    summary = record.get("summary")
+    summary_text = summary.get("text") if isinstance(summary, dict) else summary
+    parts = [str(record.get("title") or ""), str(summary_text or "")]
+    for entry in record.get("affected") or []:
+        parts.extend(str(entry.get(key) or "") for key in ("product", "vendor", "package"))
+    tokens = {token for part in parts for token in _TOKEN_RE.findall(part.lower())}
+    return {token for token in tokens if len(token) >= 3 and token not in _PRODUCT_STOPWORDS}
+
+
+def _alert_product_tokens(context: dict) -> set[str]:
+    rule = context.get("rule") or {}
+    data = context.get("data") or {}
+    target = context.get("target") or {}
+    parts = [
+        str(rule.get("description") or ""),
+        " ".join(str(group) for group in (rule.get("groups") or [])),
+        str(data.get("data.url") or ""),
+        str(data.get("data.command") or ""),
+        str(context.get("decoder") or ""),
+        str(context.get("location") or ""),
+        str(target.get("path") or ""),
+    ]
+    return {token for part in parts for token in _TOKEN_RE.findall(part.lower())}
+
+
+def product_text_overlap(record: dict, context: dict) -> str:
+    """Whether the CVE names a product token the alert also names.
+    ``no_product`` keeps class-only leads; ``disjoint`` blocks promotion.
+    """
+    cve_tokens = _product_tokens(record)
+    if not cve_tokens:
+        return "no_product"
+    return "overlap" if cve_tokens & _alert_product_tokens(context) else "disjoint"
+
 
 def _parse_version(value: str) -> tuple[int, ...] | None:
     match = _VERSION_RE.match(str(value).strip())
@@ -464,6 +520,8 @@ def compare_version(package_name: str, version: str, record: dict) -> dict:
                 "reason": f"{package_name} is not a package in this CVE's affected list"}
 
     for item in ranges:
+        if not isinstance(item, dict):
+            continue
         low = _parse_version(str(item.get("introduced") or "0"))
         fixed = _parse_version(item["fixed"]) if item.get("fixed") else None
         last = _parse_version(item["lastAffected"]) if item.get("lastAffected") else None
@@ -480,6 +538,18 @@ def compare_version(package_name: str, version: str, record: dict) -> dict:
                 "evidence": [f"{package_name} {version} in "
                              f"{item.get('introduced') or '0'}..{upper}"],
                 "range": item}
+    # No usable bound was evaluated: every range was skipped as non-numeric. A
+    # negative claim needs an evaluated range, so this is unknown, not out-of-range.
+    evaluated = sum(
+        1 for item in ranges
+        if isinstance(item, dict)
+        and _parse_version(str(item.get("introduced") or "0")) is not None
+        and not (item.get("fixed") and _parse_version(item["fixed"]) is None)
+        and not (item.get("lastAffected") and _parse_version(item["lastAffected"]) is None))
+    if evaluated == 0:
+        return {"status": "unknown", "package_matched": True,
+                "evidence": [f"{package_name} ranges use non-numeric bounds"],
+                "reason": "no affected range had usable numeric bounds"}
     return {"status": "not_in_range", "package_matched": True,
             "evidence": [f"{package_name} {version} outside every listed range"],
             "ranges": ranges[:4]}
@@ -550,6 +620,7 @@ def assess_candidate(record: dict, context: dict, attack: dict, technologies: li
     compatible = None
     if attack_class and vuln_class:
         compatible = vuln_class in CLASS_COMPATIBILITY.get(attack_class, set())
+    overlap_kind = product_text_overlap(record, context)
 
     evidence = list(identity["evidence"]) + list(vuln["evidence"])
     contradictions: list[str] = []
@@ -591,9 +662,19 @@ def assess_candidate(record: dict, context: dict, attack: dict, technologies: li
     elif (strong_identity and compatible is True and version["status"] != "not_in_range"
           and endpoint["matched"]):
         relationship = "attack_specific_match"
-    elif version["status"] == "in_range" and (identity["level"] != "none" or compatible is True):
+    elif version["status"] == "in_range" and (identity["level"] != "none"
+                                              or compatible is True
+                                              or compatibility == "compatible"):
         relationship = "vulnerability_exposure"
-    elif identity["level"] != "none" or compatible is True:
+    elif (overlap_kind == "disjoint" and identity["level"] == "none"
+          and compatibility == "unknown" and not endpoint["matched"]
+          and version["status"] != "in_range"):
+        # A class match alone cannot connect a CVE that names a different
+        # product. Example: an SMBv3 RCE record against a PHP webshell upload.
+        contradictions.append("product: the CVE names no token present in the alert")
+        relationship = "no_supported_match"
+    elif (identity["level"] != "none" or compatible is True
+          or compatibility == "compatible" or endpoint["matched"]):
         relationship = "contextual_candidate"
     else:
         relationship = "no_supported_match"
@@ -648,13 +729,14 @@ def assess_candidate(record: dict, context: dict, attack: dict, technologies: li
         "evidence": evidence,
         "contradictions": contradictions,
         "missing": missing,
-        "confidence_explanation": _explain(relationship, identity, compatible, version, endpoint),
+        "confidence_explanation": _explain(relationship, identity, compatible, version, endpoint,
+                                                          compatibility == "compatible"),
         "url": record.get("url") or f"https://cve.now/{record.get('id')}",
     }
 
 
 def _explain(relationship: str, identity: dict, compatible, version: dict,
-             endpoint: dict) -> str:
+             endpoint: dict, compatibility_matches: bool = False) -> str:
     if relationship == "confirmed_cve_reference":
         return ("The alert carries this CVE id in a structured field. That is a reference, "
                 "not proof the vulnerability was reached.")
@@ -668,9 +750,14 @@ def _explain(relationship: str, identity: dict, compatible, version: dict,
         return ("The asset runs a version inside the affected range. No evidence in this "
                 "alert links the activity to this CVE.")
     if relationship == "contextual_candidate":
-        parts = [f"product identity: {identity['level']}",
-                 "class matches" if compatible else "class does not match"]
-        return "Technology or class overlap only: " + ", ".join(parts) + "."
+        parts = [f"product identity: {identity['level']}"]
+        if compatible:
+            parts.append("class matches")
+        if compatibility_matches:
+            parts.append("product family matches")
+        if endpoint.get("matched"):
+            parts.append(f"documented endpoint {endpoint['matched'][0]} requested")
+        return "Overlap only: " + ", ".join(parts) + "."
     return "No dimension connects this CVE to the observed activity."
 
 

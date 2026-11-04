@@ -7,6 +7,7 @@ exercised with hand-built parameters so a deployment without hmmlearn still
 serves a model trained elsewhere.
 """
 from __future__ import annotations
+import math
 import os
 
 os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
@@ -314,3 +315,66 @@ def test_predict_volume_refuses_degenerate_lambdas():
     model = _hand_volume_model()
     model["lambdas"] = [5.0, 5.0]
     assert predict_volume(model, [], 24)["status"] == "unavailable"
+
+
+def test_poisson_logpmf_rejects_non_finite_inputs():
+    assert math.isinf(poisson_logpmf(float("nan"), 2.0))
+    assert poisson_logpmf(float("nan"), 2.0) < 0
+    assert math.isinf(poisson_logpmf(float("inf"), 2.0))
+    assert poisson_logpmf(0, float("nan")) == 0.0
+    assert poisson_logpmf(1, float("inf")) == float("-inf")
+
+
+def test_fit_markov_chain_rejects_non_finite_alpha():
+    for alpha in (float("nan"), float("inf"), 0.0, -1.0):
+        with pytest.raises(ValueError, match="alpha"):
+            fit_markov_chain(SEQUENCES, alpha=alpha,
+                             min_sequences=5, min_transitions=10)
+
+
+def test_fit_poisson_hmm_rejects_non_finite_counts():
+    base = [1] * 48
+    for bad in (float("nan"), float("inf")):
+        counts = list(base)
+        counts[7] = bad
+        with pytest.raises(ValueError, match="finite"):
+            fit_poisson_hmm(counts, min_buckets=48)
+
+
+def test_validate_model_rejects_non_finite_probabilities():
+    model = _model()
+    model["startprob"][0] = float("nan")
+    with pytest.raises(ValueError, match="non-finite"):
+        validate_model(model)
+
+    model = _model()
+    model["transmat"][0][0] = float("inf")
+    with pytest.raises(ValueError, match="non-finite"):
+        validate_model(model)
+
+
+def test_validate_model_rejects_non_finite_lambda():
+    model = {"kind": VOLUME_KIND, "lambdas": [1.0, float("nan")],
+             "startprob": [0.5, 0.5], "transmat": [[0.9, 0.1], [0.1, 0.9]]}
+    with pytest.raises(ValueError, match="non-finite"):
+        validate_model(model)
+
+
+def test_predict_volume_non_finite_context_falls_back():
+    model = {"kind": VOLUME_KIND, "lambdas": [1.0, 5.0],
+             "startprob": [0.5, 0.5], "transmat": [[0.9, 0.1], [0.1, 0.9]]}
+    out = predict_volume(model, [float("nan")], horizon_buckets=2)
+
+    assert out["status"] == "ok"
+    assert out["posterior_fallback"] is True
+    assert math.isfinite(out["expected_total"])
+    assert all(math.isfinite(value) for value in out["expected_counts"])
+
+
+def test_predict_volume_rejects_non_finite_lambda():
+    model = {"kind": VOLUME_KIND, "lambdas": [1.0, float("inf")],
+             "startprob": [0.5, 0.5], "transmat": [[0.9, 0.1], [0.1, 0.9]]}
+    out = predict_volume(model, [1, 2], horizon_buckets=2)
+
+    assert out["status"] == "unavailable"
+    assert "non-finite" in out["reason"]

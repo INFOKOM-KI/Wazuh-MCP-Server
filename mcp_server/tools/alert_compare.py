@@ -19,6 +19,7 @@ from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_ta
 from mcp_server.core.http_client import ValidPublicIp
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call, _get_client
+from mcp_server.core.constants import ACTIVE_RESPONSE_WRAPPER_RULES
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups, ValidAgentId
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _srcip_should_clauses
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
@@ -219,10 +220,7 @@ async def blueteam_wazuh_alert_compare(params: AlertCompareInput) -> str:
 # Each entry: (child_rule_id_regex, parent_rule_field_path_in_nested_alert)
 # When deduplicate=True, child alerts matching these patterns are subtracted
 # from aggregate counts to prevent double-counting.
-_DEDUP_PATTERNS: list[tuple[str, str]] = [
-    ("606029", "data.parameters.alert.rule.id"),  # Active Response wraps its trigger
-    ("651",   "data.parameters.alert.rule.id"),   # Ossec agent-spawned alerts
-]
+_DEDUP_PATTERNS: list[tuple[str, str]] = list(ACTIVE_RESPONSE_WRAPPER_RULES.items())
 
 # Maps directly to OpenSearch bool.must/filter clauses inside _build_curated_query().
 class CuratedReportFilters(BaseModel):

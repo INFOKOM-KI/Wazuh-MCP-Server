@@ -51,6 +51,7 @@ def _stub_indexer(monkeypatch):
             "total_with_geo": {"value": 921},
             "total_with_country": {"value": 1400},
             "total_alerts": {"value": 1421},
+            "unresolved_alerts": {"doc_count": 500},
         }}
 
     _CALLS.clear()
@@ -135,3 +136,34 @@ def test_the_aggregation_asks_for_centroid_not_the_scalar_lat_lon_fields():
     assert "geo_centroid" in body
     assert "GeoLocation.latitude" not in body and "GeoLocation.longitude" not in body
     assert '"missing"' in body
+
+
+def test_ranking_population_is_explicit():
+    payload = json.loads(_run(_tool(geo.GeoConcentrationInput(response_format="json"))))
+    population = payload["ranking_population"]
+
+    assert population["rows_returned"] == len(payload["ranking"]) == 5
+    assert population["alerts_in_rows"] == 1421
+    assert population["unresolved_bucket_included"] is True
+
+
+def test_unresolved_count_survives_bucket_truncation(monkeypatch):
+    cities = [_bucket(f"City {i}", 12, 2) for i in range(50)]
+
+    async def _truncated(body):
+        return {"aggregations": {
+            "by_geo": {"buckets": cities},
+            "total_with_geo": {"value": 785},
+            "total_with_country": {"value": 785},
+            "total_alerts": {"value": 2821},
+            "unresolved_alerts": {"doc_count": 2036},
+        }}
+
+    monkeypatch.setattr(geo, "_wazuh_indexer_post", _truncated)
+    payload = json.loads(_run(_tool(geo.GeoConcentrationInput(
+        granularity="city", response_format="json", max_buckets=50))))
+    assert payload["coverage"] == {"alerts": 2821, "fields_resolved": 785,
+                                   "unresolved": 2036}
+    rendered = _run(_tool(geo.GeoConcentrationInput(
+        granularity="city", response_format="markdown", max_buckets=50)))
+    assert "2,036 alerts resolved no city" in rendered

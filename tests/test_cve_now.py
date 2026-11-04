@@ -454,6 +454,12 @@ class TestCorrelation:
         assert data["confidence"] == "none"
         assert data["candidates"] == []
         assert data["unmapped_groups"] == ["web", "accesslog"]
+        coverage = data["coverage"]
+        assert coverage["search_performed"] is False
+        assert coverage["search_status"] == "not_performed"
+        assert coverage["pagination_complete"] is None
+        assert coverage["has_more"] is None
+        assert coverage["truncated"] is None
         assert rpc.calls == []
 
     @pytest.mark.asyncio
@@ -777,3 +783,12 @@ def test_live_lookup_smoke():
     record = asyncio.run(cve_now.lookup("CVE-2021-44228"))
     assert record and record["kev"]["listed"] is True
     assert "sazabi" not in json.dumps(record).lower()
+
+
+    @pytest.mark.asyncio
+    async def test_markdown_states_the_catalog_is_not_time_filtered(self, rpc):
+        rpc.queue({"entries": [search_entry("CVE-2024-19", "WordPress plugin SQL injection")],
+                   "total": 1})
+        out = await blueteam_cve_now_attack_correlate(CveNowCorrelateInput(
+            alert=GENERIC_LOGIN_ALERT))
+        assert "not filtered to the alert window" in out

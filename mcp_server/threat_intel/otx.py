@@ -96,30 +96,57 @@ def _normalize_adversary(value: Any) -> str:
     ({"name": "APT41", ...}). A set/dict comprehension over raw values
     crashes with ``unhashable type: 'dict'`` when it's a dict.
     """
+    return _normalize_name(value)
+
+
+def _normalize_name(value: Any, *, prefer_id: bool = False) -> str:
+    """Collapse a scalar or an OTX object into a displayable string.
+    ``attack_ids`` is a list of ``{"id", "name", "display_name"}`` objects in
+    the current API, while older responses used plain strings. Both shapes are
+    accepted so a dict can never reach a set comprehension.
+    """
     if value is None:
         return ""
     if isinstance(value, str):
-        return value
+        return value.strip()
     if isinstance(value, dict):
-        return value.get("name", value.get("id", "")) or ""
-    return str(value)
+        keys = (("id", "external_id", "name", "display_name") if prefer_id
+                else ("name", "display_name", "id"))
+        return str(next((value[key] for key in keys if value.get(key)), "")).strip()
+    return str(value).strip()
+
+
+def _normalize_str_list(values: Any, limit: int, *,
+                        prefer_id: bool = False) -> list[str]:
+    """Normalize a mixed scalar/object list, keeping order and de-duplicating."""
+    if not isinstance(values, list):
+        return []
+    out: list[str] = []
+    for value in values:
+        text = _normalize_name(value, prefer_id=prefer_id)
+        if text and text not in out:
+            out.append(text)
+    return out[:limit]
 
 
 def _extract_pulse_summary(pulses: list[dict]) -> list[dict]:
     """Condense OTX pulses to the fields the LLM needs for attribution."""
     out = []
     for p in pulses:
+        if not isinstance(p, dict):
+            continue
         out.append({
             "name": p.get("name", "?"),
-            "author": (p.get("author") or {}).get("username", "?"),
+            "author": (p.get("author") or {}).get("username", "?")
+                      if isinstance(p.get("author"), dict) else "?",
             "created": p.get("created", "?"),
             "modified": p.get("modified", "?"),
-            "tags": p.get("tags", [])[:10],
-            "malware_families": p.get("malware_families", [])[:5],
+            "tags": _normalize_str_list(p.get("tags"), 10),
+            "malware_families": _normalize_str_list(p.get("malware_families"), 5),
             "adversary": _normalize_adversary(p.get("adversary")),
-            "industries": p.get("industries", [])[:5],
-            "attack_ids": p.get("attack_ids", [])[:10],
-            "targeted_countries": p.get("targeted_countries", [])[:5],
+            "industries": _normalize_str_list(p.get("industries"), 5),
+            "attack_ids": _normalize_str_list(p.get("attack_ids"), 10, prefer_id=True),
+            "targeted_countries": _normalize_str_list(p.get("targeted_countries"), 5),
             "indicator_count": p.get("indicator_count", 0),
         })
     return out
@@ -141,9 +168,12 @@ def _format_otx_markdown(indicator: str, ind_type: str, general: dict, pulses: l
     # Pulse details
     lines.append("")
     for i, p in enumerate(pulses[:10], 1):
+        if not isinstance(p, dict):
+            continue
         name = p.get("name", "?")
-        author = (p.get("author") or {}).get("username", "?")
-        adversary = p.get("adversary", "")
+        author = ((p.get("author") or {}).get("username", "?")
+                  if isinstance(p.get("author"), dict) else "?")
+        adversary = _normalize_name(p.get("adversary"))
         lines.append(f"## Pulse {i}: {name}")
         lines.append("")
         lines.append(f"| Field | Value |")
@@ -151,21 +181,21 @@ def _format_otx_markdown(indicator: str, ind_type: str, general: dict, pulses: l
         lines.append(f"| Author | {author} |")
         if adversary:
             lines.append(f"| Adversary | **{adversary}** |")
-        mf = p.get("malware_families", [])
+        mf = _normalize_str_list(p.get("malware_families"), 5)
         if mf:
-            lines.append(f"| Malware Families | {', '.join(f'`{m}`' for m in mf[:5])} |")
-        tags = p.get("tags", [])
+            lines.append(f"| Malware Families | {', '.join(f'`{m}`' for m in mf)} |")
+        tags = _normalize_str_list(p.get("tags"), 10)
         if tags:
-            lines.append(f"| Tags | {', '.join(f'`{t}`' for t in tags[:10])} |")
-        attack_ids = p.get("attack_ids", [])
+            lines.append(f"| Tags | {', '.join(f'`{t}`' for t in tags)} |")
+        attack_ids = _normalize_str_list(p.get("attack_ids"), 10, prefer_id=True)
         if attack_ids:
-            lines.append(f"| MITRE ATT&CK | {', '.join(f'`{a}`' for a in attack_ids[:10])} |")
-        industries = p.get("industries", [])
+            lines.append(f"| MITRE ATT&CK | {', '.join(f'`{a}`' for a in attack_ids)} |")
+        industries = _normalize_str_list(p.get("industries"), 5)
         if industries:
-            lines.append(f"| Industries | {', '.join(industries[:5])} |")
-        countries = p.get("targeted_countries", [])
+            lines.append(f"| Industries | {', '.join(industries)} |")
+        countries = _normalize_str_list(p.get("targeted_countries"), 5)
         if countries:
-            lines.append(f"| Targeted Countries | {', '.join(countries[:5])} |")
+            lines.append(f"| Targeted Countries | {', '.join(countries)} |")
         lines.append("")
 
     return "\n".join(lines)

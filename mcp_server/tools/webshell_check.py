@@ -299,6 +299,18 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
 
     v = _verdict(matches)
 
+    # A signature scan needs a fetched body. A curl failure, blocked redirect,
+    # 4xx/5xx error page, or empty body is unknown.
+    evidence_sufficient = (
+        body_read_error is None
+        and blocked_error is None
+        and last_result.get("returncode") == 0
+        and 200 <= status < 400
+        and bool(body_sample)
+    )
+    if not evidence_sufficient:
+        v = "UNKNOWN"
+
     # Auto-register confirmed webshell URL as attacker IOC
     if v == "CONFIRMED":
         register_attacker_ioc(params.url, source="webshell_check")
@@ -314,6 +326,7 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
             "blocked_error": blocked_error,
             "matched_signatures": matches,
             "verdict": v,
+            "evidence_sufficient": evidence_sufficient,
             "body_read_error": body_read_error,
         }, indent=2, ensure_ascii=False)
 
@@ -337,6 +350,10 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
     if v == "CONFIRMED":
         lines.append(f"## 🔴 Verdict: CONFIRMED - Active Webshell Detected")
         lines.append(f"**URL auto-registered** in attacker IOC registry for unmasking protection.")
+    elif v == "UNKNOWN":
+        lines.append("## ⚪ Verdict: UNKNOWN - no response body was scanned")
+        lines.append("No body was scanned, so the endpoint has no verdict. Retry the "
+                     "check or inspect the host-side filesystem.")
     elif v == "LOGIN_PAGE":
         lines.append(f"## 🔐 Verdict: LOGIN_PAGE - Password-Protected Shell Login Detected")
         lines.append(f"**Classify this login page based on the HTML context below:**")

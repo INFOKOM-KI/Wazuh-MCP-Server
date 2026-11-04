@@ -20,7 +20,8 @@ from mcp_server.core.http_client import ValidPublicIp
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call, _get_client
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
-from mcp_server.core.constants import MITRE_TACTIC_TO_CATEGORY
+from mcp_server.core.constants import (ACTIVE_RESPONSE_WRAPPER_RULES,
+                                      MITRE_TACTIC_TO_CATEGORY)
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _srcip_should_clauses
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
@@ -133,6 +134,7 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
 
     body = {
         "size": min(params.limit, _WAZUH_INDEXER_MAX_SIZE),
+        "track_total_hits": True,
         "sort": [{"@timestamp": {"order": "asc"}}],
         "query": {"bool": {"must": must_clauses}},
         "_source": [
@@ -146,15 +148,45 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
         return json.dumps(raw, indent=2)
 
     hits = raw.get("hits", {}).get("hits", [])
+    total_node = raw.get("hits", {}).get("total")
+    if isinstance(total_node, dict):
+        total_matching = int(total_node.get("value", 0))
+        total_relation = total_node.get("relation", "eq")
+    elif total_node is not None:
+        total_matching = int(total_node)
+        total_relation = "eq"
+    else:
+        total_matching = len(hits)
+        total_relation = "eq"
+    omitted_alerts = max(0, total_matching - len(hits))
+    truncated = omitted_alerts > 0
     docs = [_redact_alert_data(h.get("_source", h), params=params)
             for h in hits]
+    ar_wrapper_ids = set(ACTIVE_RESPONSE_WRAPPER_RULES)
+    ar_wrappers_in_sample = sum(
+        1 for d in docs
+        if str((d.get("rule") or {}).get("id", "")) in ar_wrapper_ids)
 
     if not docs:
-        result = {"srcip": params.srcip, "total_alerts": 0,
-                  "summary": "No alerts found for this IP in the time window."}
-        return json.dumps(result, indent=2) if params.response_format == "json" else (
-            f"# Alert Digest - {params.srcip}\n\n**No alerts found** in window "
-            f"`{since_iso}` -> `{until_iso}`.")
+        result = {
+            "srcip": params.srcip,
+            "total_alerts": 0,
+            "total_matching": total_matching,
+            "alerts_analyzed": 0,
+            "truncated": total_matching > 0,
+            "omitted_alerts": total_matching,
+            "total_relation": total_relation,
+            "active_response_wrappers_in_sample": 0,
+            "summary": "No alerts found for this IP in the time window.",
+        }
+        if params.response_format == "json":
+            return json.dumps(result, indent=2)
+        note = (f"\n\n**Incomplete window**: {total_matching} matching alert(s) "
+                "were reported by the indexer but no documents were returned. "
+                "Treat this as unknown, not as a clean window."
+                if total_matching > 0 else "")
+        return (f"# Alert Digest - {params.srcip}\n\n**No alerts found** in window "
+                f"`{since_iso}` -> `{until_iso}`.{note}")
 
     # IoC extraction
     rule_counts: Counter[str] = Counter()
@@ -211,6 +243,12 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
             "srcip": params.srcip,
             "window": {"since": since_iso, "until": until_iso},
             "total_alerts": len(docs),
+            "total_matching": total_matching,
+            "alerts_analyzed": len(docs),
+            "truncated": truncated,
+            "omitted_alerts": omitted_alerts,
+            "total_relation": total_relation,
+            "active_response_wrappers_in_sample": ar_wrappers_in_sample,
             "first_seen": first_ts,
             "last_seen": last_ts,
             "rules": [
@@ -239,8 +277,26 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
         f"# Alert Digest - `{params.srcip}`",
         "",
         f"- **Window**: `{since_iso}` -> `{until_iso}`",
-        f"- **Total alerts**: {len(docs)} | **First seen**: `{first_ts}` | **Last seen**: `{last_ts}`",
+        f"- **Alerts analyzed**: {len(docs)} of {total_matching} matching"
+        f"{' (truncated by `limit`)' if truncated else ''}",
+        f"- **First seen**: `{first_ts}` | **Last seen**: `{last_ts}`",
         "",
+    ]
+    if truncated:
+        lines += [
+            f"> **Incomplete window**: {omitted_alerts} matching alert(s) were not "
+            "fetched, so rule counts and IoCs below describe the analyzed sample only. "
+            "Raise `limit` or narrow the time window for a complete digest.",
+            "",
+        ]
+    if ar_wrappers_in_sample:
+        lines += [
+            f"> **Document population**: the sample includes "
+            f"{ar_wrappers_in_sample} Active Response wrapper event(s). They are "
+            "counted as documents; this digest does not deduplicate them.",
+            "",
+        ]
+    lines += [
         "## Rules Triggered",
         "",
         "| Rule ID | Count | Description | First → Last |",

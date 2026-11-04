@@ -18,7 +18,7 @@ from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGr
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.wazuh.indexer import _wazuh_indexer_post
 
-# Email extraction helper (shared with wazuh_compromised.py)
+# Email extraction, shared with wazuh_compromised.py
 _EMAIL_PATTERN = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', re.IGNORECASE)
 
 

@@ -12,10 +12,15 @@ import os
 os.environ.setdefault("WAZUH_INDEXER_URL", "https://indexer:9200")
 os.environ.setdefault("WAZUH_INDEXER_PASSWORD", "test-indexer-pass")
 
+import asyncio
 import pytest
 import json
 import mcp_server.tools.stix_correlation as sc
-from mcp_server.tools.ioc_tools import _extract_iocs
+from mcp_server.core.exceptions import ThreatIntelError
+from mcp_server.core.ioc_store import clear_ioc_store
+from mcp_server.threat_intel.rapidapi_quota import RapidApiBudget
+from mcp_server.tools.ioc_tools import (_extract_iocs, IocExtractInput,
+                                        blueteam_extract_iocs)
 
 
 @pytest.fixture
@@ -113,3 +118,23 @@ def test_extract_iocs_cves():
 def test_extract_iocs_no_cve():
     iocs = _extract_iocs("nothing here 1.2.3.4")
     assert iocs["cves"] == []
+
+
+def test_local_ioc_extraction_survives_closed_rapidapi_budget():
+    budget = RapidApiBudget(budget=0)
+    with pytest.raises(ThreatIntelError, match="Budget closed"):
+        budget.check()
+
+    text = "srcip=1.2.3.4 md5=d41d8cd98f00b204e9800998ecf8427e"
+    iocs = _extract_iocs(text)
+    assert "1.2.3.4" in iocs["ips"]
+    assert "d41d8cd98f00b204e9800998ecf8427e" in iocs["hashes"]["md5"]
+
+    tool = getattr(blueteam_extract_iocs, "__wrapped__", blueteam_extract_iocs)
+    try:
+        payload = json.loads(asyncio.run(tool(IocExtractInput(
+            text=text, response_format="json"))))
+        assert "1.2.3.4" in payload["ips"]
+        assert "d41d8cd98f00b204e9800998ecf8427e" in payload["hashes"]["md5"]
+    finally:
+        clear_ioc_store()

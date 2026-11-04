@@ -29,7 +29,10 @@ CATALOG: dict[str, dict[str, Any]] = {
     "drupal": {"slug": None, "kind": "cms", "names": ("drupal",)},
     "magento": {"slug": None, "kind": "cms", "names": ("magento", "adobe commerce")},
     "typo3": {"slug": None, "kind": "cms", "names": ("typo3",)},
-    "laravel": {"slug": None, "kind": "framework", "names": ("laravel",)},
+    "laravel": {"slug": None, "kind": "framework",
+                "names": ("laravel", "vendor/laravel", "laravel/framework", "artisan")},
+    "phpunit": {"slug": None, "kind": "framework",
+                "names": ("phpunit", "vendor/phpunit", "eval-stdin.php")},
     "symfony": {"slug": None, "kind": "framework", "names": ("symfony",)},
     "django": {"slug": "django", "kind": "framework", "names": ("django",)},
     "flask": {"slug": "flask", "kind": "framework", "names": ("flask",)},
@@ -354,6 +357,14 @@ def identify_technologies(alert: dict) -> dict:
         # whose response was observed, stays discovery context.
         target = relationship in ("explicit_vulnerability_target",
                                   "explicit_exploitation_target")
+        best_evidence = max(evidence,
+                            key=lambda item: CLASSIFICATION_STRENGTH[item["classification"]])
+        observation = {
+            "data.url": "request_pattern",
+            "data.command": "request_pattern",
+            "rule.groups": "rule_group",
+            "rule.description": "description",
+        }.get(best_evidence["field"], "log_metadata")
         technologies.append({
             "technology": name,
             "identified": True,
@@ -366,6 +377,8 @@ def identify_technologies(alert: dict) -> dict:
             "cve_lookup": "slug_available" if slug in TECH_SLUGS else "no_slug",
             "discovery": "performed" if status == "mapped" else "not_performed",
             "classification": best,
+            "observation": observation,
+            "installed_confirmation": "not_established",
             "status": status,
             "evidence": evidence,
             "conflict": len({item["classification"] for item in evidence}) > 1,

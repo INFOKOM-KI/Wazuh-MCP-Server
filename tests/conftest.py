@@ -6,7 +6,9 @@ following the REF repository's conftest.py pattern.
 """
 from __future__ import annotations
 
+import ipaddress
 import os
+import socket
 import tempfile
 import pytest
 import httpx
@@ -37,6 +39,90 @@ def _clean_env():
     yield
     os.environ.clear()
     os.environ.update(saved)
+
+
+_BLOCKED_NETWORK_ATTEMPTS: list[str] = []
+
+
+@pytest.fixture(autouse=True)
+def _offline_wazuh_indexer(monkeypatch):
+    """Make an unmocked Indexer call fail locally, never by DNS resolution.
+    Tests that need a response replace ``_wazuh_indexer_post`` or ``_api_call``.
+    """
+    from mcp_server.wazuh import indexer
+
+    async def offline(*args, **kwargs):
+        raise httpx.ConnectError("indexer disabled in unit tests")
+
+    monkeypatch.setattr(indexer, "_api_call", offline)
+
+
+@pytest.fixture(autouse=True)
+def _block_external_network(monkeypatch):
+    """Block non-loopback connect/connect_ex/sendto/getaddrinfo and record attempts.
+    Loopback and AF_UNIX are allowed; subprocesses are outside this guard.
+    """
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    real_sendto = socket.socket.sendto
+    real_getaddrinfo = socket.getaddrinfo
+
+    def _literal(host):
+        try:
+            return ipaddress.ip_address(str(host))
+        except ValueError:
+            return None
+
+    def _allowed(host):
+        if host in ("localhost", "127.0.0.1", "::1"):
+            return True
+        ip = _literal(host)
+        return ip is not None and ip.is_loopback
+
+    def _record(message):
+        _BLOCKED_NETWORK_ATTEMPTS.append(
+            f"{os.environ.get('PYTEST_CURRENT_TEST', '?')}: {message}")
+        raise RuntimeError(message)
+
+    def guarded_connect(self, address):
+        if self.family == socket.AF_UNIX:
+            return real_connect(self, address)
+        host = address[0] if isinstance(address, tuple) else None
+        if _allowed(host):
+            return real_connect(self, address)
+        _record(f"external network blocked in tests: {address!r}")
+
+    def guarded_connect_ex(self, address):
+        if self.family == socket.AF_UNIX:
+            return real_connect_ex(self, address)
+        host = address[0] if isinstance(address, tuple) else None
+        if _allowed(host):
+            return real_connect_ex(self, address)
+        _record(f"external connect_ex blocked in tests: {address!r}")
+
+    def guarded_sendto(self, data, *args):
+        address = args[-1] if args else None
+        if not isinstance(address, tuple):
+            return real_sendto(self, data, *args)
+        host = address[0]
+        if _allowed(host):
+            return real_sendto(self, data, *args)
+        _record(f"external sendto blocked in tests: {address!r}")
+
+    def guarded_getaddrinfo(host, *args, **kwargs):
+        if _allowed(host) or _literal(host) is not None:
+            return real_getaddrinfo(host, *args, **kwargs)
+        _record(f"DNS lookup blocked in tests: {host!r}")
+
+    _BLOCKED_NETWORK_ATTEMPTS.clear()
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+    monkeypatch.setattr(socket.socket, "sendto", guarded_sendto)
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
+    yield
+    attempts = list(_BLOCKED_NETWORK_ATTEMPTS)
+    _BLOCKED_NETWORK_ATTEMPTS.clear()
+    assert not attempts, "blocked external network attempt(s): " + "; ".join(attempts)
 
 
 @pytest.fixture
