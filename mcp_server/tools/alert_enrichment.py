@@ -8,12 +8,12 @@ import json, re, math, asyncio, os
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Literal, Any
 from collections import Counter
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC,
                         CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV,
-                        ABUSEIPDB_API_KEY, VIRUSTOTAL_API_KEY,
-                        GREYNOISE_COMMUNITY_BASE_URL, ABUSEIPDB_BASE_URL,
+                        VIRUSTOTAL_API_KEY,
+                        GREYNOISE_COMMUNITY_BASE_URL,
                         VIRUSTOTAL_BASE_URL, ARGUS_BASE_URL,
                         NETRA_MIN_INTERVAL, ARGUS_MIN_INTERVAL, SANGFOR_MIN_INTERVAL)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
@@ -475,18 +475,6 @@ class UnifiedThreatScoreInput(BaseModel):
     ip: ValidPublicIp = Field(..., min_length=7, max_length=45, description="Public IP to score.")
     response_format: str = Field(default="markdown", description="'markdown' or 'json'.")
 
-    @field_validator("ip")
-    @classmethod
-    def validate_ip(cls, v: str) -> str:
-        v = v.strip()
-        try:
-            __import__("ipaddress").ip_address(v)
-        except ValueError as exc:
-            raise ValueError(f"Invalid IP: '{v}'") from exc
-        if __import__("ipaddress").ip_address(v).is_private:
-            raise ValueError(f"'{v}' is a private IP - this tool accepts public IPs only.")
-        return v
-
 
 @mcp.tool(
     name="blueteam_unified_threat_score",
@@ -517,19 +505,20 @@ async def blueteam_unified_threat_score(params: UnifiedThreatScoreInput) -> str:
         except Exception: return 0.0, {}
 
     async def _abuseipdb(ip):
+        from mcp_server.threat_intel.abuseipdb import AbuseIPDBError, check_ip
         try:
-            from mcp_server import ABUSEIPDB_API_KEY
-            if not ABUSEIPDB_API_KEY: return 0.0, {}
-            h = {"Key":ABUSEIPDB_API_KEY,"Accept":"application/json"}
-            r = await _api_call("get",f"{ABUSEIPDB_BASE_URL}/check?ipAddress={ip}&maxAgeInDays=90",headers=h)
-            d = r.json().get("data",{})
-            s = d.get("abuseConfidenceScore",0)/100.0
-            return s, {"confidence":d.get("abuseConfidenceScore",0),"total_reports":d.get("totalReports",0)}
-        except Exception: return 0.0, {}
+            d = await check_ip(ip, max_age_days=90)
+            return (d["abuse_confidence_score"] / 100.0,
+                    {"confidence": d["abuse_confidence_score"],
+                     "total_reports": d["total_reports"]}, "")
+        except AbuseIPDBError as exc:
+            return 0.0, {}, exc.kind
+        except Exception as exc:  # never turn an unexpected failure into a clean vote
+            return 0.0, {}, f"upstream_error: {exc}"
 
     cs_s, cs_d = await _crowdsec(params.ip)
     tf_s, tf_d = await _threatfox(params.ip)
-    ab_s, ab_d = await _abuseipdb(params.ip)
+    ab_s, ab_d, ab_status = await _abuseipdb(params.ip)
 
     w = {"crowdsec":0.35,"threatfox":0.35,"abuseipdb":0.30}
     parts = []
@@ -545,18 +534,24 @@ async def blueteam_unified_threat_score(params: UnifiedThreatScoreInput) -> str:
     elif parts: v="LOW — Probably benign"
     else: v="UNKNOWN - No threat intel sources available"
 
+    ab_source = ({"score": round(ab_s, 2), **ab_d} if ab_d else
+                 {"status": "not_configured" if ab_status == "not_configured"
+                  else "unavailable", "error_kind": ab_status})
+
     if params.response_format=="json":
         return _truncate_if_needed(json.dumps({"ip":params.ip,"unified_score":round(unified,2),"verdict":v,
+            "coverage": {"sources_answered": len(parts), "sources_total": 3},
             "sources":{"crowdsec":{"score":round(cs_s,2),**cs_d} if cs_d else None,
                        "threatfox":{"score":round(tf_s,2),**tf_d} if tf_d else None,
-                       "abuseipdb":{"score":round(ab_s,2),**ab_d} if ab_d else None},
+                       "abuseipdb": ab_source},
             "scoring_model":{"weights":w,"used_weight":round(uw,2)}},indent=2))
 
-    lines=[f"# Unified Threat Score - `{params.ip}`","",f"**Score**: {unified:.2f} | **Verdict**: {v}","","| Source | Score | Details |","|--------|-------|---------|"]
+    lines=[f"# Unified Threat Score - `{params.ip}`","",f"**Score**: {unified:.2f} | **Verdict**: {v}",
+           f"**Coverage**: {len(parts)}/3 sources answered","","| Source | Score | Details |","|--------|-------|---------|"]
     if cs_d: lines.append(f"| CrowdSec | {cs_s:.2f} | `{cs_d.get('reputation','?')}` - {', '.join(cs_d.get('behaviors',[])[:2])} |")
     else: lines.append("| CrowdSec | - | ⚠️ Not configured |")
     if tf_d: lines.append(f"| ThreatFox | {tf_s:.2f} | `{tf_d.get('malware','?')}` ({tf_d.get('threat_type','?')}, conf={tf_d.get('confidence','?')}) |")
     else: lines.append("| ThreatFox | - | ⚠️ Not configured |")
     if ab_d: lines.append(f"| AbuseIPDB | {ab_s:.2f} | {ab_d.get('confidence',0)}% confidence, {ab_d.get('total_reports',0)} reports |")
-    else: lines.append("| AbuseIPDB | - | ⚠️ Not configured |")
+    else: lines.append(f"| AbuseIPDB | - | ⚠️ {ab_source['status']} ({ab_status}) |")
     return _truncate_if_needed("\n".join(lines))

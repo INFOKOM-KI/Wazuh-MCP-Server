@@ -7,7 +7,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client, the blue-team counterpart to
-offensive tooling. **164 tools + 4 resources** (138 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
+offensive tooling. **166 tools + 4 resources** (138 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, local case RAG, host forensics, and opt-in HDBSCAN clustering + ATT&CK incident
 labeling. The inbound API key defaults to the read-only `wazuh:read` scope.
@@ -66,7 +66,7 @@ export WAZUH_API_PASSWORD="<api-password>"
 export CROWDSEC_API_KEY="<key>"                  # optional: threat intel (free)
 # inbound auth for the HTTP transport (REQUIRED when binding beyond 127.0.0.1)
 export MCP_API_KEY="btm_<43-char-base64>"        # generate: python3 -c "import secrets; print('btm_' + secrets.token_urlsafe(32))"
-export MCP_API_KEY_SCOPES="wazuh:read wazuh:write"   # optional: default wazuh:read (read-only)
+export MCP_API_KEY_SCOPES="wazuh:read wazuh:write threatintel:report"   # optional: default wazuh:read (read-only)
 
 # run (stdio)
 mcp-server-blueteam
@@ -102,7 +102,7 @@ optional; tools degrade gracefully without them.
 | Wazuh Indexer | `WAZUH_INDEXER_URL` / `_USER` / `_PASSWORD` | OpenSearch (9200): alert/event data |
 | Wazuh Manager | `WAZUH_API_URL` / `_USER` / `_PASSWORD` | Manager API (55000): rules/agents/config |
 | TLS | `WAZUH_INDEXER_VERIFY_SSL`, `WAZUH_API_VERIFY_SSL` | default `true` |
-| Threat intel | `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `RAPIDAPI_KEY`, `HUDSONROCK_API_KEY` | 9 providers + RapidAPI + HudsonRock; all optional |
+| Threat intel | `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `RAPIDAPI_KEY`, `HUDSONROCK_API_KEY` | 9 providers + RapidAPI + HudsonRock; all optional. AbuseIPDB adds `ABUSEIPDB_CACHE_TTL` (900s), `BLUETEAM_ABUSEIPDB_REPORTING_ENABLED` (false), `BLUETEAM_ABUSEIPDB_EXCLUDE` (IPs/CIDRs), `BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL` (1s), and `BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL` (50) |
 | RapidAPI budget | `BLUETEAM_RAPIDAPI_MONTHLY_CAP`, `BLUETEAM_RAPIDAPI_BUDGET`, `BLUETEAM_RAPIDAPI_BUDGET_HOURS`, `BLUETEAM_RAPIDAPI_CACHE`, `BLUETEAM_RAPIDAPI_RAW_WHOIS`, `BLUETEAM_RAPIDAPI_MIN_INTERVAL`, `RAPIDAPI_CACHE_TTL` | one account-wide pool (default 100/month) shared by every RapidAPI product. Budget defaults to 0, so every RapidAPI call is refused until an operator arms a window. `MIN_INTERVAL` paces requests across all of them (default 0.25s; set 7.0 where the plan requires one lookup per 7s) |
 | MISP | `MISP_URL`, `MISP_API_KEY`, `MISP_VERIFYCERT`, `MISP_CACHE_TTL`, `MISP_MIN_INTERVAL`, `MISP_MAX_CONCURRENT`, `MISP_TIMEOUT` | internal sharing instance; read-only key. `MISP_URL` without `MISP_API_KEY` fails startup. `VERIFYCERT` defaults `true` and is scoped to the MISP pool only |
 | Outbound lookup spacing | `NETRA_MIN_INTERVAL`, `ARGUS_MIN_INTERVAL`, `SANGFOR_MIN_INTERVAL` | seconds between upstream lookups, default `30`/`30`/`5` |
@@ -121,7 +121,7 @@ optional; tools degrade gracefully without them.
 | Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
 | Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder: no torch, no second model resident. `BACKEND=laya` and `BACKEND=setfit` each require `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin, and the SetFit pin is verified before its pickled head is loaded). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya`/`setfit` (already-softmaxed distributions) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya\|setfit>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`; SetFit uses its trained truncation. `MAX_CONCURRENCY` defaults `1` |
 | CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools) and `fail2ban` (3 tools) modules at import, so the startup line reads **138 tools registered** instead of 164: `164 - 23 - 3 = 138`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. Each skip is logged at INFO with the category name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools), `fail2ban` (3 tools), and `abuseipdb` (2 tools) modules at import, so the startup line reads **138 tools registered** instead of 166: `166 - 23 - 3 - 2 = 138`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. `WAZUH_DISABLED_TOOLS` removes named tools after import; for example, `WAZUH_DISABLED_TOOLS=blueteam_abuseipdb_report` keeps the read-only check tool available while hiding the report tool. Each skip is logged at INFO with the category or tool name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
@@ -443,16 +443,20 @@ from cron and the exit code is the failure signal.
 
 - `MCP_API_KEY`: format `btm_<43-char-urlsafe-base64>` (47 chars). Stored only as a SHA-256
   digest, compared with `hmac.compare_digest` (constant-time).
-- `MCP_API_KEY_SCOPES`: default `wazuh:read` (read-only). Add `wazuh:write` to enable the 17
-  write tools (`blueteam_fail2ban_unban`, `blueteam_case_*` ×3, `blueteam_set_owned_domains`,
+- `MCP_API_KEY_SCOPES`: default `wazuh:read` (read-only). Add `wazuh:write` to enable the 18
+  Wazuh write tools (`blueteam_fail2ban_unban`, `blueteam_case_*` ×3, `blueteam_set_owned_domains`,
   `blueteam_mark_investigated`, `blueteam_wazuh_export`, `blueteam_export_report`,
   `blueteam_stix_export`, `blueteam_rag_ingest`, `blueteam_capture_traffic`,
   `blueteam_alert_cluster`, `blueteam_alert_cluster_assign`, `blueteam_tactic_forecast`,
-  `blueteam_source_forecast`, `blueteam_attack_forecast`,
-  `blueteam_volume_forecast`, `blueteam_yara_rule_save`, `blueteam_sigma_rule_save`).
-  Fail-closed: no scope ⇒ read-only. The set is derived at request time from the live FastMCP
-  annotations (`readOnlyHint is not True` or `destructiveHint is True`), not a hardcoded
-  allowlist, so a newly added write tool is scoped automatically.
+  `blueteam_source_forecast`, `blueteam_volume_forecast`, `blueteam_yara_rule_save`, `blueteam_sigma_rule_save`).
+- `threatintel:report`: required for `blueteam_abuseipdb_report`. It is separate from
+  `wazuh:write` because a report leaves the SOC. A key with `wazuh:write` alone cannot
+  publish to AbuseIPDB.
+
+Fail-closed: no scope means read-only. The write set is derived at request time from the live
+FastMCP annotations (`readOnlyHint is not True` or `destructiveHint is True`), not a hardcoded
+allowlist, so a newly added write tool is scoped automatically. A tool with a dedicated scope
+override (`blueteam_abuseipdb_report`) asks for that scope instead of `wazuh:write`.
 - **Bind guard** (`main.py::_start_http_transport`): a non-loopback bind without `MCP_API_KEY`
   raises `ConfigurationError` and refuses to start. Loopback stays auth-less only when no key is
   configured; when a key is set it is enforced on every request.
@@ -509,7 +513,7 @@ A ready-to-paste prompt for a **local** LLM connected to this MCP server. Two ou
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 160
+Manager (config/agent data) plus 7+ external threat-intel providers into 166
 tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
@@ -579,9 +583,24 @@ Choose the tool by what the analyst wants. Never invent tools.
 | URLhaus hash/URL | `urlhaus_hash_lookup` / `urlhaus_lookup` |
 | Netra | `netra_ip_analysis(ip)`: 30s spaced, **90s** per-request budget because its multi-source fan-out legitimately takes ~34s |
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
-| AbuseIPDB IP reputation | **no standalone tool**: AbuseIPDB runs inside `blueteam_unified_threat_score` (weight 0.30). Do not call a `*_abuseipdb` tool; it is not registered. |
+| AbuseIPDB check | `blueteam_abuseipdb_check(ip=...)` for one IPv4/IPv6 address, or `network="8.8.8.0/24"` for a Standard-plan check-block sweep. A block lists only addresses that already have reports; an absent address is not clean. Cached 15 minutes |
+| AbuseIPDB report | `blueteam_abuseipdb_report(...)`: preview by default. Reports harvested Wazuh **source** IPs or an explicit, evidence-commented list. A submission requires all three: `BLUETEAM_ABUSEIPDB_REPORTING_ENABLED=true`, `dry_run=false`, `confirm=true`. Requires the `threatintel:report` HTTP scope, not `wazuh:write`. Every comment ends with exactly one `Reported by TangerangKota-CSIRT` signature |
 | RapidAPI (one shared budget) | `blueteam_ip_intel_bulk(ips=[...])` for 1-50 IPs in **one** request; `blueteam_ioc_search(ip)` for a single IP; `blueteam_ioc_search_bulk(ips=[...])` for 1-25 IPs one request each; `blueteam_breach_check(email)`. All four draw on one account-wide pool that is **closed unless the operator armed it**, and none of them cost quota at the six-provider aggregate |
 | MISP (own instance) | `blueteam_misp_ioc_lookup(value)`: read-only `restSearch` against your MISP. Returns the attributes an indicator appears in, plus tag names; `comment` and galaxy free text are stripped by an allowlist before you see them. Needs `MISP_URL` + `MISP_API_KEY`: when unset the tool raises at call time, so report "MISP not configured", never "no results". A header reading `Capability probe: version probe skipped` is a restricted version endpoint, not a failed lookup |
+
+**AbuseIPDB reporting is an external write, not an enrichment call.** Preview is the default. When the current user prompt explicitly asks to report malicious IPs, treat that prompt as authorization for this one operation: set `dry_run=false` and `confirm=true` and submit each eligible candidate without asking for a second per-IP confirmation. A request to check, analyze, monitor, or preview is not reporting authorization. Authorization does not carry over to a later execution. Scheduled, background, and routine SOC runs never report.
+
+This is prompt-level authorization interpreted by the assistant, not server-side verification of the original user message. `confirm=true` is a tool parameter, not authentication. The mandatory server-side controls are `BLUETEAM_ABUSEIPDB_REPORTING_ENABLED=true` and the `threatintel:report` scope. Give that scope only to the interactive SOC client; scheduled and background clients must use read-only credentials without it.
+
+| Current user intent | Action |
+|---|---|
+| Check IP reputation | `blueteam_abuseipdb_check` only |
+| Analyze Wazuh alerts | read-only alert analysis only |
+| Preview AbuseIPDB reports | `dry_run=true`; no POST |
+| Analyze and report malicious IPs | check, then `dry_run=false` + `confirm=true`; submit eligible candidates |
+| Routine SOC analysis, scheduled report, or background monitoring | never call `blueteam_abuseipdb_report` |
+
+The tool harvests only public `srcip` evidence with `min_alerts` alerts at or above `min_level`; an IP that also appears as a `dstip` in the window is `manual_review`, never auto-reported. `categories="auto"` maps Wazuh groups, and an unknown attack type is `manual_review` - category 15 (Hacking) is never a fallback. Harvested comments contain counts, timestamps, and numeric rule IDs only; an explicit report requires an analyst comment describing the evidence. No raw logs, usernames, mail addresses, agent names, or victim/third-party addresses. A local 15-minute ledger and the upstream 15-minute rule prevent duplicate submissions. The Standard plan allows 1,000 report requests/day; `remaining_candidates` and `truncated` tell you when a run did not cover the whole window. Never call this tool from a scheduled or read-only report.
 
 **The RapidAPI budget, read this before calling any RapidAPI tool.** Every RapidAPI product draws on ONE account-wide pool of `BLUETEAM_RAPIDAPI_MONTHLY_CAP` requests (default 100/month), and the guard is fail-closed: `BLUETEAM_RAPIDAPI_BUDGET` defaults to 0, so a call is refused with `Budget closed` until an operator arms a window (`BLUETEAM_RAPIDAPI_BUDGET_HOURS`, default 8h, which expires on its own). The month-to-date counter and the arm window both survive a server restart once `BLUETEAM_RAPIDAPI_CACHE` points at a file, so a restart is not a way to arm the next window. A refusal is not an outage and not a retry prompt: report it once, then continue with the quota-free providers.
 - Prefer `blueteam_ip_intel_bulk(ips=[...])`: N IPs cost **one** request, 1-50 per call, duplicates collapsed, and the cache key ignores order so re-running the same set inside the TTL is free.
@@ -594,7 +613,7 @@ It is unrelated to `threatfox_ioc_search` (different API, no shared budget). The
 
 Each provider result carries `error_kind` next to `error` (JSON output; `error` stays the
 human-readable text): `rate_limited`, `auth_error`, `not_found`, `bad_request`,
-`upstream_error`, `timeout`, `circuit_open`, `not_configured`, `unsupported_type`. Read the
+`upstream_error`, `timeout`, `circuit_open`, `plan_limit`, `not_configured`, `unsupported_type`. Read the
 kind, not the message: `not_found` means the upstream has no record (not a provider failure),
 `not_configured` and `unsupported_type` are configuration answers (not findings), and
 `rate_limited` / `circuit_open` / `upstream_error` / `timeout` mean the provider is unavailable
@@ -1527,7 +1546,7 @@ Do not lower below these without production telemetry evidence.
 | `"tool not available in this request"` | client didn't expose that tool this session | use an equivalent tool or note it |
 | `"raw/forensic bypass requires ... token"` | correct gate behavior | pass the token value (see §3) |
 | missing-key provider errors | provider skipped gracefully in `errors[]` | report partial result, note which provider skipped |
-| `error_kind` on an aggregate provider result | machine-readable failure class (see §1): `rate_limited`, `auth_error`, `not_found`, `bad_request`, `upstream_error`, `timeout`, `circuit_open`, `not_configured`, `unsupported_type`. `error` stays the human-readable text | match the kind to the action: `rate_limited` waits, `auth_error` fixes a key or subscription, `not_found` is no record, `not_configured`/`unsupported_type` are configuration answers, the rest mean the provider is degraded for this run |
+| `error_kind` on an aggregate provider result | machine-readable failure class (see §1): `rate_limited`, `auth_error`, `not_found`, `bad_request`, `upstream_error`, `timeout`, `circuit_open`, `plan_limit`, `not_configured`, `unsupported_type`. `error` stays the human-readable text | match the kind to the action: `rate_limited` waits, `auth_error` fixes a key or subscription, `not_found` is no record, `not_configured`/`unsupported_type` are configuration answers, the rest mean the provider is degraded for this run |
 | `"MISP_URL and MISP_API_KEY must both be set to use MISP tools"` | MISP is not configured on this server | report it as "MISP not configured". Never as "no results". Ask the operator to set the env vars |
 | `"Provide 'alert_text', 'srcip', or 'dependency_manifest'"` | `blueteam_investigation_workflow` called with no target | pass one of the three targets and re-invoke |
 | `"Marker conversion failed: ... llama-server binary not found"` | surya's OCR VLM backend spawns the external llama.cpp binary, which is absent | install llama-server on the host (ggml-org/llama.cpp releases) and set `LLAMA_CPP_BINARY` (e.g. `Environment="LLAMA_CPP_BINARY=/usr/local/bin/llama-server"`) in the service, then restart |

@@ -79,6 +79,7 @@ def register_all_tools() -> None:
         ("webshell_check",         "webshell_check",         False),  # 1 tool - curl + signature scan
         ("otx_lookup",             "otx_lookup",             False),  # 2 tools - AlienVault OTX threat intel
         ("threat_intel_aggregate",  "threat_intel_aggregate",  False),  # 1 tool - unified multi-provider aggregation
+        ("abuseipdb",               "abuseipdb",               True),   # check + report; report is an external write
         ("misp",                   "misp",                   False),  # 1 tool - MISP IOC lookup (read-only, version agnostic restSearch)
         ("urlhaus",                "urlhaus",                False),  # 2 tools - URLhaus malware URL database
         ("cve_enrichment",         "cve_enrichment",         False),  # 6 tools - CVE enrichment (NVD/EPSS/KEV/PoC/score/SSVC)
@@ -124,6 +125,17 @@ def register_all_tools() -> None:
         if _skip(category, also_if_read_only=skip_ro):
             continue
         __import__(f"mcp_server.tools.{attr}", fromlist=[attr])
+
+    # Decorators register at import time, so the disabled set is applied to the
+    # registry after every module has loaded. Category/read-only gating above
+    # still prevents a whole module from importing.
+    registry = getattr(mcp._tool_manager, "_tools", {})
+    removed = [name for name in sorted(disabled_tools) if name in registry]
+    for name in removed:
+        mcp.remove_tool(name)
+    if removed:
+        logger.info("Removed %d tool(s) via WAZUH_DISABLED_TOOLS: %s",
+                    len(removed), ", ".join(removed))
 
     # Dynamic tool count
     tool_count = _count_registered_tools()

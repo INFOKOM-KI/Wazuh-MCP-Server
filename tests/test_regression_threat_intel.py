@@ -29,6 +29,7 @@ import pytest
 from mcp_server.core.exceptions import ThreatIntelError
 from mcp_server.threat_intel import otx, threatfox
 from mcp_server.tools import threat_intel_aggregate as agg
+from mcp_server.threat_intel import abuseipdb
 
 
 def _run(coro):
@@ -160,8 +161,8 @@ def test_abuseipdb_missing_data_is_error(monkeypatch):
     async def fake_api_call(method, url, **kwargs):
         return _Response()
 
-    monkeypatch.setattr(agg, "ABUSEIPDB_API_KEY", "test-key")
-    with patch.object(agg, "_api_call", fake_api_call):
+    monkeypatch.setattr(abuseipdb, "ABUSEIPDB_API_KEY", "test-key")
+    with patch.object(abuseipdb, "_api_call", fake_api_call):
         result = _run(agg._abuseipdb_provider("140.82.0.86", "IPv4"))
 
     assert result.error is not None
@@ -202,8 +203,8 @@ def test_timeout_is_reported_as_timeout_not_clean(monkeypatch):
     async def fake_api_call(method, url, **kwargs):
         raise httpx.ReadTimeout("slow upstream")
 
-    monkeypatch.setattr(agg, "ABUSEIPDB_API_KEY", "test-key")
-    with patch.object(agg, "_api_call", fake_api_call):
+    monkeypatch.setattr(abuseipdb, "ABUSEIPDB_API_KEY", "test-key")
+    with patch.object(abuseipdb, "_api_call", fake_api_call):
         result = _run(agg._abuseipdb_provider("140.82.0.86", "IPv4"))
 
     assert result.error_kind == "timeout"
@@ -282,8 +283,8 @@ def test_abuseipdb_without_confidence_is_malformed(monkeypatch):
     async def fake_api_call(method, url, **kwargs):
         return _Response()
 
-    monkeypatch.setattr(agg, "ABUSEIPDB_API_KEY", "test-key")
-    with patch.object(agg, "_api_call", fake_api_call):
+    monkeypatch.setattr(abuseipdb, "ABUSEIPDB_API_KEY", "test-key")
+    with patch.object(abuseipdb, "_api_call", fake_api_call):
         result = _run(agg._abuseipdb_provider("140.82.0.86", "IPv4"))
 
     assert result.error is not None

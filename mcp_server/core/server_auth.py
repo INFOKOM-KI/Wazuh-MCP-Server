@@ -6,10 +6,13 @@ Independent of ``mcp_server/wazuh/auth.py`` (outbound JWT to the Wazuh Manager A
 Scope model (fail-closed):
 - ``wazuh:read``  - default, granted to every valid key (read-only tools).
 - ``wazuh:write`` - opt-in via MCP_API_KEY_SCOPES; required for tools whose
-``readOnlyHint`` annotation is not True (or ``destructiveHint`` is True).
+``readOnlyHint`` annotation is not True (or ``destructiveHint`` is True), except
+tools with a dedicated scope override.
+- ``threatintel:report`` - required for ``blueteam_abuseipdb_report``; a separate
+scope because the call publishes to a third party, not to Wazuh.
 The write-tool set is derived at request time from the FastMCP registry's
-tool annotations not a hardcoded allowlist, so a newly added write tool is
-automatically protected with nothing extra to update.
+tool annotations rather than a hardcoded allowlist, so a newly added write tool is
+automatically protected. The only explicit map is the egress scope override.
 """
 from __future__ import annotations
 import hashlib
@@ -33,7 +36,15 @@ logger = logging.getLogger("blue_team_mcp.server_auth")
 
 READ_SCOPE = "wazuh:read"
 WRITE_SCOPE = "wazuh:write"
-_VALID_SCOPES = (READ_SCOPE, WRITE_SCOPE)
+REPORT_SCOPE = "threatintel:report"
+_VALID_SCOPES = (READ_SCOPE, WRITE_SCOPE, REPORT_SCOPE)
+
+# External publications are not SIEM writes. A report leaves the SOC and cannot be
+# undone by a Wazuh role change, so it gets its own scope instead of reusing
+# wazuh:write. Add new egress tools here, never by widening WRITE_SCOPE.
+TOOL_SCOPE_OVERRIDES: dict[str, str] = {
+    "blueteam_abuseipdb_report": REPORT_SCOPE,
+}
 
 # "btm_" + secrets.token_urlsafe(32)  ->  4 + 43 = 47 chars
 API_KEY_PREFIX = "btm_"
@@ -249,6 +260,19 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app, dispatch)
         self._write_tools = _write_tool_names()
 
+    def _required_scope(self, tool_name: str | None) -> str | None:
+        """Return the scope a tool call needs, or None for a read tool.
+
+        A dedicated override wins over the annotation-derived write set so an
+        egress tool can be granted without handing over the Wazuh write scope.
+        """
+        if not tool_name:
+            return None
+        override = TOOL_SCOPE_OVERRIDES.get(tool_name)
+        if override is not None:
+            return override
+        return WRITE_SCOPE if tool_name in self._write_tools else None
+
     async def dispatch(self, request: Request, call_next):
         # 1. Inbound rate limit (per client IP) before any other work.
         client_ip = request.client.host if request.client else "unknown"
@@ -284,11 +308,13 @@ class APIAuthMiddleware(BaseHTTPMiddleware):
             if payload.get("method") == "tools/call" and isinstance(payload.get("params"), dict):
                 name = (payload.get("params") or {}).get("name")
                 tool_name = name if isinstance(name, str) else None
-            if key is not None and tool_name and tool_name in self._write_tools and not key.has_scope(WRITE_SCOPE):
-                return JSONResponse(
-                    {"error": f"Forbidden: tool '{tool_name}' requires '{WRITE_SCOPE}' scope"},
-                    status_code=403,
-                )
+            if key is not None and tool_name:
+                required = self._required_scope(tool_name)
+                if required is not None and not key.has_scope(required):
+                    return JSONResponse(
+                        {"error": f"Forbidden: tool '{tool_name}' requires '{required}' scope"},
+                        status_code=403,
+                    )
 
         return await call_next(request)
 

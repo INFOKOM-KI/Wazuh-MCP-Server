@@ -21,8 +21,8 @@ import json, asyncio, re, os, logging
 from typing import Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp_server import (mcp, CROWDSEC_API_KEY_ENV, OTX_API_KEY_ENV,
-                        THREATFOX_API_KEY_ENV, ABUSEIPDB_API_KEY,
-                        VIRUSTOTAL_API_KEY, ABUSEIPDB_BASE_URL, VIRUSTOTAL_BASE_URL)
+                        THREATFOX_API_KEY_ENV, VIRUSTOTAL_API_KEY,
+                        VIRUSTOTAL_BASE_URL)
 from mcp_server.core.http_client import _api_call, _classify_api_error, _is_private_or_reserved
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.threat_intel.greynoise import _NO_DATA_MESSAGE, _greynoise_lookup
@@ -40,7 +40,7 @@ _RISK_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "none": 0, None:
 
 ErrorKind = Literal["rate_limited", "not_configured", "unsupported_type",
                    "upstream_error", "timeout", "auth_error", "not_found",
-                   "bad_request", "circuit_open"]
+                   "bad_request", "circuit_open", "plan_limit"]
 
 
 class TIProviderResult(BaseModel):
@@ -270,27 +270,24 @@ async def _greynoise_provider(indicator: str, ind_type: str) -> TIProviderResult
 
 
 async def _abuseipdb_provider(indicator: str, ind_type: str) -> TIProviderResult:
-    configured = bool(ABUSEIPDB_API_KEY)
-    if ind_type != "IPv4" or not configured:
+    if ind_type != "IPv4":
         return TIProviderResult(provider="abuseipdb", indicator=indicator,
-                                indicator_type=ind_type,
-                                error="not configured" if not configured else "unsupported type",
-                                error_kind="not_configured" if not configured else "unsupported_type")
+                                indicator_type=ind_type, error="unsupported type",
+                                error_kind="unsupported_type")
     try:
-        h = {"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"}
-        r = await _api_call("get", f"{ABUSEIPDB_BASE_URL}/check?ipAddress={indicator}&maxAgeInDays=90", headers=h)
-        body = r.json()
-        if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
-            raise ValueError("malformed AbuseIPDB response (data missing)")
-        d = body["data"]
-        if "abuseConfidenceScore" not in d:
-            raise ValueError("malformed AbuseIPDB response (abuseConfidenceScore missing)")
-        conf = d.get("abuseConfidenceScore", 0)
-        risk = "high" if conf >= 75 else "medium" if conf >= 50 else "low" if conf >= 25 else "none"
+        from mcp_server.threat_intel.abuseipdb import AbuseIPDBError, check_ip
+        try:
+            data = await check_ip(indicator, max_age_days=90)
+        except AbuseIPDBError as exc:
+            return TIProviderResult(provider="abuseipdb", indicator=indicator,
+                                    indicator_type=ind_type, error=exc.message,
+                                    error_kind=exc.kind)
         return TIProviderResult(
             provider="abuseipdb", indicator=indicator, indicator_type=ind_type,
-            risk_level=risk, reputation_score=conf, is_malicious=(conf >= 50),
-            detail={"total_reports": d.get("totalReports", 0), "last_reported": d.get("lastReportedAt", "")},
+            risk_level=data["risk_band"], reputation_score=data["abuse_confidence_score"],
+            is_malicious=data["is_malicious"],
+            detail={"total_reports": data["total_reports"],
+                    "last_reported": data["last_reported_at"] or ""},
         )
     except Exception as e:
         return TIProviderResult(provider="abuseipdb", indicator=indicator,
@@ -403,7 +400,8 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput) -> 
     **Error Handling**: Providers without API keys are skipped and reported in
     ``errors[]``. Each result also carries ``error_kind`` for JSON consumers: one of
     ``rate_limited``, ``auth_error``, ``not_found``, ``bad_request``, ``timeout``,
-    ``circuit_open``, ``upstream_error``, ``not_configured``, ``unsupported_type``,
+    ``circuit_open``, ``upstream_error``, ``plan_limit``, ``not_configured``,
+    ``unsupported_type``,
     while ``error`` keeps its human-readable text. Per-provider failures never block
     the overall aggregation. ``providers_ok``/``providers_total`` count attempted
     providers: a provider that is not configured or does not support the indicator

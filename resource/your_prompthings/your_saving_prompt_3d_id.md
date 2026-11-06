@@ -31,7 +31,7 @@ Klien Anda sudah menampilkan setiap tool terdaftar beserta deskripsi dan skema p
 |---|---|
 | Ikhtisar & lini masa | Angka seluruh jendela dan sebaran tingkat keparahan, volume per jam, focused crawl, kueri indeks mentah, skema field indeks, ekspor peringatan mentah JSONL |
 | Triage IP | Ringkasan satu IP, attack chain, urutan kill-chain, periodisitas beacon, kecepatan terhadap baseline, perbandingan dua IP berdampingan |
-| Intel ancaman | Reputasi dan enrichment dari provider yang dikonfigurasi, lookup massal, reputasi domain dan berkas, fingerprint TLS, klasifikasi bot |
+| Intel ancaman | Reputasi dan enrichment dari provider yang dikonfigurasi, pemeriksaan AbuseIPDB (satu IP atau /24), lookup massal, reputasi domain dan berkas, fingerprint TLS, klasifikasi bot |
 | Korelasi & kampanye | Korelasi multi-sinyal, attack graph, pemantauan kampanye, saran pivot, analisis STIX, baseline drift dan profil, calendar heatmap, basis pengetahuan dan pelacak false positive |
 | Clustering & labeling (opt-in) | Bentuk jendela dari clustering, labeling ATT&CK per peringatan, penugasan klaster dan lineage |
 | Peramalan (opt-in) | Prediksi taktik berikutnya, ramalan volume peringatan, peringkat sumber teramati, gabungan ramalan serangan |
@@ -65,6 +65,8 @@ Klien Anda sudah menampilkan setiap tool terdaftar beserta deskripsi dan skema p
 > Argus menampilkan semua provider yang ada di respons, tanpa bentuk tetap, jadi baca seluruh bagian — jangan mengharapkan pasangan skor/sumber. Komentar laporan diringkas menjadi `N text value(s), not expanded`; minta payload mentah ke operator bila teks komentar diperlukan, dan jangan anggap ringkasan itu sebagai field kosong.
 
 > Berbagi STIX 2.1 (egress): `blueteam_stix_export(indicators=[...], tlp="AMBER", sources=["crowdsec","threatfox"], attack_technique_ids=["T1110.001"])` menulis bundle STIX 2.1 (identity produsen + marking-definition TLP + report + objek indicator + relasi `indicates` ke ATT&CK) untuk diimpor CSIRT mitra ke MISP atau OpenCTI. Tool ini mati kecuali operator menyetel `BLUETEAM_STIX_EGRESS_ENABLED=true`, dan menolak berjalan tanpa `BLUETEAM_STIX_IDENTITY_NAME` serta `BLUETEAM_OWNED_DOMAINS` yang tidak kosong. IP privat dan reserved, domain milik sendiri, TLD internal, hostname satu label, dan email DIHAPUS dari bundle dan dirinci pada `dropped` per alasan - nilai itu benar-benar keluar, bukan disamarkan, jadi jangan ditambahkan kembali secara manual. Ekspor juga ditolak bila bundle masih memuat nilai yang akan disamarkan pipeline redaksi (misalnya path atau hostname internal di dalam `description`). Masukkan hanya indikator terkonfirmasi dari `blueteam_extract_iocs`, `blueteam_ioc_lifecycle`, atau daftar IOC sebuah case - jangan teks alert mentah. Berbagi tetap keputusan manusia: hasilkan bundle, laporkan `path`, `sha256`, `tlp`, dan alasan penolakan, lalu biarkan operator mengirimkannya.
+
+> AbuseIPDB: `blueteam_abuseipdb_check` bersifat read-only dan boleh dipakai untuk satu IP. Jangan panggil `blueteam_abuseipdb_report` dari laporan terjadwal ini. Pelaporan adalah tindakan terpisah yang hanya diotorisasi oleh permintaan pelaporan eksplisit dalam percakapan saat ini; laporan terjadwal ini bukan permintaan tersebut. Klien yang menjalankan laporan terjadwal ini tidak boleh memiliki scope `threatintel:report`.
 
 ## Step 1b — Clustering & labeling insiden (opt-in)
 

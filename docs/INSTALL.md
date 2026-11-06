@@ -298,12 +298,12 @@ Copy the result into `MCP_API_KEY` in the configuration file. Do not store the t
 | `MCP_HOST` | Default is `127.0.0.1`. Binding to a non-loopback address requires `MCP_API_KEY`; the program refuses to start if the key is missing. |
 | `MCP_PORT` | Default is `8000`; choose an available port. |
 | `MCP_API_KEY` | Pre-shared key for authenticating HTTP clients. When set, authentication applies to all HTTP requests, including loopback requests. |
-| `MCP_API_KEY_SCOPES` | Default is `wazuh:read`. An example write-capable scope is `wazuh:read wazuh:write`; use it only if necessary and approved. |
+| `MCP_API_KEY_SCOPES` | Default is `wazuh:read`. An example write-capable scope is `wazuh:read wazuh:write`; use it only if necessary and approved. External AbuseIPDB reporting needs the separate `threatintel:report` scope; `wazuh:write` does not grant it. |
 | `BLUETEAM_HTTP_RATE_LIMIT` | HTTP request limit per minute per client IP; example: `60`. `0` disables this limit. |
 | `BLUETEAM_ALLOWED_ORIGINS` | Exact allowed Origin values, separated by commas. Loopback is always allowed. Set this only to Origins actually used by browser clients; it is not the MCP endpoint URL. |
-| `WAZUH_READ_ONLY` | Reduces the set of registered tools, including host-forensics/Fail2ban categories in the current implementation. Set it explicitly: the installer wrapper currently falls back to `false` if the variable is unset. This is not a substitute for the HTTP `wazuh:read` scope or least-privilege permissions on the Wazuh account. |
+| `WAZUH_READ_ONLY` | Reduces the set of registered tools, including host-forensics/Fail2ban/AbuseIPDB categories in the current implementation. Set it explicitly: the installer wrapper currently falls back to `false` if the variable is unset. This is not a substitute for the HTTP `wazuh:read` scope or least-privilege permissions on the Wazuh account. |
 | `WAZUH_DISABLED_CATEGORIES` | Tool categories to disable, separated by commas. Use category names recognized by the repository version. |
-| `WAZUH_DISABLED_TOOLS` | Specific tool names that must not be registered, separated by commas. |
+| `WAZUH_DISABLED_TOOLS` | Specific tool names that must not be registered, separated by commas. For example, `blueteam_abuseipdb_report` removes the reporting tool while leaving the read-only check tool available. |
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, or `ERROR`; use `INFO` normally and `DEBUG` only during investigations. |
 | `BLUE_TEAM_MCP_SERVER_NAME` | Name displayed by the MCP server; use lowercase to avoid casing differences. Default is `blue_team_mcp`. |
 
@@ -525,6 +525,12 @@ export THREATFOX_API_KEY="<key>"
 export OTX_API_KEY="<key>"
 export URLHAUS_API_KEY="<key>"
 export ABUSEIPDB_API_KEY="<key>"
+# Reporting is off by default. Enable only after approval, and keep dry_run=true for previews.
+export BLUETEAM_ABUSEIPDB_REPORTING_ENABLED="false"
+export BLUETEAM_ABUSEIPDB_EXCLUDE=""          # comma-separated IPs/CIDRs never reported
+export ABUSEIPDB_CACHE_TTL="900"
+export BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL="1.0"
+export BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL="50"
 export VIRUSTOTAL_API_KEY="<key>"
 export HUDSONROCK_API_KEY="<key>"
 export RAPIDAPI_KEY="<key>"

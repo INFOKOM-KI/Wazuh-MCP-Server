@@ -610,6 +610,18 @@
     "vulnerability.severity": {
       "class": "states_index",
       "rationale": "States-index field; blueteam_wazuh_vulnerabilities queries wazuh-states-vulnerabilities-*."
+    },
+    "data.dst_ip": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Decoder-dependent destination-IP path; queried only by the AbuseIPDB source/destination role check and never aggregated for output."
+    },
+    "data.destination_ip": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Decoder-dependent destination-IP path; queried only by the AbuseIPDB source/destination role check and never aggregated for output."
+    },
+    "data.dest_ip": {
+      "class": "allowlisted_dynamic",
+      "rationale": "Decoder-dependent destination-IP path; queried only by the AbuseIPDB source/destination role check and never aggregated for output."
     }
   }
 }

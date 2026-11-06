@@ -7,7 +7,7 @@ triplet with two small reusable classes. Each provider configures its own
 TTL, max concurrency, and min interval between requests.
 """
 from __future__ import annotations
-import asyncio, json, logging, time
+import asyncio, json, logging, threading, time
 from pathlib import Path
 from typing import Any
 
@@ -16,35 +16,49 @@ logger = logging.getLogger("blue_team_mcp.threat_intel.cache")
 
 class TTLCache:
     """In-memory TTL cache with LRU eviction.
-    Thread-safety note: threat-intel lookups run on a single asyncio event
-    loop, so no locking is needed. If the MCP server ever runs multiple
-    workers (multi-process), switch to a shared store (Redis/memcached).
+    A lock guards get/set: the event loop serializes most callers, but the audit
+    writer and tests can touch the same cache from another thread.
     """
 
     def __init__(self, maxsize: int = 1000):
         self.maxsize = maxsize
         self._data: dict[str, tuple[float, Any]] = {}
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> Any | None:
         """Return the cached value if present and unexpired, else None."""
-        entry = self._data.get(key)
-        if entry is None:
+        with self._lock:
+            entry = self._data.get(key)
+            if entry is None:
+                return None
+            expiry, value = entry
+            if time.monotonic() < expiry:
+                return value
+            del self._data[key]
             return None
-        expiry, value = entry
-        if time.monotonic() < expiry:
-            return value
-        del self._data[key]
-        return None
 
     def set(self, key: str, value: Any, ttl: float) -> None:
         """Store a value with a TTL. Evicts oldest (LRU) when over maxsize."""
-        if len(self._data) >= self.maxsize:
-            # Evict the first-inserted key (dict preserves insertion order)
-            self._data.pop(next(iter(self._data)))
-        self._data[key] = (time.monotonic() + ttl, value)
+        with self._lock:
+            if len(self._data) >= self.maxsize:
+                # Evict the first-inserted key (dict preserves insertion order)
+                self._data.pop(next(iter(self._data)))
+            self._data[key] = (time.monotonic() + ttl, value)
+
+    def delete(self, key: str) -> None:
+        """Drop one entry so a write can invalidate its stale read cache."""
+        with self._lock:
+            self._data.pop(key, None)
+
+    def delete_prefix(self, prefix: str) -> None:
+        """Drop every key under a prefix (all max-age variants for one IP)."""
+        with self._lock:
+            for key in [k for k in self._data if k.startswith(prefix)]:
+                self._data.pop(key, None)
 
     def __len__(self) -> int:
-        return len(self._data)
+        with self._lock:
+            return len(self._data)
 
 
 class PersistentJsonlCache:
@@ -204,6 +218,16 @@ def cache_get(namespace: str, key: str) -> Any | None:
 def cache_set(namespace: str, key: str, value: Any, ttl: float) -> None:
     """Store a value under a namespaced key with the provider's TTL."""
     _SHARED_CACHE.set(f"{namespace}:{key}", value, ttl)
+
+
+def cache_delete(namespace: str, key: str) -> None:
+    """Invalidate one namespaced key (used after a write changes the source data)."""
+    _SHARED_CACHE.delete(f"{namespace}:{key}")
+
+
+def cache_delete_prefix(namespace: str, key_prefix: str) -> None:
+    """Invalidate every key under a namespaced prefix."""
+    _SHARED_CACHE.delete_prefix(f"{namespace}:{key_prefix}")
 
 
 _limiters: dict[str, AsyncRateLimiter] = {}

@@ -33,7 +33,7 @@ Your client already exposes every registered tool with its own description and p
 |---|---|
 | Overview & timeline | Whole-window counts and severity mix, hour-by-hour volume, focused crawl, raw index queries, index field schema, JSONL raw-alert export |
 | IP triage | One-IP summary, attack chain, kill-chain ordering, beacon periodicity, velocity against a baseline, side-by-side IP comparison |
-| Threat intel | Reputation and enrichment from the configured providers, bulk lookups, domain and file reputation, TLS fingerprinting, bot classification |
+| Threat intel | Reputation and enrichment from the configured providers, AbuseIPDB check (one IP or /24), bulk lookups, domain and file reputation, TLS fingerprinting, bot classification |
 | Correlation & campaigns | Multi-signal correlation, attack graphs, campaign watch, pivot suggestions, STIX analysis, baseline drift and profiles, calendar heatmaps, false-positive knowledge base and tracker |
 | Clustering & labeling (opt-in) | Window shape from clustering, per-alert ATT&CK labeling, cluster assignment and lineage |
 | Forecasting (opt-in) | Next-tactic prediction, alert-volume forecasts, observed-source ranking, combined attack forecast |
@@ -67,6 +67,8 @@ Your client already exposes every registered tool with its own description and p
 > Rate limits: Netra and Argus lookups are spaced 30s apart, Sangfor 5s. Enriching N IPs costs N×interval — batch only what the report needs. Netra also runs on a 90s per-request budget (the rest of the server uses 30s) because its multi-source fan-out takes ~34s. If a lookup still times out, or a response names a circuit breaker on a specific host, report that upstream as degraded and move on instead of retrying. If Netra reports `Coverage: partial`, quote the source count and do not call it clean. GreyNoise is cached 15 minutes and paced at one request per second across both its standalone tool and the aggregate; a 404 is no community data (`tags: ["no_data"]`, no risk vote - not a clean verdict) and a 429 stays `rate_limited` with no blind retry.
 >
 > Argus renders every provider the response contains, with no fixed shape, so read the whole section rather than expecting a score/sources pair. Its report comments are summarised as `N text value(s), not expanded`; ask the operator for the raw payload if you need the comment text, and never read the summary as an empty field.
+
+> AbuseIPDB: `blueteam_abuseipdb_check` is read-only and may be used for a single IP. Do not call `blueteam_abuseipdb_report` from this scheduled report. Reporting is a separate action authorized only by an explicit reporting request in the current conversation; this scheduled report is never that request. The client running this scheduled report must not have the `threatintel:report` scope.
 
 ## Step 1b — Clustering & incident labeling (opt-in)
 

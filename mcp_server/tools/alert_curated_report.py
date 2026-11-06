@@ -13,7 +13,7 @@ from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC,
                         CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV,
                         ABUSEIPDB_API_KEY, VIRUSTOTAL_API_KEY,
-                        GREYNOISE_COMMUNITY_BASE_URL, ABUSEIPDB_BASE_URL,
+                        GREYNOISE_COMMUNITY_BASE_URL,
                         VIRUSTOTAL_BASE_URL, ARGUS_BASE_URL, ARGUS_MIN_INTERVAL, ARGUS_VERIFY_SSL)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.http_client import ValidPublicIp
@@ -371,22 +371,16 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
                     result["argus"] = {"error": "lookup_failed"}
             # AbuseIPDB
             if ABUSEIPDB_API_KEY:
+                from mcp_server.threat_intel.abuseipdb import AbuseIPDBError, check_ip
                 try:
-                    client = await _get_client("http")
-                    resp = await client.get(
-                        f"{ABUSEIPDB_BASE_URL}/check",
-                        headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"},
-                        params={"ipAddress": ip, "maxAgeInDays": "90"},
-                    )
-                    resp.raise_for_status()
-                    data = resp.json().get("data", {})
+                    data = await check_ip(ip, max_age_days=90)
                     result["abuseipdb"] = {
-                        "abuse_score": data.get("abuseConfidenceScore"),
-                        "total_reports": data.get("totalReports"),
-                        "country": data.get("countryCode"),
+                        "abuse_score": data.get("abuse_confidence_score"),
+                        "total_reports": data.get("total_reports"),
+                        "country": data.get("country_code"),
                     }
-                except Exception:
-                    result["abuseipdb"] = {"error": "lookup_failed"}
+                except AbuseIPDBError as exc:
+                    result["abuseipdb"] = {"error": exc.kind, "detail": exc.message}
             # VirusTotal
             if VIRUSTOTAL_API_KEY:
                 try:

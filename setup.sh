@@ -556,6 +556,13 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export OTX_API_KEY="your_key"           # free key: https://otx.alienvault.com/api
 # export URLHAUS_API_KEY="your_key"        # optional key: https://urlhaus.abuse.ch/api/
 # export ABUSEIPDB_API_KEY="your_key"     # https://www.abuseipdb.com
+# AbuseIPDB reporting is an external write and is off by default. Keep it false for
+# read-only operation; set it true only after analyst approval and a dry-run preview.
+# export BLUETEAM_ABUSEIPDB_REPORTING_ENABLED="false"
+# export BLUETEAM_ABUSEIPDB_EXCLUDE=""          # comma-separated IPs/CIDRs never reported
+# export BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL="1.0"
+# export BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL="50"
+# export ABUSEIPDB_CACHE_TTL="900"
 # export VIRUSTOTAL_API_KEY="your_key"    # https://www.virustotal.com
 # export CROWDSEC_API_KEY="your_key"      # free tier: https://www.crowdsec.net/en/user/profile
 # export RAPIDAPI_KEY="your_key"           # https://rapidapi.com. All products share ONE 100/month pool
@@ -1021,6 +1028,11 @@ cat > /usr/local/bin/mcp-server-blueteam << 'EOF'
 [[ -f /opt/blue-team-mcp/config.env ]] && source /opt/blue-team-mcp/config.env
 # Threat Intelligence keys
 export ABUSEIPDB_API_KEY="${ABUSEIPDB_API_KEY:-}"
+export BLUETEAM_ABUSEIPDB_REPORTING_ENABLED="${BLUETEAM_ABUSEIPDB_REPORTING_ENABLED:-false}"
+export BLUETEAM_ABUSEIPDB_EXCLUDE="${BLUETEAM_ABUSEIPDB_EXCLUDE:-}"
+export BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL="${BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL:-1.0}"
+export BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL="${BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL:-50}"
+export ABUSEIPDB_CACHE_TTL="${ABUSEIPDB_CACHE_TTL:-900}"
 export VIRUSTOTAL_API_KEY="${VIRUSTOTAL_API_KEY:-}"
 export CROWDSEC_API_KEY="${CROWDSEC_API_KEY:-}"
 export THREATFOX_API_KEY="${THREATFOX_API_KEY:-}"
@@ -1251,7 +1263,7 @@ echo "OPTIONAL: Edit $CONFIG_FILE to add API keys and credentials:"
 echo ""
 echo "  sudo nano $CONFIG_FILE"
 echo ""
-echo "  Uncomment and set: THREATFOX_API_KEY, ABUSEIPDB_API_KEY, VIRUSTOTAL_API_KEY,"
+echo "  Uncomment and set: THREATFOX_API_KEY, ABUSEIPDB_API_KEY (reporting stays off), VIRUSTOTAL_API_KEY,"
 echo "  CROWDSEC_API_KEY (free tier at crowdsec.net), NETRA_API_KEY, ARGUS_API_KEY,"
 echo "  RAPIDAPI_KEY (budget stays at 0 until you arm it for an incident),"
 echo "  WAZUH_API_URL, WAZUH_API_USER, WAZUH_API_PASSWORD,"
@@ -1273,7 +1285,7 @@ echo "  ThreatFox needs a free key — https://threatfox.abuse.ch/api"
 echo ""
 echo "Wrapper entry points installed:"
 echo ""
-echo "  mcp-server-blueteam    — All 164 tools (Wazuh, threat intel, host forensics,"
+echo "  mcp-server-blueteam    — All 166 tools (Wazuh, threat intel, host forensics,"
 echo "                            Sangfor blocklist, 3-Sum correlation, curated reports,"
 echo "                            CrowdSec, GreyNoise, ThreatFox)"
 echo "  mcp-server-crowdsec    — DEPRECATED — redirects to mcp-server-blueteam"

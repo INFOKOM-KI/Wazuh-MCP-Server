@@ -120,6 +120,11 @@ class ThreatIntelConfig:
     # AbuseIPDB
     abuseipdb_api_key: str = ""
     abuseipdb_base_url: str = "https://api.abuseipdb.com/api/v2"
+    abuseipdb_cache_ttl: int = 900          # 15 min: score moves as reports land
+    abuseipdb_reporting_enabled: bool = False
+    abuseipdb_exclude: str = ""             # comma-separated IPs/CIDRs never reported
+    abuseipdb_report_min_interval: float = 1.0
+    abuseipdb_report_max_per_call: int = 50
     # VirusTotal
     virustotal_api_key: str = ""
     virustotal_base_url: str = "https://www.virustotal.com/api/v3"
@@ -166,6 +171,14 @@ class ThreatIntelConfig:
             threatfox_base_url=os.environ.get("THREATFOX_BASE_URL", "https://threatfox-api.abuse.ch/api/v1/"),
             abuseipdb_api_key=os.environ.get("ABUSEIPDB_API_KEY", ""),
             abuseipdb_base_url=os.environ.get("ABUSEIPDB_BASE_URL", "https://api.abuseipdb.com/api/v2"),
+            abuseipdb_cache_ttl=int(os.environ.get("ABUSEIPDB_CACHE_TTL", "900")),
+            abuseipdb_reporting_enabled=_bool(os.environ.get(
+                "BLUETEAM_ABUSEIPDB_REPORTING_ENABLED", "false")),
+            abuseipdb_exclude=os.environ.get("BLUETEAM_ABUSEIPDB_EXCLUDE", ""),
+            abuseipdb_report_min_interval=float(os.environ.get(
+                "BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL", "1.0")),
+            abuseipdb_report_max_per_call=int(os.environ.get(
+                "BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL", "50")),
             virustotal_api_key=os.environ.get("VIRUSTOTAL_API_KEY", ""),
             virustotal_base_url=os.environ.get("VIRUSTOTAL_BASE_URL", "https://www.virustotal.com/api/v3"),
             netra_api_key=os.environ.get("NETRA_API_KEY", ""),
@@ -1340,6 +1353,15 @@ class Config:
             logger.warning("CROWDSEC_API_KEY not set - CrowdSec tools disabled.")
         if not self.threat_intel.abuseipdb_api_key:
             logger.warning("ABUSEIPDB_API_KEY not set - AbuseIPDB lookup disabled.")
+        if self.threat_intel.abuseipdb_reporting_enabled:
+            if not self.threat_intel.abuseipdb_api_key:
+                logger.warning(
+                    "BLUETEAM_ABUSEIPDB_REPORTING_ENABLED is true but "
+                    "ABUSEIPDB_API_KEY is empty; every report will fail.")
+            else:
+                logger.warning(
+                    "AbuseIPDB reporting is ENABLED - confirmed reports publish to a "
+                    "third party. Keep dry_run=true unless an analyst approved the preview.")
         if not self.threat_intel.virustotal_api_key:
             logger.warning("VIRUSTOTAL_API_KEY not set - VirusTotal lookups disabled.")
         if not self.threat_intel.rapidapi_key:

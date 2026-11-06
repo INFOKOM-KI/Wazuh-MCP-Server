@@ -429,13 +429,22 @@ def _is_private_or_reserved(ip: str) -> bool:
 
 
 def _validate_public_ip(v: str) -> str:
-    """Reject private/reserved IP for public threat intel tools (SSRF guard/prevention)."""
-    if _is_private_or_reserved(v):
+    """Reject invalid and private/reserved IPs for public threat intel tools.
+
+    ``_is_private_or_reserved`` returns False for a string it cannot parse, which
+    is the right answer for "is this private?" but the wrong answer for "is this
+    an IP?". Parse first, then apply the public-IP guard.
+    """
+    try:
+        parsed = ipaddress.ip_address(v.strip())
+    except ValueError as exc:
+        raise ValueError(f"'{v}' is not a valid IP address.") from exc
+    if _is_private_or_reserved(str(parsed)):
         raise ValueError(
             f"'{v}' is a private/reserved IP address."
             "This tool only accepts public IPs for threat intelligence lookup."
         )
-    return v
+    return str(parsed)
 
 
 ValidPublicIp = Annotated[str, AfterValidator(_validate_public_ip)]

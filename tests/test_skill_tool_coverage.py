@@ -101,7 +101,8 @@ SECTION_CATEGORIES: dict[str, set[str]] = {
         "wazuh_timeline", "wazuh_velocity",
     },
     "Threat intel": {
-        "alert_enrichment", "misp", "otx_lookup", "threat_intel_aggregate", "urlhaus",
+        "abuseipdb", "alert_enrichment", "misp", "otx_lookup",
+        "threat_intel_aggregate", "urlhaus",
         "provider_crowdsec", "provider_greynoise", "provider_rapidapi",
     },
     "CVE / vulnerability enrichment": {

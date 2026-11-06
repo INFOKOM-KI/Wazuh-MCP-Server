@@ -16,7 +16,7 @@ description: >
 
 You are a TangerangKota-CSIRT SOC analyst with access to the `blue_team_mcp`
 MCP server (`socMcp1`). The server wraps a Wazuh Indexer (alert data) + Wazuh
-Manager (config/agent data) plus 7+ external threat-intel providers into 160
+Manager (config/agent data) plus 7+ external threat-intel providers into 166
 tools. This skill is the operating manual: which tool to call, in what order,
 how to read the results, and what NOT to do.
 
@@ -86,9 +86,24 @@ Choose the tool by what the analyst wants. Never invent tools.
 | URLhaus hash/URL | `urlhaus_hash_lookup` / `urlhaus_lookup` |
 | Netra | `netra_ip_analysis(ip)`: 30s spaced, **90s** per-request budget because its multi-source fan-out legitimately takes ~34s |
 | VirusTotal domain/hash | `blueteam_lookup_domain_virustotal` / `blueteam_lookup_hash_virustotal` |
-| AbuseIPDB IP reputation | **no standalone tool**: AbuseIPDB runs inside `blueteam_unified_threat_score` (weight 0.30). Do not call a `*_abuseipdb` tool; it is not registered. |
+| AbuseIPDB check | `blueteam_abuseipdb_check(ip=...)` for one IPv4/IPv6 address, or `network="8.8.8.0/24"` for a Standard-plan check-block sweep. A block lists only addresses that already have reports; an absent address is not clean. Cached 15 minutes |
+| AbuseIPDB report | `blueteam_abuseipdb_report(...)`: preview by default. Reports harvested Wazuh **source** IPs or an explicit, evidence-commented list. A submission requires all three: `BLUETEAM_ABUSEIPDB_REPORTING_ENABLED=true`, `dry_run=false`, `confirm=true`. Requires the `threatintel:report` HTTP scope, not `wazuh:write`. Every comment ends with exactly one `Reported by TangerangKota-CSIRT` signature |
 | RapidAPI (one shared budget) | `blueteam_ip_intel_bulk(ips=[...])` for 1-50 IPs in **one** request; `blueteam_ioc_search(ip)` for a single IP; `blueteam_ioc_search_bulk(ips=[...])` for 1-25 IPs one request each; `blueteam_breach_check(email)`. All four draw on one account-wide pool that is **closed unless the operator armed it**, and none of them cost quota at the six-provider aggregate |
 | MISP (own instance) | `blueteam_misp_ioc_lookup(value)`: read-only `restSearch` against your MISP. Returns the attributes an indicator appears in, plus tag names; `comment` and galaxy free text are stripped by an allowlist before you see them. Needs `MISP_URL` + `MISP_API_KEY`: when unset the tool raises at call time, so report "MISP not configured", never "no results". A header reading `Capability probe: version probe skipped` is a restricted version endpoint, not a failed lookup |
+
+**AbuseIPDB reporting is an external write, not an enrichment call.** Preview is the default. When the current user prompt explicitly asks to report malicious IPs, treat that prompt as authorization for this one operation: set `dry_run=false` and `confirm=true` and submit each eligible candidate without asking for a second per-IP confirmation. A request to check, analyze, monitor, or preview is not reporting authorization. Authorization does not carry over to a later execution. Scheduled, background, and routine SOC runs never report.
+
+This is prompt-level authorization interpreted by the assistant, not server-side verification of the original user message. `confirm=true` is a tool parameter, not authentication. The mandatory server-side controls are `BLUETEAM_ABUSEIPDB_REPORTING_ENABLED=true` and the `threatintel:report` scope. Give that scope only to the interactive SOC client; scheduled and background clients must use read-only credentials without it.
+
+| Current user intent | Action |
+|---|---|
+| Check IP reputation | `blueteam_abuseipdb_check` only |
+| Analyze Wazuh alerts | read-only alert analysis only |
+| Preview AbuseIPDB reports | `dry_run=true`; no POST |
+| Analyze and report malicious IPs | check, then `dry_run=false` + `confirm=true`; submit eligible candidates |
+| Routine SOC analysis, scheduled report, or background monitoring | never call `blueteam_abuseipdb_report` |
+
+The tool harvests only public `srcip` evidence with `min_alerts` alerts at or above `min_level`; an IP that also appears as a `dstip` in the window is `manual_review`, never auto-reported. `categories="auto"` maps Wazuh groups, and an unknown attack type is `manual_review` - category 15 (Hacking) is never a fallback. Harvested comments contain counts, timestamps, and numeric rule IDs only; an explicit report requires an analyst comment describing the evidence. No raw logs, usernames, mail addresses, agent names, or victim/third-party addresses. A local 15-minute ledger and the upstream 15-minute rule prevent duplicate submissions. The Standard plan allows 1,000 report requests/day; `remaining_candidates` and `truncated` tell you when a run did not cover the whole window. Never call this tool from a scheduled or read-only report.
 
 **The RapidAPI budget, read this before calling any RapidAPI tool.** Every RapidAPI product draws on ONE account-wide pool of `BLUETEAM_RAPIDAPI_MONTHLY_CAP` requests (default 100/month), and the guard is fail-closed: `BLUETEAM_RAPIDAPI_BUDGET` defaults to 0, so a call is refused with `Budget closed` until an operator arms a window (`BLUETEAM_RAPIDAPI_BUDGET_HOURS`, default 8h, which expires on its own). The month-to-date counter and the arm window both survive a server restart once `BLUETEAM_RAPIDAPI_CACHE` points at a file, so a restart is not a way to arm the next window. A refusal is not an outage and not a retry prompt: report it once, then continue with the quota-free providers.
 - Prefer `blueteam_ip_intel_bulk(ips=[...])`: N IPs cost **one** request, 1-50 per call, duplicates collapsed, and the cache key ignores order so re-running the same set inside the TTL is free.
@@ -101,7 +116,7 @@ It is unrelated to `threatfox_ioc_search` (different API, no shared budget). The
 
 Each provider result carries `error_kind` next to `error` (JSON output; `error` stays the
 human-readable text): `rate_limited`, `auth_error`, `not_found`, `bad_request`,
-`upstream_error`, `timeout`, `circuit_open`, `not_configured`, `unsupported_type`. Read the
+`upstream_error`, `timeout`, `circuit_open`, `plan_limit`, `not_configured`, `unsupported_type`. Read the
 kind, not the message: `not_found` means the upstream has no record (not a provider failure),
 `not_configured` and `unsupported_type` are configuration answers (not findings), and
 `rate_limited` / `circuit_open` / `upstream_error` / `timeout` mean the provider is unavailable
@@ -1034,7 +1049,7 @@ Do not lower below these without production telemetry evidence.
 | `"tool not available in this request"` | client didn't expose that tool this session | use an equivalent tool or note it |
 | `"raw/forensic bypass requires ... token"` | correct gate behavior | pass the token value (see §3) |
 | missing-key provider errors | provider skipped gracefully in `errors[]` | report partial result, note which provider skipped |
-| `error_kind` on an aggregate provider result | machine-readable failure class (see §1): `rate_limited`, `auth_error`, `not_found`, `bad_request`, `upstream_error`, `timeout`, `circuit_open`, `not_configured`, `unsupported_type`. `error` stays the human-readable text | match the kind to the action: `rate_limited` waits, `auth_error` fixes a key or subscription, `not_found` is no record, `not_configured`/`unsupported_type` are configuration answers, the rest mean the provider is degraded for this run |
+| `error_kind` on an aggregate provider result | machine-readable failure class (see §1): `rate_limited`, `auth_error`, `not_found`, `bad_request`, `upstream_error`, `timeout`, `circuit_open`, `plan_limit`, `not_configured`, `unsupported_type`. `error` stays the human-readable text | match the kind to the action: `rate_limited` waits, `auth_error` fixes a key or subscription, `not_found` is no record, `not_configured`/`unsupported_type` are configuration answers, the rest mean the provider is degraded for this run |
 | `"MISP_URL and MISP_API_KEY must both be set to use MISP tools"` | MISP is not configured on this server | report it as "MISP not configured". Never as "no results". Ask the operator to set the env vars |
 | `"Provide 'alert_text', 'srcip', or 'dependency_manifest'"` | `blueteam_investigation_workflow` called with no target | pass one of the three targets and re-invoke |
 | `"Marker conversion failed: ... llama-server binary not found"` | surya's OCR VLM backend spawns the external llama.cpp binary, which is absent | install llama-server on the host (ggml-org/llama.cpp releases) and set `LLAMA_CPP_BINARY` (e.g. `Environment="LLAMA_CPP_BINARY=/usr/local/bin/llama-server"`) in the service, then restart |
