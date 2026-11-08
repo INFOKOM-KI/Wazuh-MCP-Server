@@ -10,10 +10,12 @@ All defaults are production-safe: localhost bind, TLS on, redaction on.
 from __future__ import annotations
 import os
 import re
+import math
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
 from mcp_server.core.exceptions import ConfigurationError
+from mcp_server.core.url_policy import validate_https_base_url
 
 logger = logging.getLogger("blue_team_mcp.config")
 
@@ -143,6 +145,14 @@ class ThreatIntelConfig:
     # VirusTotal
     virustotal_api_key: str = ""
     virustotal_base_url: str = "https://www.virustotal.com/api/v3"
+    virustotal_cache_ttl: int = 3600
+    virustotal_rate_per_minute: int = 4       # provider quota, not the local budget
+    virustotal_daily_limit: int = 500         # provider quota, not the local budget
+    virustotal_budget: int = 0                 # 0 = fail-closed until an operator initializes state
+    virustotal_budget_hours: float = 8.0      # authorized arm window
+    virustotal_state_path: str = "/var/log/blue-team-mcp/virustotal_quota.db"
+    virustotal_allowed_hosts: str = "www.virustotal.com"
+    virustotal_max_response_bytes: int = 2_000_000
     # Netra
     netra_api_key: str = ""
     netra_verify_ssl: bool = False
@@ -203,6 +213,19 @@ class ThreatIntelConfig:
                 "BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET", "5"))),
             virustotal_api_key=os.environ.get("VIRUSTOTAL_API_KEY", ""),
             virustotal_base_url=os.environ.get("VIRUSTOTAL_BASE_URL", "https://www.virustotal.com/api/v3"),
+            virustotal_cache_ttl=int(os.environ.get("VIRUSTOTAL_CACHE_TTL", "3600")),
+            virustotal_rate_per_minute=int(os.environ.get("VIRUSTOTAL_RATE_PER_MINUTE", "4")),
+            virustotal_daily_limit=int(os.environ.get("VIRUSTOTAL_DAILY_LIMIT", "500")),
+            virustotal_budget=int(os.environ.get("BLUETEAM_VIRUSTOTAL_BUDGET", "0")),
+            virustotal_budget_hours=float(os.environ.get(
+                "BLUETEAM_VIRUSTOTAL_BUDGET_HOURS", "8")),
+            virustotal_state_path=os.environ.get(
+                "BLUETEAM_VIRUSTOTAL_STATE",
+                "/var/log/blue-team-mcp/virustotal_quota.db"),
+            virustotal_allowed_hosts=os.environ.get(
+                "VIRUSTOTAL_ALLOWED_HOSTS", "www.virustotal.com"),
+            virustotal_max_response_bytes=int(os.environ.get(
+                "VIRUSTOTAL_MAX_RESPONSE_BYTES", "2000000")),
             netra_api_key=os.environ.get("NETRA_API_KEY", ""),
             netra_verify_ssl=_bool(os.environ.get("NETRA_VERIFY_SSL", "false")),
             netra_base_url=os.environ.get("NETRA_BASE_URL", "https://netra.fbi.gov:8013/api/v1"),
@@ -248,6 +271,27 @@ class ThreatIntelConfig:
                 f"BLUETEAM_RAPIDAPI_MONTHLY_CAP ({self.rapidapi_monthly_cap}); the excess would "
                 f"be spent against a 429."
             )
+        if self.virustotal_rate_per_minute <= 0:
+            raise ConfigurationError("VIRUSTOTAL_RATE_PER_MINUTE must be > 0")
+        if self.virustotal_daily_limit <= 0:
+            raise ConfigurationError("VIRUSTOTAL_DAILY_LIMIT must be > 0")
+        if self.virustotal_budget < 0:
+            raise ConfigurationError("BLUETEAM_VIRUSTOTAL_BUDGET must be >= 0")
+        if not math.isfinite(self.virustotal_budget_hours) or self.virustotal_budget_hours <= 0:
+            raise ConfigurationError("BLUETEAM_VIRUSTOTAL_BUDGET_HOURS must be finite and > 0")
+        if self.virustotal_budget > 0 and not self.virustotal_state_path:
+            raise ConfigurationError(
+                "BLUETEAM_VIRUSTOTAL_STATE must be set when the budget is positive")
+        if self.virustotal_state_path and not os.path.isabs(self.virustotal_state_path):
+            raise ConfigurationError("BLUETEAM_VIRUSTOTAL_STATE must be an absolute path")
+        if self.virustotal_max_response_bytes <= 0:
+            raise ConfigurationError("VIRUSTOTAL_MAX_RESPONSE_BYTES must be > 0")
+        try:
+            validate_https_base_url(
+                self.virustotal_base_url, self.virustotal_allowed_hosts,
+                required_path="/api/v3")
+        except ValueError as exc:
+            raise ConfigurationError(f"VIRUSTOTAL_BASE_URL is invalid: {exc}") from exc
 
 
 @dataclass

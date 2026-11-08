@@ -9,16 +9,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Literal, Any
 from collections import Counter
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from mcp.server.fastmcp import Context
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _REVEAL_IDENTITIES_DESC, _FORENSIC_TOKEN_DESC,
                         CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV,
                         ABUSEIPDB_API_KEY, VIRUSTOTAL_API_KEY,
-                        GREYNOISE_COMMUNITY_BASE_URL,
-                        VIRUSTOTAL_BASE_URL, ARGUS_BASE_URL, ARGUS_MIN_INTERVAL, ARGUS_VERIFY_SSL)
+                        GREYNOISE_COMMUNITY_BASE_URL, ARGUS_BASE_URL, ARGUS_MIN_INTERVAL, ARGUS_VERIFY_SSL)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
-from mcp_server.core.http_client import ValidPublicIp
+from mcp_server.core.http_client import ValidPublicIp, normalize_public_ip
 from mcp_server.core.redact import _redact_alert_data
-from mcp_server.core.http_client import _api_call, _get_client
+from mcp_server.core.http_client import _api_call
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
 from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _WAZUH_INDEX_PATTERNS, _resolve_agg_fields,
                                       _srcip_aggs_merged, _srcip_should_clauses,
@@ -26,11 +26,22 @@ from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 from mcp_server.threat_intel._cache import get_limiter
+from mcp_server.threat_intel.virustotal import VirusTotalError, issue_consent, lookup
+from mcp_server.threat_intel.virustotal_consent import (consent_message,
+                                                        request_ioc_sharing)
 from mcp_server.tools.alert_compare import (CuratedReportFilters, _build_curated_query,
                                             _filter_field_bases, _DEDUP_PATTERNS)
 
 # Shared with argus_ip_lookup via the global limiter registry (same namespace).
 _argus_limiter = get_limiter("argus", max_concurrent=1, min_interval=ARGUS_MIN_INTERVAL)
+
+
+def _enrichment_target(ip: str) -> tuple[str | None, str]:
+    """Return a normalized public IP, or None plus the skip reason."""
+    try:
+        return normalize_public_ip(ip), ""
+    except ValueError:
+        return None, "non-public or non-global IP address"
 
 # 1: Alert Summarization
 # Auto-extracted from alert_enrichment.py - modular refactor
@@ -41,6 +52,13 @@ class CuratedThreatReportInput(BaseModel):
     until: Optional[str] = Field(default=None, max_length=30)
     filters: CuratedReportFilters = Field(default_factory=CuratedReportFilters)
     include_threat_intel: bool = Field(default=True)
+    include_virustotal: bool = Field(
+        default=False,
+        description=("Request host confirmation before querying VirusTotal for source IPs. "
+                     "Default false because VirusTotal adds queried IoCs to its community dataset. "
+                     "This flag is a request to prompt, not proof of human consent. Requires "
+                     "include_threat_intel and VIRUSTOTAL_API_KEY."),
+    )
     max_entities: int = Field(default=50, ge=10, le=100)
     group_by: Literal["srcip", "domain", "rule.id", "agent"] = Field(default="srcip")
     response_format: Literal["markdown", "json"] = Field(default="markdown")
@@ -64,7 +82,8 @@ class CuratedThreatReportInput(BaseModel):
     annotations={"readOnlyHint": True, "destructiveHint": False,
                  "idempotentHint": True, "openWorldHint": True},
 )
-async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> str:
+async def blueteam_curated_threat_report(params: CuratedThreatReportInput,
+                                          ctx: Context | None = None) -> str:
     """Generate a geo/domain/rule-filtered threat intelligence report in one call.
     Combines alert aggregation, IP extraction, and multi-source threat intel
     enrichment into a single structured report. Replace 8-12 sequential LLM
@@ -311,8 +330,12 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
         all_ips = [b["key"] for b in entity_buckets]
         cs_verdicts: dict[str, str] = {}
         for ip in all_ips[:50]:
+            public_ip, _ = _enrichment_target(ip)
+            if public_ip is None:
+                cs_verdicts[ip] = "non_public"
+                continue
             try:
-                cs = await _crowdsec_request(f"/v2/smoke/{ip}")
+                cs = await _crowdsec_request(f"/v2/smoke/{public_ip}")
                 cs_verdicts[ip] = cs.get("reputation", "unknown")
             except Exception:
                 cs_verdicts[ip] = "lookup_failed"
@@ -336,15 +359,35 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
 
     # 2: Concurrent threat intel enrichment
     threat_data: dict[str, dict] = {}
+    vt_consent_required = False
     if params.include_threat_intel and entity_buckets and params.group_by == "srcip":
         top_ips = [b["key"] for b in entity_buckets[:min(params.max_entities, 15)]]
 
+        vt_approved: set[str] = set()
+        if VIRUSTOTAL_API_KEY and params.include_virustotal:
+            vt_targets: list[str] = []
+            for ip in top_ips:
+                public_ip, _ = _enrichment_target(ip)
+                if public_ip is not None and public_ip not in vt_targets:
+                    vt_targets.append(public_ip)
+            if vt_targets:
+                if await request_ioc_sharing(
+                        ctx, consent_message("ip_addresses", vt_targets)):
+                    vt_approved = set(vt_targets)
+                else:
+                    vt_consent_required = True
+
         async def _enrich_ip(ip: str) -> tuple[str, dict]:
+            public_ip, skip_reason = _enrichment_target(ip)
+            if public_ip is None:
+                return ip, {"skipped": "non_public_ip", "reason": skip_reason}
             result: dict = {}
+            if public_ip != ip:
+                result["normalized_ip"] = public_ip
             # CrowdSec (cached)
             if os.environ.get(CROWDSEC_API_KEY_ENV):
                 try:
-                    cs = await _crowdsec_request(f"/v2/smoke/{ip}")
+                    cs = await _crowdsec_request(f"/v2/smoke/{public_ip}")
                     result["crowdsec"] = {
                         "reputation": cs.get("reputation", "unknown"),
                         "behaviors": [b.get("name", "") for b in cs.get("behaviors", [])],
@@ -359,7 +402,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
                     async with _argus_limiter:
                         argus_resp = await _api_call("post", ARGUS_BASE_URL, client_name="argus", verify=ARGUS_VERIFY_SSL,
                             headers={"Authorization": f"Bearer {argus_key}", "Content-Type": "application/json", "accept": "application/json"},
-                            json={"observable": ip})
+                            json={"observable": public_ip})
                     argus_data = argus_resp.json()
                     argus_reports = argus_data.get("results", {}).get("argus_reports", {}).get("results", {})
                     result["argus"] = {
@@ -373,7 +416,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             if ABUSEIPDB_API_KEY:
                 from mcp_server.threat_intel.abuseipdb import AbuseIPDBError, check_ip
                 try:
-                    data = await check_ip(ip, max_age_days=90)
+                    data = await check_ip(public_ip, max_age_days=90)
                     result["abuseipdb"] = {
                         "abuse_score": data.get("abuse_confidence_score"),
                         "total_reports": data.get("total_reports"),
@@ -382,28 +425,70 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
                 except AbuseIPDBError as exc:
                     result["abuseipdb"] = {"error": exc.kind, "detail": exc.message}
             # VirusTotal
-            if VIRUSTOTAL_API_KEY:
-                try:
-                    client = await _get_client("http")
-                    resp = await client.get(
-                        f"{VIRUSTOTAL_BASE_URL}/ip_addresses/{ip}",
-                        headers={"x-apikey": VIRUSTOTAL_API_KEY, "Accept": "application/json"},
-                    )
-                    resp.raise_for_status()
-                    vt_data = resp.json().get("data", {}).get("attributes", {})
-                    stats = vt_data.get("last_analysis_stats", {})
+            if VIRUSTOTAL_API_KEY and params.include_virustotal:
+                if public_ip not in vt_approved:
                     result["virustotal"] = {
-                        "malicious": stats.get("malicious", 0),
-                        "suspicious": stats.get("suspicious", 0),
-                        "harmless": stats.get("harmless", 0),
-                        "total_engines": sum(stats.values()) if stats else 0,
+                        "error": "consent_required",
+                        "detail": "host approval was not granted for this report",
                     }
-                except Exception:
-                    result["virustotal"] = {"error": "lookup_failed"}
+                else:
+                    try:
+                        data = await lookup(
+                            "ip_addresses", public_ip,
+                            consent_token=issue_consent("ip_addresses", public_ip))
+                        result["virustotal"] = {
+                            "malicious": data.get("malicious"),
+                            "suspicious": data.get("suspicious"),
+                            "harmless": data.get("harmless"),
+                            "undetected": data.get("undetected"),
+                            "timeout": data.get("timeout"),
+                            "total_engines": data.get("total_engines"),
+                            "detection_percent": data.get("detection_percent"),
+                            "any_detection": data.get("any_detection"),
+                            "stats_complete": data.get("stats_complete"),
+                            "missing_stats": data.get("missing_stats"),
+                            "community_reputation": data.get("community_reputation"),
+                            "as_owner": data.get("as_owner"),
+                            "asn": data.get("asn"),
+                            "network": data.get("network"),
+                            "country": data.get("country"),
+                            "total_votes": data.get("total_votes"),
+                            "tags": data.get("tags"),
+                            "last_analysis_date": data.get("last_analysis_date"),
+                            "http_status": data.get("http_status"),
+                            "cached": data.get("cached", False),
+                            "retrieved_at": data.get("retrieved_at"),
+                            "cache_age_seconds": data.get("cache_age_seconds"),
+                            "cache_ttl_seconds": data.get("cache_ttl_seconds"),
+                            "cache_expired": data.get("cache_expired"),
+                        }
+                    except VirusTotalError as exc:
+                        result["virustotal"] = {"error": exc.kind, "detail": exc.message}
+                        if exc.retry_after_seconds is not None:
+                            result["virustotal"]["retry_after_seconds"] = exc.retry_after_seconds
+                        if exc.http_status is not None:
+                            result["virustotal"]["http_status"] = exc.http_status
+                    except Exception:
+                        result["virustotal"] = {"error": "lookup_failed"}
             return (ip, result)
 
         enrich_results = await asyncio.gather(*[_enrich_ip(ip) for ip in top_ips])
         threat_data = dict(enrich_results)
+
+    threat_intel_sources = {
+        "CrowdSec": ("configured" if os.environ.get(CROWDSEC_API_KEY_ENV)
+                     else "not_configured"),
+        "Argus": ("configured" if os.environ.get(ARGUS_API_KEY_ENV)
+                  else "not_configured"),
+        "AbuseIPDB": ("configured" if ABUSEIPDB_API_KEY else "not_configured"),
+        "VirusTotal": (
+            "not_configured" if not VIRUSTOTAL_API_KEY
+            else "not_requested"
+            if not (params.include_threat_intel and params.include_virustotal
+                    and params.group_by == "srcip" and entity_buckets)
+            else "consent_required" if vt_consent_required
+            else "configured"),
+    }
 
     # 3: Format report
     if params.response_format == "json":
@@ -426,6 +511,10 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             },
             "aggregation_completeness": aggregation_completeness,
             "aggregation_truncated": aggregation_truncated,
+            "threat_intel_sources": {
+                "enabled": bool(params.include_threat_intel),
+                **threat_intel_sources,
+            },
             "compare": compare_data if compare_data else None,
             "attackers": [
                 {
@@ -459,6 +548,11 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
             filter_desc_parts.append(f"`{field_name}={val}`")
     filter_desc = ", ".join(filter_desc_parts) if filter_desc_parts else "(none — all alerts)"
 
+    if params.include_threat_intel:
+        source_text = "; ".join(
+            f"{name}:{state}" for name, state in threat_intel_sources.items())
+    else:
+        source_text = "disabled"
     lines = [
         f"# 🛡️ Curated Threat Report",
         "",
@@ -482,6 +576,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
         f"| Document population | {'Original alerts only (Active Response wrappers excluded)' if params.deduplicate else 'All documents (Active Response wrappers included)'} |",
         f"| Dedup note | {dedup_note or 'none'} |",
         f"| CrowdSec filter | {crowdsec_filter_note or 'none'} |",
+        f"| Threat intel sources | {source_text} |",
         "",
     ]
     if aggregation_truncated:
@@ -556,9 +651,25 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
                 ab = ti.get("abuseipdb", {})
                 if ab and "error" not in ab and ab.get("abuse_score") is not None:
                     ti_parts.append(f"AB:{ab['abuse_score']}%")
+                if ti.get("skipped"):
+                    ti_parts.append(f"SKIP:{ti['skipped']}")
                 vt = ti.get("virustotal", {})
-                if vt and "error" not in vt:
-                    ti_parts.append(f"VT:{vt.get('malicious',0)}/{vt.get('total_engines',0)}")
+                if vt:
+                    if "error" in vt:
+                        ti_parts.append(f"VT:{vt['error']}")
+                    else:
+                        complete = vt.get("stats_complete", True)
+                        total = vt.get("total_engines")
+                        ratio = (f"{vt.get('malicious', 0)}/{total}"
+                                 if complete and total is not None
+                                 else f"{vt.get('malicious', 0)}/? (incomplete)")
+                        percent = vt.get("detection_percent")
+                        if complete and percent is not None:
+                            ratio += f" ({percent}%)"
+                        reputation = vt.get("community_reputation")
+                        if reputation is not None:
+                            ratio += f" (rep {reputation})"
+                        ti_parts.append(f"VT:{ratio}")
                 ti_str = " ".join(ti_parts) if ti_parts else "-"
                 lines.append(f"| `{key}` | {alerts:,} | {lvl} | {ti_str} | {rules} | {fst} → {lst} |")
         else:
@@ -572,6 +683,27 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput) -> st
                 lst = (b.get("last_seen", {}).get("value_as_string", "") or "")[:19]
                 lines.append(f"| `{key}` | {alerts:,} | {rules} | {fst} → {lst} |")
 
+    if params.include_threat_intel and params.group_by == "srcip":
+        vt_rows = []
+        for bucket in entity_buckets[:30]:
+            vt_data = threat_data.get(bucket["key"], {}).get("virustotal", {})
+            if vt_data and "error" not in vt_data:
+                vt_rows.append((bucket["key"], vt_data))
+        if vt_rows:
+            lines.append("")
+            lines.append("## VirusTotal retrieval")
+            lines.append("")
+            lines.append("| IP | Source | Retrieved | Age | TTL | Expired | HTTP |")
+            lines.append("|----|--------|-----------|-----|-----|---------|------|")
+            for key, vt_data in vt_rows:
+                source = "cache" if vt_data.get("cached") else "live API"
+                age = vt_data.get("cache_age_seconds")
+                ttl = vt_data.get("cache_ttl_seconds")
+                lines.append(
+                    f"| `{key}` | {source} | {vt_data.get('retrieved_at') or '-'} "
+                    f"| {age if age is not None else '-'}s | {ttl if ttl is not None else '-'}s "
+                    f"| {'yes' if vt_data.get('cache_expired') else 'no'} "
+                    f"| {vt_data.get('http_status') or '-'} |")
     if rule_buckets:
         lines.append("")
         lines.append("## 🔥 Top Rules")

@@ -92,21 +92,23 @@ def test_input_validation_accepts_public():
 class _FakeResponse:
     def __init__(self, payload: dict) -> None:
         self._payload = payload
+        self.status_code = 200
 
     def json(self) -> dict:
         return self._payload
 
 
 _VT_STATS = {"data": {"attributes": {
-    "last_analysis_stats": {"malicious": 6, "suspicious": 0, "harmless": 60, "undetected": 4},
+    "last_analysis_stats": {"malicious": 6, "suspicious": 0, "harmless": 60, "undetected": 4, "timeout": 0},
     "reputation": 12,
 }}}
 
 
-def test_virustotal_provider_routes_indicator_types():
+def test_virustotal_provider_routes_indicator_types(tmp_path):
     import asyncio
     from unittest.mock import patch
     from mcp_server.tools import threat_intel_aggregate as agg
+    from mcp_server.threat_intel import virustotal as vt
 
     seen: list[str] = []
 
@@ -114,22 +116,33 @@ def test_virustotal_provider_routes_indicator_types():
         seen.append(url)
         return _FakeResponse(_VT_STATS)
 
-    async def lookup(indicator, ind_type):
-        with patch.object(agg, "_api_call", fake_api_call), \
-                patch.object(agg, "VIRUSTOTAL_API_KEY", "test-key"):
-            return await agg._virustotal_provider(indicator, ind_type)
-
     cases = [("140.82.0.86", "IPv4", "ip_addresses"),
+             ("2606:4700:4700::1111", "IPv6", "ip_addresses"),
              ("evil.example.com", "domain", "domains"),
              ("a" * 64, "file", "files")]
-    for indicator, ind_type, segment in cases:
-        result = asyncio.run(lookup(indicator, ind_type))
-        assert result.error is None, result.error
-        assert seen[-1].endswith(f"/{segment}/{indicator}"), seen[-1]
-        assert result.risk_level == "low"  # 6/70 = 8%
-        assert result.reputation_score == 8
-        assert result.is_malicious is True
-        assert result.detail["detections"] == "6/70"
+    with patch.object(vt, "_api_call", fake_api_call), \
+            patch.object(vt, "VIRUSTOTAL_API_KEY", "test-key"), \
+            patch.object(vt, "VIRUSTOTAL_BUDGET", 50), \
+            patch.object(vt, "VIRUSTOTAL_STATE", str(tmp_path / "vt.db")), \
+            patch.object(agg, "VIRUSTOTAL_API_KEY", "test-key"):
+        vt.reset_state()
+        vt._get_quota().initialize()
+        for indicator, ind_type, segment in cases:
+            token_kind = {"IPv4": "ip_addresses", "IPv6": "ip_addresses",
+                          "domain": "domains", "file": "files"}[ind_type]
+            result = asyncio.run(agg._virustotal_provider(
+                indicator, ind_type,
+                vt.issue_consent(token_kind,
+                                 vt._normalize(token_kind, indicator))))
+            assert result.error is None, result.error
+            assert seen[-1].endswith(f"/{segment}/{indicator}"), seen[-1]
+            assert result.risk_level == "low"  # 6/70 = 8%
+            assert result.reputation_score == 8
+            assert result.is_malicious is False
+            assert result.detail["detections"] == "6/70"
+            assert result.detail["analysis_stats"]["malicious"] == 6
+            assert result.detail["community_reputation"] == 12
+            assert result.detail["any_detection"] is True
 
 
 def test_virustotal_provider_without_key_reports_not_configured():

@@ -135,17 +135,26 @@ def test_threatfox_provider_bad_status_is_error(monkeypatch):
     assert result.is_malicious is None
 
 
-def test_virustotal_missing_data_is_error(monkeypatch):
+def test_virustotal_missing_data_is_error(monkeypatch, tmp_path):
+    from mcp_server.threat_intel import virustotal as vt
+
     class _Response:
+        status_code = 200
+
         def json(self):
             return {"error": {"code": "NotFoundError"}}
 
     async def fake_api_call(method, url, **kwargs):
         return _Response()
 
+    vt.reset_state()
     monkeypatch.setattr(agg, "VIRUSTOTAL_API_KEY", "test-key")
-    with patch.object(agg, "_api_call", fake_api_call):
-        result = _run(agg._virustotal_provider("140.82.0.86", "IPv4"))
+    monkeypatch.setattr(vt, "VIRUSTOTAL_API_KEY", "test-key")
+    monkeypatch.setattr(vt, "VIRUSTOTAL_BUDGET", 50)
+    monkeypatch.setattr(vt, "VIRUSTOTAL_STATE", str(tmp_path / "vt.db"))
+    vt._get_quota().initialize()
+    with patch.object(vt, "_api_call", fake_api_call):
+        result = _run(agg._virustotal_provider("140.82.0.86", "IPv4", vt.issue_consent("ip_addresses", "140.82.0.86")))
 
     assert result.error is not None
     assert result.error_kind == "upstream_error"
@@ -258,17 +267,26 @@ def test_threatfox_ok_without_data_is_malformed(monkeypatch):
     assert result.is_malicious is None
 
 
-def test_virustotal_without_stats_is_malformed(monkeypatch):
+def test_virustotal_without_stats_is_malformed(monkeypatch, tmp_path):
+    from mcp_server.threat_intel import virustotal as vt
+
     class _Response:
+        status_code = 200
+
         def json(self):
             return {"data": {"attributes": {"reputation": 0}}}
 
     async def fake_api_call(method, url, **kwargs):
         return _Response()
 
+    vt.reset_state()
     monkeypatch.setattr(agg, "VIRUSTOTAL_API_KEY", "test-key")
-    with patch.object(agg, "_api_call", fake_api_call):
-        result = _run(agg._virustotal_provider("140.82.0.86", "IPv4"))
+    monkeypatch.setattr(vt, "VIRUSTOTAL_API_KEY", "test-key")
+    monkeypatch.setattr(vt, "VIRUSTOTAL_BUDGET", 50)
+    monkeypatch.setattr(vt, "VIRUSTOTAL_STATE", str(tmp_path / "vt.db"))
+    vt._get_quota().initialize()
+    with patch.object(vt, "_api_call", fake_api_call):
+        result = _run(agg._virustotal_provider("140.82.0.86", "IPv4", vt.issue_consent("ip_addresses", "140.82.0.86")))
 
     assert result.error is not None
     assert result.risk_level is None

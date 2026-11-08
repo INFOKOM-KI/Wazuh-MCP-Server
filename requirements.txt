@@ -1,4 +1,8 @@
-mcp>=1.0.0,<2.0.0
+# Protocol-sensitive. 1.28.1 is the verified MCP SDK with bundled FastMCP.
+# Direct Context.elicit is supported for 2025-06-18 and 2025-11-25;
+# 2026-07-28 MRTR needs Resolve(Elicit), which this SDK does not provide.
+# Run tests/test_consent_protocol.py before widening this range.
+mcp>=1.28.1,<1.29.0
 httpx>=0.27.0,<0.29.0
 pydantic>=2.0.0,<3.0.0
 defusedxml>=0.7.1,<1.0.0

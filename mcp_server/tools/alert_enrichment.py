@@ -8,23 +8,27 @@ import json, re, math, asyncio, os
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Literal, Any
 from collections import Counter
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from mcp.server.fastmcp import Context
 from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         _WAZUH_INDEXER_MAX_SIZE, _BYPASS_REDACTION_DESC, _REDACTION_POLICY_DESC, _REVEAL_OWNED_DESC, _FORENSIC_TOKEN_DESC,
                         CROWDSEC_API_KEY_ENV, ARGUS_API_KEY_ENV,
                         VIRUSTOTAL_API_KEY,
-                        GREYNOISE_COMMUNITY_BASE_URL,
-                        VIRUSTOTAL_BASE_URL, ARGUS_BASE_URL,
+                        GREYNOISE_COMMUNITY_BASE_URL, ARGUS_BASE_URL,
                         NETRA_MIN_INTERVAL, ARGUS_MIN_INTERVAL, SANGFOR_MIN_INTERVAL)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
+from mcp_server.core.exceptions import ThreatIntelError
 from mcp_server.core.http_client import ValidPublicIp
 from mcp_server.core.redact import _redact_alert_data
-from mcp_server.core.http_client import _api_call, _get_client, _handle_api_error
+from mcp_server.core.http_client import _api_call, _handle_api_error
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
 from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 from mcp_server.threat_intel._cache import get_limiter
+from mcp_server.threat_intel.virustotal import issue_consent
+from mcp_server.threat_intel.virustotal_consent import (consent_message,
+                                                        request_ioc_sharing)
 
 # Per-provider outbound lookup spacing (Netra/Argus 30s, Sangfor 5s).
 # max_concurrent=1 serializes requests so min_interval is strictly enforced.
@@ -36,10 +40,77 @@ _sangfor_limiter = get_limiter("sangfor", max_concurrent=1, min_interval=SANGFOR
 # Standalone threat-intel + Sangfor + unified scoring tools (remaining after alert-enrichment modular split)
 
 
+def _virustotal_fields(data: dict) -> dict:
+    keys = ("malicious", "suspicious", "harmless", "undetected", "timeout",
+            "stats_complete", "missing_stats", "total_engines",
+            "detection_percent", "any_detection", "community_reputation",
+            "as_owner", "asn", "network", "country", "total_votes", "tags",
+            "last_analysis_date", "http_status", "cached", "retrieved_at",
+            "cache_age_seconds", "cache_ttl_seconds", "cache_expired")
+    return {key: data.get(key) for key in keys}
+
+
+def _virustotal_markdown(title: str, value: str, data: dict) -> str:
+    from mcp_server.threat_intel.virustotal import markdown_text
+
+    complete = data.get("stats_complete", True)
+    total = data.get("total_engines")
+    total_label = str(total) if complete and total is not None else "?"
+    percent = data.get("detection_percent")
+    detection = f"{data.get('malicious', 0)}/{total_label}"
+    if complete and percent is not None:
+        detection += f" ({percent}%)"
+    else:
+        detection += " (incomplete)"
+    cache_age = data.get("cache_age_seconds")
+    cache_age_text = (f"{cache_age}s (TTL {data.get('cache_ttl_seconds', 0)}s)"
+                      if cache_age is not None else "-")
+    lines = [
+        f"# {title} - {markdown_text(value, 253)}",
+        "",
+        f"- **Malicious**: {data.get('malicious', 0)}",
+        f"- **Suspicious**: {data.get('suspicious') if data.get('suspicious') is not None else '-'}",
+        f"- **Harmless**: {data.get('harmless') if data.get('harmless') is not None else '-'}",
+        f"- **Undetected**: {data.get('undetected') if data.get('undetected') is not None else '-'}",
+        f"- **Timeout**: {data.get('timeout') if data.get('timeout') is not None else '-'}",
+        f"- **Total engines**: {total_label if total_label != '?' else 'incomplete'}",
+        f"- **Detection**: {detection}",
+        f"- **Community reputation**: "
+        f"{data.get('community_reputation') if data.get('community_reputation') is not None else '-'}",
+        f"- **Source**: {'cache' if data.get('cached') else 'live API'}",
+        f"- **Retrieved**: {data.get('retrieved_at') or '-'}",
+        f"- **Cache age**: {cache_age_text}",
+        f"- **Cache expired**: {'yes' if data.get('cache_expired') else 'no'}",
+    ]
+    for key, label in (("as_owner", "AS owner"), ("asn", "ASN"),
+                       ("network", "Network"), ("country", "Country"),
+                       ("last_analysis_date", "Last analysis date")):
+        if data.get(key) is not None:
+            lines.append(f"- **{label}**: {markdown_text(data[key])}")
+    if data.get("tags"):
+        tags = ", ".join(markdown_text(tag, 64) for tag in data["tags"])
+        lines.append(f"- **Tags**: {tags}")
+    if data.get("total_votes"):
+        votes = ", ".join(f"{key}={value}" for key, value in data["total_votes"].items())
+        lines.append(f"- **Community votes**: {votes}")
+    return "\n".join(lines)
+
+
 class VirusTotalHashInput(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    model_config = ConfigDict(str_strip_whitespace=False, extra="forbid")
     hash: str = Field(..., max_length=64, description="File hash (MD5/SHA1/SHA256)")
     response_format: str = Field(default="markdown", description="'markdown' or 'json'")
+    acknowledge_ioc_sharing: bool = Field(
+        default=False,
+        description=("Request host confirmation before sending the hash to VirusTotal. "
+                     "This flag is a request to prompt, not proof of human consent. Default false."),
+    )
+
+    @field_validator("hash")
+    @classmethod
+    def _hash_format(cls, value: str) -> str:
+        from mcp_server.threat_intel.virustotal import normalize_hash
+        return normalize_hash(value)
 
 
 # VirusTotal Hash
@@ -47,34 +118,86 @@ class VirusTotalHashInput(BaseModel):
     name="blueteam_lookup_hash_virustotal",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_lookup_hash_virustotal(params: VirusTotalHashInput) -> str:
-    """Check file hash reputation via VirusTotal.
+async def blueteam_lookup_hash_virustotal(params: VirusTotalHashInput,
+                                          ctx: Context | None = None) -> str:
+    """Check a file hash against VirusTotal's existing report.
+
     Args:
-        params.hash: File hash (MD5/SHA1/SHA256)
-        params.response_format: 'markdown' or 'json'
+        params.hash: MD5, SHA-1, or SHA-256 hexadecimal digest.
+        params.response_format: 'markdown' (default) or 'json'.
+        params.acknowledge_ioc_sharing: requests host confirmation; it is not proof of consent.
+
+    Returns:
+        Engine counts, detection percentage, community reputation, and available
+        AS/network/tag metadata. No scan is submitted. ``stats_complete=false`` and
+        ``missing_stats`` mark a partial ``last_analysis_stats`` object; the tool
+        does not compute a percentage or a malicious verdict from that object.
+        Zero malicious detections is not a benign confirmation; no report or an
+        upstream failure is an unavailable result, not a clean one.
+
+    Examples:
+        1. SHA-256 in Markdown:
+           ``blueteam_lookup_hash_virustotal(hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+           acknowledge_ioc_sharing=True)``
+        2. MD5 in JSON:
+           ``blueteam_lookup_hash_virustotal(hash="44d88612fea8a8f36de82e1278abb02f",
+           response_format="json", acknowledge_ioc_sharing=True)``
+        3. Malformed or path-like value:
+           ``blueteam_lookup_hash_virustotal(hash="../../domains/example.com")``
+           returns a validation error before any request.
+
+    Permissions: read-only; the default read scope is sufficient. The tool never
+    writes to VirusTotal.
+
+    Rate limits: a local operator budget must be armed and the request then obeys
+    the configured per-minute and daily provider limits. The default budget is 0 and
+    normal startup does not create state, so an uninitialized or zero-budget deployment
+    refuses before transport. A cached report is free. A 429
+    sets a cooldown. The local budget is persistent and shared across server
+    processes; the TTL cache is process-local and does not survive a restart.
+
+    Privacy: the hash leaves the host and VirusTotal adds the queried indicator
+    to its community dataset. Send only indicators the organization is authorized
+    to share and set ``acknowledge_ioc_sharing=true``.
     """
     _audit_log("blueteam_lookup_hash_virustotal", {"hash": params.hash})
     from mcp_server import VIRUSTOTAL_API_KEY
     if not VIRUSTOTAL_API_KEY:
-        return json.dumps({"error": "VIRUSTOTAL_API_KEY not set."})
+        raise ThreatIntelError("[virustotal] not_configured: VIRUSTOTAL_API_KEY is not set")
+    from mcp_server.threat_intel.virustotal import VirusTotalError, lookup
+    if not params.acknowledge_ioc_sharing:
+        raise ThreatIntelError(
+            "[virustotal] consent_required: set acknowledge_ioc_sharing=true to request host approval")
+    if not await request_ioc_sharing(
+            ctx, consent_message("files", params.hash)):
+        raise ThreatIntelError(
+            "[virustotal] consent_required: host approval was not granted")
     try:
-        client = await _get_client("http")
-        resp = await client.get(f"{VIRUSTOTAL_BASE_URL}/files/{params.hash}",
-                                 headers={"x-apikey": VIRUSTOTAL_API_KEY, "Accept": "application/json"})
-        resp.raise_for_status()
-        data = resp.json().get("data", {}).get("attributes", {})
-        stats = data.get("last_analysis_stats", {})
-        if params.response_format == "json":
-            return _truncate_if_needed(json.dumps({"hash": params.hash, "malicious": stats.get("malicious", 0), "suspicious": stats.get("suspicious", 0), "harmless": stats.get("harmless", 0)}, indent=2))
-        return _truncate_if_needed(f"# VirusTotal Hash - {params.hash}\n\n- **Malicious**: {stats.get('malicious',0)}\n- **Suspicious**: {stats.get('suspicious',0)}\n- **Harmless**: {stats.get('harmless',0)}")
-    except Exception as e:
-        _handle_api_error(e, context="virustotal")
+        data = await lookup("files", params.hash,
+                            consent_token=issue_consent("files", params.hash))
+    except VirusTotalError as e:
+        raise ThreatIntelError(f"[virustotal] {e.kind}: {e.message}") from e
+    if params.response_format == "json":
+        return _truncate_if_needed(json.dumps(
+            {"hash": params.hash, **_virustotal_fields(data)}, indent=2))
+    return _truncate_if_needed(_virustotal_markdown("VirusTotal Hash", params.hash, data))
 
 
 class VirusTotalDomainInput(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    model_config = ConfigDict(str_strip_whitespace=False, extra="forbid")
     domain: str = Field(..., max_length=253, description="Domain name")
     response_format: str = Field(default="markdown", description="'markdown' or 'json'")
+    acknowledge_ioc_sharing: bool = Field(
+        default=False,
+        description=("Request host confirmation before sending the domain to VirusTotal. "
+                     "This flag is a request to prompt, not proof of human consent. Default false."),
+    )
+
+    @field_validator("domain")
+    @classmethod
+    def _domain_format(cls, value: str) -> str:
+        from mcp_server.threat_intel.virustotal import normalize_domain
+        return normalize_domain(value)
 
 
 # VirusTotal Domain
@@ -82,28 +205,73 @@ class VirusTotalDomainInput(BaseModel):
     name="blueteam_lookup_domain_virustotal",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
-async def blueteam_lookup_domain_virustotal(params: VirusTotalDomainInput) -> str:
-    """Check domain reputation via VirusTotal.
+async def blueteam_lookup_domain_virustotal(params: VirusTotalDomainInput,
+                                            ctx: Context | None = None) -> str:
+    """Check a domain against VirusTotal's existing report.
+
     Args:
-        params.domain: Domain name
-        params.response_format: 'markdown' or 'json'
+        params.domain: DNS name with at least two labels. IDNA is normalized to
+            lowercase ASCII; schemes, paths, queries, fragments, userinfo, ports,
+            whitespace, and path traversal are rejected.
+        params.response_format: 'markdown' (default) or 'json'.
+        params.acknowledge_ioc_sharing: requests host confirmation; it is not proof of consent.
+
+    Returns:
+        Engine counts, detection percentage, community reputation, and available
+        AS/network/tag metadata. No scan is submitted. ``stats_complete=false`` and
+        ``missing_stats`` mark a partial ``last_analysis_stats`` object; the tool
+        does not compute a percentage or a malicious verdict from that object.
+        Zero malicious detections is not a benign confirmation; no report or an
+        upstream failure is an unavailable result, not a clean one.
+
+    Examples:
+        1. Apex domain in Markdown:
+           ``blueteam_lookup_domain_virustotal(domain="example.com",
+           acknowledge_ioc_sharing=True)``
+        2. Subdomain in JSON:
+           ``blueteam_lookup_domain_virustotal(domain="login.example.com",
+           response_format="json", acknowledge_ioc_sharing=True)``
+        3. Internationalized domain:
+           ``blueteam_lookup_domain_virustotal(domain="münich.example")``
+           is sent as its IDNA form.
+        4. A path or query is rejected before transport:
+           ``blueteam_lookup_domain_virustotal(domain="example.com/../../comments")``
+
+    Permissions: read-only; the default read scope is sufficient. The tool never
+    writes to VirusTotal.
+
+    Rate limits: a local operator budget must be armed and the request then obeys
+    the configured per-minute and daily provider limits. The default budget is 0 and
+    normal startup does not create state, so an uninitialized or zero-budget deployment
+    refuses before transport. A cached report is free. A 429
+    sets a cooldown. The local budget is persistent and shared across server
+    processes; the TTL cache is process-local and does not survive a restart.
+
+    Privacy: the domain leaves the host and VirusTotal adds the queried indicator
+    to its community dataset. Send only indicators the organization is authorized
+    to share and set ``acknowledge_ioc_sharing=true``.
     """
     _audit_log("blueteam_lookup_domain_virustotal", {"domain": params.domain})
     from mcp_server import VIRUSTOTAL_API_KEY
     if not VIRUSTOTAL_API_KEY:
-        return json.dumps({"error": "VIRUSTOTAL_API_KEY not set."})
+        raise ThreatIntelError("[virustotal] not_configured: VIRUSTOTAL_API_KEY is not set")
+    from mcp_server.threat_intel.virustotal import VirusTotalError, lookup
+    if not params.acknowledge_ioc_sharing:
+        raise ThreatIntelError(
+            "[virustotal] consent_required: set acknowledge_ioc_sharing=true to request host approval")
+    if not await request_ioc_sharing(
+            ctx, consent_message("domains", params.domain)):
+        raise ThreatIntelError(
+            "[virustotal] consent_required: host approval was not granted")
     try:
-        client = await _get_client("http")
-        resp = await client.get(f"{VIRUSTOTAL_BASE_URL}/domains/{params.domain}",
-                                 headers={"x-apikey": VIRUSTOTAL_API_KEY, "Accept": "application/json"})
-        resp.raise_for_status()
-        data = resp.json().get("data", {}).get("attributes", {})
-        stats = data.get("last_analysis_stats", {})
-        if params.response_format == "json":
-            return _truncate_if_needed(json.dumps({"domain": params.domain, "malicious": stats.get("malicious", 0), "suspicious": stats.get("suspicious", 0), "harmless": stats.get("harmless", 0)}, indent=2))
-        return _truncate_if_needed(f"# VirusTotal Domain - {params.domain}\n\n- **Malicious**: {stats.get('malicious',0)}\n- **Suspicious**: {stats.get('suspicious',0)}\n- **Harmless**: {stats.get('harmless',0)}")
-    except Exception as e:
-        _handle_api_error(e, context="virustotal")
+        data = await lookup("domains", params.domain,
+                            consent_token=issue_consent("domains", params.domain))
+    except VirusTotalError as e:
+        raise ThreatIntelError(f"[virustotal] {e.kind}: {e.message}") from e
+    if params.response_format == "json":
+        return _truncate_if_needed(json.dumps(
+            {"domain": params.domain, **_virustotal_fields(data)}, indent=2))
+    return _truncate_if_needed(_virustotal_markdown("VirusTotal Domain", params.domain, data))
 
 
 # Argus response rendering is provider-agnostic: no provider name and no field path is

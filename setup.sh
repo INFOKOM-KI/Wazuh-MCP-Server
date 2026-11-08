@@ -572,6 +572,25 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET="5"       # cumulative per-endpoint/per-process before the first header; headerless does not restore
 # export ABUSEIPDB_CACHE_TTL="900"
 # export VIRUSTOTAL_API_KEY="your_key"    # https://www.virustotal.com
+# VirusTotal is closed at budget 0. Normal startup never creates state. The operator creates
+# it with: python -m mcp_server.threat_intel.virustotal_quota init --state ... --budget ...
+# --hours ... --rate ... --daily ...  The state is 0600 SQLite and shared by server processes.
+# The CLI is a local administrative command, not an MCP tool; run it as the service user.
+# The state directory must not be group or world writable; the state file is 0600.
+# Missing, expired, corrupt, or policy-mismatched state fails closed. Use policy, rearm, migrate,
+# and prune for explicit policy changes, a new window, legacy adoption, and retention.
+# Public API defaults: 4 requests/min, 500/day. Public API use is limited to noncommercial
+# or academic work; commercial or government use requires a Private API agreement. The
+# published terms also prohibit business workflows that do not contribute new files. Confirm
+# the agreement before arming a SOC alert-enrichment deployment. A key alone does not prove entitlement.
+# export BLUETEAM_VIRUSTOTAL_BUDGET="0"
+# export BLUETEAM_VIRUSTOTAL_BUDGET_HOURS="8"
+# export BLUETEAM_VIRUSTOTAL_STATE="/var/log/blue-team-mcp/virustotal_quota.db"
+# export VIRUSTOTAL_ALLOWED_HOSTS="www.virustotal.com"
+# export VIRUSTOTAL_MAX_RESPONSE_BYTES="2000000"
+# export VIRUSTOTAL_CACHE_TTL="3600"
+# export VIRUSTOTAL_RATE_PER_MINUTE="4"
+# export VIRUSTOTAL_DAILY_LIMIT="500"
 # export CROWDSEC_API_KEY="your_key"      # free tier: https://www.crowdsec.net/en/user/profile
 # export RAPIDAPI_KEY="your_key"           # https://rapidapi.com. All products share ONE 100/month pool
 #   The RapidAPI budget is fail-closed: leave BLUETEAM_RAPIDAPI_BUDGET at 0 for normal
@@ -616,7 +635,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export THREATFOX_BASE_URL="https://threatfox-api.abuse.ch/api/v1/"
 # export OTX_BASE_URL="https://otx.alienvault.com"
 # export ABUSEIPDB_BASE_URL="https://api.abuseipdb.com/api/v2"
-# export VIRUSTOTAL_BASE_URL="https://www.virustotal.com/api/v3"
+# export VIRUSTOTAL_BASE_URL="https://www.virustotal.com/api/v3"  # HTTPS, port 443, host in VIRUSTOTAL_ALLOWED_HOSTS, path /api/v3
 # export NETRA_BASE_URL="https://netra.fbi.gov:8013/api/v1"
 # export RDAP_BASE_URL="https://rdap.org"
 # export CRTSH_BASE_URL="https://crt.sh"
@@ -1046,6 +1065,14 @@ export BLUETEAM_ABUSEIPDB_BOOTSTRAP_CONCURRENCY="${BLUETEAM_ABUSEIPDB_BOOTSTRAP_
 export BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET="${BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET:-5}"
 export ABUSEIPDB_CACHE_TTL="${ABUSEIPDB_CACHE_TTL:-900}"
 export VIRUSTOTAL_API_KEY="${VIRUSTOTAL_API_KEY:-}"
+export BLUETEAM_VIRUSTOTAL_BUDGET="${BLUETEAM_VIRUSTOTAL_BUDGET:-0}"
+export BLUETEAM_VIRUSTOTAL_BUDGET_HOURS="${BLUETEAM_VIRUSTOTAL_BUDGET_HOURS:-8}"
+export BLUETEAM_VIRUSTOTAL_STATE="${BLUETEAM_VIRUSTOTAL_STATE:-/var/log/blue-team-mcp/virustotal_quota.db}"
+export VIRUSTOTAL_ALLOWED_HOSTS="${VIRUSTOTAL_ALLOWED_HOSTS:-www.virustotal.com}"
+export VIRUSTOTAL_MAX_RESPONSE_BYTES="${VIRUSTOTAL_MAX_RESPONSE_BYTES:-2000000}"
+export VIRUSTOTAL_CACHE_TTL="${VIRUSTOTAL_CACHE_TTL:-3600}"
+export VIRUSTOTAL_RATE_PER_MINUTE="${VIRUSTOTAL_RATE_PER_MINUTE:-4}"
+export VIRUSTOTAL_DAILY_LIMIT="${VIRUSTOTAL_DAILY_LIMIT:-500}"
 export CROWDSEC_API_KEY="${CROWDSEC_API_KEY:-}"
 export THREATFOX_API_KEY="${THREATFOX_API_KEY:-}"
 export THREATFOX_CACHE_TTL="${THREATFOX_CACHE_TTL:-900}"
@@ -1278,6 +1305,7 @@ echo ""
 echo "  Uncomment and set: THREATFOX_API_KEY, ABUSEIPDB_API_KEY (reporting stays off), VIRUSTOTAL_API_KEY,"
 echo "  CROWDSEC_API_KEY (free tier at crowdsec.net), NETRA_API_KEY, ARGUS_API_KEY,"
 echo "  RAPIDAPI_KEY (budget stays at 0 until you arm it for an incident),"
+echo "  VirusTotal stays closed until the quota init command creates its state,"
 echo "  WAZUH_API_URL, WAZUH_API_USER, WAZUH_API_PASSWORD,"
 echo "  WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD."
 echo ""

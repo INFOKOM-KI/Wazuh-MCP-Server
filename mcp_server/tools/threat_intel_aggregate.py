@@ -17,13 +17,18 @@ Provider coverage:
 Normalizes each into TIProviderResult, then aggregates into TIQueryOutput.
 """
 from __future__ import annotations
-import json, asyncio, re, os, logging
-from typing import Optional, Literal
+import json, asyncio, os, logging
+from typing import Optional, Literal, get_args
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from mcp.server.fastmcp import Context
 from mcp_server import (mcp, CROWDSEC_API_KEY_ENV, OTX_API_KEY_ENV,
-                        THREATFOX_API_KEY_ENV, VIRUSTOTAL_API_KEY,
-                        VIRUSTOTAL_BASE_URL)
-from mcp_server.core.http_client import _api_call, _classify_api_error, _is_private_or_reserved
+                        THREATFOX_API_KEY_ENV, VIRUSTOTAL_API_KEY)
+from mcp_server.core.http_client import (_api_call, _classify_api_error,
+                                         normalize_public_ip)
+from mcp_server.threat_intel.virustotal import (issue_consent, normalize_domain,
+                                                normalize_hash)
+from mcp_server.threat_intel.virustotal_consent import (consent_message,
+                                                        request_ioc_sharing)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.threat_intel.greynoise import _NO_DATA_MESSAGE, _greynoise_lookup
 from mcp_server.threat_intel.otx import (_classify_indicator, _normalize_adversary,
@@ -31,16 +36,27 @@ from mcp_server.threat_intel.otx import (_classify_indicator, _normalize_adversa
 
 logger = logging.getLogger("blue_team_mcp.threat_intel_aggregate")
 
-_IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
-_HASH_RE = re.compile(r"^[a-fA-F0-9]{32}$|^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$")
-
 # Risk level ordering for aggregation
 _RISK_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "none": 0, None: 0}
 
 
-ErrorKind = Literal["rate_limited", "not_configured", "unsupported_type",
-                   "upstream_error", "timeout", "auth_error", "not_found",
-                   "bad_request", "circuit_open", "plan_limit"]
+ErrorKind = Literal[
+    "rate_limited", "cooldown", "not_configured", "unsupported_type",
+    "upstream_error", "timeout", "auth_error", "not_found", "bad_request",
+    "circuit_open", "plan_limit", "budget_closed", "not_armed", "arm_expired",
+    "consent_required",
+    "budget_exhausted", "daily_exhausted", "storage_unavailable",
+    "state_corrupt", "state_missing", "policy_mismatch", "state_exists",
+    "config_invalid",
+]
+_ERROR_KINDS = frozenset(get_args(ErrorKind))
+_LOCAL_REFUSAL_KINDS = frozenset({
+    "not_configured", "unsupported_type", "bad_request", "circuit_open",
+    "plan_limit", "budget_closed", "not_armed", "arm_expired", "consent_required",
+    "budget_exhausted",
+    "daily_exhausted", "storage_unavailable", "state_corrupt", "state_missing",
+    "policy_mismatch", "state_exists", "config_invalid", "cooldown",
+})
 
 
 class TIProviderResult(BaseModel):
@@ -49,7 +65,11 @@ class TIProviderResult(BaseModel):
     indicator: str = ""
     indicator_type: str = "unknown"
     risk_level: Optional[str] = None
-    reputation_score: Optional[int] = None
+    reputation_score: Optional[int] = Field(
+        default=None,
+        description=("Provider-normalized 0-100 score. For VirusTotal this is "
+                     "the engine detection percentage; community reputation is "
+                     "reported separately in detail.community_reputation."))
     is_malicious: Optional[bool] = None
     tags: list[str] = Field(default_factory=list)
     attack_techniques: list[str] = Field(default_factory=list)
@@ -83,6 +103,12 @@ class ThreatIntelAggregateInput(BaseModel):
         description="IOC to analyze: IP address, domain, or file hash (MD5/SHA1/SHA256).",
     )
     response_format: Literal["markdown", "json"] = Field(default="markdown")
+    acknowledge_ioc_sharing: bool = Field(
+        default=False,
+        description=("Request host confirmation before querying VirusTotal. This flag is a "
+                     "request to prompt, not proof of human consent; the MCP host must return "
+                     "an explicit approval. Default false."),
+    )
 
     @field_validator("indicator")
     @classmethod
@@ -90,11 +116,11 @@ class ThreatIntelAggregateInput(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("indicator must not be empty")
-        if _IP_RE.match(v) and _is_private_or_reserved(v):
-            raise ValueError(f"'{v}' is a private/reserved IP - this tool only accepts public IOCs.")
         ind_type = _classify_indicator(v)
         if not ind_type:
             raise ValueError(f"Unrecognized IOC type: '{v}'. Supported: IP, domain, hostname, URL, MD5/SHA1/SHA256.")
+        if ind_type in ("IPv4", "IPv6"):
+            return normalize_public_ip(v)
         return v
 
 
@@ -295,35 +321,65 @@ async def _abuseipdb_provider(indicator: str, ind_type: str) -> TIProviderResult
                                 error_kind=_classify_api_error(e))
 
 
-async def _virustotal_provider(indicator: str, ind_type: str) -> TIProviderResult:
-    vt_types = {"file": "files", "domain": "domains", "IPv4": "ip_addresses"}
+async def _virustotal_provider(indicator: str, ind_type: str,
+                               consent_token: str | None = None) -> TIProviderResult:
+    vt_types = {"file": "files", "domain": "domains",
+                "IPv4": "ip_addresses", "IPv6": "ip_addresses"}
     configured = bool(VIRUSTOTAL_API_KEY)
     if ind_type not in vt_types or not configured:
         return TIProviderResult(provider="virustotal", indicator=indicator,
                                 indicator_type=ind_type,
                                 error="not configured" if not configured else "unsupported type",
                                 error_kind="not_configured" if not configured else "unsupported_type")
+    from mcp_server.threat_intel.virustotal import VirusTotalError, lookup
     try:
-        vt_type = vt_types[ind_type]
-        h = {"x-apikey": VIRUSTOTAL_API_KEY, "Accept": "application/json"}
-        r = await _api_call("get", f"{VIRUSTOTAL_BASE_URL}/{vt_type}/{indicator}", headers=h)
-        body = r.json()
-        if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
-            raise ValueError("malformed VirusTotal response (data missing)")
-        d = body["data"]
-        attrs = d.get("attributes") or {}
-        stats = attrs.get("last_analysis_stats")
-        if not isinstance(stats, dict):
-            raise ValueError("malformed VirusTotal response (last_analysis_stats missing)")
-        mal = stats.get("malicious", 0)
-        total = sum(stats.values()) or 1
-        score = int(mal / total * 100)
-        risk = "high" if score >= 50 else "medium" if score >= 20 else "low" if mal > 0 else "none"
+        data = await lookup(vt_types[ind_type], indicator,
+                            consent_token=consent_token)
+        mal = data["malicious"]
+        complete = bool(data.get("stats_complete", False))
+        total = data.get("total_engines")
+        score = data.get("detection_percent")
+        if complete and score is not None:
+            risk = ("high" if score >= 50 else "medium" if score >= 20
+                    else "low" if mal > 0 else "none")
+            is_malicious = risk in ("high", "medium")
+        else:
+            risk = None
+            is_malicious = None
         return TIProviderResult(
             provider="virustotal", indicator=indicator, indicator_type=ind_type,
-            risk_level=risk, reputation_score=score, is_malicious=(mal > 0),
-            detail={"detections": f"{mal}/{total}", "reputation": attrs.get("reputation", 0)},
+            risk_level=risk, reputation_score=score if complete else None,
+            is_malicious=is_malicious,
+            detail={
+                "detections": (f"{mal}/{total}" if complete and total is not None
+                               else f"{mal}/? (incomplete)"),
+                "detection_percent": score,
+                "stats_complete": complete,
+                "missing_stats": data.get("missing_stats", []),
+                "analysis_stats": data.get("analysis_stats"),
+                "total_engines": total,
+                "community_reputation": data.get("community_reputation"),
+                "as_owner": data.get("as_owner"),
+                "asn": data.get("asn"),
+                "network": data.get("network"),
+                "country": data.get("country"),
+                "total_votes": data.get("total_votes"),
+                "tags": data.get("tags"),
+                "last_analysis_date": data.get("last_analysis_date"),
+                "http_status": data.get("http_status"),
+                "any_detection": data.get("any_detection", mal > 0),
+                "cached": data.get("cached", False),
+                "retrieved_at": data.get("retrieved_at"),
+                "cache_age_seconds": data.get("cache_age_seconds"),
+                "cache_ttl_seconds": data.get("cache_ttl_seconds"),
+                "cache_expired": data.get("cache_expired"),
+            },
         )
+    except VirusTotalError as e:
+        kind = e.kind if e.kind in _ERROR_KINDS else "upstream_error"
+        return TIProviderResult(provider="virustotal", indicator=indicator,
+                                indicator_type=ind_type, error=e.message,
+                                error_kind=kind)
     except Exception as e:
         return TIProviderResult(provider="virustotal", indicator=indicator,
                                 indicator_type=ind_type, error=str(e),
@@ -339,7 +395,7 @@ def _aggregate(results: list[TIProviderResult]) -> TIQueryOutput:
     # Configuration answers are not attempts: a provider that is unconfigured or
     # does not support the indicator type never left the process.
     attempted = [r for r in results
-                 if r.error_kind not in ("not_configured", "unsupported_type")]
+                 if r.error_kind not in _LOCAL_REFUSAL_KINDS]
     coverage = {"providers_total": len(attempted), "providers_ok": len(valid)}
 
     if not valid:
@@ -371,13 +427,24 @@ def _malicious_mark(is_malicious: bool | None) -> str:
     return "✅" if is_malicious else "❌"
 
 
+def _vt_consent_target(ind_type: str, indicator: str) -> tuple[str, str] | None:
+    if ind_type in ("IPv4", "IPv6"):
+        return "ip_addresses", normalize_public_ip(indicator)
+    if ind_type == "domain":
+        return "domains", normalize_domain(indicator)
+    if ind_type == "file":
+        return "files", normalize_hash(indicator)
+    return None
+
+
 # MCP Tool
 @mcp.tool(
     name="blueteam_threat_intel_aggregate",
     annotations={"readOnlyHint": True, "destructiveHint": False,
                  "idempotentHint": True, "openWorldHint": True},
 )
-async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput) -> str:
+async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
+                                           ctx: Context | None = None) -> str:
     """Aggregate threat intelligence from all available providers for one IOC.
 
     Queries CrowdSec, ThreatFox, AlienVault OTX, GreyNoise, AbuseIPDB, and
@@ -389,26 +456,48 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput) -> 
     **Worked Examples**
 
     1. *Full aggregation for a suspicious IP*:
-       ``blueteam_threat_intel_aggregate(indicator="140.82.0.86")``
+       ``blueteam_threat_intel_aggregate(indicator="140.82.0.86", acknowledge_ioc_sharing=true)``
 
     2. *Aggregate a domain*:
-       ``blueteam_threat_intel_aggregate(indicator="evil-c2.example.com")``
+       ``blueteam_threat_intel_aggregate(indicator="evil-c2.example.com", acknowledge_ioc_sharing=true)``
 
     3. *Aggregate a file hash*:
-       ``blueteam_threat_intel_aggregate(indicator="<sha256>")``
+       ``blueteam_threat_intel_aggregate(indicator="<sha256>", acknowledge_ioc_sharing=true)``
+
+    VirusTotal is queried only when ``acknowledge_ioc_sharing=true`` requests
+    host confirmation and the MCP host returns an explicit approval. The boolean
+    alone is not consent. Queried indicators are added to VirusTotal's community
+    dataset. Without host approval, VT returns ``consent_required`` and no
+    request or quota reservation is made.
 
     **Error Handling**: Providers without API keys are skipped and reported in
-    ``errors[]``. Each result also carries ``error_kind`` for JSON consumers: one of
-    ``rate_limited``, ``auth_error``, ``not_found``, ``bad_request``, ``timeout``,
-    ``circuit_open``, ``upstream_error``, ``plan_limit``, ``not_configured``,
-    ``unsupported_type``,
-    while ``error`` keeps its human-readable text. Per-provider failures never block
-    the overall aggregation. ``providers_ok``/``providers_total`` count attempted
-    providers: a provider that is not configured or does not support the indicator
-    type is excluded from the ratio and stays in ``errors[]``.
+    ``errors[]``. Each result also carries ``error_kind`` for JSON consumers. Upstream
+    failures include ``rate_limited`` (HTTP 429), ``auth_error``, ``not_found``,
+    ``timeout``, and ``upstream_error``. Local refusals include ``cooldown``,
+    ``budget_closed``, ``not_armed``, ``arm_expired``, ``budget_exhausted``,
+    ``daily_exhausted``, ``storage_unavailable``, ``state_corrupt``,
+    ``state_missing``, ``policy_mismatch``, ``state_exists``, ``config_invalid``,
+    ``bad_request``, ``circuit_open``, ``plan_limit``, ``not_configured``, and
+    ``unsupported_type``; ``error`` keeps the human-readable text. Per-provider
+    failures never block the overall aggregation. ``providers_ok``/``providers_total``
+    count attempted upstream providers. A provider that is not configured, does not
+    support the indicator type, is refused locally before transport, or fails its
+    input validation is excluded from the ratio and stays in ``errors[]``.
     """
     _audit_log("blueteam_threat_intel_aggregate", {"indicator": params.indicator})
     ind_type = _classify_indicator(params.indicator)
+
+    vt_token = None
+    if params.acknowledge_ioc_sharing and VIRUSTOTAL_API_KEY:
+        try:
+            consent_target = _vt_consent_target(ind_type, params.indicator)
+        except ValueError:
+            consent_target = None
+        if consent_target is not None:
+            vt_kind, vt_value = consent_target
+            if await request_ioc_sharing(
+                    ctx, consent_message(vt_kind, vt_value)):
+                vt_token = issue_consent(vt_kind, vt_value)
 
     # Query all applicable providers concurrently
     tasks = [
@@ -417,7 +506,7 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput) -> 
         _otx_provider(params.indicator, ind_type),
         _greynoise_provider(params.indicator, ind_type),
         _abuseipdb_provider(params.indicator, ind_type),
-        _virustotal_provider(params.indicator, ind_type),
+        _virustotal_provider(params.indicator, ind_type, vt_token),
     ]
     results: list[TIProviderResult] = await asyncio.gather(*tasks)
     output = _aggregate(results)
@@ -438,9 +527,33 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput) -> 
         else:
             mf = ", ".join(r.malware_families[:2]) or ""
             adv = ", ".join(r.adversaries[:2]) or ""
-            detail = f"{mf} {adv}".strip() or "—"
+            detail = f"{mf} {adv}".strip()
+            if r.provider == "virustotal" and r.detail.get("detections"):
+                rep = r.detail.get("community_reputation")
+                detail = (f"{r.detail['detections']} engines; "
+                          f"rep {rep if rep is not None else '-'}")
+            detail = detail or "-"
             lines.append(f"| `{r.provider}` | {r.risk_level or '?'} | {r.reputation_score if r.reputation_score is not None else '?'} "
                          f"| {_malicious_mark(r.is_malicious)} | {detail[:40]} |")
+
+    lines.append("")
+    lines.append("`Score` is the provider's normalized 0-100 score. For VirusTotal it is the engine "
+                 "detection percentage; `rep` in the detail is community reputation.")
+
+    vt_rows = [r for r in results if r.provider == "virustotal" and r.error is None]
+    if vt_rows:
+        lines.append("")
+        lines.append("### VirusTotal retrieval")
+        for row in vt_rows:
+            detail = row.detail
+            source = "cache" if detail.get("cached") else "live API"
+            age = detail.get("cache_age_seconds")
+            ttl = detail.get("cache_ttl_seconds")
+            lines.append(
+                f"- `{row.indicator}`: {source}, retrieved {detail.get('retrieved_at') or '-'}, "
+                f"age {age if age is not None else '-'}s/TTL {ttl if ttl is not None else '-'}s, "
+                f"expired {'yes' if detail.get('cache_expired') else 'no'}, "
+                f"HTTP {detail.get('http_status') or '-'}")
 
     if output.errors:
         lines.append("")

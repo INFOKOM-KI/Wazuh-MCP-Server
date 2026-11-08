@@ -12,7 +12,7 @@ Endpoints:
 Sections: general, reputation, geo, malware, url_list, passive_dns
 """
 from __future__ import annotations
-import json, logging, time, os, re, asyncio
+import asyncio, ipaddress, json, logging, os, re, time
 from typing import Any
 import httpx
 from mcp_server import OTX_API_KEY_ENV, OTX_BASE_URL, OTX_CACHE_TTL
@@ -25,7 +25,6 @@ logger = logging.getLogger("blue_team_mcp.otx")
 _otx_limiter = get_limiter("otx", max_concurrent=5, min_interval=0.2)  # 5 req/sec
 
 # Indicator type resolution
-_IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 _MD5_RE = re.compile(r"^[a-fA-F0-9]{32}$")
 _SHA1_RE = re.compile(r"^[a-fA-F0-9]{40}$")
 _SHA256_RE = re.compile(r"^[a-fA-F0-9]{64}$")
@@ -39,8 +38,13 @@ _VALID_TYPES = ("IPv4", "IPv6", "domain", "hostname", "url", "file")
 def _classify_indicator(value: str) -> str:
     """Classify an IOC string into an OTX indicator type."""
     v = (value or "").strip()
-    if _IP_RE.match(v):
-        return "IPv4"
+    try:
+        address = ipaddress.ip_address(v)
+    except ValueError:
+        pass
+    else:
+        mapped = getattr(address, "ipv4_mapped", None)
+        return "IPv4" if mapped is not None or address.version == 4 else "IPv6"
     if _MD5_RE.match(v):
         return "file"
     if _SHA1_RE.match(v) or _SHA256_RE.match(v):

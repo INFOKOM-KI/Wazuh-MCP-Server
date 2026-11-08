@@ -18,6 +18,24 @@ This guide explains how to install **INFOKOM-KI Wazuh MCP Server** on Ubuntu/Deb
 
 The examples below use **Streamable HTTP bound only to `127.0.0.1:8000`**, with the service running as a non-root system user. A reverse proxy or VPN can be used when the client runs on another machine. If you only need SSH/stdio, see Section 12.
 
+### 1.1 MCP protocol and VirusTotal consent
+
+The server pins `mcp>=1.28.1,<1.29.0` and uses its bundled FastMCP. The installed
+SDK supports protocol revisions up to `2025-11-25`; direct `Context.elicit` is
+valid for `2025-06-18` and `2025-11-25`.
+
+- `2024-11-05` and `2025-03-26` predate elicitation. VirusTotal consent fails
+  closed with `consent_required`; no prompt and no request are made.
+- `2026-07-28` Multi Round-Trip Requests are not supported by this SDK. A client
+  that requests `2026-07-28` receives `2025-11-25` and must use the negotiated
+  legacy revision. The current SDK has no `Resolve(Elicit)`; the gate refuses
+  native `2026-07-28` before prompting.
+- `stdio` and stateful `streamable_http` are supported. Do not set
+  `stateless_http=true`, and do not run multiple HTTP workers for consent-bearing
+  calls: consent tokens are process-local and single-use.
+- The server does not accept client-supplied `requestState` for consent. Each
+  retry performs a fresh host prompt.
+
 ## 2. Prerequisites
 
 Prepare the following:
@@ -531,7 +549,27 @@ export BLUETEAM_ABUSEIPDB_EXCLUDE=""          # comma-separated IPs/CIDRs never 
 export ABUSEIPDB_CACHE_TTL="900"
 export BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL="1.0"
 export BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL="50"
+# Public API defaults: 4 requests/min, 500/day, 3600s cache.
+# VirusTotal is closed at budget 0. Normal startup never creates state. Create it with:
+# python -m mcp_server.threat_intel.virustotal_quota init --state ... --budget ... --hours ...
+# --rate ... --daily ...  The state is 0600 SQLite and shared by server processes.
+# The CLI is a local administrative command, not an MCP tool; run it as the service user.
+# The state directory must not be group or world writable; the state file is 0600.
+# Missing, expired, corrupt, or policy-mismatched state fails closed. Use policy, rearm, migrate,
+# and prune for explicit policy changes, a new window, legacy adoption, and retention.
+# Public API use is limited to permitted noncommercial or academic work.
+# Commercial or government use requires a Private API agreement; the published terms also
+# prohibit business workflows that do not contribute new files. Confirm the agreement before
+# arming a SOC alert-enrichment deployment. A key alone does not prove entitlement.
 export VIRUSTOTAL_API_KEY="<key>"
+export BLUETEAM_VIRUSTOTAL_BUDGET="0"
+export BLUETEAM_VIRUSTOTAL_BUDGET_HOURS="8"
+export BLUETEAM_VIRUSTOTAL_STATE="/var/log/blue-team-mcp/virustotal_quota.db"
+export VIRUSTOTAL_ALLOWED_HOSTS="www.virustotal.com"
+export VIRUSTOTAL_MAX_RESPONSE_BYTES="2000000"
+export VIRUSTOTAL_CACHE_TTL="3600"
+export VIRUSTOTAL_RATE_PER_MINUTE="4"
+export VIRUSTOTAL_DAILY_LIMIT="500"
 export HUDSONROCK_API_KEY="<key>"
 export RAPIDAPI_KEY="<key>"
 export NVD_API_KEY="<key>"
@@ -594,7 +632,53 @@ General cache TTLs:
 | `BLUETEAM_GRAPH_CACHE_TTL` | `60` | Seconds for attack-graph cache. |
 | `BLUETEAM_INDEXER_CACHE_TTL` | `30` | Seconds to avoid repeated identical Indexer aggregations; `0` disables the cache. |
 
-Set `SANGFOR_BLOCKLIST_URL` and `SANGFOR_BLOCKLIST_TOKEN` only if your organization uses a compatible blocklist service; do not copy the example endpoint as an active value. `SANGFOR_BLOCKLIST_VERIFY_SSL` should be `true`, and the token must be stored as a secret. Provider base URLs usually do not need to be changed. For an internal proxy/mirror, the script provides `GREYNOISE_BASE_URL`, `CROWDSEC_BASE_URL`, `THREATFOX_BASE_URL`, `OTX_BASE_URL`, `URLHAUS_BASE_URL`, `ABUSEIPDB_BASE_URL`, `VIRUSTOTAL_BASE_URL`, `NETRA_BASE_URL`, `RDAP_BASE_URL`, `CRTSH_BASE_URL`, `HUDSONROCK_BASE_URL`, and specific settings such as `ARGUS_BASE_URL`/`SANGFOR_BLOCKLIST_URL`. Change these only if the alternative endpoint is compatible and trusted.
+Set `SANGFOR_BLOCKLIST_URL` and `SANGFOR_BLOCKLIST_TOKEN` only if your organization uses a compatible blocklist service; do not copy the example endpoint as an active value. `SANGFOR_BLOCKLIST_VERIFY_SSL` should be `true`, and the token must be stored as a secret. Provider base URLs usually do not need to be changed. For an internal proxy/mirror, the script provides `GREYNOISE_BASE_URL`, `CROWDSEC_BASE_URL`, `THREATFOX_BASE_URL`, `OTX_BASE_URL`, `URLHAUS_BASE_URL`, `ABUSEIPDB_BASE_URL`, `VIRUSTOTAL_BASE_URL`, `NETRA_BASE_URL`, `RDAP_BASE_URL`, `CRTSH_BASE_URL`, `HUDSONROCK_BASE_URL`, and specific settings such as `ARGUS_BASE_URL`/`SANGFOR_BLOCKLIST_URL`. Change these only if the alternative endpoint is compatible and trusted. `VIRUSTOTAL_BASE_URL` must be HTTPS on port 443, use a hostname listed in `VIRUSTOTAL_ALLOWED_HOSTS`, and end at `/api/v3`; IP literals, userinfo, queries, fragments, and unexpected ports are rejected before transport.
+
+### 13.2a Controlled live VirusTotal validation
+
+The live validator is an operator-run command. It is not an MCP tool, is not
+collected by the unit tests, and never runs automatically. It uses the normal
+`lookup` path, so the quota reservation, state policy, cache, and 429 handling
+remain in force.
+
+```bash
+# Replace the placeholders with public addresses you are authorized to query.
+# This may consume one reserved IPv4 request and one IPv6 request; cache hits consume none.
+python -m mcp_server.threat_intel.virustotal_live \
+  --ip <PUBLIC_TEST_IPV4> --ipv6 <PUBLIC_TEST_IPV6> \
+  --confirm-live --acknowledge-ioc-sharing
+```
+
+Requirements:
+
+- `VIRUSTOTAL_API_KEY` must be configured; if it is not, the command reports
+  `live validation not performed` and exits without a request.
+- The quota state must already exist and its policy must match the service
+  environment. The command never calls `init`, `policy`, or `rearm`.
+- The operator supplies the test addresses. Private, loopback, link-local,
+  multicast, reserved, documentation, and other non-public addresses are
+  rejected before transport.
+- `--confirm-live` and `--acknowledge-ioc-sharing` are both mandatory. Without
+  them, no lookup is attempted. The same consent policy applies to the MCP
+  paths: aggregate and standalone domain/hash tools require
+  `acknowledge_ioc_sharing=true`; the curated report requires
+  `include_virustotal=true`. Missing consent returns `consent_required` before
+  cache and quota. Cached results also require consent. The MCP host is asked
+  through `Context.elicit`; a client that auto-answers can still assert approval,
+  so the server cannot independently prove a human saw the prompt.
+- VirusTotal documents that queried IoCs are scanned and added to its dataset,
+  where they become accessible to the community. Do not query confidential
+  organizational indicators. A public address is not automatically
+  non-sensitive; choose the test address accordingly.
+- The output includes HTTP status, detection counts, normalized fields,
+  retrieval timestamp, cache age and expiry state, quota before and after, and
+  whether the result came from the API or the local cache. A cache hit is labeled
+  `source: cache`; `live_api_observed=false` means every success came from cache.
+  It never prints the API key.
+- The command does not read or modify Wazuh configuration.
+
+Do not run this procedure without operator approval and an allocated quota
+window. The unit tests use mocks and temporary state only.
 
 ### 13.3 MITRE ATT&CK STIX and STIX export
 

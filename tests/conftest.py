@@ -173,3 +173,24 @@ def config_singleton():
     from mcp_server.core.config import Config
 
     return Config.from_env()
+
+
+class ConsentContext:
+    """Minimal FastMCP Context stand-in for tool-level consent tests."""
+
+    def __init__(self, approve: bool = True, action: str | None = None) -> None:
+        self.approve = approve
+        self.action = action or ("accept" if approve else "decline")
+        self.messages: list[str] = []
+
+    async def elicit(self, message, schema):
+        from types import SimpleNamespace
+
+        self.messages.append(message)
+        return SimpleNamespace(action=self.action,
+                               data=SimpleNamespace(approve=self.approve))
+
+
+@pytest.fixture
+def consent_approval():
+    return ConsentContext(approve=True)

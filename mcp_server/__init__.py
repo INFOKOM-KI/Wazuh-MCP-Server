@@ -34,7 +34,8 @@ if os.environ.get("BLUE_TEAM_MCP_SERVER_NAME", "").strip() and os.environ.get("B
 
 _MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
 _MCP_PORT = int(os.environ.get("MCP_PORT", "8000"))
-mcp = FastMCP(_SERVER_NAME, host=_MCP_HOST, port=_MCP_PORT)
+mcp = FastMCP(_SERVER_NAME, host=_MCP_HOST, port=_MCP_PORT,
+              json_response=False, stateless_http=False)
 
 # Configuration bootstrap - called once at import time.
 # Raises ConfigurationError on fatal issues (missing Indexer URL, etc.).
@@ -88,6 +89,14 @@ ABUSEIPDB_BOOTSTRAP_CONCURRENCY = _c.threat_intel.abuseipdb_bootstrap_concurrenc
 ABUSEIPDB_BOOTSTRAP_BUDGET = _c.threat_intel.abuseipdb_bootstrap_budget
 ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX = 16 if ABUSEIPDB_PLAN == "premium" else 24
 VIRUSTOTAL_BASE_URL = _c.threat_intel.virustotal_base_url
+VIRUSTOTAL_CACHE_TTL = _c.threat_intel.virustotal_cache_ttl
+VIRUSTOTAL_RATE_PER_MINUTE = _c.threat_intel.virustotal_rate_per_minute
+VIRUSTOTAL_DAILY_LIMIT = _c.threat_intel.virustotal_daily_limit
+VIRUSTOTAL_BUDGET = _c.threat_intel.virustotal_budget
+VIRUSTOTAL_BUDGET_HOURS = _c.threat_intel.virustotal_budget_hours
+VIRUSTOTAL_STATE = _c.threat_intel.virustotal_state_path
+VIRUSTOTAL_ALLOWED_HOSTS = _c.threat_intel.virustotal_allowed_hosts
+VIRUSTOTAL_MAX_RESPONSE_BYTES = _c.threat_intel.virustotal_max_response_bytes
 NETRA_BASE_URL     = _c.threat_intel.netra_base_url
 ARGUS_BASE_URL     = _c.threat_intel.argus_base_url
 RDAP_BASE_URL      = _c.threat_intel.rdap_base_url

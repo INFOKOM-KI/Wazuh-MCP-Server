@@ -64,6 +64,14 @@ class CircuitOpenError(httpx.ConnectError):
     """
 
 
+class ResponseTooLargeError(httpx.HTTPError):
+    """Raised when a bounded response exceeds its configured byte limit."""
+
+    def __init__(self, max_bytes: int) -> None:
+        super().__init__(f"upstream response exceeds {max_bytes} bytes")
+        self.max_bytes = max_bytes
+
+
 class CircuitBreaker:
     """Fail-fast breaker keyed per HTTP client pool.
     Counts consecutive upstream failures (5xx / transport errors). After
@@ -230,7 +238,8 @@ def _guard_abuseipdb_request(method: str, url: str, verify: bool, kw: dict):
 
 # API call
 async def _api_call(method: str, url: str, *, client_name: str | None = None, verify: bool = True,
-                    max_retries: int = 1, backoff: float = 0.2, **kw) -> httpx.Response:
+                    max_retries: int = 1, max_response_bytes: int | None = None,
+                    backoff: float = 0.2, **kw) -> httpx.Response:
     """Unified async HTTP helper. Returns raw response caller calls .json() or .text.
     Retries (default once, configurable via max_retries) on 5xx server errors and
     network failures (jittered backoff). A 429 is retried only when the response
@@ -241,6 +250,8 @@ async def _api_call(method: str, url: str, *, client_name: str | None = None, ve
     derived from the URL host, so unrelated upstreams never share one breaker: a
     flaky NVD must not fail-fast every Netra or GreyNoise call, and the error has to
     name the upstream that actually failed rather than a catch-all pool.
+    ``max_response_bytes`` streams the body and rejects an oversized response before
+    the caller parses it; ``Content-Length`` is not trusted as the only check.
 
     Credential isolation covers the inspectable arguments used by project
     integrations: headers, params, cookies, data, json, content (str/bytes),
@@ -263,11 +274,30 @@ async def _api_call(method: str, url: str, *, client_name: str | None = None, ve
                     f"({breaker.failures} consecutive failures) try again shortly"
                 )
             try:
-                resp = await getattr(client, method.lower())(url, **kw)
-                resp.raise_for_status()
+                if max_response_bytes is not None:
+                    request = client.build_request(method.upper(), url, **kw)
+                    stream = await client.send(request, stream=True)
+                    try:
+                        stream.raise_for_status()
+                        body = bytearray()
+                        async for chunk in stream.aiter_bytes():
+                            body.extend(chunk)
+                            if len(body) > max_response_bytes:
+                                raise ResponseTooLargeError(max_response_bytes)
+                        resp = httpx.Response(
+                            stream.status_code, headers=stream.headers,
+                            content=bytes(body), request=request)
+                    finally:
+                        await stream.aclose()
+                else:
+                    resp = await getattr(client, method.lower())(url, **kw)
+                    resp.raise_for_status()
                 breaker.on_success()
                 outcome = resp
                 return resp
+            except ResponseTooLargeError:
+                breaker.on_failure()
+                raise
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code
                 if status == 429:
@@ -511,7 +541,25 @@ def _is_private_or_reserved(ip: str) -> bool:
     mapped = getattr(ip, "ipv4_mapped", None)
     if mapped is not None:
         ip = mapped
-    return not ip.is_global
+    return ip.is_multicast or not ip.is_global
+
+
+def normalize_public_ip(value: str) -> str:
+    """Return a normalized public IP, or raise ValueError.
+
+    Unmasks IPv4-mapped IPv6 and rejects anything that is not globally
+    routable, including multicast.
+    """
+    try:
+        parsed = ipaddress.ip_address((value or "").strip())
+    except ValueError as exc:
+        raise ValueError(f"'{value}' is not a valid IP address.") from exc
+    mapped = getattr(parsed, "ipv4_mapped", None)
+    if mapped is not None:
+        parsed = mapped
+    if parsed.is_multicast or not parsed.is_global:
+        raise ValueError(f"'{value}' is not a public IP address.")
+    return str(parsed)
 
 
 def _validate_public_ip(v: str) -> str:
@@ -527,7 +575,7 @@ def _validate_public_ip(v: str) -> str:
         raise ValueError(f"'{v}' is not a valid IP address.") from exc
     if _is_private_or_reserved(str(parsed)):
         raise ValueError(
-            f"'{v}' is a private/reserved IP address."
+            f"'{v}' is a private/reserved IP address. "
             "This tool only accepts public IPs for threat intelligence lookup."
         )
     return str(parsed)

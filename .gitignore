@@ -62,6 +62,14 @@ config.env
 rapidapi_state.jsonl*
 *.jsonl.tmp
 
+# VirusTotal quota state (BLUETEAM_VIRUSTOTAL_STATE). Holds the authorized policy,
+# arm window, request counts and cooldown. No API key, but it is runtime state and
+# an operator can point the path inside the repo.
+virustotal_quota.db*
+*.virustotal.db
+*.virustotal.db-wal
+*.virustotal.db-shm
+
 # MCP audit log output
 blue-team-mcp-audit.jsonl
 
