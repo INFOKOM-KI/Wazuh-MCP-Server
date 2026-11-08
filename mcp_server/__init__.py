@@ -82,6 +82,11 @@ ABUSEIPDB_REPORTING_ENABLED = _c.threat_intel.abuseipdb_reporting_enabled
 ABUSEIPDB_EXCLUDE = _c.threat_intel.abuseipdb_exclude
 ABUSEIPDB_REPORT_MIN_INTERVAL = _c.threat_intel.abuseipdb_report_min_interval
 ABUSEIPDB_REPORT_MAX_PER_CALL = _c.threat_intel.abuseipdb_report_max_per_call
+ABUSEIPDB_PLAN = _c.threat_intel.abuseipdb_plan
+ABUSEIPDB_QUOTA_RESERVE = _c.threat_intel.abuseipdb_quota_reserve
+ABUSEIPDB_BOOTSTRAP_CONCURRENCY = _c.threat_intel.abuseipdb_bootstrap_concurrency
+ABUSEIPDB_BOOTSTRAP_BUDGET = _c.threat_intel.abuseipdb_bootstrap_budget
+ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX = 16 if ABUSEIPDB_PLAN == "premium" else 24
 VIRUSTOTAL_BASE_URL = _c.threat_intel.virustotal_base_url
 NETRA_BASE_URL     = _c.threat_intel.netra_base_url
 ARGUS_BASE_URL     = _c.threat_intel.argus_base_url

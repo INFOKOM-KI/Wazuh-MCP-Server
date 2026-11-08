@@ -4,6 +4,11 @@
 These guard the instructions the LLM reads. They do not simulate an LLM; they
 fail when the skill or the scheduled prompts drift back to "preview everything"
 or start treating analysis/check requests as reporting authorization.
+
+The 12 scheduled prompts were reviewed for the RFC 1918 egress invariant
+(2026-11-08). No change was needed: every prompt already forbids calling the
+report tool, so an address-eligibility sentence would be repeated noise. The
+"never call" contract stays enforced below.
 """
 from __future__ import annotations
 
@@ -36,6 +41,7 @@ def test_skill_distinguishes_reporting_from_analysis_and_check():
     assert "prompt-level authorization" in text
     assert "not server-side verification" in text
     assert "Never call this tool from a scheduled or read-only report" in text
+    assert "RFC 1918" in text
 
 
 def test_tool_schema_defaults_are_preview_and_unconfirmed():

@@ -6,6 +6,7 @@ HTTP client pool, unified API call helper, error handling, IP validation.
 from __future__ import annotations
 import asyncio, ipaddress, logging, random, socket, time
 from typing import Annotated
+from urllib.parse import unquote
 import httpx
 from pydantic import AfterValidator
 from mcp_server import HTTP_TIMEOUT
@@ -166,6 +167,67 @@ def _retry_after_seconds(header: str | None) -> float | None:
     return delay
 
 
+def _guard_abuseipdb_request(method: str, url: str, verify: bool, kw: dict):
+    """Enforce the AbuseIPDB policy and reserve one quota unit.
+
+    The AbuseIPDB client has its own wrapper; this catches a caller that imports
+    this shared transport directly. On a non-approved host, every request
+    component is scanned for the configured AbuseIPDB key before the client or
+    breaker is touched. Only that exact key is rejected, so unrelated provider
+    credentials and headers are unaffected.
+
+    Returns ``(kw, reservation, endpoint)``. The caller must release the
+    reservation exactly once after the HTTP outcome is known.
+    """
+    try:
+        parsed = httpx.URL(url)
+    except (httpx.InvalidURL, ValueError):
+        return kw, None, None
+    host = unquote(parsed.host or "").rstrip(".").lower()
+    headers = kw.get("headers") or {}
+    params = kw.get("params") or {}
+    try:
+        from mcp_server import ABUSEIPDB_BASE_URL
+        base_host = unquote(httpx.URL(ABUSEIPDB_BASE_URL).host or "").rstrip(".").lower()
+    except Exception:
+        base_host = ""
+    abuse_host = host in {"api.abuseipdb.com", base_host} if host else False
+    if not abuse_host:
+        try:
+            from mcp_server.threat_intel.abuseipdb import (
+                AbuseIPDBError, request_carries_configured_key)
+        except Exception as exc:
+            raise RuntimeError("AbuseIPDB egress guard unavailable") from exc
+        if request_carries_configured_key(kw, url):
+            raise AbuseIPDBError(
+                "the configured AbuseIPDB credential may only be sent to an "
+                "approved AbuseIPDB host", "credential_scope")
+        return kw, None, None
+    try:
+        from mcp_server.threat_intel.abuseipdb import (AbuseIPDBError,
+                                                       SUPPORTED_ENDPOINTS,
+                                                       begin_quota_reservation,
+                                                       endpoint_for,
+                                                       enforce_transport_policy,
+                                                       guard_report_payload,
+                                                       is_report_request)
+    except Exception as exc:
+        raise RuntimeError("AbuseIPDB egress guard unavailable") from exc
+    enforce_transport_policy(method, url, verify=verify, headers=headers,
+                             params=params)
+    if abuse_host and is_report_request(method, url):
+        kw["data"] = guard_report_payload(kw.get("data"))
+    endpoint = None
+    reservation = None
+    if abuse_host:
+        endpoint = endpoint_for(method, url)
+        if endpoint not in SUPPORTED_ENDPOINTS:
+            raise AbuseIPDBError("unsupported AbuseIPDB endpoint",
+                                 "unsupported_endpoint")
+        reservation = begin_quota_reservation(endpoint)
+    return kw, reservation, endpoint
+
+
 # API call
 async def _api_call(method: str, url: str, *, client_name: str | None = None, verify: bool = True,
                     max_retries: int = 1, backoff: float = 0.2, **kw) -> httpx.Response:
@@ -179,52 +241,76 @@ async def _api_call(method: str, url: str, *, client_name: str | None = None, ve
     derived from the URL host, so unrelated upstreams never share one breaker: a
     flaky NVD must not fail-fast every Netra or GreyNoise call, and the error has to
     name the upstream that actually failed rather than a catch-all pool.
+
+    Credential isolation covers the inspectable arguments used by project
+    integrations: headers, params, cookies, data, json, content (str/bytes),
+    auth tuples/BasicAuth, extension values, and str/bytes file contents.
+    Custom ``httpx.Auth`` objects, file-like/streaming bodies, and arbitrary
+    encoded representations are outside the project transport contract; no
+    project-owned integration uses them.
     """
     client_name = client_name or (httpx.URL(url).host or "http")
-    client = await _get_client(client_name, verify=verify)
-    breaker = _get_breaker(client_name)
-    last_exc: Exception | None = None
-    for attempt in range(1 + max_retries):
-        if not breaker.before_call():
-            raise CircuitOpenError(
-                f"circuit breaker open for '{client_name}' "
-                f"({breaker.failures} consecutive failures) try again shortly"
-            )
-        try:
-            resp = await getattr(client, method.lower())(url, **kw)
-            resp.raise_for_status()
-            breaker.on_success()
-            return resp
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code
-            if status == 429:
-                breaker.on_throttled()
-                # Only retry when the server told us when to come back. A blind
-                # fixed backoff retry of a 429 spends more of the same exhausted
-                # quota and turns one throttle into two.
-                delay = _retry_after_seconds(e.response.headers.get("Retry-After"))
-                if delay is not None and attempt < max_retries:
-                    await asyncio.sleep(delay)
+    kw, reservation, endpoint = _guard_abuseipdb_request(method, url, verify, kw)
+    outcome = None
+    try:
+        client = await _get_client(client_name, verify=verify)
+        breaker = _get_breaker(client_name)
+        last_exc: Exception | None = None
+        for attempt in range(1 + max_retries):
+            if not breaker.before_call():
+                raise CircuitOpenError(
+                    f"circuit breaker open for '{client_name}' "
+                    f"({breaker.failures} consecutive failures) try again shortly"
+                )
+            try:
+                resp = await getattr(client, method.lower())(url, **kw)
+                resp.raise_for_status()
+                breaker.on_success()
+                outcome = resp
+                return resp
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                if status == 429:
+                    breaker.on_throttled()
+                    # Only retry when the server told us when to come back. A blind
+                    # fixed backoff retry of a 429 spends more of the same exhausted
+                    # quota and turns one throttle into two.
+                    delay = _retry_after_seconds(e.response.headers.get("Retry-After"))
+                    if delay is not None and attempt < max_retries:
+                        await asyncio.sleep(delay)
+                        last_exc = e
+                        continue
+                    raise
+                if 400 <= status < 500:
+                    breaker.on_liveness()
+                    raise
+                breaker.on_failure()
+                if attempt < max_retries:
+                    await asyncio.sleep(backoff + random.uniform(0, 0.2))
                     last_exc = e
                     continue
                 raise
-            if 400 <= status < 500:
-                breaker.on_liveness()
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
+                breaker.on_failure()
+                if attempt < max_retries:
+                    await asyncio.sleep(backoff + random.uniform(0, 0.2))
+                    last_exc = e
+                    continue
                 raise
-            breaker.on_failure()
-            if attempt < max_retries:
-                await asyncio.sleep(backoff + random.uniform(0, 0.2))
-                last_exc = e
-                continue
-            raise
-        except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as e:
-            breaker.on_failure()
-            if attempt < max_retries:
-                await asyncio.sleep(backoff + random.uniform(0, 0.2))
-                last_exc = e
-                continue
-            raise
-    raise last_exc  # type: ignore[misc]
+        raise last_exc  # type: ignore[misc]
+    except BaseException as exc:
+        outcome = exc
+        raise
+    finally:
+        if reservation is not None or endpoint is not None:
+            from mcp_server.threat_intel import abuseipdb as _abuseipdb
+            error = outcome if isinstance(outcome, BaseException) else None
+            consumed = (_abuseipdb.quota_consumed_on_failure(error)
+                        if error is not None else None)
+            response = (getattr(error, "response", None)
+                        if error is not None else outcome)
+            _abuseipdb.finish_quota_reservation(
+                reservation, response, consumed=consumed, endpoint=endpoint)
 
 
 # Statuses worth explaining in the error text itself rather than as a bare code.

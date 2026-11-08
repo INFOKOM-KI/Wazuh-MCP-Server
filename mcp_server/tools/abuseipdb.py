@@ -15,7 +15,8 @@ import httpx
 from pydantic import (BaseModel, ConfigDict, Field, field_validator,
                       model_validator)
 
-from mcp_server import (ABUSEIPDB_EXCLUDE, ABUSEIPDB_REPORTING_ENABLED,
+from mcp_server import (ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX, ABUSEIPDB_EXCLUDE,
+                        ABUSEIPDB_PLAN, ABUSEIPDB_REPORTING_ENABLED,
                         ABUSEIPDB_REPORT_MAX_PER_CALL, WAZUH_INDEXER_PASSWORD,
                         WAZUH_INDEXER_URL, mcp)
 from mcp_server.core.audit import _audit_log, _escape_md_table, _truncate_if_needed
@@ -25,6 +26,7 @@ from mcp_server.threat_intel.abuseipdb import (AbuseIPDBError, CATEGORY_NAMES,
                                                categories_for_evidence,
                                                check_block, check_ip,
                                                normalize_public_ip,
+                                               quota_snapshot,
                                                report_ip, report_retry_after,
                                                sanitize_comment,
                                                validate_categories)
@@ -46,7 +48,8 @@ class AbuseIPDBCheckInput(BaseModel):
         description="Public IPv4/IPv6 address to check.")
     network: Optional[str] = Field(
         default=None, max_length=64,
-        description="Public IPv4 CIDR, /24 or narrower, for a check-block sweep.")
+        description=(f"Public IPv4 CIDR, /{ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX} or "
+                     f"narrower ({ABUSEIPDB_PLAN} plan), for a check-block sweep."))
     max_age_days: int = Field(
         default=30, ge=1, le=365,
         description="Only count reports from the last N days (default 30).")
@@ -73,8 +76,10 @@ class AbuseIPDBCheckInput(BaseModel):
             raise ValueError(f"'{value}' is not a valid CIDR network.") from exc
         if net.version != 4:
             raise ValueError("network must be IPv4; use ip= for IPv6.")
-        if net.prefixlen < 24:
-            raise ValueError("network must be /24 or narrower on the Standard plan.")
+        if net.prefixlen < ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX:
+            raise ValueError(
+                f"network must be /{ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX} or narrower "
+                f"on the {ABUSEIPDB_PLAN} plan.")
         if not net.network_address.is_global:
             raise ValueError(f"'{value}' is a private/reserved network.")
         return str(net)
@@ -84,6 +89,58 @@ class AbuseIPDBCheckInput(BaseModel):
         if bool(self.ip) == bool(self.network):
             raise ValueError("provide exactly one of ip or network")
         return self
+
+
+def _quota_line(quota: dict | None) -> str:
+    """One markdown line; never turns an unobserved remaining count into a value."""
+    if not quota:
+        return "- **Quota**: unavailable (no rate-limit headers observed)"
+    limit = quota.get("limit")
+    remaining = quota.get("remaining")
+    source = quota.get("limit_source", "configured")
+    reset = quota.get("reset_at") or "unknown"
+    if remaining is None:
+        bootstrap = quota.get("bootstrap_limit")
+        budget = quota.get("bootstrap_budget")
+        used = quota.get("bootstrap_used")
+        left = quota.get("bootstrap_remaining")
+        inflight = int(quota.get("inflight", 0) or 0)
+        extra = ""
+        if budget is not None:
+            extra += f"; bootstrap {used}/{budget} used, {left} left"
+        if bootstrap:
+            extra += f"; concurrency {bootstrap}"
+        if inflight:
+            extra += f", {inflight} in flight"
+        return (f"- **Quota**: remaining unknown (configured limit "
+                f"{limit if limit is not None else 'unknown'}, source {source}); "
+                f"resets {reset}{extra}")
+    retry = quota.get("retry_after_seconds")
+    wait = f"; retry after {retry}s" if retry else ""
+    inflight = int(quota.get("inflight", 0) or 0)
+    local = quota.get("local_available")
+    flight = f"; {inflight} in flight" if inflight else ""
+    local_text = f", local {local}" if inflight and local is not None else ""
+    return (f"- **Quota**: {remaining}/{limit if limit is not None else '?'} "
+            f"remaining ({source}){flight}{local_text}; resets {reset}; reserve "
+            f"{quota.get('reserve', 0)}{wait}")
+
+
+def _quota_markdown(quota: dict) -> list[str]:
+    rows = [q for q in (quota or {}).values() if isinstance(q, dict)]
+    if not rows:
+        return []
+    lines = ["", "## Quota", "",
+             "| Endpoint | Limit | Remaining | Resets (UTC) | Source |",
+             "|---|---|---|---|---|"]
+    for q in rows:
+        limit = q.get("limit")
+        remaining = q.get("remaining")
+        lines.append(
+            f"| `{q.get('endpoint')}` | {limit if limit is not None else '-'} "
+            f"| {remaining if remaining is not None else 'unknown'} "
+            f"| {q.get('reset_at') or '-'} | {q.get('limit_source', 'configured')} |")
+    return lines
 
 
 def _render_check(result: dict, verbose: bool) -> str:
@@ -101,6 +158,7 @@ def _render_check(result: dict, verbose: bool) -> str:
         f"- **Usage type**: {result.get('usage_type') or '-'}",
         f"- **Tor / whitelisted**: {result.get('is_tor')} / {result.get('is_whitelisted')}",
         f"- **Source**: {'cache' if result.get('cached') else 'live API'}",
+        _quota_line(result.get("quota")),
     ]
     reports = result.get("reports") or []
     if verbose and reports:
@@ -123,8 +181,10 @@ def _render_block(result: dict) -> str:
         "",
         f"- **Possible hosts**: {result.get('num_possible_hosts', '?')}",
         f"- **Address space**: {result.get('address_space') or '-'}",
-        f"- **Reported addresses**: {len(rows)}",
+        f"- **Reported addresses**: {result.get('returned_count', len(rows))}"
+        f"{' (truncated)' if result.get('truncated') else ''}",
         f"- **Source**: {'cache' if result.get('cached') else 'live API'}",
+        _quota_line(result.get("quota")),
     ]
     if rows:
         lines.extend(["", "| IP | Score | Reports | Last reported |", "|---|---|---|---|"])
@@ -140,7 +200,7 @@ def _render_block(result: dict) -> str:
                  "idempotentHint": True, "openWorldHint": True},
 )
 async def blueteam_abuseipdb_check(params: AbuseIPDBCheckInput) -> str:
-    """Check one public IP, or sweep an IPv4 /24, against AbuseIPDB.
+    """Check one public IP, or sweep an IPv4 /16 (Premium) or /24, against AbuseIPDB.
 
     Returns the abuse confidence score, report volume, last report time, country,
     ISP, usage type, Tor and whitelist flags. A check-block sweep is **not** a
@@ -154,18 +214,22 @@ async def blueteam_abuseipdb_check(params: AbuseIPDBCheckInput) -> str:
     2. *Check one IP with recent report rows*:
        ``blueteam_abuseipdb_check(ip="118.25.6.39", verbose=True)``
 
-    3. *Sweep a /24 for already-reported hosts*:
-       ``blueteam_abuseipdb_check(network="8.8.8.0/24", max_age_days=15)``
+    3. *Sweep a /16 for already-reported hosts*:
+       ``blueteam_abuseipdb_check(network="8.8.0.0/16", max_age_days=90)``
 
-    **Required Permissions**: ``ABUSEIPDB_API_KEY``. The Standard plan allows
-    1,000 checks/day and 100 check-block calls/day. Checks are cached for 15
+    **Required Permissions**: ``ABUSEIPDB_API_KEY``. Premium reference: 50,000
+    checks/day and 5,000 check-block calls/day; Standard: 1,000 and 100. The
+    configured plan is only a fallback: ``X-RateLimit-*`` response headers are
+    authoritative and are reported back per endpoint. Checks are cached for 15
     minutes (``ABUSEIPDB_CACHE_TTL``), so repeating the same IP does not spend
     quota. ``maxAgeInDays`` is 1..365.
 
     **Error Handling**: private/reserved/CGNAT input is rejected before any
-    request. A timeout, 401/403, 402 plan limit, 429, malformed body, or open
-    circuit is raised as a tool error, never returned as a clean result. ``cached=true`` means the
-    answer is a cached check, not a skipped lookup.
+    request. Quota below the configured reserve (``BLUETEAM_ABUSEIPDB_QUOTA_RESERVE``)
+    is refused before a request is sent, with the observed reset time. A timeout,
+    401/403, 402 plan limit, 429, malformed body, or open circuit is raised as a
+    tool error, never returned as a clean result. ``cached=true`` means the answer
+    is a cached check, not a skipped lookup.
     """
     _audit_log("blueteam_abuseipdb_check",
                {"ip": params.ip, "network": params.network,
@@ -222,7 +286,9 @@ class AbuseIPDBReportInput(BaseModel):
     max_age_days: int = Field(default=30, ge=1, le=365)
     exclude_srcips: list[str] = Field(
         default_factory=list, max_length=100,
-        description="IPs or CIDRs that must never be reported.")
+        description=("IPs or CIDRs excluded from from_alerts harvesting. "
+                     "Explicit srcips are not filtered by this list; private "
+                     "and reserved addresses are always rejected."))
     categories: Literal["auto"] | list[int] = Field(
         default="auto",
         description="'auto' maps Wazuh groups; a list sets categories explicitly.")
@@ -539,7 +605,7 @@ async def _evaluate(candidates: list[dict],
             checked = await check_ip(candidate["ip"], params.max_age_days)
             check_status = "cached" if checked.get("cached") else "checked"
         except AbuseIPDBError as exc:
-            if exc.kind in ("auth_error", "not_configured"):
+            if exc.kind in ("auth_error", "not_configured", "quota_exhausted"):
                 raise ThreatIntelError(
                     f"[blueteam_abuseipdb_report] AbuseIPDB {exc.kind}: {exc.message}"
                 ) from exc
@@ -626,6 +692,8 @@ def _summary(evaluated: list[dict], meta: dict, params: AbuseIPDBReportInput,
         "partial": (bool(meta.get("truncated")) or not bool(meta.get("alerts_examined_exact", True))
                     or failed > 0 or manual > 0 or remaining > 0),
         "role_check": meta.get("role_check"),
+        "quota": {endpoint: quota_snapshot(endpoint)
+                  for endpoint in ("check", "report")},
         "results": evaluated,
     }
 
@@ -653,6 +721,7 @@ def _render_report_output(output: dict) -> str:
         f"{output.get('check_counts', {}).get('cached', 0)} cached, "
         f"{output.get('check_counts', {}).get('unavailable', 0)} unavailable",
     ]
+    lines.extend(_quota_markdown(output.get("quota") or {}))
     if output.get("preview_reason"):
         lines.append(f"- **Submission blocked**: {output['preview_reason']}")
     rows = output.get("results") or []
@@ -728,7 +797,8 @@ async def blueteam_abuseipdb_report(params: AbuseIPDBReportInput) -> str:
       fallback.
     - Harvested comments contain counts, timestamps, and numeric rule IDs only. Explicit
       reports require a comment describing the evidence. No raw logs, usernames, mail
-      addresses, agent names, or victim addresses in either path.
+      addresses, agent names, or victim IPv4 addresses in either path; IPv6 comment
+      scanning is out of scope.
     - A local 15-minute ledger prevents duplicate submissions; AbuseIPDB also
       rejects the same IP within 15 minutes.
 
@@ -744,9 +814,12 @@ async def blueteam_abuseipdb_report(params: AbuseIPDBReportInput) -> str:
        ``blueteam_abuseipdb_report(srcips=["8.8.8.8"], categories=[18, 22], comment="Confirmed SSH brute force against a monitored host.", dry_run=False, confirm=True)``
 
     **Required Permissions**: ``ABUSEIPDB_API_KEY``; the HTTP transport additionally
-    requires the ``threatintel:report`` scope (not ``wazuh:write``). Standard plan:
-    1,000 report requests/day, one report per IP per 15 minutes. Checks are cached
-    for 15 minutes; report submissions are paced at one request per second.
+    requires the ``threatintel:report`` scope (not ``wazuh:write``). Premium
+    reference: 50,000 report requests/day; Standard: 1,000. Observed
+    ``X-RateLimit-*`` headers are authoritative, and requests are refused below
+    the configured quota reserve. One report per IP per 15 minutes still applies.
+    Checks are cached for 15 minutes; report submissions are paced at one request
+    per second.
 
     **Limits**: at most 50 candidates per call. ``remaining_candidates`` and
     ``truncated`` are reported; a truncated run never claims complete coverage.
@@ -814,9 +887,12 @@ async def blueteam_abuseipdb_report(params: AbuseIPDBReportInput) -> str:
                 stop_status = "skipped_auth_error"
             elif exc.kind == "circuit_open":
                 stop_status = "skipped_upstream"
+            elif exc.kind == "quota_exhausted":
+                stop_status = "skipped_quota"
             elif exc.kind == "rate_limited" and (
                     "daily rate limit" in exc.message.lower()
-                    or "quota" in exc.message.lower()):
+                    or "quota" in exc.message.lower()
+                    or "rate limited" in exc.message.lower()):
                 stop_status = "skipped_quota"
             if stop_status:
                 for pending in evaluated:

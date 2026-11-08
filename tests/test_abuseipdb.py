@@ -45,6 +45,7 @@ def _fast_abuseipdb(monkeypatch):
     monkeypatch.setattr(abuseipdb, "REPORT_LIMITER",
                         AsyncRateLimiter(max_concurrent=1, min_interval=0))
     monkeypatch.setattr(abuseipdb, "ABUSEIPDB_API_KEY", "test-key")
+    abuseipdb.reset_quota_state()
     cache_delete_prefix("abuseipdb", "")
     with abuseipdb._LAST_REPORT_LOCK:
         abuseipdb._LAST_REPORT.clear()
@@ -62,6 +63,7 @@ def _run(coro):
 @pytest.mark.parametrize("value", [
     "not-an-ip", "999.1.1.1", "1.2.3", "", "  ", "127.0.0.1",
     "192.168.1.1", "100.64.0.1", "169.254.1.1", "::1", "fc00::1",
+    "224.0.0.1", "ff02::1",
 ])
 def test_public_ip_rejects_invalid_private_and_cgnat(value):
     with pytest.raises(ValueError):
@@ -246,7 +248,7 @@ def test_check_ip_status_errors_keep_kind(status, kind):
 
 # check_block
 def test_check_block_rejects_broad_or_private_network():
-    for network in ("8.8.0.0/16", "192.168.1.0/24", "2001:db8::/64"):
+    for network in ("8.8.0.0/15", "192.168.1.0/24", "2001:db8::/64"):
         with pytest.raises(abuseipdb.AbuseIPDBError):
             _run(abuseipdb.check_block(network))
 

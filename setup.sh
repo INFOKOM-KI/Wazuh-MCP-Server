@@ -558,10 +558,18 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export ABUSEIPDB_API_KEY="your_key"     # https://www.abuseipdb.com
 # AbuseIPDB reporting is an external write and is off by default. Keep it false for
 # read-only operation; set it true only after analyst approval and a dry-run preview.
+# RFC 1918 (10/8, 172.16/12, 192.168/16) is always excluded from reporting; this list only adds ranges.
+# This list filters from_alerts harvesting only; explicit srcips and direct calls are not filtered.
+# Premium reference: 50,000 check, 50,000 report, 5,000 check-block per day.
+# Response headers override this; the reserve keeps interactive capacity.
 # export BLUETEAM_ABUSEIPDB_REPORTING_ENABLED="false"
-# export BLUETEAM_ABUSEIPDB_EXCLUDE=""          # comma-separated IPs/CIDRs never reported
+# export BLUETEAM_ABUSEIPDB_EXCLUDE=""          # comma-separated IPs/CIDRs added to the harvest exclusion
 # export BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL="1.0"
 # export BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL="50"
+# export BLUETEAM_ABUSEIPDB_PLAN="premium"         # premium: /16 check-block; standard: /24; invalid -> standard
+# export BLUETEAM_ABUSEIPDB_QUOTA_RESERVE="100"    # refuse before transport at the observed limit
+# export BLUETEAM_ABUSEIPDB_BOOTSTRAP_CONCURRENCY="1"  # in-flight limit before the first quota header
+# export BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET="5"       # cumulative per-endpoint/per-process before the first header; headerless does not restore
 # export ABUSEIPDB_CACHE_TTL="900"
 # export VIRUSTOTAL_API_KEY="your_key"    # https://www.virustotal.com
 # export CROWDSEC_API_KEY="your_key"      # free tier: https://www.crowdsec.net/en/user/profile
@@ -1032,6 +1040,10 @@ export BLUETEAM_ABUSEIPDB_REPORTING_ENABLED="${BLUETEAM_ABUSEIPDB_REPORTING_ENAB
 export BLUETEAM_ABUSEIPDB_EXCLUDE="${BLUETEAM_ABUSEIPDB_EXCLUDE:-}"
 export BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL="${BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL:-1.0}"
 export BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL="${BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL:-50}"
+export BLUETEAM_ABUSEIPDB_PLAN="${BLUETEAM_ABUSEIPDB_PLAN:-premium}"
+export BLUETEAM_ABUSEIPDB_QUOTA_RESERVE="${BLUETEAM_ABUSEIPDB_QUOTA_RESERVE:-100}"
+export BLUETEAM_ABUSEIPDB_BOOTSTRAP_CONCURRENCY="${BLUETEAM_ABUSEIPDB_BOOTSTRAP_CONCURRENCY:-1}"
+export BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET="${BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET:-5}"
 export ABUSEIPDB_CACHE_TTL="${ABUSEIPDB_CACHE_TTL:-900}"
 export VIRUSTOTAL_API_KEY="${VIRUSTOTAL_API_KEY:-}"
 export CROWDSEC_API_KEY="${CROWDSEC_API_KEY:-}"

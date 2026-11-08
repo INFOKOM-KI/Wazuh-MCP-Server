@@ -24,6 +24,17 @@ def _bool(v: str, default: bool = False) -> bool:
         return default
     return v.strip().lower() in ("1", "true", "yes")
 
+
+def _plan(v: str) -> str:
+    """AbuseIPDB plan label; an invalid non-empty value falls back to standard."""
+    plan = (v or "").strip().lower()
+    if not plan:
+        return "premium"
+    if plan in ("premium", "standard"):
+        return plan
+    logger.warning("Unknown BLUETEAM_ABUSEIPDB_PLAN=%r; using standard.", v)
+    return "standard"
+
 # Nested config groups, one dataclass per trust domain.
 @dataclass
 class ServerConfig:
@@ -125,6 +136,10 @@ class ThreatIntelConfig:
     abuseipdb_exclude: str = ""             # comma-separated IPs/CIDRs never reported
     abuseipdb_report_min_interval: float = 1.0
     abuseipdb_report_max_per_call: int = 50
+    abuseipdb_plan: str = "premium"        # configured reference; response headers win
+    abuseipdb_quota_reserve: int = 100      # capacity kept for interactive work
+    abuseipdb_bootstrap_concurrency: int = 1  # until the first quota header is seen
+    abuseipdb_bootstrap_budget: int = 5       # total local requests before a header
     # VirusTotal
     virustotal_api_key: str = ""
     virustotal_base_url: str = "https://www.virustotal.com/api/v3"
@@ -179,6 +194,13 @@ class ThreatIntelConfig:
                 "BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL", "1.0")),
             abuseipdb_report_max_per_call=int(os.environ.get(
                 "BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL", "50")),
+            abuseipdb_plan=_plan(os.environ.get("BLUETEAM_ABUSEIPDB_PLAN", "premium")),
+            abuseipdb_quota_reserve=max(0, int(os.environ.get(
+                "BLUETEAM_ABUSEIPDB_QUOTA_RESERVE", "100"))),
+            abuseipdb_bootstrap_concurrency=max(1, int(os.environ.get(
+                "BLUETEAM_ABUSEIPDB_BOOTSTRAP_CONCURRENCY", "1"))),
+            abuseipdb_bootstrap_budget=max(1, int(os.environ.get(
+                "BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET", "5"))),
             virustotal_api_key=os.environ.get("VIRUSTOTAL_API_KEY", ""),
             virustotal_base_url=os.environ.get("VIRUSTOTAL_BASE_URL", "https://www.virustotal.com/api/v3"),
             netra_api_key=os.environ.get("NETRA_API_KEY", ""),
