@@ -188,3 +188,6 @@ mitre_enterprise_attack.json
 *.pcap
 *.pcapng
 capture_*.txt
+
+# Playwright generated artifacts
+/.playwright-mcp/
