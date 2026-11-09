@@ -112,8 +112,11 @@ def _bound_audit_value(value: Any, *, depth: int = 0,
     """Redact and bound one nested audit value. Returns ``(value, truncated)``.
 
     Scalars survive as scalars so the JSONL stays queryable; strings are redacted
-    then capped; containers are cut at ``_AUDIT_DETAIL_MAX_ITEMS``. Anything past
-    the depth or node budget is dropped and reported as truncated, never silently.
+    then capped; containers are cut at ``_AUDIT_DETAIL_MAX_ITEMS``. A dict key past
+    the depth or node budget is omitted rather than written as ``None``, so a
+    dropped value is never confused with a real null. A list keeps its positions
+    and writes ``None`` for a dropped element, because shifting the remaining
+    items would silently reassign indices. ``detail_truncated`` marks either case.
     """
     if budget is None:
         budget = [_AUDIT_DETAIL_MAX_NODES]
