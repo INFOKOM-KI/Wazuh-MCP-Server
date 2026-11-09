@@ -19,6 +19,11 @@ import pytest
 from mcp_server.threat_intel import abuseipdb
 from mcp_server.threat_intel._cache import (AsyncRateLimiter, cache_delete_prefix)
 
+# Hardcoded, not imported from the implementation. A test that compares the
+# constant to itself cannot catch a changed signature; this literal is the
+# requirement, and the assertion below pins the constant to it.
+REQUIRED_SIGNATURE = "Reported by TangerangKota-CSIRT."
+
 
 class _Response:
     def __init__(self, payload, status: int = 200):
@@ -124,11 +129,15 @@ def test_unknown_category_is_manual_review_not_hacking():
 
 
 # Comment construction and the CIRT signature
+def test_signature_constant_is_the_mandated_literal():
+    assert abuseipdb.SIGNATURE == REQUIRED_SIGNATURE
+
+
 def test_build_comment_has_exactly_one_signature_and_no_pii():
     text = abuseipdb.build_comment(
         7, "2026-11-06T01:00:00Z", "2026-11-06T02:00:00Z", ["5710", "5712"])
-    assert text.count(abuseipdb.SIGNATURE) == 1
-    assert text.endswith(abuseipdb.SIGNATURE)
+    assert text.count(REQUIRED_SIGNATURE) == 1
+    assert text.endswith(REQUIRED_SIGNATURE)
     assert "5710" in text and "5712" in text
     assert "@" not in text and "http" not in text
     assert "agent" not in text.lower()
@@ -160,8 +169,9 @@ def test_comment_rejects_pii_and_urls(comment):
 def test_long_comment_keeps_signature_and_cap():
     text = abuseipdb.sanitize_comment("A" * 900)
     assert len(text) <= abuseipdb.MAX_COMMENT_LENGTH
-    assert text.count(abuseipdb.SIGNATURE) == 1
-    assert text.endswith(abuseipdb.SIGNATURE)
+    assert text.count(REQUIRED_SIGNATURE) == 1
+    assert text.endswith(REQUIRED_SIGNATURE)
+    assert text[-len(REQUIRED_SIGNATURE):] == REQUIRED_SIGNATURE
 
 
 def test_category_validation():
@@ -299,7 +309,8 @@ def test_report_ip_uses_form_body_and_signature():
     assert seen["data"]["ip"] == "8.8.8.8"
     assert seen["data"]["categories"] == "18,22"
     assert "5710" in seen["data"]["comment"]
-    assert seen["data"]["comment"].count(abuseipdb.SIGNATURE) == 1
+    assert seen["data"]["comment"].count(REQUIRED_SIGNATURE) == 1
+    assert seen["data"]["comment"].endswith(REQUIRED_SIGNATURE)
     assert result["status"] == "reported"
     assert result["verified"] is True
 
@@ -364,9 +375,7 @@ def test_middleware_requires_report_scope_for_report_tool():
     assert mw._required_scope("blueteam_abuseipdb_check") is None
 
 
-# ---------------------------------------------------------------------------
 # Report tool: input shape, safety gates, evidence, provenance
-# ---------------------------------------------------------------------------
 
 from pydantic import ValidationError  # noqa: E402
 

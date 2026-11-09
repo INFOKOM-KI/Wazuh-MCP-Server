@@ -25,8 +25,6 @@ from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS,
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 
-# 1: Alert Summarization
-# Auto-extracted from alert_enrichment.py - modular refactor (2026-08-11)
 class AlertCompareInput(BaseModel):
     """Input model for blueteam_wazuh_alert_compare."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -214,7 +212,6 @@ async def blueteam_wazuh_alert_compare(params: AlertCompareInput) -> str:
     return _truncate_if_needed(_redact_alert_data("\n".join(lines), params=params))
 
 
-# Geo-Aware Curated Threat Intelligence Pipeline (AUL Adjust)
 # Composable filter specification - any combination of dimensions can be AND'd.
 # Cross-source deduplication patterns (parent-child alert relationships).
 # Each entry: (child_rule_id_regex, parent_rule_field_path_in_nested_alert)

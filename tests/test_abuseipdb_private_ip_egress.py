@@ -99,9 +99,7 @@ def _report_boundary(**overrides):
                               limiter=abuseipdb.REPORT_LIMITER, data=body)
 
 
-# ---------------------------------------------------------------------------
 # Predicate and normalizer
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("value", RFC1918_SAMPLES)
 def test_rfc1918_predicate_and_normalizer_reject_every_range(value):
@@ -143,9 +141,7 @@ def test_multicast_is_rejected(value):
         abuseipdb.normalize_public_ip(value)
 
 
-# ---------------------------------------------------------------------------
 # Outbound /report boundary
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("value", RFC1918_SAMPLES)
 def test_egress_boundary_rejects_rfc1918_before_http(outbound, value):
@@ -248,9 +244,7 @@ def test_comment_unicode_forms_cannot_hide_email_or_url(outbound, comment):
     assert outbound == []
 
 
-# ---------------------------------------------------------------------------
 # Direct transport boundary (_api_call), bypassing _request entirely
-# ---------------------------------------------------------------------------
 
 REPORT_URL = "https://api.abuseipdb.com/api/v2/report"
 
@@ -320,9 +314,7 @@ def test_direct_transport_leaves_the_check_endpoint_unchanged(outbound):
     assert outbound[0]["params"] == {"ipAddress": "10.0.0.1"}
 
 
-# ---------------------------------------------------------------------------
 # Shared raw transport (core.http_client._api_call) — no module wrapper
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def raw_core_transport(monkeypatch):
@@ -405,9 +397,7 @@ def test_raw_core_transport_leaves_check_endpoint_unchanged(raw_core_transport):
     assert raw_core_transport[0][1]["params"] == {"ipAddress": "10.0.0.1"}
 
 
-# ---------------------------------------------------------------------------
 # report_ip and the input schemas
-# ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("value", RFC1918_SAMPLES)
 def test_report_ip_rejects_rfc1918_before_http(outbound, value):
@@ -434,9 +424,7 @@ def test_check_schema_rejects_rfc1918_network():
         AbuseIPDBCheckInput(network="192.168.0.0/24")
 
 
-# ---------------------------------------------------------------------------
 # Harvest path
-# ---------------------------------------------------------------------------
 
 def _bucket(ip: str) -> dict:
     return {
@@ -518,9 +506,7 @@ def test_tool_rejects_rfc1918_in_explicit_comment(outbound, comment):
     assert [c for c in outbound if c["method"] == "post"] == []
 
 
-# ---------------------------------------------------------------------------
 # Public reporting is unchanged
-# ---------------------------------------------------------------------------
 
 def test_public_report_ip_body_is_unchanged(outbound):
     result = _run(abuseipdb.report_ip(

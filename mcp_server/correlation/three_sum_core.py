@@ -11,11 +11,8 @@ from typing import Any
 from mcp_server.core.constants import (ACTIVE_RESPONSE_WRAPPER_RULES,
                                       MITRE_TACTIC_TO_CATEGORY, MITRE_TACTIC_WEIGHTS)
 
-# Default thresholds (Aul Tunning;P)
-# threshold_score=35: with dynamic scoring (rule.level x MITRE tactic weight),
-# a single high-severity C2 alert lands ~25-32 (level 12-13 x 2.5). 35 therefore
-# requires either a cross-category chain or multiple high-severity alerts before
-# Engine A triggers - suppresses single-alert false positives.
+# threshold_score=35: one high-severity C2 alert scores ~25-32 under dynamic
+# rule.level x tactic-weight scoring, so a lone alert stays under the gate.
 DEFAULT_THRESHOLD_SCORE: int = 35
 DEFAULT_Z_THRESHOLD: float = 2.5
 DEFAULT_WINDOW_MINUTES: int = 10080  # 7 days
@@ -38,8 +35,7 @@ _EXCLUDE_IP_FALLBACKS: set[str] = {"0.0.0.0", "unknown", ""}
 _DEDUP_WRAPPER_RULES: set[str] = set(ACTIVE_RESPONSE_WRAPPER_RULES)
 
 
-# MITRE ATT&CK -> 3-Sum dynamic classification (MCP-TAXONOMY-V2) (Aul Tunning;P)
-# MITRE_TACTIC_TO_CATEGORY is the PRIMARY classification engine; rule.groups
+# MITRE_TACTIC_TO_CATEGORY is the primary classification engine; rule.groups
 # string tokens are only a fallback for alerts lacking rule.mitre.* data.
 def normalize_tactic(tactic: str) -> str:
     """Lowercase + hyphen-to-space normalization (case/format-insensitive lookup)."""

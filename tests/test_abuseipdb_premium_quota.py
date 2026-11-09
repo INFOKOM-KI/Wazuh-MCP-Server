@@ -114,9 +114,7 @@ def transport(monkeypatch):
     return calls, queue
 
 
-# ---------------------------------------------------------------------------
 # Configured reference and header parsing
-# ---------------------------------------------------------------------------
 
 def test_premium_limits_are_per_endpoint():
     limits = abuseipdb.PREMIUM_DAILY_LIMITS
@@ -209,9 +207,7 @@ def test_reset_epoch_is_stored_as_utc(transport):
     assert int(parsed.timestamp()) == epoch
 
 
-# ---------------------------------------------------------------------------
 # Quota guard
-# ---------------------------------------------------------------------------
 
 def test_quota_guard_stops_before_transport_at_the_reserve(transport, monkeypatch):
     calls, queue = transport
@@ -314,9 +310,7 @@ def test_429_retry_after_is_recorded(transport):
     assert len(calls) == 1
 
 
-# ---------------------------------------------------------------------------
 # Check-block Premium capability
-# ---------------------------------------------------------------------------
 
 def _block_payload(rows=2):
     return {"data": {
@@ -368,9 +362,10 @@ def test_check_block_rejects_more_than_365_days(transport):
     assert calls == []
 
 
-def test_check_block_ipv6_is_explicitly_unsupported(transport):
+def test_check_block_rejects_an_ipv6_prefix_wider_than_the_local_bound(transport):
+    """IPv6 is accepted, but not an unbounded sweep. The /32 is a local bound."""
     calls, _ = transport
-    with pytest.raises(AbuseIPDBError, match="IPv4 only"):
+    with pytest.raises(AbuseIPDBError, match="IPv6"):
         _run(abuseipdb.check_block("2001:4860::/32"))
     assert calls == []
 
@@ -385,9 +380,7 @@ def test_check_block_caps_the_returned_list(transport, monkeypatch):
     assert len(calls) == 1
 
 
-# ---------------------------------------------------------------------------
 # Check caching and report pacing
-# ---------------------------------------------------------------------------
 
 def test_cached_check_does_not_spend_transport(transport):
     calls, queue = transport
@@ -453,9 +446,7 @@ def test_reporting_tool_surfaces_quota_exhaustion(transport, monkeypatch):
     assert len(posts) == 1  # only the seeding report, no new POST
 
 
-# ---------------------------------------------------------------------------
 # Observability
-# ---------------------------------------------------------------------------
 
 def test_check_tool_json_reports_quota(transport):
     _, queue = transport

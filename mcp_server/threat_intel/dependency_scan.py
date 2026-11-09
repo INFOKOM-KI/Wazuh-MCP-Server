@@ -22,7 +22,7 @@ from mcp_server.threat_intel._cache import cache_get, cache_set, get_limiter
 
 logger = logging.getLogger("blue_team_mcp.depscan")
 
-OSV_BASE = "https://api.osv.dev/v1"  # fixed endpoint - no SSRF surface - Aul Tunnings;P
+OSV_BASE = "https://api.osv.dev/v1"  # fixed endpoint, no SSRF surface
 
 TTL_DEP_SCAN = 1800      # OSV results cached 30 minutes
 MAX_PACKAGES = 500       # bound input so a giant manifest can't fan out unbounded

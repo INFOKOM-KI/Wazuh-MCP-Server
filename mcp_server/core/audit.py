@@ -98,10 +98,81 @@ for _sig in (signal.SIGTERM, signal.SIGINT):
         pass  # not the main thread (e.g. under a test runner)
 
 
-# Audit logging
-def _audit_log(tool_name: str, params: dict, result_preview: str = "") -> None:
-    """Enqueue an audit entry for async, batched write to BLUETEAM_AUDIT_LOG."""
-    metrics.record_call(tool_name)
+# Per-event detail is bounded so one call cannot flood the JSONL trail. Strings
+# are redacted before they are measured, so a redacted value is never split
+# mid-token by the cap.
+_AUDIT_DETAIL_MAX_ITEMS = 20      # list entries or dict keys per container
+_AUDIT_DETAIL_MAX_DEPTH = 3
+_AUDIT_DETAIL_MAX_STR = 120
+_AUDIT_DETAIL_MAX_NODES = 200     # total values across the whole detail tree
+
+
+def _bound_audit_value(value: Any, *, depth: int = 0,
+                       budget: list[int] | None = None) -> tuple[Any, bool]:
+    """Redact and bound one nested audit value. Returns ``(value, truncated)``.
+
+    Scalars survive as scalars so the JSONL stays queryable; strings are redacted
+    then capped; containers are cut at ``_AUDIT_DETAIL_MAX_ITEMS``. Anything past
+    the depth or node budget is dropped and reported as truncated, never silently.
+    """
+    if budget is None:
+        budget = [_AUDIT_DETAIL_MAX_NODES]
+    budget[0] -= 1
+    if budget[0] < 0 or depth > _AUDIT_DETAIL_MAX_DEPTH:
+        return None, True
+    if value is None or isinstance(value, (bool, int, float)):
+        return value, False
+    if isinstance(value, str):
+        safe = _redact_alert_data(value)
+        if len(safe) > _AUDIT_DETAIL_MAX_STR:
+            return safe[:_AUDIT_DETAIL_MAX_STR - 3] + "...", True
+        return safe, False
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        truncated = False
+        for index, (key, item) in enumerate(value.items()):
+            if index >= _AUDIT_DETAIL_MAX_ITEMS:
+                truncated = True
+                break
+            child, child_cut = _bound_audit_value(item, depth=depth + 1, budget=budget)
+            if child is None and child_cut:
+                # Dropped, not null: a real null survives below, and a reader
+                # must be able to tell the two apart in a forensic trail.
+                truncated = True
+                continue
+            out[str(key)[:40]] = child
+            truncated = truncated or child_cut
+        return out, truncated
+    if isinstance(value, (list, tuple, set, frozenset)):
+        # A set iterates in hash order, which would make the same event log
+        # differently on every run. Sort it so the trail is reproducible.
+        items = sorted(value, key=str) if isinstance(value, (set, frozenset)) else value
+        out_list: list[Any] = []
+        truncated = False
+        for index, item in enumerate(items):
+            if index >= _AUDIT_DETAIL_MAX_ITEMS:
+                truncated = True
+                break
+            child, child_cut = _bound_audit_value(item, depth=depth + 1, budget=budget)
+            out_list.append(child)
+            truncated = truncated or child_cut
+        return out_list, truncated
+    return None, True
+
+
+def _audit_log(tool_name: str, params: dict, result_preview: str = "", *,
+               detail: dict | None = None, phase: str | None = None,
+               op_id: str | None = None, record_metric: bool = True) -> None:
+    """Enqueue an audit entry for async, batched write to BLUETEAM_AUDIT_LOG.
+
+    ``detail`` is an optional bounded structured payload for tools whose outcome
+    does not fit the 200-char preview. Existing callers are unaffected; the five
+    original keys are unchanged and the new keys appear only when passed.
+    """
+    if record_metric:
+        # Two events can describe one call (prepared, completed); the counter
+        # tracks calls, not entries.
+        metrics.record_call(tool_name)
     if not BLUETEAM_AUDIT_LOG:
         return
     try:
@@ -113,6 +184,14 @@ def _audit_log(tool_name: str, params: dict, result_preview: str = "") -> None:
             "result_preview": _redact_alert_data((result_preview or "")[:200]),
             "redaction_bypassed": params.get("bypass_redaction", False),
         }
+        if phase is not None:
+            entry["phase"] = str(phase)[:24]
+        if op_id is not None:
+            entry["op_id"] = str(op_id)[:64]
+        if detail is not None:
+            bounded, truncated = _bound_audit_value(detail)
+            entry["detail"] = bounded
+            entry["detail_truncated"] = bool(truncated)
         _ensure_audit_worker()
         _AUDIT_QUEUE.put(entry)
     except Exception:

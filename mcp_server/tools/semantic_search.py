@@ -31,7 +31,7 @@ class _BM25:
         self.n = len(corpus)
         self.tokenized = [_tokenize(d) for d in corpus]
         self.doc_len = [len(t) for t in self.tokenized]
-        # avgdl guard: empty corpus or all-empty docs must not divide by zero (Aul adjust)
+        # avgdl guard: empty corpus must not divide by zero.
         self.avgdl = sum(self.doc_len) / max(self.n, 1) or 1e-9
         df: dict[str, int] = defaultdict(int)
         for tokens in self.tokenized:
@@ -46,7 +46,7 @@ class _BM25:
         for idx, doc_tokens in enumerate(self.tokenized):
             dl = self.doc_len[idx]
             if dl == 0:
-                continue  # empty doc -> score 0 (also protects the length-normalized TF - by Aul)
+                continue  # empty doc scores 0 instead of dividing by a zero avgdl
             # One-pass term-frequency dict per doc (O(dl)) instead of
             # doc_tokens.count(qt) per query term (O(q*dl)).
             tf: dict[str, int] = {}

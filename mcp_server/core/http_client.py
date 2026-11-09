@@ -236,6 +236,38 @@ def _guard_abuseipdb_request(method: str, url: str, verify: bool, kw: dict):
     return kw, reservation, endpoint
 
 
+# Method policy mirrored from the installed httpx convenience helpers, not from
+# HTTP semantics: httpx.AsyncClient.delete() takes no body even though RFC 9110
+# allows one. Measured against httpx 0.28.1.
+_BODY_KWARGS = ("content", "data", "files", "json")
+_BODY_VERBS = frozenset({"post", "put", "patch"})
+_NO_BODY_VERBS = frozenset({"get", "head", "options", "delete"})
+_ALLOWED_VERBS = _BODY_VERBS | _NO_BODY_VERBS
+
+
+def _check_request_shape(method: str, kw: dict) -> None:
+    """Reject a kwarg the selected httpx helper does not accept.
+
+    Without this, ``client.get(url, data=None)`` raises a bare TypeError from
+    inside httpx, which every caller reports as an opaque upstream failure.
+    Raises ``ThreatIntelError`` so the classification stays stable.
+    """
+    verb = str(method or "").lower()
+    if verb not in _ALLOWED_VERBS:
+        raise ThreatIntelError(
+            f"unsupported HTTP method {method!r}; expected one of "
+            f"{', '.join(sorted(_ALLOWED_VERBS))}")
+    if verb in _BODY_VERBS:
+        return
+    # Presence, not value: ``data=None`` is still an argument the helper
+    # rejects, and raising beats the bare TypeError httpx would produce.
+    rejecting = [name for name in _BODY_KWARGS if name in kw]
+    if rejecting:
+        raise ThreatIntelError(
+            f"{verb.upper()} does not accept a request body in httpx; "
+            f"remove {', '.join(rejecting)}, or use POST")
+
+
 # API call
 async def _api_call(method: str, url: str, *, client_name: str | None = None, verify: bool = True,
                     max_retries: int = 1, max_response_bytes: int | None = None,
@@ -261,9 +293,16 @@ async def _api_call(method: str, url: str, *, client_name: str | None = None, ve
     project-owned integration uses them.
     """
     client_name = client_name or (httpx.URL(url).host or "http")
+    # Credential scope is decided before request shape: a leaked key must be
+    # reported as a credential violation, not masked by a generic body-kwarg error.
     kw, reservation, endpoint = _guard_abuseipdb_request(method, url, verify, kw)
     outcome = None
     try:
+        # Inside the try: the guard above may already hold a quota reservation,
+        # and the finally block is what releases it on a shape rejection.
+        # One shape policy for both dispatch paths, because the streaming branch
+        # uses build_request(), which accepts body kwargs on any verb.
+        _check_request_shape(method, kw)
         client = await _get_client(client_name, verify=verify)
         breaker = _get_breaker(client_name)
         last_exc: Exception | None = None

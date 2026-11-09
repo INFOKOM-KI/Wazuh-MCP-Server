@@ -567,6 +567,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL="1.0"
 # export BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL="50"
 # export BLUETEAM_ABUSEIPDB_PLAN="premium"         # premium: /16 check-block; standard: /24; invalid -> standard
+#                                              # IPv6 check-block is /112 or narrower on either plan (local bound)
 # export BLUETEAM_ABUSEIPDB_QUOTA_RESERVE="100"    # refuse before transport at the observed limit
 # export BLUETEAM_ABUSEIPDB_BOOTSTRAP_CONCURRENCY="1"  # in-flight limit before the first quota header
 # export BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET="5"       # cumulative per-endpoint/per-process before the first header; headerless does not restore

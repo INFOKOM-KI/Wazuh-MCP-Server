@@ -7,12 +7,17 @@ One client for every AbuseIPDB call site, so quota is spent once per IP and the
 retry/circuit-breaker behaviour is identical in the aggregate, the unified score,
 the curated report, and the reporting tool.
 
-Facts encoded here come from the official API docs (checked 2026-11-06):
+Facts encoded here come from the official API docs (docs.abuseipdb.com, checked
+2026-11-09):
 - ``/check`` accepts one IPv4/IPv6 address; ``maxAgeInDays`` is 1..365 (default 30).
-- ``/check-block`` accepts an IPv4 CIDR (/16 Premium, /24 Standard) and returns
-  only addresses that already have reports. IPv6 subnets are not implemented here.
-- ``/report`` is a form-encoded POST; ``categories`` is required; the same IP can
-  be reported once per 15 minutes; comments must not contain PII.
+  The docs say to url-encode the address because IPv6 contains colons.
+- ``/check-block`` takes a CIDR in ``network``. The published plan table caps IPv4
+  at /24 Standard, /20 Basic, /16 Premium and does not mention IPv6 at all, so the
+  IPv6 /112 bound here is a local safety limit, not a vendor rule: an upstream 402
+  surfaces as ``plan_limit``. It returns only addresses that already have reports.
+- ``/report`` is a form-encoded POST; ``ip`` is documented as "a valid IPv4 or IPv6
+  address"; ``categories`` is required; the same IP can be reported once per 15
+  minutes; comments must not contain PII.
 """
 from __future__ import annotations
 
@@ -51,7 +56,7 @@ REPORT_LIMITER = get_limiter("abuseipdb_report", max_concurrent=1,
 
 REPORT_DUPLICATE_WINDOW_SECONDS = 15 * 60
 MAX_COMMENT_LENGTH = 500
-SIGNATURE = "Reported by TangerangKota-CSIRT"
+SIGNATURE = "Reported by TangerangKota-CSIRT."
 
 # Configured subscription reference. Runtime response headers always win; these
 # values are only a display fallback and never override an observed limit.
@@ -86,6 +91,10 @@ SUPPORTED_ENDPOINTS = frozenset({"check", "check-block", "report"})
 # A /16 has 65,536 addresses; cap the parsed list so one sweep cannot exhaust
 # the tool response. The API still counts it as one check-block request.
 CHECK_BLOCK_MAX_RESULTS = 10_000
+# The published plan table caps the IPv4 prefix (/24 Standard, /16 Premium) and
+# says nothing about IPv6 prefixes. This is a local safety bound, not a vendor
+# rule: /112 is the IPv6 analogue of the /16 host count.
+CHECK_BLOCK_MAX_PREFIX_V6 = 112
 
 # Mandatory egress invariant: these ranges never reach /report. The check is
 # explicit so it survives a stdlib change or a swap of the broader is_global
@@ -872,11 +881,14 @@ async def _request(method: str, path: str, *, limiter, max_retries: int = 1,
     _quota_guard(endpoint_for(method, path))
     key = _api_key()
     headers = {"Key": key, "Accept": "application/json"}
+    # httpx only accepts body kwargs on the verb helpers that take a body;
+    # AsyncClient.get() rejects data=/json=/content= outright.
+    body = {"data": data} if data is not None else {}
     try:
         async with limiter:
             return await _api_call(method, f"{ABUSEIPDB_BASE_URL.rstrip('/')}{path}",
-                                   headers=headers, params=params, data=data,
-                                   max_retries=max_retries)
+                                   headers=headers, params=params,
+                                   max_retries=max_retries, **body)
     except AbuseIPDBError:
         raise
     except Exception as exc:
@@ -972,24 +984,31 @@ async def check_ip(ip: str, max_age_days: int = 30, *, verbose: bool = False) ->
 
 
 async def check_block(network: str, max_age_days: int = 30) -> dict:
-    """Return a normalized ``/check-block`` result for the plan's maximum CIDR.
+    """Return a normalized ``/check-block`` result for one CIDR network.
 
-    Premium accepts an IPv4 /16; Standard is /24. ``/check-block`` is a subnet
-    triage call, not a per-IP check: it reports only addresses that already have
-    reports. The network size is one request regardless of host count.
+    IPv4 follows the published plan table (/24 Standard, /16 Premium). IPv6 is
+    passed through as an IPv6 CIDR: the official endpoint documentation does not
+    state an IPv6 prefix limit, so the local bound is /112 (the host-count
+    analogue of a /16) and an upstream rejection surfaces as a typed error rather
+    than being pre-empted here.
+
+    ``/check-block`` is a subnet triage call, not a per-IP check: it reports only
+    addresses that already have reports. The network size is one request
+    regardless of host count.
     """
     try:
         net = ipaddress.ip_network((network or "").strip(), strict=False)
     except ValueError as exc:
         raise AbuseIPDBError(f"'{network}' is not a valid CIDR network", "bad_request") from exc
-    if net.version != 4:
+    if net.version == 4:
+        if net.prefixlen < ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX:
+            raise AbuseIPDBError(
+                f"check-block accepts /{ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX} or "
+                f"narrower on the {ABUSEIPDB_PLAN} plan", "bad_request")
+    elif net.prefixlen < CHECK_BLOCK_MAX_PREFIX_V6:
         raise AbuseIPDBError(
-            "check-block currently accepts IPv4 only; use ip= for an IPv6 check",
-            "unsupported_type")
-    if net.prefixlen < ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX:
-        raise AbuseIPDBError(
-            f"check-block accepts /{ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX} or narrower "
-            f"on the {ABUSEIPDB_PLAN} plan", "bad_request")
+            f"check-block accepts /{CHECK_BLOCK_MAX_PREFIX_V6} or narrower for "
+            f"IPv6 (local safety bound)", "bad_request")
     if not net.network_address.is_global:
         raise AbuseIPDBError(f"'{network}' is a private/reserved network", "bad_request")
     if not 1 <= max_age_days <= 365:

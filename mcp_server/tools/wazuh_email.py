@@ -182,7 +182,7 @@ async def wazuh_email_lookup(params: WazuhEmailLookupInput) -> str:
             data = await _wazuh_indexer_post(body)
             if "error" in data:
                 error_msg = data["error"]
-                # If already collected some data, return partial results. (Aul Adjust)
+                # Keep the partial results already collected.
                 if total_scanned > 0:
                     break
                 return json.dumps(data, indent=2)

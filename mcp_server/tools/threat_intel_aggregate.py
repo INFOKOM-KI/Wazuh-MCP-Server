@@ -83,7 +83,13 @@ class TIProviderResult(BaseModel):
 
 
 class TIQueryOutput(BaseModel):
-    """Aggregated multi-provider result."""
+    """Aggregated multi-provider result.
+
+    ``aggregated_risk_level`` is the highest risk any single provider reported,
+    not a vote. The verdict tally below it exists so a reader can tell
+    "one provider said high" from "the providers agree", and so a provider that
+    failed, was skipped, or returned no determinate answer is never counted clean.
+    """
     indicator: str
     indicator_type: str
     results: list[TIProviderResult] = Field(default_factory=list)
@@ -92,6 +98,15 @@ class TIQueryOutput(BaseModel):
     providers_total: int = 0
     providers_ok: int = 0
     errors: list[str] = Field(default_factory=list)
+    # Expanded accounting; additive, so existing JSON consumers keep working.
+    providers_configured: int = 0
+    providers_queried: int = 0
+    verdicts_malicious: int = 0
+    verdicts_clean: int = 0
+    verdicts_inconclusive: int = 0
+    providers_failed: int = 0
+    providers_skipped: int = 0
+    verdict_basis: str = "no_provider_answered"
 
 
 class ThreatIntelAggregateInput(BaseModel):
@@ -296,7 +311,8 @@ async def _greynoise_provider(indicator: str, ind_type: str) -> TIProviderResult
 
 
 async def _abuseipdb_provider(indicator: str, ind_type: str) -> TIProviderResult:
-    if ind_type != "IPv4":
+    # /check accepts IPv4 and IPv6 alike; only the value differs.
+    if ind_type not in ("IPv4", "IPv6"):
         return TIProviderResult(provider="abuseipdb", indicator=indicator,
                                 indicator_type=ind_type, error="unsupported type",
                                 error_kind="unsupported_type")
@@ -398,16 +414,46 @@ def _aggregate(results: list[TIProviderResult]) -> TIQueryOutput:
                  if r.error_kind not in _LOCAL_REFUSAL_KINDS]
     coverage = {"providers_total": len(attempted), "providers_ok": len(valid)}
 
+    configured = [r for r in results
+                  if r.error_kind not in ("not_configured", "unsupported_type")]
+    # "Queried" means the process actually sent a request: the same set as
+    # attempted. Failed is the subset that never produced a usable answer.
+    queried = attempted
+    failed = [r for r in results
+              if r.error is not None and r.error_kind not in _LOCAL_REFUSAL_KINDS]
+    skipped = [r for r in results
+               if r.error is not None and r.error_kind in _LOCAL_REFUSAL_KINDS]
+    malicious_votes = sum(1 for r in valid if r.is_malicious is True)
+    clean_votes = sum(1 for r in valid if r.is_malicious is False)
+    inconclusive = sum(1 for r in valid if r.is_malicious is None)
+    tally = {
+        "providers_configured": len(configured),
+        "providers_queried": len(queried),
+        "verdicts_malicious": malicious_votes,
+        "verdicts_clean": clean_votes,
+        "verdicts_inconclusive": inconclusive,
+        "providers_failed": len(failed),
+        "providers_skipped": len(skipped),
+    }
+
     if not valid:
         return TIQueryOutput(indicator=results[0].indicator if results else "",
                              indicator_type=results[0].indicator_type if results else "unknown",
                              results=results, aggregated_risk_level=None,
-                             consensus_malicious=0, errors=errors, **coverage)
+                             consensus_malicious=0, errors=errors,
+                             verdict_basis="no_provider_answered",
+                             **coverage, **tally)
 
-    malicious_votes = sum(1 for r in valid if r.is_malicious)
-    # Weighted risk: take the highest risk level among providers
     highest = max(valid, key=lambda r: _RISK_ORDER.get(r.risk_level, 0))
     aggregated = highest.risk_level
+    if malicious_votes:
+        basis = "provider_detection"
+    elif inconclusive and not clean_votes:
+        basis = "inconclusive"
+    elif inconclusive:
+        basis = "mixed_clean_and_inconclusive"
+    else:
+        basis = "all_clean"
 
     return TIQueryOutput(
         indicator=valid[0].indicator,
@@ -416,8 +462,16 @@ def _aggregate(results: list[TIProviderResult]) -> TIQueryOutput:
         aggregated_risk_level=aggregated,
         consensus_malicious=malicious_votes,
         errors=errors,
+        verdict_basis=basis,
         **coverage,
+        **tally,
     )
+
+
+def _clip(text: object, limit: int) -> str:
+    """One-line Markdown scalar capped at ``limit``, with an explicit ellipsis."""
+    value = " ".join(str(text if text is not None else "").split()) or "-"
+    return value if len(value) <= limit else value[:max(0, limit - 1)] + "\u2026"
 
 
 def _malicious_mark(is_malicious: bool | None) -> str:
@@ -523,7 +577,8 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
              "|----------|------|-------|-----------|---------------------|"]
     for r in results:
         if r.error:
-            lines.append(f"| `{r.provider}` | — | — | — | ⚠️ {r.error[:40]} |")
+            lines.append(f"| `{r.provider}` | — | — | — | "
+                         f"⚠️ {_clip(r.error, 40)} |")
         else:
             mf = ", ".join(r.malware_families[:2]) or ""
             adv = ", ".join(r.adversaries[:2]) or ""
@@ -533,12 +588,33 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
                 detail = (f"{r.detail['detections']} engines; "
                           f"rep {rep if rep is not None else '-'}")
             detail = detail or "-"
-            lines.append(f"| `{r.provider}` | {r.risk_level or '?'} | {r.reputation_score if r.reputation_score is not None else '?'} "
-                         f"| {_malicious_mark(r.is_malicious)} | {detail[:40]} |")
+            lines.append(
+                f"| `{r.provider}` | {r.risk_level or '?'} | "
+                f"{r.reputation_score if r.reputation_score is not None else '?'} "
+                f"| {_malicious_mark(r.is_malicious)} | {_clip(detail, 40)} |")
 
     lines.append("")
     lines.append("`Score` is the provider's normalized 0-100 score. For VirusTotal it is the engine "
                  "detection percentage; `rep` in the detail is community reputation.")
+
+    lines.append("")
+    lines.append("### Verdict accounting")
+    lines.append("")
+    lines.append(
+        f"- **Aggregated risk**: `{output.aggregated_risk_level or 'unknown'}` — the highest "
+        f"risk any single provider reported, not a vote."
+    )
+    lines.append(
+        f"- **Providers**: {output.providers_configured} configured, "
+        f"{output.providers_total} queried, {output.providers_ok} answered, "
+        f"{output.providers_failed} failed, {output.providers_skipped} skipped")
+    lines.append(
+        f"- **Verdicts**: {output.verdicts_malicious} malicious, "
+        f"{output.verdicts_clean} clean, {output.verdicts_inconclusive} inconclusive")
+    if output.verdicts_inconclusive or output.providers_failed or output.providers_skipped:
+        lines.append(
+            "- A failed, skipped, or inconclusive provider is not a clean verdict. "
+            "Treat this IOC as partially assessed.")
 
     vt_rows = [r for r in results if r.provider == "virustotal" and r.error is None]
     if vt_rows:
@@ -554,6 +630,22 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
                 f"age {age if age is not None else '-'}s/TTL {ttl if ttl is not None else '-'}s, "
                 f"expired {'yes' if detail.get('cache_expired') else 'no'}, "
                 f"HTTP {detail.get('http_status') or '-'}")
+        # Network attributes are shown only when VirusTotal returned them. An
+        # absent field prints as "-", never as a guessed value.
+        lines.append("")
+        lines.append("### VirusTotal network attributes")
+        lines.append("")
+        lines.append("| Indicator | ASN | AS owner | Country | Network |")
+        lines.append("|---|---|---|---|---|")
+        for row in vt_rows:
+            detail = row.detail or {}
+            asn = detail.get("asn")
+            lines.append(
+                f"| `{_clip(row.indicator, 45)}` "
+                f"| {('AS' + str(asn)) if isinstance(asn, int) else '-'} "
+                f"| {_clip(detail.get('as_owner'), 40)} "
+                f"| {_clip(detail.get('country'), 20)} "
+                f"| {_clip(detail.get('network'), 40)} |")
 
     if output.errors:
         lines.append("")

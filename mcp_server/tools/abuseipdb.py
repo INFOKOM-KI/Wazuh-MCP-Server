@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
 © NAuliajati - TangerangKota-CSIRT
-AbuseIPDB check tools: one IP, or an IPv4 /24 block.
+AbuseIPDB tools: check one IPv4/IPv6 address, sweep a CIDR network, and report
+evidence-backed public source IPs with an explicit operator gate.
 """
 from __future__ import annotations
 
 import ipaddress
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
@@ -22,6 +24,7 @@ from mcp_server import (ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX, ABUSEIPDB_EXCLUDE,
 from mcp_server.core.audit import _audit_log, _escape_md_table, _truncate_if_needed
 from mcp_server.core.exceptions import ThreatIntelError
 from mcp_server.threat_intel.abuseipdb import (AbuseIPDBError, CATEGORY_NAMES,
+                                              CHECK_BLOCK_MAX_PREFIX_V6,
                                                build_comment,
                                                categories_for_evidence,
                                                check_block, check_ip,
@@ -48,8 +51,10 @@ class AbuseIPDBCheckInput(BaseModel):
         description="Public IPv4/IPv6 address to check.")
     network: Optional[str] = Field(
         default=None, max_length=64,
-        description=(f"Public IPv4 CIDR, /{ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX} or "
-                     f"narrower ({ABUSEIPDB_PLAN} plan), for a check-block sweep."))
+        description=(f"Public CIDR for a check-block sweep. IPv4: "
+                     f"/{ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX} or narrower "
+                     f"({ABUSEIPDB_PLAN} plan). IPv6: /"
+                     f"{CHECK_BLOCK_MAX_PREFIX_V6} or narrower."))
     max_age_days: int = Field(
         default=30, ge=1, le=365,
         description="Only count reports from the last N days (default 30).")
@@ -74,12 +79,14 @@ class AbuseIPDBCheckInput(BaseModel):
             net = ipaddress.ip_network(value, strict=False)
         except ValueError as exc:
             raise ValueError(f"'{value}' is not a valid CIDR network.") from exc
-        if net.version != 4:
-            raise ValueError("network must be IPv4; use ip= for IPv6.")
-        if net.prefixlen < ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX:
+        if net.version == 4:
+            if net.prefixlen < ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX:
+                raise ValueError(
+                    f"network must be /{ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX} or "
+                    f"narrower on the {ABUSEIPDB_PLAN} plan.")
+        elif net.prefixlen < CHECK_BLOCK_MAX_PREFIX_V6:
             raise ValueError(
-                f"network must be /{ABUSEIPDB_CHECK_BLOCK_MAX_PREFIX} or narrower "
-                f"on the {ABUSEIPDB_PLAN} plan.")
+                f"network must be /{CHECK_BLOCK_MAX_PREFIX_V6} or narrower for IPv6.")
         if not net.network_address.is_global:
             raise ValueError(f"'{value}' is a private/reserved network.")
         return str(net)
@@ -200,7 +207,7 @@ def _render_block(result: dict) -> str:
                  "idempotentHint": True, "openWorldHint": True},
 )
 async def blueteam_abuseipdb_check(params: AbuseIPDBCheckInput) -> str:
-    """Check one public IP, or sweep an IPv4 /16 (Premium) or /24, against AbuseIPDB.
+    """Check one public IP, or sweep a CIDR network, against AbuseIPDB.
 
     Returns the abuse confidence score, report volume, last report time, country,
     ISP, usage type, Tor and whitelist flags. A check-block sweep is **not** a
@@ -216,6 +223,9 @@ async def blueteam_abuseipdb_check(params: AbuseIPDBCheckInput) -> str:
 
     3. *Sweep a /16 for already-reported hosts*:
        ``blueteam_abuseipdb_check(network="8.8.0.0/16", max_age_days=90)``
+
+    4. *Sweep an IPv6 /120*:
+       ``blueteam_abuseipdb_check(network="2001:4860:4860::/120")``
 
     **Required Permissions**: ``ABUSEIPDB_API_KEY``. Premium reference: 50,000
     checks/day and 5,000 check-block calls/day; Standard: 1,000 and 100. The
@@ -262,7 +272,7 @@ __all__ = ["blueteam_abuseipdb_check", "AbuseIPDBCheckInput", "CATEGORY_NAMES"]
 # Reporting: evidence -> candidate -> preview -> explicit submission
 
 _DSTIP_FIELDS = ("data.dstip", "data.dst_ip", "data.destination_ip",
-                 "data.dest_ip")
+                 "data.dest_ip", "dstip")
 
 
 class AbuseIPDBReportInput(BaseModel):
@@ -453,7 +463,7 @@ async def _harvest_candidates(params: AbuseIPDBReportInput) -> tuple[list[dict],
             },
         },
     }
-    merged, _live_paths, errors = await _srcip_aggs_merged(query, agg_spec)
+    merged, live_paths, errors = await _srcip_aggs_merged(query, agg_spec)
     if not merged and errors:
         raise ThreatIntelError(
             "[blueteam_abuseipdb_report] Indexer aggregation failed: "
@@ -528,12 +538,32 @@ async def _harvest_candidates(params: AbuseIPDBReportInput) -> tuple[list[dict],
     effective_cap = min(params.max_candidates, max(1, ABUSEIPDB_REPORT_MAX_PER_CALL))
     selected = eligible[:effective_cap]
     remaining = other + max(0, len(eligible) - len(selected))
+
+    # Provenance runs as its own query. A top_hits sub-aggregation inside the
+    # shared tree would be shredded by _merge_bucket_lists, which expects every
+    # list element to carry a bucket "key".
+    provenance_status = "not_requested"
+    if selected:
+        try:
+            refs, provenance_status = await _alert_provenance(
+                filters, [c["ip"] for c in selected], live_paths)
+        except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("alert provenance fetch failed: %s", exc)
+            refs, provenance_status = {}, "unavailable"
+        for candidate in selected:
+            entry = refs.get(candidate["ip"])
+            if entry is not None:
+                candidate["alert_refs"] = entry["refs"]
+                candidate["alert_refs_total"] = entry["total"]
+                candidate["alert_refs_truncated"] = entry["truncated"]
+
     meta = {
         "window": {"since": since_iso, "until": until_iso},
         "source": "alerts",
-        "srcip_paths": _live_paths,
+        "srcip_paths": live_paths,
         "indexer_errors": errors,
         "role_check": role_status,
+        "provenance": provenance_status,
         "alerts_examined": alerts_in_returned_buckets + other,
         "alerts_examined_exact": counts_exact,
         "unique_srcip_buckets": len(buckets),
@@ -576,6 +606,104 @@ async def _dstip_role(filters: list[dict], candidate_ips: list[str]) -> tuple[se
     if failures or successes == 0:
         return set(), "unavailable"
     return hits, "checked"
+
+
+PROVENANCE_SAMPLE_PER_IP = 3
+
+
+def _provenance_refs(bucket: dict) -> tuple[list[dict], bool]:
+    """Extract alert references from one top_hits bucket. Never invents an _id."""
+    hits = ((bucket.get("sample") or {}).get("hits") or {}).get("hits") or []
+    refs: list[dict] = []
+    seen: set[str] = set()
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        alert_id = hit.get("_id")
+        if not isinstance(alert_id, str) or not alert_id.strip():
+            continue
+        alert_id = alert_id.strip()
+        if alert_id in seen:
+            continue
+        seen.add(alert_id)
+        source = hit.get("_source") if isinstance(hit.get("_source"), dict) else {}
+        rule_id = source.get("rule", {}).get("id") if isinstance(
+            source.get("rule"), dict) else None
+        timestamp = source.get("@timestamp")
+        refs.append({
+            "alert_id": alert_id[:64],
+            "rule_id": str(rule_id)[:16] if rule_id is not None else None,
+            "timestamp": str(timestamp)[:40] if timestamp is not None else None,
+        })
+    total = int(bucket.get("doc_count") or 0)
+    return refs, total > len(refs)
+
+
+async def _alert_provenance(filters: list[dict], candidate_ips: list[str],
+                             live_paths: list[str] | None = None) -> tuple[dict, str]:
+    """Sample originating alert references per source IP, without ``full_log``.
+
+    Runs as a standalone aggregation rather than a sub-aggregation of the harvest
+    tree: ``_merge_bucket_lists`` assumes every list element is a bucket carrying
+    a ``key``, and a ``top_hits`` hit has none, so merging would collapse the
+    sample into a single bogus entry.
+
+    Returns ``({ip: {refs, total, truncated}}, status)``. A failure is reported as
+    ``unavailable`` and never fails the harvest: reporting evidence is optional,
+    the role check is not.
+    """
+    if not candidate_ips:
+        return {}, "not_requested"
+    # The harvest swaps data.srcip for each live path; provenance asks the same
+    # question, so it walks the same paths and merges by alert id.
+    out: dict[str, dict] = {}
+    answered = 0
+    for field in (live_paths or ["data.srcip"]):
+        refs_by_ip, ok = await _provenance_query(filters, candidate_ips, field)
+        answered += 1 if ok else 0
+        for ip, entry in refs_by_ip.items():
+            current = out.setdefault(ip, {"refs": [], "total": 0, "truncated": False})
+            current["total"] = max(current["total"], entry["total"])
+            seen = {r["alert_id"] for r in current["refs"]}
+            for ref in entry["refs"]:
+                if ref["alert_id"] not in seen and len(current["refs"]) < PROVENANCE_SAMPLE_PER_IP:
+                    current["refs"].append(ref)
+                    seen.add(ref["alert_id"])
+            current["truncated"] = (current["truncated"] or entry["truncated"]
+                                    or current["total"] > len(current["refs"]))
+    if not answered:
+        return {}, "unavailable"
+    return out, ("sampled" if out else "empty")
+
+
+async def _provenance_query(filters: list[dict], candidate_ips: list[str],
+                            field: str) -> tuple[dict, bool]:
+    """One top_hits sample for one source-IP field path. Returns (refs, answered)."""
+    body = {"size": 0,
+            "query": {"bool": {"filter": filters + [
+                {"terms": {field: candidate_ips}}]}},
+            "aggs": {"refs": {
+                "terms": {"field": field, "size": len(candidate_ips) + 10,
+                          "include": candidate_ips},
+                "aggs": {"sample": {"top_hits": {
+                    "size": PROVENANCE_SAMPLE_PER_IP,
+                    "sort": [{"@timestamp": {"order": "desc"}}],
+                    "_source": {"includes": ["rule.id", "@timestamp"]},
+                }}},
+            }}}
+    raw = await _wazuh_indexer_post(body)
+    if not isinstance(raw, dict) or "error" in raw:
+        return {}, False
+    buckets = ((raw.get("aggregations") or {}).get("refs") or {}).get("buckets") or []
+    result: dict[str, dict] = {}
+    for bucket in buckets:
+        key = str(bucket.get("key") or "")
+        if not key:
+            continue
+        refs, truncated = _provenance_refs(bucket)
+        result[key] = {"refs": refs, "total": int(bucket.get("doc_count") or 0),
+                       "truncated": truncated}
+    return result, True
 
 
 def _candidate_status(candidate: dict, categories: list[int],
@@ -722,6 +850,9 @@ def _render_report_output(output: dict) -> str:
         f"{output.get('check_counts', {}).get('unavailable', 0)} unavailable",
     ]
     lines.extend(_quota_markdown(output.get("quota") or {}))
+    if output.get("provenance") == "unavailable":
+        lines.append("- **Alert provenance**: unavailable (the reference query "
+                     "failed; counts and rule IDs above are unaffected)")
     if output.get("preview_reason"):
         lines.append(f"- **Submission blocked**: {output['preview_reason']}")
     rows = output.get("results") or []
@@ -748,6 +879,18 @@ def _render_report_output(output: dict) -> str:
                     f"{row.get('first_seen')} to {row.get('last_seen')}, rules "
                     f"{', '.join(row.get('rule_ids') or []) or '-'}, groups "
                     f"{', '.join(row.get('rule_groups') or []) or '-'}")
+                refs = row.get("alert_refs") or []
+                if refs:
+                    shown = ", ".join(ref.get("alert_id", "?") for ref in refs)
+                    total = row.get("alert_refs_total")
+                    note = ""
+                    if total and row.get("alert_refs_truncated"):
+                        note = f" ({len(refs)} of {total}, truncated)"
+                    elif total:
+                        note = f" ({len(refs)} of {total})"
+                    lines.append(f"  - alert refs: {shown}{note}")
+                elif row.get("alert_refs_truncated") is False:
+                    lines.append("  - alert refs: none returned")
         if mode == "preview":
             lines.extend(["", "## Final comments", ""])
             for row in rows:
@@ -765,6 +908,71 @@ def _render_report_output(output: dict) -> str:
     return "\n".join(lines)
 
 
+# A failure is only "unsent" when the request provably never left the process.
+# Anything else without an HTTP response may have been processed upstream.
+_UNSENT_KINDS = frozenset({"not_configured", "quota_exhausted", "budget_closed",
+                           "budget_exhausted", "daily_exhausted", "circuit_open",
+                           "plan_limit", "bad_request", "cooldown"})
+
+
+def _row_outcome(row: dict) -> str:
+    """Classify one candidate's submission state for the audit trail.
+
+    ``accepted`` is not a verdict: it only means AbuseIPDB took the report. The
+    returned score is recorded beside it, never folded into it.
+    """
+    status = str(row.get("status") or "")
+    if status == "reported":
+        return "accepted"
+    if status == "failed":
+        if row.get("http_status") is not None:
+            return "rejected"
+        return "unsent" if row.get("error_kind") in _UNSENT_KINDS else "unknown"
+    if status == "would_report":
+        return "dry_run"
+    if status == "manual_review":
+        return "manual_review"
+    if status.startswith("skipped") or status == "duplicate_local":
+        return "skipped"
+    return "not_submitted"
+
+
+def _completion_detail(evaluated: list[dict], meta: dict,
+                       params: AbuseIPDBReportInput) -> dict:
+    """Build the bounded audit payload for the completion event.
+
+    Deliberately excludes the report comment: it is public-facing text and the
+    JSONL trail must not carry it. Alert references stay local.
+    """
+    counts: dict[str, int] = {}
+    rows: list[dict] = []
+    for row in evaluated:
+        outcome = _row_outcome(row)
+        counts[outcome] = counts.get(outcome, 0) + 1
+        item = {"ip": row.get("ip"), "outcome": outcome,
+                "status": row.get("status")}
+        if row.get("error_kind"):
+            item["error_kind"] = row.get("error_kind")
+            item["http_status"] = row.get("http_status")
+        if row.get("status") == "reported":
+            item["verified"] = row.get("verified")
+            item["abuse_confidence_score"] = row.get("abuse_confidence_score")
+        if row.get("alert_refs"):
+            item["alert_refs"] = row.get("alert_refs")[:3]
+        rows.append(item)
+    return {
+        "source": meta.get("source", "explicit"),
+        "dry_run": bool(params.dry_run),
+        "confirmed": bool(params.confirm),
+        "counts": counts,
+        "role_check": meta.get("role_check"),
+        "provenance": meta.get("provenance"),
+        "truncated": bool(meta.get("truncated")),
+        "remaining_candidates": meta.get("remaining_candidates"),
+        "results": rows,
+    }
+
+
 @mcp.tool(
     name="blueteam_abuseipdb_report",
     annotations={"readOnlyHint": False, "destructiveHint": True,
@@ -777,7 +985,7 @@ async def blueteam_abuseipdb_report(params: AbuseIPDBReportInput) -> str:
     ``BLUETEAM_ABUSEIPDB_REPORTING_ENABLED=true``, ``dry_run=false``, and
     ``confirm=true``. The default call is a preview that checks each candidate and
     shows the exact final comment, including the
-    ``Reported by TangerangKota-CSIRT`` signature.
+    ``Reported by TangerangKota-CSIRT.`` signature (exact, trailing period included).
 
     An explicit user prompt to report malicious IPs is the authorization for that
     one call: set ``dry_run=false`` and ``confirm=true`` and report each eligible
@@ -824,83 +1032,102 @@ async def blueteam_abuseipdb_report(params: AbuseIPDBReportInput) -> str:
     **Limits**: at most 50 candidates per call. ``remaining_candidates`` and
     ``truncated`` are reported; a truncated run never claims complete coverage.
     """
-    _audit_log("blueteam_abuseipdb_report", {
-        "from_alerts": params.from_alerts,
-        "srcip_count": len(params.srcips),
-        "dry_run": params.dry_run,
-        "confirm": params.confirm,
-    })
+    op_id = f"abuseipdb-report-{uuid.uuid4().hex[:12]}"
+    audit_params = {"from_alerts": params.from_alerts,
+                    "srcip_count": len(params.srcips),
+                    "dry_run": params.dry_run, "confirm": params.confirm}
+    _audit_log("blueteam_abuseipdb_report", audit_params, phase="prepared",
+               op_id=op_id,
+               detail={"source": "alerts" if params.from_alerts else "explicit",
+                       "candidate_inputs": len(params.srcips),
+                       "dry_run": params.dry_run, "confirm": params.confirm,
+                       "categories": (params.categories
+                                      if isinstance(params.categories, str)
+                                      else "explicit")})
 
-    if params.from_alerts:
-        candidates, meta = await _harvest_candidates(params)
-    else:
-        candidates = [{
-            "ip": ip, "alert_count": 1, "first_seen": "", "last_seen": "",
-            "max_level": None, "rule_ids": [], "rule_groups": [],
-            "source": "explicit", "role": "srcip", "role_check": "not_applicable",
-        } for ip in params.srcips]
-        meta = {"source": "explicit", "window": None, "remaining_candidates": 0,
-                "truncated": False, "role_check": "not_applicable"}
-
+    evaluated: list[dict] = []
+    meta: dict = {"source": "alerts" if params.from_alerts else "explicit"}
     try:
-        evaluated = await _evaluate(candidates, params)
-    except AbuseIPDBError as exc:
-        raise ThreatIntelError(
-            f"[blueteam_abuseipdb_report] {exc.kind}: {exc.message}") from exc
+        if params.from_alerts:
+            candidates, meta = await _harvest_candidates(params)
+        else:
+            candidates = [{
+                "ip": ip, "alert_count": 1, "first_seen": "", "last_seen": "",
+                "max_level": None, "rule_ids": [], "rule_groups": [],
+                "source": "explicit", "role": "srcip", "role_check": "not_applicable",
+            } for ip in params.srcips]
+            meta = {"source": "explicit", "window": None, "remaining_candidates": 0,
+                    "truncated": False, "role_check": "not_applicable"}
 
-    if params.dry_run or not params.confirm:
-        reason = "dry_run=true" if params.dry_run else "confirm=true is required"
+        try:
+            evaluated = await _evaluate(candidates, params)
+        except AbuseIPDBError as exc:
+            raise ThreatIntelError(
+                f"[blueteam_abuseipdb_report] {exc.kind}: {exc.message}") from exc
+
+        if params.dry_run or not params.confirm:
+            reason = "dry_run=true" if params.dry_run else "confirm=true is required"
+            for row in evaluated:
+                if row.get("status") == "eligible":
+                    row["status"] = "would_report"
+            output = _summary(evaluated, meta, params, preview_reason=reason)
+            if params.response_format == "json":
+                return _truncate_if_needed(json.dumps(output, indent=2, default=str))
+            return _truncate_if_needed(_render_report_output(output))
+
+        if not ABUSEIPDB_REPORTING_ENABLED:
+            raise ThreatIntelError(
+                "[blueteam_abuseipdb_report] reporting is disabled; set "
+                "BLUETEAM_ABUSEIPDB_REPORTING_ENABLED=true after analyst approval")
+
         for row in evaluated:
-            if row.get("status") == "eligible":
-                row["status"] = "would_report"
-        output = _summary(evaluated, meta, params, preview_reason=reason)
+            if row.get("status") != "eligible":
+                continue
+            try:
+                submitted = await report_ip(
+                    row["ip"], row["categories"],
+                    comment=row["comment"],
+                    timestamp=row.get("timestamp_used"),
+                    alert_count=int(row.get("alert_count") or 1),
+                    first_seen=row.get("first_seen") or "",
+                    last_seen=row.get("last_seen") or "",
+                    rule_ids=row.get("rule_ids") or [])
+                row["status"] = submitted["status"]
+                row["verified"] = submitted.get("verified")
+                row["abuse_confidence_score"] = submitted.get("abuse_confidence_score")
+            except AbuseIPDBError as exc:
+                row["status"] = "failed"
+                row["error_kind"] = exc.kind
+                row["error"] = exc.message
+                stop_status = ""
+                if exc.kind == "auth_error":
+                    stop_status = "skipped_auth_error"
+                elif exc.kind == "circuit_open":
+                    stop_status = "skipped_upstream"
+                elif exc.kind == "quota_exhausted":
+                    stop_status = "skipped_quota"
+                elif exc.kind == "rate_limited" and (
+                        "daily rate limit" in exc.message.lower()
+                        or "quota" in exc.message.lower()
+                        or "rate limited" in exc.message.lower()):
+                    stop_status = "skipped_quota"
+                if stop_status:
+                    for pending in evaluated:
+                        if pending.get("status") == "eligible":
+                            pending["status"] = stop_status
+                    break
+
+        output = _summary(evaluated, meta, params)
         if params.response_format == "json":
             return _truncate_if_needed(json.dumps(output, indent=2, default=str))
         return _truncate_if_needed(_render_report_output(output))
-
-    if not ABUSEIPDB_REPORTING_ENABLED:
-        raise ThreatIntelError(
-            "[blueteam_abuseipdb_report] reporting is disabled; set "
-            "BLUETEAM_ABUSEIPDB_REPORTING_ENABLED=true after analyst approval")
-
-    for row in evaluated:
-        if row.get("status") != "eligible":
-            continue
+    finally:
+        # The completion event fires on every exit path, including an exception
+        # between harvest and render. A failure here must not replace the
+        # exception that is already propagating.
         try:
-            submitted = await report_ip(
-                row["ip"], row["categories"],
-                comment=row["comment"],
-                timestamp=row.get("timestamp_used"),
-                alert_count=int(row.get("alert_count") or 1),
-                first_seen=row.get("first_seen") or "",
-                last_seen=row.get("last_seen") or "",
-                rule_ids=row.get("rule_ids") or [])
-            row["status"] = submitted["status"]
-            row["verified"] = submitted.get("verified")
-            row["abuse_confidence_score"] = submitted.get("abuse_confidence_score")
-        except AbuseIPDBError as exc:
-            row["status"] = "failed"
-            row["error_kind"] = exc.kind
-            row["error"] = exc.message
-            stop_status = ""
-            if exc.kind == "auth_error":
-                stop_status = "skipped_auth_error"
-            elif exc.kind == "circuit_open":
-                stop_status = "skipped_upstream"
-            elif exc.kind == "quota_exhausted":
-                stop_status = "skipped_quota"
-            elif exc.kind == "rate_limited" and (
-                    "daily rate limit" in exc.message.lower()
-                    or "quota" in exc.message.lower()
-                    or "rate limited" in exc.message.lower()):
-                stop_status = "skipped_quota"
-            if stop_status:
-                for pending in evaluated:
-                    if pending.get("status") == "eligible":
-                        pending["status"] = stop_status
-                break
-
-    output = _summary(evaluated, meta, params)
-    if params.response_format == "json":
-        return _truncate_if_needed(json.dumps(output, indent=2, default=str))
-    return _truncate_if_needed(_render_report_output(output))
+            _audit_log("blueteam_abuseipdb_report", audit_params,
+                       phase="completed", op_id=op_id, record_metric=False,
+                       detail=_completion_detail(evaluated, meta, params))
+        except Exception:  # noqa: BLE001 - audit is best-effort, never masking
+            logger.warning("completion audit event failed", exc_info=True)

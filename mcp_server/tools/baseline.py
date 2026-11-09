@@ -181,8 +181,6 @@ async def blueteam_baseline_profile(params: BaselineProfileInput) -> str:
     return "\n".join(lines)
 
 
-
-# AUL Adjust - CAT-B: Calendar Heatmap (Periodicity Detection)
 class CalendarHeatmapInput(BaseModel):
     """Input model for blueteam_calendar_heatmap."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")

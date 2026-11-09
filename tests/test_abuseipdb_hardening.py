@@ -129,9 +129,7 @@ def _seed(remaining=101, endpoint="check", reset=None, include_reset=True):
         endpoint=endpoint)
 
 
-# ---------------------------------------------------------------------------
 # Unified transport and provider isolation
-# ---------------------------------------------------------------------------
 
 def test_wrapper_rejects_http_downgrade(transport):
     calls, _ = transport
@@ -255,9 +253,7 @@ def test_invalid_plan_falls_back_to_standard():
     assert _plan("bogus") == "standard"
 
 
-# ---------------------------------------------------------------------------
 # Credential isolation at the shared transport
-# ---------------------------------------------------------------------------
 
 def test_configured_key_to_approved_host_is_allowed(transport):
     calls, _ = transport
@@ -418,17 +414,18 @@ def test_configured_key_in_url_is_rejected(transport, url):
     assert calls == []
 
 
-@pytest.mark.parametrize("kwargs", [
-    {"headers": {"Authorization": "Bearer other-key"}},
-    {"headers": {"X-Api-Key": "other-key"}},
-    {"params": {"api_key": "other-key"}},
-    {"json": {"key": "other-key"}},
-    {"data": {"key": "other-key"}},
-    {"auth": ("user", "other-key")},
+@pytest.mark.parametrize("method,kwargs", [
+    ("get", {"headers": {"Authorization": "Bearer other-key"}}),
+    ("get", {"headers": {"X-Api-Key": "other-key"}}),
+    ("get", {"params": {"api_key": "other-key"}}),
+    # json and data are body kwargs, so they ride a verb that accepts a body.
+    ("post", {"json": {"key": "other-key"}}),
+    ("post", {"data": {"key": "other-key"}}),
+    ("get", {"auth": ("user", "other-key")}),
 ])
-def test_other_provider_credentials_are_unaffected(transport, kwargs):
+def test_other_provider_credentials_are_unaffected(transport, method, kwargs):
     calls, _ = transport
-    _run(http_client._api_call("get", "https://evil.example/api/v2/check",
+    _run(http_client._api_call(method, "https://evil.example/api/v2/check",
                                client_name="hardening-key", **kwargs))
     assert len(calls) == 1
 
@@ -464,9 +461,7 @@ def test_custom_base_host_accepts_the_configured_key(transport, monkeypatch):
     assert len(calls) == 1
 
 
-# ---------------------------------------------------------------------------
 # Opaque-object boundary (documented limitations)
-# ---------------------------------------------------------------------------
 
 class _KeyAuth(httpx.Auth):
     def auth_flow(self, request):
@@ -518,7 +513,7 @@ def test_seekable_file_like_content_is_outside_the_scan(transport):
     calls, _ = transport
     stream = io.BytesIO(b"test-key")
     try:
-        _run(http_client._api_call("get", "https://evil.example/api/v2/check",
+        _run(http_client._api_call("post", "https://evil.example/api/v2/check",
                                    client_name="hardening-opaque", content=stream))
         assert len(calls) == 1
         assert calls[0]["content"] is stream
@@ -537,7 +532,7 @@ def test_streaming_content_is_not_consumed_by_the_scan(transport):
         yield b"key"
 
     stream = body()
-    _run(http_client._api_call("get", "https://evil.example/api/v2/check",
+    _run(http_client._api_call("post", "https://evil.example/api/v2/check",
                                client_name="hardening-opaque", content=stream))
     assert len(calls) == 1
     assert calls[0]["content"] is stream
@@ -546,15 +541,13 @@ def test_streaming_content_is_not_consumed_by_the_scan(transport):
 def test_streaming_content_with_unrelated_data_is_allowed(transport):
     calls, _ = transport
     stream = (chunk for chunk in [b"ordinary", b"data"])
-    _run(http_client._api_call("get", "https://evil.example/api/v2/check",
+    _run(http_client._api_call("post", "https://evil.example/api/v2/check",
                                client_name="hardening-opaque", content=stream))
     assert len(calls) == 1
     assert calls[0]["content"] is stream
 
 
-# ---------------------------------------------------------------------------
 # Unified reservation lifecycle
-# ---------------------------------------------------------------------------
 
 def test_snapshot_separates_observed_remaining_from_inflight():
     _seed(101)
@@ -728,9 +721,7 @@ def test_429_during_concurrent_request_updates_state(transport, monkeypatch):
         _run(abuseipdb._api_call("get", CHECK))
 
 
-# ---------------------------------------------------------------------------
 # Reset-window reconciliation
-# ---------------------------------------------------------------------------
 
 def _epoch(hour: int) -> int:
     base = datetime(2030, 1, 1, tzinfo=timezone.utc)
@@ -835,9 +826,7 @@ def test_past_reset_allows_recovery(transport):
     assert abuseipdb.quota_snapshot("check")["remaining"] == 500
 
 
-# ---------------------------------------------------------------------------
 # Bootstrap and ambiguous failures
-# ---------------------------------------------------------------------------
 
 def test_bootstrap_limits_first_concurrent_requests(transport, monkeypatch):
     async def scenario():

@@ -26,8 +26,6 @@ from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS,
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 
-# 1: Alert Summarization
-# Auto-extracted from alert_enrichment.py - modular refactor (2026-08-11)
 class AlertSummarizeInput(BaseModel):
     """Input model for blueteam_wazuh_alert_summarize."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")

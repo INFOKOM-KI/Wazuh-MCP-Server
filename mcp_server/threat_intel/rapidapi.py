@@ -248,11 +248,11 @@ def _sanitize_breach(raw: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-# WHOIS allowlist
-# Technical registry fields only. Allowlist, not denylist: a future registry field
-# (e-mail, role, phone) is dropped by default instead of leaking until someone
-# notices. Verified against a real RapidAPI IOC Search body, this drops
-# person/address/phone/fax-no/nic-hdl/remarks and keeps netname TOR-EXIT, org-name ForPrivacyNET, route and origin.
+# Allowlist, not denylist: a future registry field (e-mail, role, phone) is
+# dropped by default instead of leaking until someone notices. Verified against a
+# real RapidAPI IOC Search body: it drops person, address, phone, fax-no,
+# nic-hdl and remarks, and keeps netname TOR-EXIT, org-name ForPrivacyNET, route
+# and origin.
 # `address` is dropped by field NAME, not by block. RIPE repeats the same
 # street address in both the ORG block and the person block, so a block-level rule
 # would have kept one copy.

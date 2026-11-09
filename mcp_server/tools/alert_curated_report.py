@@ -43,8 +43,6 @@ def _enrichment_target(ip: str) -> tuple[str | None, str]:
     except ValueError:
         return None, "non-public or non-global IP address"
 
-# 1: Alert Summarization
-# Auto-extracted from alert_enrichment.py - modular refactor
 class CuratedThreatReportInput(BaseModel):
     """Input model for blueteam_curated_threat_report."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")

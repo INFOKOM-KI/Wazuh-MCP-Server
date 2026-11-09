@@ -200,7 +200,6 @@ class AsyncRateLimiter:
         self._semaphore.release()
 
 
-# Shared namespaced cache + limiter registry
 # One backing TTLCache shared across all threat-intel providers; keys are
 # namespaced ("provider:key") so each provider keeps its own TTL (passed to
 # cache_set) while memory is consolidated in a single store. Rate limiters stay

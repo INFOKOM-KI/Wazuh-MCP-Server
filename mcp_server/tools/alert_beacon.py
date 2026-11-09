@@ -29,8 +29,6 @@ _BEACON_EXCLUDE_IPS: set[str] = {
     ip.strip() for ip in os.environ.get("BLUETEAM_BEACON_EXCLUDE_IPS", "").split(",") if ip.strip()
 }
 
-# 2: Beacon Detection
-# Auto-extracted from alert_enrichment.py - modular refactor (2026-08-11 - AUL Tuning)
 class BeaconDetectInput(BaseModel):
     """Input model for blueteam_beacon_detect."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")

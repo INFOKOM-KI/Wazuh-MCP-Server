@@ -30,9 +30,6 @@ from mcp_server.wazuh.indexer import (
     _WAZUH_INDEX_PATTERNS, _encode_cursor, _decode_cursor,
 )
 
-# Manager API tools - all benefit from @blueteam_tool (audit + error + trunc)
-# blueteam_wazuh_get_rules
-# Auto-extracted from wazuh_siem.py - Manager API surface (2026-08-11 - AUL Tunings)
 class WazuhRulesInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
     rule_id: Optional[str] = Field(default=None, max_length=16,

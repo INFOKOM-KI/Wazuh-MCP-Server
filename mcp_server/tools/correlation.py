@@ -604,7 +604,7 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
     if params.use_attack_graph:
         ctx = await _build_cluster_context()
 
-    # ENGINE A - Multi-IoC Risk Thresholding (dynamic MITRE scoring)
+    # Engine A: multi-IoC risk thresholding with dynamic MITRE scoring.
     if params.engine_a_enabled:
         def _agg() -> dict:
             return _category_agg(params.use_mitre)
@@ -674,7 +674,7 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
             stats["warnings"] = engine_a_warnings  # surfaced, never silent
         engine_a_results = (triggers, stats)
 
-    # ENGINE B - 3-Source Volumetric Z-Score
+    # Engine B: three-source volumetric Z-score.
     if params.engine_b_enabled:
         # Compute auto-bucket interval: target ~60 buckets
         dur_minutes = params.time_window_minutes
@@ -741,8 +741,8 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
         evaluation_time_ms=(time.monotonic() - start_time) * 1000,
     )
 
-    # DEGRADATION DETECTION - surface total Indexer failure so the LLM
-    # agent is never told "NONE / 0 triggers" when the Indexer was down.
+    # Surface total Indexer failure so the agent is never told "NONE / 0
+    # triggers" when the Indexer was down.
     engine_a_degraded = (params.engine_a_enabled and engine_a_query_failures == 3)
     engine_b_degraded = (params.engine_b_enabled and engine_b_query_failures == 3)
     if params.engine_a_enabled and not params.engine_b_enabled and engine_a_degraded:
@@ -775,7 +775,7 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
             "The working engine's results are reliable; the failed engine's results "
             "(0 triggers/anomalies) should NOT be interpreted as a clean signal.")
 
-    # MULTI-RESOLUTION - re-run at 1h and 24h windows, cross-tier analysis.
+    # Re-run at 1h and 24h windows for cross-tier analysis.
     if params.multi_resolution:
         tier_results = [result]  # current run is the 7d tier
         for tier in _MULTI_RES_TIERS[:-1]:  # 1h, 24h (7d already done)

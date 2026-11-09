@@ -43,9 +43,7 @@ def _dig(doc: dict, path: str):
             return None
     return node
 
-# Manager API tools - all benefit from @blueteam_tool (audit + error + trunc)
-# blueteam_wazuh_get_rules
-# Indexer tools (remaining after Manager API split)
+# Indexer tools (remaining after the Manager API split)
 from mcp_server.core.audit import (_audit_log, _truncate_if_needed,
                                    _resolve_forensic_full_output, _fit_document_prefix,
                                    _document_stub)

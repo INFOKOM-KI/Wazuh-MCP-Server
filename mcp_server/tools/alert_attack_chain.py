@@ -25,8 +25,7 @@ from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS,
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 
-# 1: Alert Summarization
-# Auto-extracted from alert_enrichment.py - modular refactor (2026-08-11 - AUL)
+
 class AttackChainInput(BaseModel):
     """Input model for blueteam_attack_chain."""
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -143,7 +142,7 @@ async def blueteam_attack_chain(params: AttackChainInput) -> str:
                 "level": str(d.get("rule", {}).get("level", "?")),
             }
 
-    # Compress consecutive duplicates (Aul Adjusted : same rule firing repeatedly = persistence, not a transition)
+    # The same rule repeating is persistence, not a chain transition.
     compressed: list[str] = [rule_seq[0]]
     for rid in rule_seq[1:]:
         if rid != compressed[-1]:
@@ -264,6 +263,3 @@ async def blueteam_attack_chain(params: AttackChainInput) -> str:
             lines.append(f"| `{f}` | `{t}` | {c} |")
 
     return _truncate_if_needed("\n".join(lines))
-
-
-# 5: Threat Card Generation (AUL Adjusted)
