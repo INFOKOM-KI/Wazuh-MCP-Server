@@ -55,7 +55,8 @@ as failures, so an outage on one upstream fails fast instead of stacking retries
 - **Supported protocol revisions**: `2025-06-18` and `2025-11-25` for direct
   `Context.elicit`. The installed SDK also accepts `2024-11-05` and
   `2025-03-26`, but those revisions predate elicitation, so VirusTotal consent
-  fails closed with `consent_required`.
+  fails closed with `consent_required`. The error names the cause it observed:
+  no elicitation support, an older revision, or a declined prompt.
 - **`2026-07-28` / MRTR**: not supported by this SDK. The server answers a
   client that requests `2026-07-28` with `2025-11-25`; the client must use the
   negotiated legacy revision. The current SDK has no `Resolve(Elicit)`, and the
