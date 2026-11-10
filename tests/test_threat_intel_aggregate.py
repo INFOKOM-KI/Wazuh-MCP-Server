@@ -159,6 +159,48 @@ def test_virustotal_provider_without_key_reports_not_configured():
     assert result.error_kind == "not_configured"
 
 
+def test_virustotal_provider_reports_host_refusal_not_missing_acknowledgement():
+    import asyncio
+    from unittest.mock import patch
+    from mcp_server.tools import threat_intel_aggregate as agg
+
+    with patch.object(agg, "VIRUSTOTAL_API_KEY", "test-key"):
+        result = asyncio.run(agg._virustotal_provider(
+            "140.82.0.86", "IPv4", None, agg.VT_HOST_REFUSAL))
+
+    assert result.error_kind == "consent_required"
+    assert result.error == agg.VT_HOST_REFUSAL
+    assert "acknowledgement is required" not in result.error
+
+
+def test_aggregate_surfaces_host_refusal_instead_of_blaming_the_caller(monkeypatch):
+    import asyncio
+    from mcp_server.tools import threat_intel_aggregate as agg
+
+    async def decline(ctx, message):
+        return False
+
+    def stub(name):
+        async def provider(*args, **kwargs):
+            return agg.TIProviderResult(provider=name, is_malicious=None)
+        return provider
+
+    for name in ("_crowdsec_provider", "_threatfox_provider", "_otx_provider",
+                 "_greynoise_provider", "_abuseipdb_provider"):
+        monkeypatch.setattr(agg, name, stub(name.strip("_")))
+    monkeypatch.setattr(agg, "request_ioc_sharing", decline)
+    monkeypatch.setattr(agg, "VIRUSTOTAL_API_KEY", "test-key")
+
+    output = asyncio.run(agg.blueteam_threat_intel_aggregate(
+        agg.ThreatIntelAggregateInput(
+            indicator="140.82.0.86", acknowledge_ioc_sharing=True,
+            response_format="json"),
+        None))
+
+    assert "host approval was not granted" in output
+    assert "acknowledgement is required" not in output
+
+
 def _http_status_error(status: int):
     import httpx
     req = httpx.Request("GET", "https://upstream.example/api")

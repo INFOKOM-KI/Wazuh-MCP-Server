@@ -50,6 +50,9 @@ ErrorKind = Literal[
     "config_invalid",
 ]
 _ERROR_KINDS = frozenset(get_args(ErrorKind))
+VT_HOST_REFUSAL = (
+    "host approval was not granted; the client must support Context.elicit on "
+    "protocol 2025-06-18 or 2025-11-25, and the operator must approve the prompt")
 _LOCAL_REFUSAL_KINDS = frozenset({
     "not_configured", "unsupported_type", "bad_request", "circuit_open",
     "plan_limit", "budget_closed", "not_armed", "arm_expired", "consent_required",
@@ -338,7 +341,8 @@ async def _abuseipdb_provider(indicator: str, ind_type: str) -> TIProviderResult
 
 
 async def _virustotal_provider(indicator: str, ind_type: str,
-                               consent_token: str | None = None) -> TIProviderResult:
+                               consent_token: str | None = None,
+                               denied_reason: str | None = None) -> TIProviderResult:
     vt_types = {"file": "files", "domain": "domains",
                 "IPv4": "ip_addresses", "IPv6": "ip_addresses"}
     configured = bool(VIRUSTOTAL_API_KEY)
@@ -347,6 +351,11 @@ async def _virustotal_provider(indicator: str, ind_type: str,
                                 indicator_type=ind_type,
                                 error="not configured" if not configured else "unsupported type",
                                 error_kind="not_configured" if not configured else "unsupported_type")
+    # The host was asked and declined; lookup() would blame the caller instead.
+    if consent_token is None and denied_reason:
+        return TIProviderResult(provider="virustotal", indicator=indicator,
+                                indicator_type=ind_type, error=denied_reason,
+                                error_kind="consent_required")
     from mcp_server.threat_intel.virustotal import VirusTotalError, lookup
     try:
         data = await lookup(vt_types[ind_type], indicator,
@@ -521,8 +530,9 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
     VirusTotal is queried only when ``acknowledge_ioc_sharing=true`` requests
     host confirmation and the MCP host returns an explicit approval. The boolean
     alone is not consent. Queried indicators are added to VirusTotal's community
-    dataset. Without host approval, VT returns ``consent_required`` and no
-    request or quota reservation is made.
+    dataset. Without host approval, VT returns ``consent_required`` with the
+    refusal reason (no elicitation support, an older protocol revision, or an
+    operator who declined), and no request or quota reservation is made.
 
     **Error Handling**: Providers without API keys are skipped and reported in
     ``errors[]``. Each result also carries ``error_kind`` for JSON consumers. Upstream
@@ -542,16 +552,21 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
     ind_type = _classify_indicator(params.indicator)
 
     vt_token = None
+    vt_denial: str | None = None
     if params.acknowledge_ioc_sharing and VIRUSTOTAL_API_KEY:
         try:
             consent_target = _vt_consent_target(ind_type, params.indicator)
         except ValueError:
             consent_target = None
-        if consent_target is not None:
+        if consent_target is None:
+            vt_denial = "no VirusTotal consent target for this indicator type"
+        else:
             vt_kind, vt_value = consent_target
             if await request_ioc_sharing(
                     ctx, consent_message(vt_kind, vt_value)):
                 vt_token = issue_consent(vt_kind, vt_value)
+            else:
+                vt_denial = VT_HOST_REFUSAL
 
     # Query all applicable providers concurrently
     tasks = [
@@ -560,7 +575,7 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
         _otx_provider(params.indicator, ind_type),
         _greynoise_provider(params.indicator, ind_type),
         _abuseipdb_provider(params.indicator, ind_type),
-        _virustotal_provider(params.indicator, ind_type, vt_token),
+        _virustotal_provider(params.indicator, ind_type, vt_token, vt_denial),
     ]
     results: list[TIProviderResult] = await asyncio.gather(*tasks)
     output = _aggregate(results)
