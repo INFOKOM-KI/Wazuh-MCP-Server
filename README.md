@@ -552,6 +552,10 @@ Correct pattern, every time:
 Do NOT: skip the tool, invent a different tool name, or report the tool as
 broken. Always re-invoke once after the signature comes back.
 
+Every tool takes a single `params` object; there is no flat form. A call shaped
+`{"query": ...}` fails with `Instance does not have required property "params"`,
+so wrap it: `{"params": {"query": "ssh brute force"}}`.
+
 ## 1. Tool taxonomy (grouped by SOC function)
 
 Route the analyst's own sentence before picking from the tables below.

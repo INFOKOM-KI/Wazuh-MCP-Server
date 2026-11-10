@@ -217,13 +217,14 @@ async def wazuh_alert_dsl_query(params: DslQueryInput) -> str:
     Returns:
         str: OpenSearch aggregation response (JSON by default, markdown on request).
 
-    Example usage (structured path):
-        - aggs={"by_agent": {"terms": {"field": "agent.name", "size": 50}}}
-        - aggs={"hourly": {"date_histogram": {"field": "@timestamp", "fixed_interval": "1h"}}},
-          query={"bool": {"must": [{"range": {"@timestamp": {"gte": "now-24h"}}}]}}
+    Example usage (structured path), arguments nested in ``params``:
+        - ``params={"aggs": {"by_agent": {"terms": {"field": "agent.name", "size": 50}}}}``
+        - ``params={"aggs": {"hourly": {"date_histogram": {"field": "@timestamp",
+          "fixed_interval": "1h"}}}, "query": {"bool": {"must": [{"range":
+          {"@timestamp": {"gte": "now-24h"}}}]}}}``
 
     Example usage (deprecated raw path):
-        - query_json='{"size":0,"aggs":{"by_agent":{"terms":{"field":"agent.name"}}}}'
+        - ``params={"query_json": '{"size":0,"aggs":{"by_agent":{"terms":{"field":"agent.name"}}}}'}``
 
     Nested fields (MS Graph) need explicit nested syntax; a plain terms query on a
     nested leaf returns zero buckets, not an error:

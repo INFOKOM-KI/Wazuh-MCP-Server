@@ -436,6 +436,7 @@ class RagQueryInput(BaseModel):
 )
 async def blueteam_rag_query(params: RagQueryInput) -> str:
     """Retrieve analyst knowledge: prior cases, confirmed false positives, IR playbooks.
+    Every argument nests in one ``params`` object; flat calls fail schema validation.
     Three optional stages. Vector recall pulls ``recall_k`` candidates (default 100)
     from the local SQLite store; the term-weighted lexical leg re-scores them when
     ``vector_weight`` is below 1.0; the cross-encoder rerank re-scores what is left and
@@ -464,15 +465,20 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
         is unavailable: a vector only query cannot answer without it.
 
     Examples:
-        1. Prior cases on a host -> ``blueteam_rag_query(query="ssh brute force mail server")``
-        2. Did we already call this noise? -> ``blueteam_rag_query(query="8.8.8.8 scanner noise",
-           sources=["false_positives"])``
-        3. Wider recall with rerank -> ``blueteam_rag_query(query="webshell upload nginx",
-           rerank=True, recall_k=100)``
-        4. IR guidance -> ``blueteam_rag_query(query="containment steps for ransomware",
-           sources=["ir_playbooks"])``
-        5. Exact indicator buried in prose -> ``blueteam_rag_query(query="117.247.110.24 webshell",
-           vector_weight=0.3)`` (the lexical leg weights the IOC above the surrounding words)
+        1. Prior cases on a host ->
+           ``blueteam_rag_query(params={"query": "ssh brute force mail server"})``
+        2. Did we already call this noise? ->
+           ``blueteam_rag_query(params={"query": "8.8.8.8 scanner noise",
+           "sources": ["false_positives"]})``
+        3. Wider recall with rerank ->
+           ``blueteam_rag_query(params={"query": "webshell upload nginx",
+           "rerank": True, "recall_k": 100})``
+        4. IR guidance ->
+           ``blueteam_rag_query(params={"query": "containment steps for ransomware",
+           "sources": ["ir_playbooks"]})``
+        5. Exact indicator buried in prose ->
+           ``blueteam_rag_query(params={"query": "117.247.110.24 webshell",
+           "vector_weight": 0.3})`` (the lexical leg weights the IOC above the surrounding words)
 
     Permissions: read on BLUETEAM_RAG_DB. Rate limits: none; the first call loads
     the embedder (one-off ONNX session build, a few seconds) and builds the corpus
