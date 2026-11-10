@@ -234,6 +234,36 @@ def test_sangfor_explicit_true_is_blocked(monkeypatch):
     assert data["status"] == "blocked"
 
 
+def test_sangfor_accepts_iso8601_with_utc_offset():
+    """2026-11-06T00:00:00+07:00 is 25 chars and used to fail max_length=24."""
+    params = alert_enrichment.SangforBlocklistListInput(
+        date_start="2026-11-06T00:00:00+07:00",
+        date_end="2026-11-10T23:59:59+07:00")
+
+    assert params.date_start.endswith("+07:00")
+
+
+def test_sangfor_list_uses_configured_timeout_without_retry(monkeypatch):
+    """Default 30s x 2 attempts overran the MCP client's 60s deadline."""
+    import mcp_server
+    seen = {}
+
+    monkeypatch.setattr(mcp_server, "SANGFOR_BLOCKLIST_URL", "https://sangfor.example/blocklist")
+    monkeypatch.setattr(mcp_server, "SANGFOR_BLOCKLIST_TOKEN", "test-token")
+    monkeypatch.setattr(mcp_server, "SANGFOR_BLOCKLIST_TIMEOUT", 15.0)
+
+    async def fake_api_call(method, url, **kwargs):
+        seen.update(kwargs)
+        return _FakeResponse({"entries": []})
+
+    monkeypatch.setattr(alert_enrichment, "_api_call", fake_api_call)
+    _run(_tool(alert_enrichment, "sangfor_blocklist_list")(
+        alert_enrichment.SangforBlocklistListInput(limit=20)))
+
+    assert seen["timeout"] == 15.0
+    assert seen["max_retries"] == 0
+
+
 # Webshell: a failed fetch has no verdict
 
 def test_webshell_failed_fetch_is_unknown(monkeypatch):

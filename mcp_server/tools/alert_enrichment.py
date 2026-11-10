@@ -540,10 +540,12 @@ class SangforBlocklistListInput(BaseModel):
                         description="Pagination offset for the result set.")
     ip: Optional[ValidPublicIp] = Field(default=None, min_length=3, max_length=45,
                                         description="Attacker IP / IoC filter. When provided, only blocklist entries matching this IP are returned.")
-    date_start: str = Field(default="", max_length=24,
-                            description="Start date. ISO 8601 (e.g. 2026-08-18T17:27:00Z) or YYYY-MM-DD HH:MM:SS. Defaults to 30 days ago (UTC, ISO-8601).")
-    date_end: str = Field(default="", max_length=24,
-                          description="End date. ISO 8601 (e.g. 2026-08-19T17:27:00Z) or YYYY-MM-DD HH:MM:SS. Defaults to now (UTC, ISO-8601).")
+    # 32, not 24: an ISO-8601 timestamp with a numeric UTC offset
+    # (2026-11-06T00:00:00+07:00) is 25 chars and is passed through as-is.
+    date_start: str = Field(default="", max_length=32,
+                            description="Start date. ISO 8601 (e.g. 2026-08-18T17:27:00Z or 2026-08-18T17:27:00+07:00) or YYYY-MM-DD HH:MM:SS. Defaults to 30 days ago (UTC, ISO-8601).")
+    date_end: str = Field(default="", max_length=32,
+                          description="End date. ISO 8601 (e.g. 2026-08-19T17:27:00Z or 2026-08-19T17:27:00+07:00) or YYYY-MM-DD HH:MM:SS. Defaults to now (UTC, ISO-8601).")
     response_format: str = Field(default="markdown")
 
 @mcp.tool(
@@ -557,13 +559,15 @@ async def sangfor_blocklist_check(params: SangforBlocklistCheckInput) -> str:
     # {date_start, date_end, limit, offset, ip} - validate this path, or fold it
     # into sangfor_blocklist_list(ip=...) with limit=1, once live credentials exist.
     _audit_log("sangfor_blocklist_check", {"ip": params.ip})
-    from mcp_server import SANGFOR_BLOCKLIST_URL, SANGFOR_BLOCKLIST_TOKEN, SANGFOR_BLOCKLIST_VERIFY_SSL
+    from mcp_server import (SANGFOR_BLOCKLIST_URL, SANGFOR_BLOCKLIST_TOKEN,
+                            SANGFOR_BLOCKLIST_VERIFY_SSL, SANGFOR_BLOCKLIST_TIMEOUT)
     if not SANGFOR_BLOCKLIST_TOKEN or not SANGFOR_BLOCKLIST_URL:
         return json.dumps({"error": "SANGFOR_BLOCKLIST_TOKEN and SANGFOR_BLOCKLIST_URL must be set."})
     try:
         headers = {"Authorization": f"Bearer {SANGFOR_BLOCKLIST_TOKEN}", "accept": "application/json"}
         async with _sangfor_limiter:
-            resp = await _api_call("get", f"{SANGFOR_BLOCKLIST_URL}/check/{params.ip}", headers=headers)
+            resp = await _api_call("get", f"{SANGFOR_BLOCKLIST_URL}/check/{params.ip}", headers=headers,
+                                   timeout=SANGFOR_BLOCKLIST_TIMEOUT, max_retries=0)
         raw = resp.json()
         if isinstance(raw, list):
             raw = {"blocked": len(raw) > 0, "entries": raw}
@@ -610,7 +614,8 @@ async def sangfor_blocklist_list(params: SangforBlocklistListInput) -> str:
     _audit_log("sangfor_blocklist_list", {"ip": params.ip, "limit": params.limit,
                "offset": params.offset, "date_start": params.date_start,
                "date_end": params.date_end})
-    from mcp_server import SANGFOR_BLOCKLIST_URL, SANGFOR_BLOCKLIST_TOKEN, SANGFOR_BLOCKLIST_VERIFY_SSL
+    from mcp_server import (SANGFOR_BLOCKLIST_URL, SANGFOR_BLOCKLIST_TOKEN,
+                            SANGFOR_BLOCKLIST_VERIFY_SSL, SANGFOR_BLOCKLIST_TIMEOUT)
     if not SANGFOR_BLOCKLIST_TOKEN or not SANGFOR_BLOCKLIST_URL:
         return json.dumps({"error": "SANGFOR_BLOCKLIST_TOKEN and SANGFOR_BLOCKLIST_URL must be set."})
     try:
@@ -625,8 +630,11 @@ async def sangfor_blocklist_list(params: SangforBlocklistListInput) -> str:
             body["ip"] = params.ip
         # POST to SANGFOR_BLOCKLIST_URL directly the URL already ends in /blocklist
         async with _sangfor_limiter:
+            # timeout + max_retries=0: a 30s default x 2 attempts exceeded the MCP
+            # client's ~60s tool deadline, surfacing as an opaque AbortError.
             resp = await _api_call("post", SANGFOR_BLOCKLIST_URL, json=body,
-                                   headers=headers, verify=SANGFOR_BLOCKLIST_VERIFY_SSL)
+                                   headers=headers, verify=SANGFOR_BLOCKLIST_VERIFY_SSL,
+                                   timeout=SANGFOR_BLOCKLIST_TIMEOUT, max_retries=0)
         raw = resp.json()
         if isinstance(raw, list):
             raw = {"blocked": len(raw) > 0, "count": len(raw), "entries": raw}
