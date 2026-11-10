@@ -439,8 +439,17 @@ def test_report_input_requires_exactly_one_source():
         AbuseIPDBReportInput(srcips=["8.8.8.8"], from_alerts=True)
     with pytest.raises(ValidationError):
         AbuseIPDBReportInput(srcips=["192.168.1.1"])
+
+
+def test_report_input_accepts_batch_with_shared_comment():
+    params = AbuseIPDBReportInput(
+        srcips=["8.8.8.8", "8.8.4.4"],
+        comment="SSH brute force against a monitored host.")
+    assert len(params.srcips) == 2
     with pytest.raises(ValidationError):
-        AbuseIPDBReportInput(srcips=["8.8.8.8", "8.8.4.4"], comment="x")
+        AbuseIPDBReportInput(srcips=["8.8.8.8", "8.8.4.4"],
+                             comment="SSH brute force.",
+                             timestamp="2026-01-01T00:00:00Z")
 
 
 def test_report_input_rejects_unknown_category():

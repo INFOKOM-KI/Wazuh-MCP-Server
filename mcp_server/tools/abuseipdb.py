@@ -304,10 +304,11 @@ class AbuseIPDBReportInput(BaseModel):
         description="'auto' maps Wazuh groups; a list sets categories explicitly.")
     comment: Optional[str] = Field(
         default=None, max_length=500,
-        description="Custom comment for one explicit IP. The CIRT signature is appended.")
+        description=("Evidence comment for explicit srcips; applies to every IP "
+                     "in the list. The CIRT signature is appended."))
     timestamp: Optional[str] = Field(
         default=None, max_length=64,
-        description="ISO 8601 earliest observance; explicit single-IP mode only.")
+        description="ISO 8601 earliest observance; requires exactly one explicit srcip.")
     dry_run: bool = Field(
         default=True,
         description="Preview only. Set false only when the current user prompt explicitly requests reporting.")
@@ -371,8 +372,8 @@ class AbuseIPDBReportInput(BaseModel):
             raise ValueError("comment is not accepted for harvested batches")
         if self.srcips and not self.comment:
             raise ValueError("explicit srcips require a comment describing the evidence")
-        if (self.comment or self.timestamp) and len(self.srcips) != 1:
-            raise ValueError("comment/timestamp require exactly one explicit srcip")
+        if self.timestamp and len(self.srcips) != 1:
+            raise ValueError("timestamp requires exactly one explicit srcip")
         return self
 
 
@@ -1004,7 +1005,8 @@ async def blueteam_abuseipdb_report(params: AbuseIPDBReportInput) -> str:
       established the candidate is ``manual_review``; category 15 is never a
       fallback.
     - Harvested comments contain counts, timestamps, and numeric rule IDs only. Explicit
-      reports require a comment describing the evidence. No raw logs, usernames, mail
+      reports require a comment describing the evidence; one comment covers the whole
+      ``srcips`` list. ``timestamp`` is single-IP only. No raw logs, usernames, mail
       addresses, agent names, or victim IPv4 addresses in either path; IPv6 comment
       scanning is out of scope.
     - A local 15-minute ledger prevents duplicate submissions; AbuseIPDB also
@@ -1015,8 +1017,8 @@ async def blueteam_abuseipdb_report(params: AbuseIPDBReportInput) -> str:
     1. *Preview a 24-hour harvest*:
        ``blueteam_abuseipdb_report(from_alerts=True, since="24h")``
 
-    2. *Preview one explicit IP with a custom comment*:
-       ``blueteam_abuseipdb_report(srcips=["8.8.8.8"], categories=[18, 22], comment="SSH brute force against a monitored host.")``
+    2. *Preview explicit IPs with a shared campaign comment*:
+       ``blueteam_abuseipdb_report(srcips=["8.8.8.8", "8.8.4.4"], categories=[18, 22], comment="SSH brute force against a monitored host.")``
 
     3. *Submit after an explicit user reporting request*:
        ``blueteam_abuseipdb_report(srcips=["8.8.8.8"], categories=[18, 22], comment="Confirmed SSH brute force against a monitored host.", dry_run=False, confirm=True)``
