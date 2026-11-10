@@ -266,18 +266,19 @@ async def wazuh_alert_dsl_query(params: DslQueryInput) -> str:
 
     if params.response_format == "toon":
         toon_limit = None if _resolve_forensic_full_output(params) else CHARACTER_LIMIT
-        return encode_toon(_redact_alert_data(data, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities), limit=toon_limit)
+        return encode_toon(_redact_alert_data(data, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities,
+                                               forensic_token=params.forensic_token), limit=toon_limit)
 
     if params.response_format == "markdown":
         if isinstance(data.get("error"), str):
             return f"# DSL Query Error\n\n**Error**: {data['error']}\n\n**Detail**: {data.get('detail', 'N/A')}"
         aggs = data.get("aggregations", data.get("aggs", {}))
         md = (f"# DSL Query Result\n\n**Index**: {params.index_pattern}\n\n"
-              f"```json\n{json.dumps(_redact_alert_data(aggs, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities), indent=2, default=str)}\n```")
+              f"```json\n{json.dumps(_redact_alert_data(aggs, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities, forensic_token=params.forensic_token), indent=2, default=str)}\n```")
         return _truncate_if_needed(
             md, params=params,
             recovery_hint="Narrow the aggregation (smaller terms size, a tighter query) or "
                           "request response_format='json'. This tool returns aggregations, not "
                           "documents, so a field window does not apply.")
 
-    return _truncate_if_needed(json.dumps(_redact_alert_data(data, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities), indent=2, default=str), params=params)
+    return _truncate_if_needed(json.dumps(_redact_alert_data(data, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities, forensic_token=params.forensic_token), indent=2, default=str), params=params)

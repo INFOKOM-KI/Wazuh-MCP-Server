@@ -192,7 +192,7 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
         )
 
     total_alerts = sum(b.get("doc_count", 0) for b in buckets)
-    buckets = _redact_alert_data(buckets, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities)  # mask victim emails/IP/domains in bucket keys
+    buckets = _redact_alert_data(buckets, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities, forensic_token=params.forensic_token)  # mask victim emails/IP/domains in bucket keys
 
     if params.response_format in ("json", "toon"):
         payload = {

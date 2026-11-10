@@ -366,7 +366,8 @@ async def blueteam_wazuh_indexer_search(params: WazuhIndexerSearchInput) -> str:
     redacted = _redact_alert_data([x["doc"] for x in hits_state],
                                   policy=params.redaction_policy,
                                   reveal_owned=params.reveal_owned,
-                                  reveal_identities=params.reveal_identities)
+                                  reveal_identities=params.reveal_identities,
+                                  forensic_token=params.forensic_token)
 
     def _payload(k: int) -> dict:
         omitted = len(redacted) - k

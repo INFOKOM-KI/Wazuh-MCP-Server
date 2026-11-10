@@ -196,7 +196,7 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
                 hits = data.get("hits", {})
                 hit_list = hits.get("hits", [])
                 docs = [h.get("_source", h) for h in hit_list]
-                docs = _redact_alert_data(docs, bypass=False, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities)
+                docs = _redact_alert_data(docs, bypass=False, reveal_owned=params.reveal_owned, reveal_identities=params.reveal_identities, forensic_token=params.forensic_token)
                 if not docs:
                     break
 
