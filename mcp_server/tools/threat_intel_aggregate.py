@@ -266,11 +266,13 @@ async def _otx_provider(indicator: str, ind_type: str) -> TIProviderResult:
         # Malicious if malware families/adversaries OR direct malware sample hits.
         is_mal = bool(mf or adv or malware_hits)
         risk = "high" if is_mal else "medium"
+        # A pulse that names the indicator without attribution is suspicion, not
+        # a clean vote: the fall-through here always has at least one pulse.
         return TIProviderResult(
             provider="otx", indicator=indicator, indicator_type=ind_type,
             risk_level=risk,
             reputation_score=min(50 + count * 5 + len(malware_hits) * 10, 100),
-            is_malicious=is_mal,
+            is_malicious=True if is_mal else None,
             malware_families=mf, adversaries=adv, attack_techniques=attack,
             industries=industries,
             pulses=[{"name": p.get("name", "?"), "author": (p.get("author") or {}).get("username", "?")}

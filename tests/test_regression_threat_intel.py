@@ -348,3 +348,20 @@ def test_unknown_vote_is_not_rendered_as_negative():
     assert agg._malicious_mark(None) == "?"
     assert agg._malicious_mark(True) == "✅"
     assert agg._malicious_mark(False) == "❌"
+
+
+def test_otx_pulse_without_attribution_is_not_a_clean_vote(monkeypatch):
+    monkeypatch.setenv("OTX_API_KEY", "test-key")
+
+    async def fake_request(indicator, section="general"):
+        if section == "malware":
+            return {"data": []}
+        return {"pulse_info": {"count": 3, "pulses": [
+            {"name": "Anonymous Proxy List", "author": {"username": "x"},
+             "malware_families": [], "adversary": "", "attack_ids": []}]}}
+
+    with patch("mcp_server.threat_intel.otx._otx_request", fake_request):
+        result = _run(agg._otx_provider("103.168.246.3", "IPv4"))
+
+    assert result.is_malicious is None
+    assert result.risk_level == "medium"
