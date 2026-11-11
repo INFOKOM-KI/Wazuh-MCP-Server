@@ -18,6 +18,7 @@ All HTTP calls are replaced at the module boundary. No request leaves the host.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from unittest.mock import patch
 
@@ -310,11 +311,12 @@ def test_abuseipdb_without_confidence_is_malformed(monkeypatch):
     assert result.is_malicious is None
 
 
-def test_threatfox_no_results_is_unknown_not_clean(monkeypatch):
+@pytest.mark.parametrize("status", ["no_result", "no_results"])
+def test_threatfox_no_results_is_unknown_not_clean(monkeypatch, status):
     monkeypatch.setenv("THREATFOX_API_KEY", "test-key")
 
     async def fake_request(indicator, exact_match=False):
-        return {"query_status": "no_results", "data": []}
+        return {"query_status": status, "data": []}
 
     with patch("mcp_server.threat_intel.threatfox._threatfox_request", fake_request):
         result = _run(agg._threatfox_provider("evil.example.com", "domain"))
@@ -324,6 +326,22 @@ def test_threatfox_no_results_is_unknown_not_clean(monkeypatch):
     assert result.is_malicious is None
     assert "no_results" in result.tags
     assert result.detail["match_count"] == 0
+
+
+def test_threatfox_tool_accepts_the_singular_no_match_status(monkeypatch):
+    monkeypatch.setenv("THREATFOX_API_KEY", "test-key")
+
+    async def fake_request(indicator, exact_match=False):
+        return {"query_status": "no_result", "data": []}
+
+    params = threatfox.ThreatFoxSearchInput(
+        search_term="evil.example.com", response_format="json")
+    with patch("mcp_server.threat_intel.threatfox._threatfox_request", fake_request):
+        out = json.loads(_run(threatfox.threatfox_ioc_search(params)))
+
+    assert "error" not in out
+    assert out["match_count"] == 0
+    assert out["query_status"] == "no_result"
 
 
 def test_unknown_vote_is_not_rendered_as_negative():

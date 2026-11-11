@@ -23,6 +23,11 @@ if not os.environ.get(THREATFOX_API_KEY_ENV):
 
 _threatfox_limiter = get_limiter("threatfox", max_concurrent=3, min_interval=0.1)  # 10 req/sec
 
+# ThreatFox answers a miss with "no_result" (singular); URLhaus, a different
+# abuse.ch API, uses "no_results". Accept both so a miss is never read as a
+# failed upstream call.
+_NO_MATCH_STATUSES = ("no_result", "no_results")
+
 # Patterns for detecting IOC type (used for SSRF guard scoping)
 _IP_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 _MD5_RE = re.compile(r"^[a-fA-F0-9]{32}$")
@@ -223,7 +228,7 @@ async def threatfox_ioc_search(params: ThreatFoxSearchInput) -> str:
     **Error Handling**:
         - Missing API key -> ``"THREATFOX_API_KEY not set"`` at call time
         - Invalid/private IP -> rejected at Pydantic validation
-        - ``query_status: "no_results"`` -> empty result set (not an error)
+        - ``query_status: "no_result"`` / ``"no_results"`` -> empty result set (not an error)
         - HTTP 429 → rate-limit message with retry hint
     """
     if not os.environ.get(THREATFOX_API_KEY_ENV):
@@ -240,7 +245,7 @@ async def threatfox_ioc_search(params: ThreatFoxSearchInput) -> str:
         _handle_api_error(e, context="threatfox_ioc_search")
 
     query_status = raw.get("query_status", "error")
-    if query_status not in ("ok", "no_results"):
+    if query_status != "ok" and query_status not in _NO_MATCH_STATUSES:
         return json.dumps({
             "error": f"ThreatFox API returned unexpected status: {query_status}",
             "raw": raw,
@@ -334,7 +339,7 @@ async def threatfox_ioc_search_bulk(params: ThreatFoxBulkInput) -> str:
         try:
             raw = await _threatfox_request(term, params.exact_match)
             status = raw.get("query_status", "error")
-            if status not in ("ok", "no_results"):
+            if status != "ok" and status not in _NO_MATCH_STATUSES:
                 return {"search_term": term,
                         "error": f"ThreatFox returned query_status={status!r}"}
             items = raw.get("data", [])

@@ -179,14 +179,16 @@ async def _threatfox_provider(indicator: str, ind_type: str) -> TIProviderResult
                                 indicator_type=ind_type, error="not configured",
                                 error_kind="not_configured")
     try:
-        from mcp_server.threat_intel.threatfox import _threatfox_request
+        from mcp_server.threat_intel.threatfox import (_NO_MATCH_STATUSES,
+                                                       _threatfox_request)
         r = await _threatfox_request(indicator, False)
         if not isinstance(r, dict):
             raise ValueError("malformed ThreatFox response (not a JSON object)")
         # Only these statuses are a decisive answer. An error status must never be
         # read as "no matches" and then down-scored to a clean verdict.
-        if r.get("query_status") not in ("ok", "no_results"):
-            raise ValueError(f"ThreatFox returned query_status={r.get('query_status')!r}")
+        status = r.get("query_status")
+        if status != "ok" and status not in _NO_MATCH_STATUSES:
+            raise ValueError(f"ThreatFox returned query_status={status!r}")
         if "data" not in r:
             raise ValueError("malformed ThreatFox response (data missing)")
         items = r.get("data")
@@ -622,7 +624,8 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
     lines.append(
         f"- **Providers**: {output.providers_configured} configured, "
         f"{output.providers_total} queried, {output.providers_ok} answered, "
-        f"{output.providers_failed} failed, {output.providers_skipped} skipped")
+        f"{output.providers_failed} failed, {output.providers_skipped} skipped "
+        f"(never sent — not part of the queried count)")
     lines.append(
         f"- **Verdicts**: {output.verdicts_malicious} malicious, "
         f"{output.verdicts_clean} clean, {output.verdicts_inconclusive} inconclusive")
@@ -664,7 +667,7 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
 
     if output.errors:
         lines.append("")
-        lines.append("### ⚠️ Skipped providers")
+        lines.append("### ⚠️ Failed or skipped providers")
         for e in output.errors:
             lines.append(f"- {e}")
 
