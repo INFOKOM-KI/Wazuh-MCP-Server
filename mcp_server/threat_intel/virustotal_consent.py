@@ -153,10 +153,11 @@ async def request_ioc_sharing_detailed(ctx: Any | None,
     Reasons: ``context_missing``, ``unsupported_protocol`` (with the revision the
     client *requested*; the pinned SDK does not retain a negotiated revision),
     ``elicitation_capability_missing``, ``elicitation_error``, ``user_declined``,
-    ``user_cancelled``, ``invalid_approval_response``, ``approved``.
+    ``user_cancelled``, ``approval_not_given`` (accepted form, box unticked),
+    ``invalid_approval_response``, ``approved``.
 
-    A client that cannot elicit, uses an older revision, declines, cancels, or
-    returns a non-boolean approval is a refusal. The server cannot prove the
+    A client that cannot elicit, uses an older revision, declines, cancels,
+    leaves the box unticked, or returns a non-boolean approval is a refusal. The server cannot prove the
     client showed the prompt to a human if the client is an autonomous agent.
     """
     def decision(approved: bool, reason: str, detail: str = "") -> ConsentDecision:
@@ -196,7 +197,9 @@ async def request_ioc_sharing_detailed(ctx: Any | None,
     if approved is True:
         return decision(True, "approved")
     if approved is False:
-        return decision(False, "user_declined")
+        # The form came back accepted with the box unticked: a different fix
+        # from a deliberate decline, and the operator can see which happened.
+        return decision(False, "approval_not_given", "approve=false")
     return decision(False, "invalid_approval_response",
                     f"approve={type(approved).__name__}")
 

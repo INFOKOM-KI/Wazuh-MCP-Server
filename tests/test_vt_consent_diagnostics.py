@@ -91,8 +91,10 @@ def test_user_cancels():
     assert _ask(_Ctx(action="cancel")).reason == "user_cancelled"
 
 
-def test_accept_with_false_approval_is_a_decline():
-    assert _ask(_Ctx(approve=False)).reason == "user_declined"
+def test_accepted_form_without_the_box_ticked_is_not_a_decline():
+    decision = _ask(_Ctx(approve=False))
+    assert decision.reason == "approval_not_given"
+    assert decision.detail == "approve=false"
 
 
 @pytest.mark.parametrize("approve", ["yes", 1, None])
@@ -123,6 +125,6 @@ def test_reason_does_not_leak_the_prompt_text(monkeypatch):
     seen = []
     monkeypatch.setattr(consent.logger, "info",
                         lambda msg, *args: seen.append((msg % args) if args else msg))
-    _ask(_Ctx(approve=False))
+    _ask(_Ctx(action="decline"))
     assert all("consent?" not in line for line in seen)
     assert any("user_declined" in line for line in seen)
