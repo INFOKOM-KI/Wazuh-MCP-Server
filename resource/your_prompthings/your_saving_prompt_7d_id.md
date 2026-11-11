@@ -35,8 +35,8 @@ Klien Anda sudah menampilkan setiap tool terdaftar beserta deskripsi dan skema p
 | Triage IP | Ringkasan satu IP, attack chain, urutan kill-chain, periodisitas beacon, kecepatan terhadap baseline, perbandingan dua IP berdampingan |
 | Intel ancaman | Reputasi dan enrichment dari provider yang dikonfigurasi, lookup MISP read-only ke instans sendiri bila `MISP_URL` dan `MISP_API_KEY` disetel, pemeriksaan AbuseIPDB (satu IP atau jaringan CIDR), lookup massal, reputasi domain dan berkas termasuk VirusTotal setelah persetujuan host, fingerprint TLS, klasifikasi bot |
 | Korelasi & kampanye | Korelasi multi-sinyal, attack graph, pemantauan kampanye, saran pivot, analisis STIX, baseline drift dan profil, calendar heatmap, basis pengetahuan dan pelacak false positive |
-| Clustering & labeling (opt-in) | Bentuk jendela dari clustering, labeling ATT&CK per peringatan, penugasan klaster dan lineage |
-| Peramalan (opt-in) | Prediksi taktik berikutnya, ramalan volume peringatan, peringkat sumber teramati, gabungan ramalan serangan |
+| Clustering & labeling (opt-in) | Bentuk jendela dari clustering (`BLUETEAM_CLUSTER_ENABLED=true`), labeling ATT&CK per peringatan (`BLUETEAM_LAYA_ENABLED=true`), penugasan klaster dan lineage |
+| Peramalan (opt-in) | Prediksi taktik berikutnya dan ramalan volume peringatan (`BLUETEAM_FORECAST_ENABLED=true`), peringkat sumber teramati (`BLUETEAM_SOURCE_FORECAST_ENABLED=true` + `BLUETEAM_SOURCE_STORE`), gabungan ramalan serangan |
 | CVE & kerentanan | Kerentanan agen, lookup dan skor CVE, SSVC, EPSS, KEV, lookup proof-of-concept, pemetaan ATT&CK, advisory vendor, pemindaian dependensi, record dan feed katalog cve.now, korelasi alert-ke-CVE |
 | Email / kebocoran / domain | Lookup email dan kebocoran kredensial, log stealer, lookup domain, permutasi domain mirip, WHOIS, certificate transparency |
 | Geo & forensik host | Geo heatmap dan distribusi, FIM dan kepatuhan, pemeriksaan webshell, hashing berkas, fail2ban, inventaris proses dan koneksi dan akun, pembacaan log, audit rootkit dan Lynis, kesehatan host, status firewall, kunci SSH, packet capture |

@@ -37,8 +37,8 @@ Your client already exposes every registered tool with its own description and p
 | IP triage | One-IP summary, attack chain, kill-chain ordering, beacon periodicity, velocity against a baseline, side-by-side IP comparison |
 | Threat intel | Reputation and enrichment from the configured providers, read-only MISP lookup against your own instance when `MISP_URL` and `MISP_API_KEY` are set, AbuseIPDB check (one IP or a CIDR network), bulk lookups, domain and file reputation including VirusTotal after host consent, TLS fingerprinting, bot classification |
 | Correlation & campaigns | Multi-signal correlation, attack graphs, campaign watch, pivot suggestions, STIX analysis, baseline drift and profiles, calendar heatmaps, false-positive knowledge base and tracker |
-| Clustering & labeling (opt-in) | Window shape from clustering, per-alert ATT&CK labeling, cluster assignment and lineage |
-| Forecasting (opt-in) | Next-tactic prediction, alert-volume forecasts, observed-source ranking, combined attack forecast |
+| Clustering & labeling (opt-in) | Window shape from clustering (`BLUETEAM_CLUSTER_ENABLED=true`), per-alert ATT&CK labeling (`BLUETEAM_LAYA_ENABLED=true`), cluster assignment and lineage |
+| Forecasting (opt-in) | Next-tactic prediction and alert-volume forecasts (`BLUETEAM_FORECAST_ENABLED=true`), observed-source ranking (`BLUETEAM_SOURCE_FORECAST_ENABLED=true` + `BLUETEAM_SOURCE_STORE`), combined attack forecast |
 | CVE & vulnerability | Agent vulnerabilities, CVE lookup and scoring, SSVC, EPSS, KEV, proof-of-concept lookup, ATT&CK mapping, vendor advisories, dependency scanning, cve.now catalog record and feed, alert-to-CVE correlation |
 | Email / breach / domain | Mail and credential-leak lookups, stealer logs, domain lookup, lookalike permutation, WHOIS, certificate transparency |
 | Geo & host forensics | Geo heatmaps and distribution, FIM and compliance, webshell checks, file hashing, fail2ban, process and connection and account inventory, log reads, rootkit and Lynis audits, host health, firewall state, SSH keys, packet capture |

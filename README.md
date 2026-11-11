@@ -892,6 +892,9 @@ that an entity is malicious.
   no `model_id`, resolves the newest volume fit (tactic fits share the store and are
   skipped). A thin,
   all-zero or constant series returns `insufficient_data` before any fit.
+- `blueteam_source_forecast` needs `BLUETEAM_SOURCE_FORECAST_ENABLED=true` plus
+  `BLUETEAM_SOURCE_STORE=/abs/path/source.db`. With the flag off the tool raises the enable
+  hint; it never returns an empty candidate list that would read as "no sources".
 - `blueteam_incident_label` needs `BLUETEAM_LAYA_ENABLED=true`. The default `onnx`
   backend reuses the RAG embedder and costs no extra memory. The `laya` and `setfit`
   backends are **unsupported by policy**: CPU torch plus weights exceed the agreed 250 MB /
