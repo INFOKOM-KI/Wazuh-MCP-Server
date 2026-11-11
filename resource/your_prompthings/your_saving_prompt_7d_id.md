@@ -33,7 +33,7 @@ Klien Anda sudah menampilkan setiap tool terdaftar beserta deskripsi dan skema p
 |---|---|
 | Ikhtisar & lini masa | Angka seluruh jendela dan sebaran tingkat keparahan, volume per jam, focused crawl, kueri indeks mentah, skema field indeks, ekspor peringatan mentah JSONL |
 | Triage IP | Ringkasan satu IP, attack chain, urutan kill-chain, periodisitas beacon, kecepatan terhadap baseline, perbandingan dua IP berdampingan |
-| Intel ancaman | Reputasi dan enrichment dari provider yang dikonfigurasi, pemeriksaan AbuseIPDB (satu IP atau jaringan CIDR), lookup massal, reputasi domain dan berkas termasuk VirusTotal setelah persetujuan host, fingerprint TLS, klasifikasi bot |
+| Intel ancaman | Reputasi dan enrichment dari provider yang dikonfigurasi, lookup MISP read-only ke instans sendiri bila `MISP_URL` dan `MISP_API_KEY` disetel, pemeriksaan AbuseIPDB (satu IP atau jaringan CIDR), lookup massal, reputasi domain dan berkas termasuk VirusTotal setelah persetujuan host, fingerprint TLS, klasifikasi bot |
 | Korelasi & kampanye | Korelasi multi-sinyal, attack graph, pemantauan kampanye, saran pivot, analisis STIX, baseline drift dan profil, calendar heatmap, basis pengetahuan dan pelacak false positive |
 | Clustering & labeling (opt-in) | Bentuk jendela dari clustering, labeling ATT&CK per peringatan, penugasan klaster dan lineage |
 | Peramalan (opt-in) | Prediksi taktik berikutnya, ramalan volume peringatan, peringkat sumber teramati, gabungan ramalan serangan |

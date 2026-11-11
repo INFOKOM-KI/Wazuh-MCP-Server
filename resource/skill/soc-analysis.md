@@ -768,7 +768,7 @@ not a server outage.
 
 ### Workflow E2: alert → CVE assessment (no manifest)
 ```
-1. blueteam_alert_summarize(<alert>)                       # what happened
+1. blueteam_wazuh_alert_summarize(srcip="<alert srcip>", since="24h")   # what happened
 2. blueteam_cve_now_attack_correlate(alert=<the alert>, use_inventory=true)
    # read relationship + assessment; inventory is local, versions are not uploaded
 3. blueteam_cve_now_lookup(vulnerability_id="<top candidate>", response_format="json")
