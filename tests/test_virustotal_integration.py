@@ -1185,3 +1185,25 @@ def test_vt_tools_inject_mcp_context_and_do_not_expose_it():
     ):
         target = getattr(fn, "__wrapped__", fn)
         assert find_context_parameter(target) == "ctx"
+
+
+def test_domain_lookup_rejects_an_ip_literal():
+    import pydantic
+    from mcp_server.tools import alert_enrichment as enrich
+
+    with pytest.raises(pydantic.ValidationError):
+        enrich.VirusTotalDomainInput(domain="103.151.95.2")
+
+
+def test_acknowledgement_without_a_host_names_the_refusal_reason(monkeypatch):
+    from mcp_server.core.exceptions import ThreatIntelError
+    from mcp_server.tools import alert_enrichment as enrich
+
+    import mcp_server
+    monkeypatch.setattr(mcp_server, "VIRUSTOTAL_API_KEY", "test-key")
+
+    with pytest.raises(ThreatIntelError) as err:
+        _run(enrich.blueteam_lookup_domain_virustotal(
+            enrich.VirusTotalDomainInput(domain="example.com",
+                                         acknowledge_ioc_sharing=True)))
+    assert "[reason=context_missing]" in str(err.value)

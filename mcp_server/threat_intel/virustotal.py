@@ -6,6 +6,7 @@ Shared VirusTotal request control: validation, persistent budget/quota, and proc
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import re
 import time
@@ -125,6 +126,12 @@ def normalize_domain(value: str) -> str:
         raise ValueError("domain contains a path, query, userinfo, port, or whitespace")
     if any(not ch.isprintable() for ch in text):
         raise ValueError("domain contains a control character")
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("domain must not be an IP address")
     labels = text.split(".")
     if len(labels) < 2:
         raise ValueError("domain must contain at least two labels")

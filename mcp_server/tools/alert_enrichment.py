@@ -28,7 +28,7 @@ from mcp_server.threat_intel.crowdsec import _crowdsec_request
 from mcp_server.threat_intel._cache import get_limiter
 from mcp_server.threat_intel.virustotal import issue_consent
 from mcp_server.threat_intel.virustotal_consent import (consent_message,
-                                                        request_ioc_sharing)
+                                                        request_ioc_sharing_detailed)
 
 # Per-provider outbound lookup spacing (Netra/Argus 30s, Sangfor 5s).
 # max_concurrent=1 serializes requests so min_interval is strictly enforced.
@@ -168,10 +168,12 @@ async def blueteam_lookup_hash_virustotal(params: VirusTotalHashInput,
     if not params.acknowledge_ioc_sharing:
         raise ThreatIntelError(
             "[virustotal] consent_required: set acknowledge_ioc_sharing=true to request host approval")
-    if not await request_ioc_sharing(
-            ctx, consent_message("files", params.hash)):
+    decision = await request_ioc_sharing_detailed(
+        ctx, consent_message("files", params.hash))
+    if not decision.approved:
         raise ThreatIntelError(
-            "[virustotal] consent_required: host approval was not granted")
+            "[virustotal] consent_required: host approval was not granted "
+            f"[reason={decision.reason}]")
     try:
         data = await lookup("files", params.hash,
                             consent_token=issue_consent("files", params.hash))
@@ -259,10 +261,12 @@ async def blueteam_lookup_domain_virustotal(params: VirusTotalDomainInput,
     if not params.acknowledge_ioc_sharing:
         raise ThreatIntelError(
             "[virustotal] consent_required: set acknowledge_ioc_sharing=true to request host approval")
-    if not await request_ioc_sharing(
-            ctx, consent_message("domains", params.domain)):
+    decision = await request_ioc_sharing_detailed(
+        ctx, consent_message("domains", params.domain))
+    if not decision.approved:
         raise ThreatIntelError(
-            "[virustotal] consent_required: host approval was not granted")
+            "[virustotal] consent_required: host approval was not granted "
+            f"[reason={decision.reason}]")
     try:
         data = await lookup("domains", params.domain,
                             consent_token=issue_consent("domains", params.domain))
