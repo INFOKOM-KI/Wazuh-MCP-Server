@@ -433,7 +433,11 @@ def test_deleted_state_fails_closed_and_requires_explicit_recovery(tmp_path):
     assert str(path) in error.value.message
     assert "virustotal_quota init --state" in error.value.message
     assert not path.exists()
-    _quota(path).initialize(1000.0)
+    # A marker now survives the deleted file, so recreating is an explicit act.
+    with pytest.raises(VirusTotalQuotaError) as again:
+        _quota(path).initialize(1000.0)
+    assert again.value.kind == "state_missing"
+    _quota(path).initialize(1000.0, force=True)
     assert path.exists()
 
 

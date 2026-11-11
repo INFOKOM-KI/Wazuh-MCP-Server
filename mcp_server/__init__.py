@@ -95,6 +95,7 @@ VIRUSTOTAL_DAILY_LIMIT = _c.threat_intel.virustotal_daily_limit
 VIRUSTOTAL_BUDGET = _c.threat_intel.virustotal_budget
 VIRUSTOTAL_BUDGET_HOURS = _c.threat_intel.virustotal_budget_hours
 VIRUSTOTAL_STATE = _c.threat_intel.virustotal_state_path
+VIRUSTOTAL_AUTOINIT = _c.threat_intel.virustotal_autoinit
 VIRUSTOTAL_ALLOWED_HOSTS = _c.threat_intel.virustotal_allowed_hosts
 VIRUSTOTAL_MAX_RESPONSE_BYTES = _c.threat_intel.virustotal_max_response_bytes
 NETRA_BASE_URL     = _c.threat_intel.netra_base_url

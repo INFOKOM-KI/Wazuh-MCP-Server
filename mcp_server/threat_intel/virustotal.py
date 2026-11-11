@@ -18,8 +18,9 @@ from typing import Literal, TypedDict
 import httpx
 
 from mcp_server import (VIRUSTOTAL_ALLOWED_HOSTS, VIRUSTOTAL_API_KEY,
-                        VIRUSTOTAL_BASE_URL, VIRUSTOTAL_BUDGET,
-                        VIRUSTOTAL_BUDGET_HOURS, VIRUSTOTAL_CACHE_TTL,
+                        VIRUSTOTAL_AUTOINIT, VIRUSTOTAL_BASE_URL,
+                        VIRUSTOTAL_BUDGET, VIRUSTOTAL_BUDGET_HOURS,
+                        VIRUSTOTAL_CACHE_TTL,
                         VIRUSTOTAL_DAILY_LIMIT, VIRUSTOTAL_MAX_RESPONSE_BYTES,
                         VIRUSTOTAL_RATE_PER_MINUTE, VIRUSTOTAL_STATE)
 from mcp_server.core.http_client import (CircuitOpenError, ResponseTooLargeError,
@@ -450,10 +451,31 @@ async def lookup(kind: str, indicator: str, *,
             result.update(cache_metadata(result))
             return result
 
+        autoinit_tried = False
         while True:
             try:
                 reserved = quota.reserve(_NOW())
             except VirusTotalQuotaError as exc:
+                if (exc.kind == "state_missing" and VIRUSTOTAL_AUTOINIT
+                        and not autoinit_tried):
+                    # Opt-in: the budget comes from the operator's env, never
+                    # from the caller. The audit entry names the file only.
+                    try:
+                        quota.auto_initialize()
+                    except VirusTotalQuotaError as init_exc:
+                        # Same mapping as reserve(): a failed init is a provider
+                        # error, never an exception escaping the aggregate.
+                        raise VirusTotalError(
+                            init_exc.message, init_exc.kind,
+                            init_exc.retry_after_seconds) from init_exc
+                    autoinit_tried = True
+                    from mcp_server.core.audit import _audit_log
+                    try:
+                        _audit_log("virustotal_quota_autoinit",
+                                   {"state": str(VIRUSTOTAL_STATE)})
+                    except Exception:  # audit is evidence, not a gate
+                        logger.warning("virustotal_quota_autoinit not audited")
+                    continue
                 raise VirusTotalError(
                     exc.message, exc.kind, exc.retry_after_seconds) from exc
             if reserved.wait_seconds <= 0:

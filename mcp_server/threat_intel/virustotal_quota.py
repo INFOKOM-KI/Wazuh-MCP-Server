@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import fcntl
 import math
 import os
 import sqlite3
@@ -128,8 +129,8 @@ class VirusTotalQuota:
             f"{self._path} --budget <n> --hours <h> --rate <n> --daily <n>` "
             "with the values from BLUETEAM_VIRUSTOTAL_BUDGET, "
             "BLUETEAM_VIRUSTOTAL_BUDGET_HOURS, "
-            "BLUETEAM_VIRUSTOTAL_RATE_PER_MINUTE and "
-            "BLUETEAM_VIRUSTOTAL_DAILY",
+            "VIRUSTOTAL_RATE_PER_MINUTE and "
+            "VIRUSTOTAL_DAILY_LIMIT",
             "state_missing")
 
     def _connect_existing(self) -> sqlite3.Connection:
@@ -272,24 +273,56 @@ class VirusTotalQuota:
                     "INSERT OR REPLACE INTO vt_meta(key, value) VALUES(?, ?)",
                     (key, value))
 
-    def initialize(self, now: float | None = None) -> None:
-        """Create a new state. Refuse if any state already exists."""
-        current = self._now(now)
-        if self._budget <= 0:
-            raise VirusTotalQuotaError(
-                "VirusTotal budget must be positive to initialize", "config_invalid")
-        if os.path.exists(self._path):
-            raise VirusTotalQuotaError(
-                "VirusTotal quota state already exists; use policy or rearm",
-                "state_exists")
+    @property
+    def _marker_path(self) -> str:
+        """Durable evidence that a budget was initialized for this path.
+
+        It lives outside the database on purpose: deleting the database must
+        not erase the fact that a budget existed, or a re-init would silently
+        hand out a fresh allowance.
+        """
+        return f"{self._path}.initialized"
+
+    def _initialization_lock(self):
+        """Exclusive cross-process lock held only during creation."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def hold():
+            lock_path = f"{self._path}.lock"
+            try:
+                Path(lock_path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            except OSError as exc:
+                raise VirusTotalQuotaError(
+                    "VirusTotal quota lock is unavailable",
+                    "storage_unavailable") from exc
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                yield
+            finally:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(fd)
+        return hold()
+
+    def _create_atomically(self, current: float) -> None:
+        """Build the database beside its final path, then rename into place."""
+        directory = Path(self._path).parent
         try:
-            Path(self._path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         except OSError as exc:
             raise VirusTotalQuotaError(
                 "VirusTotal quota state directory is unavailable",
                 "storage_unavailable") from exc
         self._check_parent()
-        conn = self._connect()
+        temp = f"{self._path}.tmp-{os.getpid()}"
+        try:
+            conn = sqlite3.connect(temp, timeout=5.0, isolation_level=None)
+        except sqlite3.Error as exc:
+            raise VirusTotalQuotaError(
+                "VirusTotal quota state is unavailable", "storage_unavailable") from exc
         try:
             conn.execute("BEGIN IMMEDIATE")
             self._init_schema(conn)
@@ -300,10 +333,111 @@ class VirusTotalQuota:
                 conn.execute("ROLLBACK")
             except sqlite3.Error:
                 pass
-            raise
-        finally:
             conn.close()
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+            raise
+        conn.close()
+        try:
+            os.chmod(temp, 0o600)
+            os.replace(temp, self._path)
+        except OSError as exc:
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+            raise VirusTotalQuotaError(
+                "VirusTotal quota state cannot be committed",
+                "storage_unavailable") from exc
+
+    def _write_marker(self) -> None:
+        temp = f"{self._marker_path}.tmp-{os.getpid()}"
+        payload = json.dumps({"schema": _SCHEMA_VERSION,
+                              "initialized_at": datetime.now(timezone.utc).isoformat()})
+        try:
+            with open(temp, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temp, 0o600)
+            os.replace(temp, self._marker_path)
+        except OSError as exc:
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+            raise VirusTotalQuotaError(
+                "VirusTotal quota initialization marker cannot be written",
+                "storage_unavailable") from exc
+
+    def _ensure_marker(self) -> None:
+        """Adopt a state created before markers existed; best effort on a RO fs."""
+        if os.path.exists(self._marker_path):
+            return
+        try:
+            self._write_marker()
+        except VirusTotalQuotaError as exc:
+            logger.warning("VirusTotal quota marker not written: %s", exc.message)
+
+    def initialize(self, now: float | None = None, *, force: bool = False) -> None:
+        """Create a new state (operator action). Refuse if state exists."""
+        current = self._now(now)
+        if self._budget <= 0:
+            raise VirusTotalQuotaError(
+                "VirusTotal budget must be positive to initialize", "config_invalid")
+        with self._initialization_lock():
+            if os.path.exists(self._path):
+                raise VirusTotalQuotaError(
+                    "VirusTotal quota state already exists; use policy or rearm",
+                    "state_exists")
+            if os.path.exists(self._marker_path) and not force:
+                # A marker without a database means the file was removed after a
+                # budget existed. Recreating silently would reset consumption.
+                raise VirusTotalQuotaError(
+                    "VirusTotal quota state is missing but the initialization "
+                    "marker exists; pass --force-recreate to start a new budget",
+                    "state_missing")
+            self._create_atomically(current)
+            try:
+                self._write_marker()
+            except VirusTotalQuotaError:
+                try:
+                    os.unlink(self._path)
+                except OSError:
+                    pass
+                raise
         self._secure()
+
+    def auto_initialize(self, now: float | None = None) -> None:
+        """Create the state only for a genuine first installation.
+
+        Refuses when the marker exists and the database does not: that is a
+        deleted budget, not a fresh install.
+        """
+        current = self._now(now)
+        if self._budget <= 0:
+            raise VirusTotalQuotaError(
+                "VirusTotal budget must be positive to initialize", "config_invalid")
+        with self._initialization_lock():
+            if os.path.exists(self._path):
+                self._ensure_marker()
+                return
+            if os.path.exists(self._marker_path):
+                raise VirusTotalQuotaError(
+                    "VirusTotal quota state was initialized before and is now "
+                    "missing; refusing to create a new budget",
+                    "state_missing")
+            self._create_atomically(current)
+            try:
+                self._write_marker()
+            except VirusTotalQuotaError:
+                try:
+                    os.unlink(self._path)
+                except OSError:
+                    pass
+                raise
 
     def update_policy(self, now: float | None = None) -> None:
         """Update the authorized policy without changing accounting or the arm."""
@@ -794,11 +928,15 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument(
                 "--confirm", action="store_true",
                 help="confirm adoption of the legacy state")
+        if name == "init":
+            command.add_argument(
+                "--force-recreate", action="store_true",
+                help="start a new budget after the state file was deleted")
     args = parser.parse_args(argv)
     try:
         quota = _quota_from_args(args)
         if args.command == "init":
-            quota.initialize()
+            quota.initialize(force=getattr(args, "force_recreate", False))
         elif args.command == "policy":
             quota.update_policy()
         elif args.command == "rearm":

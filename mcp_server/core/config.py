@@ -151,6 +151,7 @@ class ThreatIntelConfig:
     virustotal_budget: int = 0                 # 0 = fail-closed until an operator initializes state
     virustotal_budget_hours: float = 8.0      # authorized arm window
     virustotal_state_path: str = "/var/log/blue-team-mcp/virustotal_quota.db"
+    virustotal_autoinit: bool = False          # opt-in: create missing state at first request
     virustotal_allowed_hosts: str = "www.virustotal.com"
     virustotal_max_response_bytes: int = 2_000_000
     # Netra
@@ -222,6 +223,8 @@ class ThreatIntelConfig:
             virustotal_state_path=os.environ.get(
                 "BLUETEAM_VIRUSTOTAL_STATE",
                 "/var/log/blue-team-mcp/virustotal_quota.db"),
+            virustotal_autoinit=_bool(
+                os.environ.get("BLUETEAM_VIRUSTOTAL_AUTOINIT", "false"), False),
             virustotal_allowed_hosts=os.environ.get(
                 "VIRUSTOTAL_ALLOWED_HOSTS", "www.virustotal.com"),
             virustotal_max_response_bytes=int(os.environ.get(
@@ -279,6 +282,10 @@ class ThreatIntelConfig:
             raise ConfigurationError("BLUETEAM_VIRUSTOTAL_BUDGET must be >= 0")
         if not math.isfinite(self.virustotal_budget_hours) or self.virustotal_budget_hours <= 0:
             raise ConfigurationError("BLUETEAM_VIRUSTOTAL_BUDGET_HOURS must be finite and > 0")
+        if self.virustotal_autoinit and self.virustotal_budget <= 0:
+            raise ConfigurationError(
+                "BLUETEAM_VIRUSTOTAL_AUTOINIT requires BLUETEAM_VIRUSTOTAL_BUDGET > 0; "
+                "an auto-created state must still carry an operator-set budget")
         if self.virustotal_budget > 0 and not self.virustotal_state_path:
             raise ConfigurationError(
                 "BLUETEAM_VIRUSTOTAL_STATE must be set when the budget is positive")
