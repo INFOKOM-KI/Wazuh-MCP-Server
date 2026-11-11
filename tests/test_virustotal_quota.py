@@ -428,6 +428,10 @@ def test_deleted_state_fails_closed_and_requires_explicit_recovery(tmp_path):
     with pytest.raises(VirusTotalQuotaError) as error:
         _quota(path).reserve(1000.0)
     assert error.value.kind == "state_missing"
+    # The message must name the file and command, otherwise a path mismatch
+    # between the server and the CLI reads as an unbreakable loop.
+    assert str(path) in error.value.message
+    assert "virustotal_quota init --state" in error.value.message
     assert not path.exists()
     _quota(path).initialize(1000.0)
     assert path.exists()

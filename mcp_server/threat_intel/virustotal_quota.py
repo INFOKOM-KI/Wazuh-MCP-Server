@@ -103,7 +103,9 @@ class VirusTotalQuota:
     def _connect(self) -> sqlite3.Connection:
         if not self._path:
             raise VirusTotalQuotaError(
-                "VirusTotal quota state path is empty", "state_missing")
+                "VirusTotal quota state path is empty; set "
+                "BLUETEAM_VIRUSTOTAL_STATE to an absolute path",
+                "state_missing")
         try:
             conn = sqlite3.connect(self._path, timeout=5.0, isolation_level=None)
             conn.execute("PRAGMA busy_timeout=5000")
@@ -113,11 +115,26 @@ class VirusTotalQuota:
             raise VirusTotalQuotaError(
                 "VirusTotal quota state is unavailable", "storage_unavailable") from exc
 
+    def _missing_state_error(self) -> VirusTotalQuotaError:
+        """Return the missing-state error with the path and the init command.
+
+        Without them, a path mismatch between the server's
+        BLUETEAM_VIRUSTOTAL_STATE and the CLI leaves the operator no next step.
+        """
+        return VirusTotalQuotaError(
+            "VirusTotal quota state is missing at "
+            f"{self._path}; run `python -m mcp_server.threat_intel."
+            "virustotal_quota init --state "
+            f"{self._path} --budget <n> --hours <h> --rate <n> --daily <n>` "
+            "with the values from BLUETEAM_VIRUSTOTAL_BUDGET, "
+            "BLUETEAM_VIRUSTOTAL_BUDGET_HOURS, "
+            "BLUETEAM_VIRUSTOTAL_RATE_PER_MINUTE and "
+            "BLUETEAM_VIRUSTOTAL_DAILY",
+            "state_missing")
+
     def _connect_existing(self) -> sqlite3.Connection:
         if not os.path.exists(self._path):
-            raise VirusTotalQuotaError(
-                "VirusTotal quota state is missing; run the init command",
-                "state_missing")
+            raise self._missing_state_error()
         self._check_parent()
         return self._connect()
 
@@ -359,9 +376,7 @@ class VirusTotalQuota:
             raise VirusTotalQuotaError(
                 "VirusTotal budget is closed at 0 requests", "budget_closed")
         if not os.path.exists(self._path):
-            raise VirusTotalQuotaError(
-                "VirusTotal quota state is missing; run the init command",
-                "state_missing")
+            raise self._missing_state_error()
         conn = self._connect()
         try:
             tables = self._tables(conn)
