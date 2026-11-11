@@ -201,13 +201,14 @@ def test_negotiated_2026_gate_fails_closed(monkeypatch) -> None:
 
     from mcp_server.threat_intel import virustotal_consent as consent
 
-    class FakeContext:
-        async def elicit(self, message, schema):
+    class FakeSession:
+        client_params = SimpleNamespace(protocolVersion="2026-07-28")
+
+        async def elicit_form(self, **kwargs):
             raise AssertionError("2026-native elicitation must not be attempted")
 
-        request_context = SimpleNamespace(
-            session=SimpleNamespace(
-                client_params=SimpleNamespace(protocolVersion="2026-07-28")))
+    class FakeContext:
+        session = FakeSession()
 
     monkeypatch.setattr(consent, "LATEST_PROTOCOL_VERSION", "2026-07-28")
     approved = anyio.run(

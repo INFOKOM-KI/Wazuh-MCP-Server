@@ -75,6 +75,8 @@ def consent_message(kind: str, values: list[str] | str) -> str:
     return (
         f"Approve sending {subject} to VirusTotal for {operation}?\n"
         f"Indicator(s): {joined}\n"
+        "Review the disclosure below, tick the approval checkbox, then submit. "
+        "Submitting the form untouched does not authorize sharing.\n"
         "VirusTotal adds queried IoCs to its dataset, where they become accessible "
         "to the community. A public indicator is not automatically non-sensitive. "
         "Do not approve confidential, sensitive, or personally identifiable indicators."
@@ -146,6 +148,20 @@ def _capability_state(ctx: Any) -> tuple[bool, str]:
         return False, type(exc).__name__
 
 
+def _host_facts(ctx: Any) -> tuple[str, str, str]:
+    """Client name, version, requested revision. Never the indicator."""
+    try:
+        params = ctx.session.client_params
+    except (AttributeError, TypeError, ValueError):
+        return "unknown", "unknown", "unknown"
+    if params is None:
+        return "unknown", "unknown", "unknown"
+    info = getattr(params, "clientInfo", None)
+    return (_safe_detail(getattr(info, "name", "unknown") or "unknown", 40),
+            _safe_detail(getattr(info, "version", "unknown") or "unknown", 40),
+            _safe_detail(getattr(params, "protocolVersion", "unknown") or "unknown"))
+
+
 async def request_ioc_sharing_detailed(ctx: Any | None,
                                        message: str) -> ConsentDecision:
     """Ask the MCP host/user and name the branch that decided the outcome.
@@ -154,11 +170,13 @@ async def request_ioc_sharing_detailed(ctx: Any | None,
     client *requested*; the pinned SDK does not retain a negotiated revision),
     ``elicitation_capability_missing``, ``elicitation_error``, ``user_declined``,
     ``user_cancelled``, ``approval_not_given`` (accepted form, box unticked),
-    ``invalid_approval_response``, ``approved``.
+    ``approval_field_missing``, ``empty_content``, ``invalid_approval_response``,
+    ``approved``.
 
     A client that cannot elicit, uses an older revision, declines, cancels,
-    leaves the box unticked, or returns a non-boolean approval is a refusal. The server cannot prove the
-    client showed the prompt to a human if the client is an autonomous agent.
+    leaves the box unticked, or returns a non-boolean approval is a refusal.
+    The server cannot prove the client showed the prompt to a human if the
+    client is an autonomous agent.
     """
     def decision(approved: bool, reason: str, detail: str = "") -> ConsentDecision:
         # Log the branch only: never the prompt text or the indicator.
@@ -168,6 +186,9 @@ async def request_ioc_sharing_detailed(ctx: Any | None,
 
     if ctx is None:
         return decision(False, "context_missing")
+    name, version, asked = _host_facts(ctx)
+    logger.info("VirusTotal consent host=%s/%s requested=%s elicitation=%s",
+                name, version, asked, _capability_state(ctx)[0])
     requested = _negotiated_protocol(ctx)
     if requested == "unsupported":
         return decision(False, "context_missing", "client_params_missing")
@@ -179,7 +200,11 @@ async def request_ioc_sharing_detailed(ctx: Any | None,
     if not supported:
         return decision(False, "elicitation_capability_missing", evidence)
     try:
-        result = await ctx.elicit(message, schema=IocSharingApproval)
+        # Raw form response: FastMCP's ctx.elicit() coerces content through the
+        # model, which turns a missing field into the default False.
+        result = await ctx.session.elicit_form(
+            message=message,
+            requestedSchema=IocSharingApproval.model_json_schema())
     except Exception as exc:
         return decision(False, "elicitation_error", type(exc).__name__)
     action = getattr(result, "action", None)
@@ -191,17 +216,32 @@ async def request_ioc_sharing_detailed(ctx: Any | None,
     if action != "accept":
         return decision(False, "invalid_approval_response",
                         f"action={_safe_detail(action)}")
-    data = getattr(result, "data", None)
-    approved = data.get("approve") if isinstance(data, dict) \
-        else getattr(data, "approve", None)
+    content = getattr(result, "content", None)
+    if content is None:
+        return decision(False, "invalid_approval_response", "content=none")
+    if not isinstance(content, dict):
+        return decision(False, "invalid_approval_response",
+                        f"content_type={type(content).__name__}")
+    if not content:
+        return decision(False, "empty_content", "content=empty")
+    if "approve" not in content:
+        return decision(False, "approval_field_missing",
+                        "content=present approve_field=missing")
+    approved = content["approve"]
     if approved is True:
-        return decision(True, "approved")
+        # Manual checks classify the refusal; the model is the final gate so a
+        # hand-built dict cannot drift from the schema the prompt advertises.
+        try:
+            IocSharingApproval.model_validate(content)
+        except Exception:
+            return decision(False, "invalid_approval_response", "schema=rejected")
+        return decision(True, "approved", "content=present approve=true")
     if approved is False:
-        # The form came back accepted with the box unticked: a different fix
-        # from a deliberate decline, and the operator can see which happened.
-        return decision(False, "approval_not_given", "approve=false")
+        # Accepted form with the box off: a different fix from a decline.
+        return decision(False, "approval_not_given",
+                        "content=present approve=false")
     return decision(False, "invalid_approval_response",
-                    f"approve={type(approved).__name__}")
+                    f"approve_type={type(approved).__name__}")
 
 
 async def request_ioc_sharing(ctx: Any | None, message: str) -> bool:

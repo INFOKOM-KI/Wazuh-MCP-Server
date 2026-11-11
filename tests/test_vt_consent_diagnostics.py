@@ -13,29 +13,41 @@ from mcp_server.threat_intel import virustotal_consent as consent
 
 
 class _Session:
-    def __init__(self, version="2025-06-18", elicitation=True):
-        self.client_params = SimpleNamespace(protocolVersion=version)
+    def __init__(self, version="2025-06-18", elicitation=True,
+                 action="accept", approve=True, raises=None, content="auto"):
+        self.client_params = SimpleNamespace(
+            protocolVersion=version,
+            clientInfo=SimpleNamespace(name="TestHost", version="1.0"))
         self._elicitation = elicitation
+        self.action = action
+        self.approve = approve
+        self.raises = raises
+        self.content = content
+        self.calls = 0
 
     def check_client_capability(self, capability):
         return self._elicitation
 
+    def _raw_content(self):
+        if self.content != "auto":
+            return self.content
+        return {"approve": self.approve} if self.action == "accept" else None
 
-class _Ctx:
-    def __init__(self, *, version="2025-06-18", elicitation=True,
-                 action="accept", approve=True, raises=None):
-        self.request_context = SimpleNamespace(session=_Session(version, elicitation))
-        self.action = action
-        self.approve = approve
-        self.raises = raises
-        self.calls = 0
-
-    async def elicit(self, message, schema):
+    async def elicit_form(self, message, requestedSchema, related_request_id=None):
         self.calls += 1
         if self.raises:
             raise self.raises
-        return SimpleNamespace(action=self.action,
-                               data=SimpleNamespace(approve=self.approve))
+        return SimpleNamespace(action=self.action, content=self._raw_content())
+
+
+class _Ctx:
+    def __init__(self, **kwargs):
+        self.session = _Session(**kwargs)
+        self.request_context = SimpleNamespace(session=self.session)
+
+    @property
+    def calls(self):
+        return self.session.calls
 
 
 class _NoParams:
@@ -66,8 +78,10 @@ def test_approved():
 
 
 def test_missing_elicitation_capability():
-    decision = _ask(_Ctx(elicitation=False))
+    ctx = _Ctx(elicitation=False)
+    decision = _ask(ctx)
     assert decision.reason == "elicitation_capability_missing"
+    assert ctx.calls == 0
 
 
 @pytest.mark.parametrize("version", ["2024-11-05", "2025-03-26"])
@@ -94,7 +108,7 @@ def test_user_cancels():
 def test_accepted_form_without_the_box_ticked_is_not_a_decline():
     decision = _ask(_Ctx(approve=False))
     assert decision.reason == "approval_not_given"
-    assert decision.detail == "approve=false"
+    assert decision.detail == "content=present approve=false"
 
 
 @pytest.mark.parametrize("approve", ["yes", 1, None])
@@ -128,3 +142,40 @@ def test_reason_does_not_leak_the_prompt_text(monkeypatch):
     _ask(_Ctx(action="decline"))
     assert all("consent?" not in line for line in seen)
     assert any("user_declined" in line for line in seen)
+
+
+def test_empty_form_content_is_not_approval():
+    decision = _ask(_Ctx(content={}))
+    assert decision.reason == "empty_content"
+    assert decision.approved is False
+
+
+def test_form_without_the_approval_field_is_classified_separately():
+    decision = _ask(_Ctx(content={"other": True}))
+    assert decision.reason == "approval_field_missing"
+    assert decision.approved is False
+
+
+def test_null_content_is_incomplete():
+    decision = _ask(_Ctx(content=None))
+    assert decision.reason == "invalid_approval_response"
+    assert decision.detail == "content=none"
+
+
+def test_non_object_content_is_rejected():
+    decision = _ask(_Ctx(content=["approve"]))
+    assert decision.reason == "invalid_approval_response"
+    assert decision.detail == "content_type=list"
+
+
+@pytest.mark.parametrize("value", [1, "true", [True], {"approve": True}])
+def test_truthy_values_are_not_approval(value):
+    decision = _ask(_Ctx(content={"approve": value}))
+    assert decision.reason == "invalid_approval_response"
+    assert "approve_type=" in decision.detail
+
+
+def test_automatic_default_answer_cannot_mint_consent():
+    """A client that accepts and fills the schema defaults sends approve=false."""
+    decision = _ask(_Ctx(action="accept", approve=False))
+    assert decision.reason == "approval_not_given"

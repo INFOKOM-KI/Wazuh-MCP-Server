@@ -176,19 +176,32 @@ def config_singleton():
 
 
 class ConsentContext:
-    """Minimal FastMCP Context stand-in for tool-level consent tests."""
+    """Minimal FastMCP Context stand-in for tool-level consent tests.
 
-    def __init__(self, approve: bool = True, action: str | None = None) -> None:
-        self.approve = approve
-        self.action = action or ("accept" if approve else "decline")
-        self.messages: list[str] = []
+    Exposes `session.elicit_form`, the path production code uses to keep the
+    raw form content: an empty form must stay distinguishable from approve=false.
+    """
 
-    async def elicit(self, message, schema):
+    def __init__(self, approve: bool = True, action: str | None = None,
+                 content=None) -> None:
         from types import SimpleNamespace
 
+        self.approve = approve
+        self.action = action or ("accept" if approve else "decline")
+        self.content = content
+        self.messages: list[str] = []
+        self.session = SimpleNamespace(elicit_form=self._elicit_form,
+                                       client_params=None)
+        self._ns = SimpleNamespace
+
+    async def _elicit_form(self, message, requestedSchema, related_request_id=None):
         self.messages.append(message)
-        return SimpleNamespace(action=self.action,
-                               data=SimpleNamespace(approve=self.approve))
+        content = self.content if self.content is not None else (
+            {"approve": self.approve} if self.action == "accept" else None)
+        return self._ns(action=self.action, content=content)
+
+    async def elicit(self, message, schema):
+        return await self._elicit_form(message, None)
 
 
 @pytest.fixture

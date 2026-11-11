@@ -52,7 +52,7 @@ ErrorKind = Literal[
 ]
 _ERROR_KINDS = frozenset(get_args(ErrorKind))
 VT_HOST_REFUSAL = (
-    "host approval was not granted; the client must support Context.elicit on "
+    "host approval was not granted; the client must support MCP elicitation on "
     "protocol 2025-06-18 or 2025-11-25, and the operator must approve the prompt")
 _LOCAL_REFUSAL_KINDS = frozenset({
     "not_configured", "unsupported_type", "bad_request", "circuit_open",
@@ -554,8 +554,12 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
     host confirmation and the MCP host returns an explicit approval. The boolean
     alone is not consent. Queried indicators are added to VirusTotal's community
     dataset. Without host approval, VT returns ``consent_required`` with the
-    refusal reason (no elicitation support, an older protocol revision, or an
-    operator who declined), and no request or quota reservation is made.
+    refusal reason as a ``[reason=...]`` token plus ``detail.consent_reason``
+    (``context_missing``, ``unsupported_protocol``,
+    ``elicitation_capability_missing``, ``elicitation_error``,
+    ``approval_not_given``, ``empty_content``, ``approval_field_missing``,
+    ``user_declined``, ``user_cancelled``, ``invalid_approval_response``), and no
+    request or quota reservation is made.
 
     **Error Handling**: Providers without API keys are skipped and reported in
     ``errors[]``. Each result also carries ``error_kind`` for JSON consumers. Upstream
