@@ -671,8 +671,8 @@ async def blueteam_crtsh_lookup(params: CrtshLookupInput) -> str:
     """Search SSL certificate transparency logs for a domain via crt.sh.
 
     Returns all SSL/TLS certificates issued for a domain and its subdomains.
-    This is a powerful pivoting technique: find sibling domains an attacker
-    registered alongside the one you're investigating.
+    Certificates name sibling domains registered alongside the one you are
+    investigating, which is how an infrastructure pivot usually starts.
 
     **No API key required** - crt.sh is a free, public Certificate Transparency log.
 

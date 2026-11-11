@@ -80,12 +80,11 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     """Generate a threat card for a source IP.
     Collapses alert summarization, attack chain analysis, MITRE ATT&CK
     mapping, and threat intelligence (CrowdSec + GreyNoise) into a single
-    structured report. Designed as the one-stop triage tool the LLM can
-    understand the full threat context in one call.
+    structured report, so one call gives the full context for triage.
 
     **Required Permissions**: Wazuh Indexer ``read`` access.
-    CrowdSec/GreyNoise lookups are best-effort (fail gracefully if keys
-    are not configured).
+    A missing CrowdSec key or a failed GreyNoise call leaves that section out
+    of the card; the alert summary still renders.
 
     Args:
         params.redaction_policy: 'full' (shape-based, default), 'protect_victim' (mask victim-owned indicators only), 'raw' (Layer 1 credential strip only, requires BLUETEAM_ALLOW_FORENSIC_BYPASS).

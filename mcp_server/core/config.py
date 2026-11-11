@@ -79,7 +79,7 @@ class WazuhManagerConfig:
         )
 
     def validate(self) -> None:
-        """Manager API is optional - tools degrade gracefully when unset."""
+        """Reject a URL without a password; an unset URL disables the tools."""
         if self.url and not self.password:
             raise ConfigurationError(
                 "WAZUH_API_URL is set but WAZUH_API_PASSWORD is empty -"
@@ -252,7 +252,7 @@ class ThreatIntelConfig:
         )
 
     def validate(self) -> None:
-        """Threat-intel keys are all optional - tools degrade gracefully."""
+        """Reject negative intervals and budgets; absent keys leave tools unconfigured."""
         if self.netra_min_interval < 0:
             raise ConfigurationError("NETRA_MIN_INTERVAL must be >= 0")
         if self.argus_min_interval < 0:

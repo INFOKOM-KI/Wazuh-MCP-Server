@@ -35,13 +35,15 @@ PLUMBING = {
 }
 
 ELICIT = "request_ioc_sharing"
+# The detailed form is the same gate; it returns the refusal reason alongside.
+ELICIT_NAMES = {ELICIT, "request_ioc_sharing_detailed"}
 MINT = "issue_consent"
 
 
 def _aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
     """Return (mint names, elicit names) as they appear in this module."""
     mint = {MINT}
-    elicit = {ELICIT}
+    elicit = set(ELICIT_NAMES)
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom):
             continue
@@ -49,7 +51,7 @@ def _aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
             local = alias.asname or alias.name
             if alias.name == MINT:
                 mint.add(local)
-            elif alias.name == ELICIT:
+            elif alias.name in ELICIT_NAMES:
                 elicit.add(local)
     return mint, elicit
 
@@ -62,7 +64,7 @@ def _is_call_to(node: ast.AST, names: set[str], attr_name: str) -> bool:
         return func.id in names
     if isinstance(func, ast.Attribute):
         # v.issue_consent(...) and module.issue_consent(...)
-        return func.attr == attr_name
+        return func.attr == attr_name or func.attr in ELICIT_NAMES
     return False
 
 

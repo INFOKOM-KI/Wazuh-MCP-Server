@@ -136,9 +136,10 @@ def test_virustotal_provider_routes_indicator_types(tmp_path):
                                  vt._normalize(token_kind, indicator))))
             assert result.error is None, result.error
             assert seen[-1].endswith(f"/{segment}/{indicator}"), seen[-1]
-            assert result.risk_level == "low"  # 6/70 = 8%
+            assert result.risk_level == "medium"  # 6/70 = 8%: a detection, not low risk
             assert result.reputation_score == 8
-            assert result.is_malicious is False
+            assert result.is_malicious is True
+            assert result.detail["vt_verdict"] == "malicious"
             assert result.detail["detections"] == "6/70"
             assert result.detail["analysis_stats"]["malicious"] == 6
             assert result.detail["community_reputation"] == 12
@@ -177,8 +178,10 @@ def test_aggregate_surfaces_host_refusal_instead_of_blaming_the_caller(monkeypat
     import asyncio
     from mcp_server.tools import threat_intel_aggregate as agg
 
+    from mcp_server.threat_intel.virustotal_consent import ConsentDecision
+
     async def decline(ctx, message):
-        return False
+        return ConsentDecision(False, "user_declined")
 
     def stub(name):
         async def provider(*args, **kwargs):
@@ -188,7 +191,7 @@ def test_aggregate_surfaces_host_refusal_instead_of_blaming_the_caller(monkeypat
     for name in ("_crowdsec_provider", "_threatfox_provider", "_otx_provider",
                  "_greynoise_provider", "_abuseipdb_provider"):
         monkeypatch.setattr(agg, name, stub(name.strip("_")))
-    monkeypatch.setattr(agg, "request_ioc_sharing", decline)
+    monkeypatch.setattr(agg, "request_ioc_sharing_detailed", decline)
     monkeypatch.setattr(agg, "VIRUSTOTAL_API_KEY", "test-key")
 
     output = asyncio.run(agg.blueteam_threat_intel_aggregate(

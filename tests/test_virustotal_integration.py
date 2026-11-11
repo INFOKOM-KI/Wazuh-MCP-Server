@@ -263,10 +263,10 @@ def test_cache_key_never_contains_the_api_key(monkeypatch):
 
 @pytest.mark.parametrize("stats,risk,is_malicious,any_detection", [
     (_stats(harmless=10), "none", False, False),
-    (_stats(malicious=1, harmless=58, undetected=33), "low", False, True),
+    (_stats(malicious=1, harmless=58, undetected=33), "medium", True, True),
     (_stats(malicious=20, harmless=80), "medium", True, True),
     (_stats(malicious=50, harmless=50), "high", True, True),
-    (_stats(suspicious=2, harmless=8), "none", False, False),
+    (_stats(suspicious=2, harmless=8), "medium", None, False),
 ])
 def test_provider_verdict_uses_existing_risk_thresholds(stats, risk, is_malicious,
                                                          any_detection):
@@ -738,7 +738,7 @@ def test_provider_accepts_every_quota_error_kind(kind):
 
 
 def _not_configured(provider):
-    async def _provider(indicator, ind_type):
+    async def _provider(indicator, ind_type, *args, **kwargs):
         return agg.TIProviderResult(
             provider=provider, indicator=indicator, indicator_type=ind_type,
             error="not configured", error_kind="not_configured")
@@ -932,13 +932,14 @@ def test_markdown_includes_retrieval_timestamp():
 def test_aggregate_markdown_includes_vt_retrieval(monkeypatch, consent_approval):
     from mcp_server.tools.threat_intel_aggregate import ThreatIntelAggregateInput
 
-    async def vt_provider(indicator, ind_type, acknowledge_ioc_sharing=False):
+    async def vt_provider(indicator, ind_type, *args, **kwargs):
         return agg.TIProviderResult(
             provider="virustotal", indicator=indicator, indicator_type=ind_type,
             risk_level="low", reputation_score=1, is_malicious=False,
             detail={
                 "detections": "1/92", "community_reputation": 117,
                 "cached": True, "retrieved_at": "2026-11-08T00:00:00+00:00",
+                "last_analysis_date": 1700000000,
                 "cache_age_seconds": 120, "cache_ttl_seconds": 3600,
                 "cache_expired": False, "http_status": 200,
             })
@@ -962,6 +963,7 @@ def test_aggregate_markdown_includes_vt_retrieval(monkeypatch, consent_approval)
     assert "### VirusTotal retrieval" in output
     assert "cache, retrieved 2026-11-08T00:00:00+00:00" in output
     assert "age 120s/TTL 3600s" in output
+    assert "analysis 2023-11-14T22:13:20Z" in output
 
 
 def test_direct_lookup_requires_consent_before_cache_or_quota(monkeypatch):

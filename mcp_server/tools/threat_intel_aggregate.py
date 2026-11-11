@@ -18,6 +18,7 @@ Normalizes each into TIProviderResult, then aggregates into TIQueryOutput.
 """
 from __future__ import annotations
 import json, asyncio, os, logging
+from datetime import datetime, timezone
 from typing import Optional, Literal, get_args
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp.server.fastmcp import Context
@@ -28,7 +29,7 @@ from mcp_server.core.http_client import (_api_call, _classify_api_error,
 from mcp_server.threat_intel.virustotal import (issue_consent, normalize_domain,
                                                 normalize_hash)
 from mcp_server.threat_intel.virustotal_consent import (consent_message,
-                                                        request_ioc_sharing)
+                                                        request_ioc_sharing_detailed)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.threat_intel.greynoise import _NO_DATA_MESSAGE, _greynoise_lookup
 from mcp_server.threat_intel.otx import (_classify_indicator, _normalize_adversary,
@@ -344,7 +345,17 @@ async def _abuseipdb_provider(indicator: str, ind_type: str) -> TIProviderResult
 
 async def _virustotal_provider(indicator: str, ind_type: str,
                                consent_token: str | None = None,
-                               denied_reason: str | None = None) -> TIProviderResult:
+                               denied_reason: str | None = None,
+                               denial_kind: str | None = None) -> TIProviderResult:
+    """Map a VirusTotal report onto one provider result.
+
+    The detection ratio is the share of engines that flagged the indicator, not
+    a confidence score: one engine is a detection, so `is_malicious` follows
+    `malicious > 0`. The 50% boundary below is the high-risk tier the previous
+    mapping already used; it is a severity tier for display and never upgrades
+    or downgrades the verdict. Community reputation stays in `detail` and does
+    not feed either field.
+    """
     vt_types = {"file": "files", "domain": "domains",
                 "IPv4": "ip_addresses", "IPv6": "ip_addresses"}
     configured = bool(VIRUSTOTAL_API_KEY)
@@ -357,27 +368,34 @@ async def _virustotal_provider(indicator: str, ind_type: str,
     if consent_token is None and denied_reason:
         return TIProviderResult(provider="virustotal", indicator=indicator,
                                 indicator_type=ind_type, error=denied_reason,
-                                error_kind="consent_required")
+                                error_kind="consent_required",
+                                detail=({"consent_reason": denial_kind}
+                                        if denial_kind else {}))
     from mcp_server.threat_intel.virustotal import VirusTotalError, lookup
     try:
         data = await lookup(vt_types[ind_type], indicator,
                             consent_token=consent_token)
         mal = data["malicious"]
+        susp = data.get("suspicious") or 0
         complete = bool(data.get("stats_complete", False))
         total = data.get("total_engines")
         score = data.get("detection_percent")
-        if complete and score is not None:
-            risk = ("high" if score >= 50 else "medium" if score >= 20
-                    else "low" if mal > 0 else "none")
-            is_malicious = risk in ("high", "medium")
+        # One engine flagging the IP is a detection, not a low-risk neighbour.
+        # An incomplete or suspicious-only report is never a clean verdict.
+        if not complete or score is None:
+            risk, is_malicious, verdict = None, None, "inconclusive"
+        elif mal > 0:
+            risk, is_malicious, verdict = ("high" if score >= 50 else "medium"), True, "malicious"
+        elif susp > 0:
+            risk, is_malicious, verdict = "medium", None, "suspicious"
         else:
-            risk = None
-            is_malicious = None
+            risk, is_malicious, verdict = "none", False, "no_detections"
         return TIProviderResult(
             provider="virustotal", indicator=indicator, indicator_type=ind_type,
             risk_level=risk, reputation_score=score if complete else None,
             is_malicious=is_malicious,
             detail={
+                "vt_verdict": verdict,
                 "detections": (f"{mal}/{total}" if complete and total is not None
                                else f"{mal}/? (incomplete)"),
                 "detection_percent": score,
@@ -516,7 +534,8 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
     VirusTotal **concurrently** for a single indicator (IP / domain / hash),
     normalizes each into a unified result, and returns an aggregated verdict.
 
-    This replaces 6 sequential tool calls with one faster and gives a consensus view across independent sources.
+    One call replaces six sequential tool calls and gives a consensus view
+    across independent sources.
 
     **Worked Examples**
 
@@ -555,6 +574,7 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
 
     vt_token = None
     vt_denial: str | None = None
+    vt_denial_kind: str | None = None
     if params.acknowledge_ioc_sharing and VIRUSTOTAL_API_KEY:
         try:
             consent_target = _vt_consent_target(ind_type, params.indicator)
@@ -564,11 +584,13 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
             vt_denial = "no VirusTotal consent target for this indicator type"
         else:
             vt_kind, vt_value = consent_target
-            if await request_ioc_sharing(
-                    ctx, consent_message(vt_kind, vt_value)):
+            decision = await request_ioc_sharing_detailed(
+                ctx, consent_message(vt_kind, vt_value))
+            if decision.approved:
                 vt_token = issue_consent(vt_kind, vt_value)
             else:
-                vt_denial = VT_HOST_REFUSAL
+                vt_denial = f"{VT_HOST_REFUSAL} [reason={decision.reason}]"
+                vt_denial_kind = decision.reason
 
     # Query all applicable providers concurrently
     tasks = [
@@ -577,7 +599,8 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
         _otx_provider(params.indicator, ind_type),
         _greynoise_provider(params.indicator, ind_type),
         _abuseipdb_provider(params.indicator, ind_type),
-        _virustotal_provider(params.indicator, ind_type, vt_token, vt_denial),
+        _virustotal_provider(params.indicator, ind_type, vt_token, vt_denial,
+                             vt_denial_kind),
     ]
     results: list[TIProviderResult] = await asyncio.gather(*tasks)
     output = _aggregate(results)
@@ -643,11 +666,15 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
             source = "cache" if detail.get("cached") else "live API"
             age = detail.get("cache_age_seconds")
             ttl = detail.get("cache_ttl_seconds")
+            analysed = detail.get("last_analysis_date")
+            analysed_text = (datetime.fromtimestamp(analysed, timezone.utc)
+                             .strftime("%Y-%m-%dT%H:%M:%SZ")
+                             if isinstance(analysed, int) else "-")
             lines.append(
                 f"- `{row.indicator}`: {source}, retrieved {detail.get('retrieved_at') or '-'}, "
                 f"age {age if age is not None else '-'}s/TTL {ttl if ttl is not None else '-'}s, "
                 f"expired {'yes' if detail.get('cache_expired') else 'no'}, "
-                f"HTTP {detail.get('http_status') or '-'}")
+                f"analysis {analysed_text}, HTTP {detail.get('http_status') or '-'}")
         # Network attributes are shown only when VirusTotal returned them. An
         # absent field prints as "-", never as a guessed value.
         lines.append("")
