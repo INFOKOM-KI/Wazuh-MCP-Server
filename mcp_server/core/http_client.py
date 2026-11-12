@@ -323,8 +323,16 @@ async def _api_call(method: str, url: str, *, client_name: str | None = None, ve
                             body.extend(chunk)
                             if len(body) > max_response_bytes:
                                 raise ResponseTooLargeError(max_response_bytes)
+                        # aiter_bytes() decodes the body; strip the encoding and
+                        # length headers or the rebuilt response decodes it again.
+                        headers = {
+                            key: value for key, value in stream.headers.items()
+                            if key.lower() not in ("content-encoding",
+                                                   "content-length",
+                                                   "transfer-encoding")
+                        }
                         resp = httpx.Response(
-                            stream.status_code, headers=stream.headers,
+                            stream.status_code, headers=headers,
                             content=bytes(body), request=request)
                     finally:
                         await stream.aclose()

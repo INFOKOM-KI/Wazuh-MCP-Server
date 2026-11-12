@@ -630,6 +630,57 @@ def test_bounded_response_without_content_length_is_accepted(monkeypatch):
     _run(client.aclose())
 
 
+def test_bounded_compressed_response_decodes_once(monkeypatch):
+    import gzip
+    from mcp_server.core import http_client
+
+    payload = b'{"ok": true}'
+
+    async def handler(request):
+        return httpx.Response(
+            200, content=gzip.compress(payload),
+            headers={"Content-Encoding": "gzip",
+                     "Content-Type": "application/json"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def fake_get_client(name, verify=True):
+        return client
+
+    monkeypatch.setattr(http_client, "_get_client", fake_get_client)
+    response = _run(http_client._api_call(
+        "get", "https://www.virustotal.com/api/v3/ip_addresses/8.8.8.8",
+        client_name="virustotal-gzip", max_response_bytes=100))
+    assert response.json() == {"ok": True}
+    _run(client.aclose())
+
+
+def test_bounded_response_counts_decoded_bytes(monkeypatch):
+    import gzip
+    from mcp_server.core import http_client
+    from mcp_server.core.http_client import ResponseTooLargeError
+
+    payload = b'{"x": "' + b"a" * 200 + b'"}'
+
+    async def handler(request):
+        return httpx.Response(
+            200, content=gzip.compress(payload),
+            headers={"Content-Encoding": "gzip",
+                     "Content-Type": "application/json"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def fake_get_client(name, verify=True):
+        return client
+
+    monkeypatch.setattr(http_client, "_get_client", fake_get_client)
+    with pytest.raises(ResponseTooLargeError):
+        _run(http_client._api_call(
+            "get", "https://www.virustotal.com/api/v3/ip_addresses/8.8.8.8",
+            client_name="virustotal-gzip-large", max_response_bytes=100))
+    _run(client.aclose())
+
+
 def test_insecure_base_url_is_rejected_before_transport(monkeypatch):
     calls = []
 
