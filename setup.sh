@@ -40,7 +40,7 @@ mkdir -p "$INSTALL_DIR"
 find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find . -type f -name "*.pyc" -delete 2>/dev/null || true
 
-# Copy the server — main.py is the entry point (M14 modular refactor)
+# Copy the server: main.py is the entry point (M14 modular refactor)
 cp main.py "$INSTALL_DIR/"
 cp -r mcp_server/ "$INSTALL_DIR/mcp_server/"
 cp requirements.txt "$INSTALL_DIR/"
@@ -573,8 +573,10 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET="5"       # cumulative per-endpoint/per-process before the first header; headerless does not restore
 # export ABUSEIPDB_CACHE_TTL="900"
 # export VIRUSTOTAL_API_KEY="your_key"    # https://www.virustotal.com
-# VirusTotal is closed at budget 0. Normal startup never creates state. The operator creates
-# it with: python -m mcp_server.threat_intel.virustotal_quota init --state ... --budget ...
+# VirusTotal is closed at budget 0. Normal startup never creates state. With a positive
+# budget, the wrapper enables AUTOINIT and the first request creates it; set AUTOINIT=false
+# to require the explicit init command. The operator creates it with:
+# python -m mcp_server.threat_intel.virustotal_quota init --state ... --budget ...
 # --hours ... --rate ... --daily ...  The state is 0600 SQLite and shared by server processes.
 # The CLI is a local administrative command, not an MCP tool; run it as the service user.
 # The state directory must not be group or world writable; the state file is 0600.
@@ -586,6 +588,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # the agreement before arming a SOC alert-enrichment deployment. A key alone does not prove entitlement.
 # export BLUETEAM_VIRUSTOTAL_BUDGET="0"
 # export BLUETEAM_VIRUSTOTAL_BUDGET_HOURS="8"
+# export BLUETEAM_VIRUSTOTAL_AUTOINIT="true"   # requires BUDGET > 0; the wrapper enables it when armed
 # export BLUETEAM_VIRUSTOTAL_STATE="/var/log/blue-team-mcp/virustotal_quota.db"
 # export VIRUSTOTAL_ALLOWED_HOSTS="www.virustotal.com"
 # export VIRUSTOTAL_MAX_RESPONSE_BYTES="2000000"
@@ -611,15 +614,15 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export NVD_API_KEY="your_key"            # free: https://nvd.nist.gov/developers/request-an-api-key (5->50 req/30s)
 # export GITHUB_TOKEN="your_token"         # optional: enables Nuclei PoC code-search + higher GitHub rate limit
 
-# Argus Threat Intelligence (optional — TangerangKota-CSIRT)
+# Argus Threat Intelligence (optional, TangerangKota-CSIRT)
 # export ARGUS_API_KEY="your_key"         # You should MoU to TangerangKota-CSIRT for secret api key.:)
 # export ARGUS_BASE_URL="http://<host>:<port>/lookup-jobs"  # full endpoint
 # export ARGUS_VERIFY_SSL="false"         # set to "true" for production / trusted CA
 # export ARGUS_MIN_INTERVAL="30"          # seconds between Argus lookups (outbound rate limit)
 
-# GreyNoise Community — no API key needed; greynoise_ip_context works out of the box.
+# GreyNoise Community: no API key needed; greynoise_ip_context works out of the box.
 
-# MISP threat intelligence (optional — your own sharing instance, READ-ONLY key)
+# MISP threat intelligence (optional, your own sharing instance, READ-ONLY key)
 # export MISP_URL="https://misp.example.go.id"     # no trailing slash
 # export MISP_API_KEY="your_readonly_key"          # MISP > Administration > List Users, or your profile
 # export MISP_VERIFYCERT="true"                    # "false" only for a self-signed internal cert
@@ -628,9 +631,9 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export MISP_MAX_CONCURRENT="2"                   # in-flight requests
 # export MISP_TIMEOUT="20"                         # per-request budget in seconds
 # NOTE: setting MISP_URL without MISP_API_KEY stops the server at startup (ConfigurationError).
-# No MISP-specific pip package is needed — the tool uses the shared httpx pool.
+# No MISP-specific pip package is needed; the tool uses the shared httpx pool.
 
-# External API Base URLs (defaults shown — override for self-hosted mirrors or proxies)
+# External API Base URLs (defaults shown; override for self-hosted mirrors or proxies)
 # export GREYNOISE_BASE_URL="https://api.greynoise.io/v3/community"
 # export CROWDSEC_BASE_URL="https://cti.api.crowdsec.net"
 # export THREATFOX_BASE_URL="https://threatfox-api.abuse.ch/api/v1/"
@@ -643,7 +646,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export URLHAUS_BASE_URL="https://urlhaus-api.abuse.ch/v1/"
 # export HUDSONROCK_BASE_URL="https://cavalier.hudsonrock.com/api/json/v2"  # stealer-log check
 
-# Caching TTLs (seconds — defaults shown)
+# Caching TTLs (seconds, defaults shown)
 # export CROWDSEC_CACHE_TTL="900"
 # export THREATFOX_CACHE_TTL="900"
 # export OTX_CACHE_TTL="1800"
@@ -655,7 +658,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_CMDB_FILE="/var/log/blue-team-mcp/cmdb_inventory.json"
 # export BLUETEAM_STIX_CACHE="/var/log/blue-team-mcp/mitre_enterprise_attack.json"  # MITRE ATT&CK STIX bundle cache
 
-# MCP transport (optional — default: stdio for SSH usage)
+# MCP transport (optional, default: stdio for SSH usage)
 # Uncomment one for a remote HTTP service:
 # export MCP_TRANSPORT="streamable_http"
 # export MCP_HOST="0.0.0.0"
@@ -666,7 +669,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export MCP_API_KEY="btm_<43-char-base64>"
 # export MCP_API_KEY_SCOPES="wazuh:read wazuh:write"   # default: wazuh:read (read-only)
 
-# Inbound HTTP hardening (optional — streamable_http only)
+# Inbound HTTP hardening (optional, streamable_http only)
 # export BLUETEAM_HTTP_RATE_LIMIT="60"          # sliding-window requests/min per client IP; 0 = disabled
 # export BLUETEAM_ALLOWED_ORIGINS="https://app.example.com"  # comma-separated exact Origins; loopback always allowed
 
@@ -677,15 +680,15 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export WAZUH_API_URL="https://192.168.1.180:55000"
 # export WAZUH_API_USER="wazuh-wui"
 # export WAZUH_API_PASSWORD="MyS3cr37P450r.*-"
-# export WAZUH_API_VERIFY_SSL="true"   # TLS verification ON by default — disable only for self-signed labs
+# export WAZUH_API_VERIFY_SSL="true"   # TLS verification ON by default; disable only for self-signed labs
 
 # Wazuh Indexer / OpenSearch (optional - for HYDRA-DC Windows events, port 9200)
 # export WAZUH_INDEXER_URL="https://192.168.1.180:9200"
 # export WAZUH_INDEXER_USER="admin"
 # export WAZUH_INDEXER_PASSWORD="your_indexer_password"
-# export WAZUH_INDEXER_VERIFY_SSL="true"  # TLS verification ON by default — disable only for self-signed labs
+# export WAZUH_INDEXER_VERIFY_SSL="true"  # TLS verification ON by default; disable only for self-signed labs
 
-# Tool gating (optional — hide write tools or specific categories/tools)
+# Tool gating (optional, hide write tools or specific categories/tools)
 # export WAZUH_READ_ONLY="false"                     # true = block write tools
 # export WAZUH_DISABLED_CATEGORIES="host_forensics"  # comma-separated categories
 # export WAZUH_DISABLED_TOOLS="tool_name_1,tool_name_2"
@@ -733,10 +736,10 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_RAG_QUERY_NORMALIZE="false"     # true = NFKC the query before retrieval, so a pasted full-width indicator can match.
 #                                                 # NFKC is a no-op for ASCII, so false is byte-identical to the raw-query path.
 
-# Forensic Mode (ADMIN GATE — off by default)
+# Forensic Mode (ADMIN GATE, off by default)
 # export BLUETEAM_ALLOW_UNTRUNCATED="false"
 
-# Tier-2 forensic bypass — raw (unmasked) data to disk via blueteam_wazuh_export (HUMAN ONLY)
+# Tier-2 forensic bypass: raw (unmasked) data to disk via blueteam_wazuh_export (HUMAN ONLY)
 # export BLUETEAM_ALLOW_FORENSIC_BYPASS="false"
 # export BLUETEAM_FORENSIC_TOKEN="change-me-per-deployment"   # change this adjust based on your server prods
 # Tier-1b identity reveal (reveal_identities=true), needs BLUETEAM_FORENSIC_TOKEN:
@@ -744,7 +747,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_ALLOW_IDENTITY_REVEAL="false"
 # export BLUETEAM_EXPORT_RETENTION_DAYS="7"     # auto-prune export_*.jsonl older than N days; 0 = keep forever
 
-# Sangfor Blocklist Integration (optional — set SANGFOR_BLOCKLIST_TOKEN to enable sangfor_blocklist_* tools)
+# Sangfor Blocklist Integration (optional, set SANGFOR_BLOCKLIST_TOKEN to enable sangfor_blocklist_* tools)
 # URL must point directly at the /blocklist endpoint. sangfor_blocklist_list POSTs a JSON
 # body {date_start, date_end, limit, offset, ip} to this exact URL (ip key omitted when no IP filter).
 # export SANGFOR_BLOCKLIST_URL="http://sangfor.local:8088/blocklist"
@@ -762,21 +765,21 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # Redaction policy: full | protect_victim (default) | raw
 # export BLUETEAM_REDACTION_POLICY="protect_victim"
 
-# Owned domains for Tier-1 forensic unmasking (reveal_owned=true) — comma-separated
+# Owned domains for Tier-1 forensic unmasking (reveal_owned=true), comma-separated
 # export BLUETEAM_OWNED_DOMAINS="tangerangkota.go.id"   # change this, use comma to multiple domain names
 # export BLUETEAM_ALLOW_RUNTIME_DOMAINS="false"   # allow blueteam_set_owned_domains at runtime
 
 # Forensic email/path hashing salt (change per deployment)
 # export BLUETEAM_REDACT_SALT="change-me-per-deployment"
 
-# Server identity (optional — use lowercase to avoid LLM casing mismatches)
+# Server identity (optional, use lowercase to avoid LLM casing mismatches)
 # export BLUE_TEAM_MCP_SERVER_NAME="blue_team_mcp"
 
 # audit and limits (optional)
 # export BLUETEAM_INVESTIGATION_HISTORY="/var/log/blue-team-mcp/investigation_history.jsonl"
 # export BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES="10000"
 # export BLUETEAM_EXPORT_DIR="/var/log/blue-team-mcp/exports"
-# STIX 2.1 egress — the only path that shares indicators OUT of the perimeter (off by default)
+# STIX 2.1 egress: the only path that shares indicators OUT of the perimeter (off by default)
 # export BLUETEAM_STIX_EGRESS_ENABLED="false"      # "true" allows blueteam_stix_export to write a bundle
 # export BLUETEAM_STIX_IDENTITY_NAME="TangerangKota CSIRT"   # producer Identity, required once egress is on
 # export BLUETEAM_STIX_IDENTITY_SECTORS="government"         # comma-separated STIX sectors
@@ -791,12 +794,12 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # IOC lifecycle & attacker registry persistence
 # export BLUETEAM_IOC_STORE="/var/log/blue-team-mcp/ioc_store.jsonl"
 # export BLUETEAM_IOC_STORE_MAX="50000"
-# export BLUETEAM_IOC_STORE_TTL="7776000"   # 90 days — oldest entries with negligible decay are pruned
+# export BLUETEAM_IOC_STORE_TTL="7776000"   # 90 days; oldest entries with negligible decay are pruned
 # export BLUETEAM_ATTACKER_REGISTRY="/var/log/blue-team-mcp/attacker_registry.jsonl"
 # export BLUETEAM_ATTACKER_REGISTRY_TTL="604800"  # 7 days
 # export BLUETEAM_ATTACKER_REGISTRY_MAX="10000"
 # export BLUETEAM_FALSE_POSITIVE_KB="/var/log/blue-team-mcp/false_positive_kb.jsonl"
-# export BLUETEAM_FALSE_POSITIVE_TTL="2592000"  # 30 days — FP suppression TTL
+# export BLUETEAM_FALSE_POSITIVE_TTL="2592000"  # 30 days; FP suppression TTL
 # export BLUETEAM_FALSE_POSITIVE_MAX="5000"
 
 # Case management (blueteam_case_*) and attack-graph campaign snapshots
@@ -807,7 +810,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 
 # LangGraph workflow persistence (opt-in)
 # export BLUETEAM_LANGGRAPH_DB="/var/log/blue-team-mcp/langgraph.db"  # unset (default) = per-run threads held in memory; set = durable subject-keyed threads
-# export BLUETEAM_LANGGRAPH_NODE_TIMEOUT="120"  # seconds — per-node timeout
+# export BLUETEAM_LANGGRAPH_NODE_TIMEOUT="120"  # seconds, per-node timeout
 
 # Investigation memory (opt-in): subject-scoped prior analyst decisions
 # export BLUETEAM_MEM_ENABLED="true"                        # no effect until a path is set
@@ -815,17 +818,17 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_MEM_MAX_UNITS_PER_SUBJECT="50"            # write-time cap, no eviction
 # export BLUETEAM_MEM_TTL="7776000"                        # 90 days from the last confirmation; 0 = never expire
 
-# Beacon detection exclusions (comma-separated IPs — known health-check/monitoring infra)
+# Beacon detection exclusions (comma-separated IPs; known health-check/monitoring infra)
 # export BLUETEAM_BEACON_EXCLUDE_IPS="10.0.0.1,10.0.0.2"
 
-# SSRF / outbound URL guard (blueteam_check_webshell) — comma-separated internal-domain allowlist.
+# SSRF / outbound URL guard (blueteam_check_webshell): comma-separated internal-domain allowlist.
 # By default the webshell checker rejects any host that resolves to a non-public IP
 # (private / loopback / link-local / CGNAT 100.64/10). Add your owned domains here to
 # permit scanning internal webshells on your own infrastructure (e.g. tangerangkota.go.id).
 # Each hop is resolved once and IP-pinned via curl --resolve (DNS-rebinding / TOCTOU safe).
 # export ALLOWED_INTERNAL_DOMAINS="tangerangkota.go.id,abc123.go.id"   # add your domains? use comma separated.
 
-# Detection engineering — rule staging dirs (STAGING ONLY, never a live rules path)
+# Detection engineering: rule staging dirs (STAGING ONLY, never a live rules path)
 # blueteam_yara_rule_save / blueteam_sigma_rule_save write here and nothing loads these
 # files: promotion to a live rules path is a manual, reviewed step. The directory is
 # created on first save. Point these at /var/ossec/etc/rules only if you intend to skip
@@ -833,7 +836,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_YARA_RULES_DIR="/opt/yara_rules/yara_staging"
 # export BLUETEAM_SIGMA_RULES_DIR="/opt/sigma_rules/sigma_staging"
 
-# Sigma conversion (blueteam_sigma_rule_convert) — needs the optional pySigma install
+# Sigma conversion (blueteam_sigma_rule_convert): needs the optional pySigma install
 # (set BLUETEAM_INSTALL_SIGMA=1 above, or see requirements.txt). Generate/validate/save
 # work without it; only conversion returns an install hint.
 # export BLUETEAM_SIGMA_INDEX_PATTERN="wazuh-alerts-*"    # artifact target; pySigma default is beats-*
@@ -841,7 +844,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_SIGMA_VERIFY_FIELDS="true"             # probe the Indexer for unmapped fields (finding SG9)
 # export BLUETEAM_SIGMA_CHECK_EXISTING="true"            # search Manager rules for overlapping detections
 
-# Alert-entity clustering (blueteam_alert_cluster / _assign) — needs the optional
+# Alert-entity clustering (blueteam_alert_cluster / _assign): needs the optional
 # scikit-learn install: set BLUETEAM_INSTALL_CLUSTER=1 above. Both tools return an enable
 # hint while BLUETEAM_CLUSTER_ENABLED=false, so leaving this off is safe.
 # export BLUETEAM_CLUSTER_ENABLED="false"         # true = register the fit/assign path
@@ -858,7 +861,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_CLUSTER_LINEAGE_SHIFT_Z="2.5"    # z threshold for a size/novelty jump (conservative)
 # export BLUETEAM_CLUSTER_LINEAGE_TACTIC_SHIFT="0.25"  # L1 composition shift that counts as a change
 
-# Tactic-sequence forecasting (blueteam_tactic_forecast) — the Markov estimator is
+# Tactic-sequence forecasting (blueteam_tactic_forecast): the Markov estimator is
 # stdlib-only; kind='hmm' needs the optional BLUETEAM_INSTALL_FORECAST=1 install.
 # The store is a PII-adjacent training corpus (entity keys are source IPs); written 0600.
 # export BLUETEAM_FORECAST_ENABLED="false"        # true = register the forecast tool
@@ -881,7 +884,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_FORECAST_MAX_HITS="100000"          # fetched-hit cap for one sweep (>= page size)
 # export BLUETEAM_FORECAST_REQUIRE_COMPLETE_CORPUS="false"  # true = refuse to fit a truncated corpus
 
-# Observed-source forecasting (blueteam_source_forecast) — disabled by default.
+# Observed-source forecasting (blueteam_source_forecast): disabled by default.
 # Forecasts candidate observed sources, never attacker attribution. The store is
 # PII-adjacent (source IPs); written 0600 and never committed.
 # export BLUETEAM_SOURCE_FORECAST_ENABLED="false"  # true = register the source tools
@@ -902,7 +905,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_SOURCE_EVAL_STEP_DAYS="1"
 # export BLUETEAM_SOURCE_EVAL_MIN_TRAIN_OBSERVATIONS="100"
 
-# Laya-Multilingual / SetFit labeling (blueteam_incident_label) — needs
+# Laya-Multilingual / SetFit labeling (blueteam_incident_label): needs
 # BLUETEAM_INSTALL_LAYA=1 (laya) or BLUETEAM_INSTALL_SETFIT=1 (setfit), plus a
 # vendored, pinned model directory. Without weights the tool reports 'unavailable';
 # it never falls back to a hub download at call time.
@@ -1070,6 +1073,14 @@ export VIRUSTOTAL_API_KEY="${VIRUSTOTAL_API_KEY:-}"
 export BLUETEAM_VIRUSTOTAL_BUDGET="${BLUETEAM_VIRUSTOTAL_BUDGET:-0}"
 export BLUETEAM_VIRUSTOTAL_BUDGET_HOURS="${BLUETEAM_VIRUSTOTAL_BUDGET_HOURS:-8}"
 export BLUETEAM_VIRUSTOTAL_STATE="${BLUETEAM_VIRUSTOTAL_STATE:-/var/log/blue-team-mcp/virustotal_quota.db}"
+# Autoinit needs a positive budget; never enable it at the default 0.
+_vt_budget="${BLUETEAM_VIRUSTOTAL_BUDGET:-0}"
+if [[ "$_vt_budget" =~ ^[0-9]+$ ]] && (( 10#$_vt_budget > 0 )); then
+    export BLUETEAM_VIRUSTOTAL_AUTOINIT="${BLUETEAM_VIRUSTOTAL_AUTOINIT:-true}"
+else
+    export BLUETEAM_VIRUSTOTAL_AUTOINIT="${BLUETEAM_VIRUSTOTAL_AUTOINIT:-false}"
+fi
+unset _vt_budget
 export VIRUSTOTAL_ALLOWED_HOSTS="${VIRUSTOTAL_ALLOWED_HOSTS:-www.virustotal.com}"
 export VIRUSTOTAL_MAX_RESPONSE_BYTES="${VIRUSTOTAL_MAX_RESPONSE_BYTES:-2000000}"
 export VIRUSTOTAL_CACHE_TTL="${VIRUSTOTAL_CACHE_TTL:-3600}"
@@ -1121,7 +1132,7 @@ export BLUETEAM_INVESTIGATION_HISTORY_MAX_ENTRIES="${BLUETEAM_INVESTIGATION_HIST
 export BLUETEAM_EXPORT_DIR="${BLUETEAM_EXPORT_DIR:-/var/log/blue-team-mcp/exports}"
 export MITRE_ATTACK_STIX="${MITRE_ATTACK_STIX:-https://raw.githubusercontent.com/mitre-attack/attack-stix-data/refs/heads/master/enterprise-attack/enterprise-attack.json}"
 export BLUETEAM_STIX_CACHE="${BLUETEAM_STIX_CACHE:-/var/log/blue-team-mcp/mitre_enterprise_attack.json}"
-# STIX 2.1 egress (bundle producer) — stays off until explicitly enabled. Needs an identity
+# STIX 2.1 egress (bundle producer): stays off until explicitly enabled. Needs an identity
 # and a non-empty BLUETEAM_OWNED_DOMAINS; private IPs, owned domains, internal hostnames and
 # emails are dropped from every bundle (never masked).
 export BLUETEAM_STIX_EGRESS_ENABLED="${BLUETEAM_STIX_EGRESS_ENABLED:-false}"
@@ -1183,7 +1194,7 @@ export BLUETEAM_MAX_INPUT_FILE_MB="${BLUETEAM_MAX_INPUT_FILE_MB:-1024}"
 # (90s) because its multi-source fan-out takes ~34s; a budget under real latency makes
 # healthy lookups count as failures and trips that upstream's circuit breaker.
 export HTTP_TIMEOUT="${HTTP_TIMEOUT:-30}"
-# Detection engineering — rule staging dirs (staging only, never a live rules path)
+# Detection engineering: rule staging dirs (staging only, never a live rules path)
 export BLUETEAM_YARA_RULES_DIR="${BLUETEAM_YARA_RULES_DIR:-/opt/yara_rules/yara_staging}"
 export BLUETEAM_SIGMA_RULES_DIR="${BLUETEAM_SIGMA_RULES_DIR:-/opt/sigma_rules/sigma_staging}"
 export BLUETEAM_SIGMA_INDEX_PATTERN="${BLUETEAM_SIGMA_INDEX_PATTERN:-wazuh-alerts-*}"
@@ -1259,16 +1270,16 @@ export MCP_PORT="${MCP_PORT:-8000}"
 # Inbound auth: non-loopback bind without MCP_API_KEY refuses to start.
 export MCP_API_KEY="${MCP_API_KEY:-}"
 export MCP_API_KEY_SCOPES="${MCP_API_KEY_SCOPES:-wazuh:read}"
-# Main entry point — modular M14 architecture (main.py + mcp_server/ package)
+# Main entry point: modular M14 architecture (main.py + mcp_server/ package)
 exec /opt/blue-team-mcp/venv/bin/python3 /opt/blue-team-mcp/main.py "$@"
 EOF
 chmod +x /usr/local/bin/mcp-server-blueteam
 
-# DEPRECATED standalone wrappers — redirect to the unified server.
+# DEPRECATED standalone wrappers: redirect to the unified server.
 for legacy in mcp-server-crowdsec mcp-server-greynoise; do
   cat > "/usr/local/bin/$legacy" << 'EOF'
 #!/usr/bin/env bash
-echo "[$0] DEPRECATED — redirecting to mcp-server-blueteam (unified server)" >&2
+echo "[$0] DEPRECATED: redirecting to mcp-server-blueteam (unified server)" >&2
 exec /usr/local/bin/mcp-server-blueteam "$@"
 EOF
   chmod +x "/usr/local/bin/$legacy"
@@ -1322,16 +1333,16 @@ echo "    WAZUH_INDEXER_MAX_SIZE=10000      (docs per page in indexer search)"
 echo "    BLUETEAM_ALLOW_UNTRUNCATED=false  (set true for forensic mode)"
 echo "    BLUETEAM_ALLOW_IDENTITY_REVEAL=false  (needs BLUETEAM_FORENSIC_TOKEN)"
 echo ""
-echo "  GreyNoise Community needs no key — greynoice_ip_context works immediately."
-echo "  ThreatFox needs a free key — https://threatfox.abuse.ch/api"
+echo "  GreyNoise Community needs no key: greynoise_ip_context works immediately."
+echo "  ThreatFox needs a free key: https://threatfox.abuse.ch/api"
 echo ""
 echo "Wrapper entry points installed:"
 echo ""
-echo "  mcp-server-blueteam    — All 166 tools (Wazuh, threat intel, host forensics,"
+echo "  mcp-server-blueteam    : All 167 tools (Wazuh, threat intel, host forensics,"
 echo "                            Sangfor blocklist, 3-Sum correlation, curated reports,"
 echo "                            CrowdSec, GreyNoise, ThreatFox)"
-echo "  mcp-server-crowdsec    — DEPRECATED — redirects to mcp-server-blueteam"
-echo "  mcp-server-greynoise   — DEPRECATED — redirects to mcp-server-blueteam"
+echo "  mcp-server-crowdsec    : DEPRECATED, redirects to mcp-server-blueteam"
+echo "  mcp-server-greynoise   : DEPRECATED, redirects to mcp-server-blueteam"
 echo ""
 echo "Run as a remote HTTP service (no SSH needed):"
 echo ""
@@ -1340,7 +1351,7 @@ echo "    MCP_API_KEY=\"btm_<43-char-base64>\" mcp-server-blueteam   # MCP_API_K
 echo ""
 echo "Then add to your Claude Desktop config on macOS/Windows:"
 echo ""
-echo "  Option A — Local via SSH:"
+echo "  Option A: Local via SSH:"
 echo '  {
     "mcpServers": {
       "blue-team-mcp": {
@@ -1355,7 +1366,7 @@ echo '  {
     }
   }'
 echo ""
-echo "  Option B — Remote service (no SSH, connects over HTTP):"
+echo "  Option B: Remote service (no SSH, connects over HTTP):"
 echo '  {
     "mcpServers": {
       "blue-team-mcp": {

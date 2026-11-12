@@ -551,7 +551,9 @@ export ABUSEIPDB_CACHE_TTL="900"
 export BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL="1.0"
 export BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL="50"
 # Public API defaults: 4 requests/min, 500/day, 3600s cache.
-# VirusTotal is closed at budget 0. Normal startup never creates state. Create it with:
+# VirusTotal is closed at budget 0. Normal startup never creates state. With a
+# positive budget, the wrapper enables AUTOINIT and the first request creates it;
+# set AUTOINIT=false to require explicit init. Create it with:
 # python -m mcp_server.threat_intel.virustotal_quota init --state ... --budget ... --hours ...
 # --rate ... --daily ...  The state is 0600 SQLite and shared by server processes.
 # The CLI is a local administrative command, not an MCP tool; run it as the service user.
