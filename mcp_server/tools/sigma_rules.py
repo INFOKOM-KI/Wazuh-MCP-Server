@@ -81,7 +81,7 @@ _WAZUH_LEVEL_BANDS: list[tuple[int, str]] = [
 # exact because the decoder emits it whole; file values use endswith so a path
 # or a bare name both match. This table is the one place a new harvestable
 # field needs a modifier decision.
-# KNOWN CEILING, agreed 2026-09-11 and deferred: ``data.url`` as ``|contains``
+# KNOWN CEILING, deferred: ``data.url`` as ``|contains``
 # emits ``data.url:*\/shell.php*``. A leading wildcard is a per-document scan on
 # that field, and a URL carrying a query string (``shell.php?id=1``) matches when
 # the exact URL was intended. Prefer ``|endswith`` on a path literal, or keep the

@@ -866,6 +866,7 @@ class VirusTotalQuota:
                 "SELECT COUNT(*) FROM vt_requests "
                 "WHERE status IN ('pending','committed') AND reserved_at >= ?",
                 (current - _RATE_WINDOW_SECONDS,)).fetchone()[0]
+            cooldown_until = float(meta.get("cooldown_until", "0") or "0")
             return {
                 "budget": policy["budget"],
                 "spent": pending + committed,
@@ -882,6 +883,8 @@ class VirusTotalQuota:
                 "daily_spent": daily_spent,
                 "rate_limit": policy["rate"],
                 "rate_spent": rate_spent,
+                "cooldown_until": cooldown_until,
+                "cooldown_remaining_seconds": max(0, int(cooldown_until - current)),
                 "state_path": self._path,
             }
         finally:

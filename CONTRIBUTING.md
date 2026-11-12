@@ -28,7 +28,7 @@ You can contribute by:
 
 For substantial changes, open an issue first to discuss the problem, expected behavior, and proposed approach. This helps avoid duplicating work and makes the scope clear before implementation.
 
-## Before You Start
+## Before you start
 
 1. Check the existing issues and pull requests for related work.
 2. Read the project [README](https://github.com/INFOKOM-KI/Wazuh-MCP-Server/blob/main/README.md) and the relevant module documentation.
@@ -268,7 +268,7 @@ Before requesting review, confirm that:
 
 Maintainers may ask for changes, additional tests, or a narrower scope before merging. Please keep review discussions constructive and respond to feedback with the relevant technical context.
 
-## Reporting Security Vulnerabilities
+## Reporting security vulnerabilities
 
 **Do not report suspected security vulnerabilities in public issues or pull requests.** Public reports can expose users before a fix is available.
 

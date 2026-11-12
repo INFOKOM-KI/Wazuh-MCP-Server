@@ -43,9 +43,7 @@ def _hit(alert_id, rule_id="5710", ts="2026-11-06T01:00:00.000Z"):
 FILTERS = [{"range": {"rule.level": {"gte": 7}}}]
 
 
-# --------------------------------------------------------------------------
 # Extraction
-# --------------------------------------------------------------------------
 
 def test_sample_is_attached_with_rule_id_and_timestamp(monkeypatch):
     async def fake_post(body, *args, **kwargs):
@@ -176,9 +174,7 @@ def test_provenance_is_never_in_the_report_comment():
     assert "report" not in comment.lower().replace("reported by", "")
 
 
-# --------------------------------------------------------------------------
 # Destination-role fields (Gap 8)
-# --------------------------------------------------------------------------
 
 def test_bare_dstip_is_queried():
     assert "dstip" in tool._DSTIP_FIELDS

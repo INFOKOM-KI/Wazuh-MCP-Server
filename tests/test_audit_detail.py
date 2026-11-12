@@ -37,9 +37,7 @@ class _ListQueue:
         self._sink.append(item)
 
 
-# --------------------------------------------------------------------------
 # Bounds, redaction, compatibility
-# --------------------------------------------------------------------------
 
 def test_existing_call_shape_is_unchanged(monkeypatch):
     """A caller that passes only the original three arguments sees five keys."""
@@ -108,9 +106,7 @@ def test_phase_and_op_id_are_recorded(monkeypatch):
     assert {e["op_id"] for e in entries} == {"op-1"}
 
 
-# --------------------------------------------------------------------------
 # The report tool's prepared/completed pair
-# --------------------------------------------------------------------------
 
 @pytest.fixture
 def report_env(monkeypatch, tmp_path):

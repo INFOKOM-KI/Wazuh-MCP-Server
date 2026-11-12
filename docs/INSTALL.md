@@ -531,7 +531,7 @@ Replace the key path, username, and hostname. Install the workstation's public k
 
 ## 13. Optional feature configuration guide
 
-This section covers common groups of settings in `config.env`. **You do not need to configure all of them.** Enable only features whose dependencies are installed, state paths are ready, and functionality and risks have been reviewed.
+**You do not need to configure all of the settings in `config.env`.** Enable only features whose dependencies are installed, state paths are ready, and functionality and risks have been reviewed.
 
 ### 13.1 Threat-intelligence API keys
 
@@ -660,12 +660,17 @@ Requirements:
   rejected before transport.
 - `--confirm-live` and `--acknowledge-ioc-sharing` are both mandatory. Without
   them, no lookup is attempted. The same consent policy applies to the MCP
-  paths: aggregate and standalone domain/hash tools require
-  `acknowledge_ioc_sharing=true`; the curated report requires
+  paths: the aggregate, the batch alert-IP tool, and the standalone domain/hash
+  tools require `acknowledge_ioc_sharing=true`; the curated report requires
   `include_virustotal=true`. Missing consent returns `consent_required` before
-  cache and quota. Cached results also require consent. The MCP host is asked
-  through `Context.elicit`; a client that auto-answers can still assert approval,
-  so the server cannot independently prove a human saw the prompt.
+  cache and quota. The batch tool reports `census_complete` and
+  `unseen_candidates`; an incomplete census is not a total, and raising
+  `bucket_limit` or narrowing the window widens the census. It also reports
+  `correction_limit` and `counts_exact`; exact counts cover up to 200 observed
+  buckets, and an incomplete correction is never described as exact. Cached
+  results also require consent. The MCP host is asked through `Context.elicit`;
+  a client that auto-answers can still assert approval, so the server cannot
+  independently prove a human saw the prompt.
 - VirusTotal documents that queried IoCs are scanned and added to its dataset,
   where they become accessible to the community. Do not query confidential
   organizational indicators. A public address is not automatically
@@ -797,7 +802,7 @@ export BLUETEAM_RERANK_ALLOW_DOWNLOAD="false"
 export BLUETEAM_RERANK_NORMALIZE="false"
 ```
 
-The default setup downloads and pins the local reranker model. `BLUETEAM_RERANK_MODEL_PATH` is used when you provide a local model snapshot (including `config.json`, `onnx/model.onnx`, and tokenizer files). `BLUETEAM_RERANK_MODEL_SHA256` serves as an ONNX integrity pin when used. Do not change the model name based only on similar naming; an unknown model will cause startup validation to fail rather than silently falling back.
+The default setup downloads and pins the local reranker model. `BLUETEAM_RERANK_MODEL_PATH` is used when you provide a local model snapshot (including `config.json`, `onnx/model.onnx`, and tokenizer files). `BLUETEAM_RERANK_MODEL_SHA256` is the ONNX integrity pin when set. Do not change the model name based only on similar naming; an unknown model will cause startup validation to fail rather than silently falling back.
 
 ### 13.7 Clustering, forecasting, and source forecasting
 

@@ -357,5 +357,5 @@ async def blueteam_wazuh_manager_logs(params: WazuhManagerLogsInput) -> str:
     }, indent=2)
 
 
-# Indexer tools + local alerts fallback (keep manual pattern for now
-# these call _wazuh_indexer_post which still returns dicts, not exceptions)
+# These call _wazuh_indexer_post, which returns dicts rather than exceptions,
+# so the manual error pattern stays here.

@@ -186,9 +186,7 @@ def test_no_tool_module_imports_consent_plumbing_directly_by_relay():
     assert not offenders, offenders
 
 
-# --------------------------------------------------------------------------
 # The checker itself must not be vacuous
-# --------------------------------------------------------------------------
 
 def test_checker_flags_a_direct_mint(tmp_path):
     path = tmp_path / "bad_tool.py"

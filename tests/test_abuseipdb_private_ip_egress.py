@@ -314,7 +314,7 @@ def test_direct_transport_leaves_the_check_endpoint_unchanged(outbound):
     assert outbound[0]["params"] == {"ipAddress": "10.0.0.1"}
 
 
-# Shared raw transport (core.http_client._api_call) — no module wrapper
+# Shared raw transport (core.http_client._api_call); no module wrapper.
 
 @pytest.fixture
 def raw_core_transport(monkeypatch):
@@ -446,8 +446,9 @@ def harvest(monkeypatch):
                             "sum_other_doc_count": 0}},
                 ["data.srcip.keyword"], [])
 
-    async def fake_correct(buckets, query):
-        return buckets
+    async def fake_correct(buckets, query, index_pattern=None):
+        observed = len([b for b in buckets if b.get("key") is not None])
+        return buckets, observed
 
     async def fake_role(filters, candidate_ips):
         return set(), "checked"
@@ -462,7 +463,7 @@ def harvest(monkeypatch):
     monkeypatch.setattr(report_tool, "WAZUH_INDEXER_URL", "https://indexer:9200")
     monkeypatch.setattr(report_tool, "WAZUH_INDEXER_PASSWORD", "test")
     monkeypatch.setattr(report_tool, "_srcip_aggs_merged", fake_merged)
-    monkeypatch.setattr(report_tool, "_correct_srcip_counts", fake_correct)
+    monkeypatch.setattr(report_tool, "_correct_srcip_counts_with_status", fake_correct)
     monkeypatch.setattr(report_tool, "_dstip_role", fake_role)
     monkeypatch.setattr(report_tool, "check_ip", fake_check)
     monkeypatch.setattr(report_tool, "report_retry_after", lambda ip: 0)

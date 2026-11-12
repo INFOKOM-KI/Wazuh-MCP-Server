@@ -26,8 +26,8 @@ from mcp_server import (mcp, CROWDSEC_API_KEY_ENV, OTX_API_KEY_ENV,
                         THREATFOX_API_KEY_ENV, VIRUSTOTAL_API_KEY)
 from mcp_server.core.http_client import (_api_call, _classify_api_error,
                                          normalize_public_ip)
-from mcp_server.threat_intel.virustotal import (issue_consent, normalize_domain,
-                                                normalize_hash)
+from mcp_server.threat_intel.virustotal import (classify_report, issue_consent,
+                                                normalize_domain, normalize_hash)
 from mcp_server.threat_intel.virustotal_consent import (consent_message,
                                                         request_ioc_sharing_detailed)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
@@ -378,20 +378,12 @@ async def _virustotal_provider(indicator: str, ind_type: str,
         data = await lookup(vt_types[ind_type], indicator,
                             consent_token=consent_token)
         mal = data["malicious"]
-        susp = data.get("suspicious") or 0
         complete = bool(data.get("stats_complete", False))
         total = data.get("total_engines")
         score = data.get("detection_percent")
         # One engine flagging the IP is a detection, not a low-risk neighbour.
         # An incomplete or suspicious-only report is never a clean verdict.
-        if not complete or score is None:
-            risk, is_malicious, verdict = None, None, "inconclusive"
-        elif mal > 0:
-            risk, is_malicious, verdict = ("high" if score >= 50 else "medium"), True, "malicious"
-        elif susp > 0:
-            risk, is_malicious, verdict = "medium", None, "suspicious"
-        else:
-            risk, is_malicious, verdict = "none", False, "no_detections"
+        risk, is_malicious, verdict = classify_report(data)
         return TIProviderResult(
             provider="virustotal", indicator=indicator, indicator_type=ind_type,
             risk_level=risk, reputation_score=score if complete else None,

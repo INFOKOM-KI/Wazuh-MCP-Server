@@ -340,6 +340,66 @@ def _normalize_response(response, indicator: str, kind: str) -> dict:
     }
 
 
+VTVerdict = Literal["malicious", "suspicious", "no_detections", "inconclusive"]
+
+
+def classify_report(data: dict) -> tuple[str | None, bool | None, VTVerdict]:
+    """Map engine counts onto ``(risk level, malicious vote, verdict)``.
+
+    One flagged engine is a detection; the 50% line is display only. Incomplete
+    statistics are inconclusive, and zero detections is not proof of safety.
+    """
+    malicious = int(data.get("malicious") or 0)
+    suspicious = int(data.get("suspicious") or 0)
+    score = data.get("detection_percent")
+    if not data.get("stats_complete") or score is None:
+        return None, None, "inconclusive"
+    if malicious > 0:
+        return ("high" if score >= 50 else "medium"), True, "malicious"
+    if suspicious > 0:
+        return "medium", None, "suspicious"
+    return "none", False, "no_detections"
+
+
+def preflight() -> dict:
+    """Return the quota snapshot, or refuse before any transport is attempted.
+
+    The checks mirror the order ``lookup()`` hits them: budget, state, arm,
+    cooldown, then per-window and daily capacity. A missing or corrupt state is
+    reported, never recreated here; ``VIRUSTOTAL_AUTOINIT`` stays the only
+    opt-in that creates one, and it does so inside ``lookup()``.
+    """
+    if not VIRUSTOTAL_API_KEY:
+        raise VirusTotalError("VIRUSTOTAL_API_KEY is not set", "not_configured")
+    _base_url()  # fails closed on an invalid base URL or allowlist before prompting
+    if int(VIRUSTOTAL_BUDGET) <= 0:
+        raise VirusTotalError("VirusTotal budget is closed at 0 requests",
+                              "budget_closed")
+    try:
+        snapshot = _get_quota().state()
+    except VirusTotalQuotaError as exc:
+        raise VirusTotalError(exc.message, exc.kind,
+                              exc.retry_after_seconds) from exc
+    if not snapshot["window_open"]:
+        raise VirusTotalError(
+            "VirusTotal arm window has expired; run the rearm command",
+            "arm_expired")
+    cooldown = int(snapshot.get("cooldown_remaining_seconds") or 0)
+    if cooldown > 0:
+        raise VirusTotalError("VirusTotal rate limit cooldown is active",
+                              "cooldown", max(1, cooldown))
+    if snapshot["remaining"] < 1:
+        raise VirusTotalError(
+            f"VirusTotal budget exhausted: {snapshot['spent']}/{snapshot['budget']} "
+            "requests used in this arm window", "budget_exhausted")
+    if snapshot["daily_spent"] >= snapshot["daily_limit"]:
+        raise VirusTotalError(
+            f"VirusTotal daily provider limit reached: "
+            f"{snapshot['daily_spent']}/{snapshot['daily_limit']} requests today",
+            "daily_exhausted")
+    return snapshot
+
+
 def markdown_text(value, limit: int = 200) -> str:
     """Project one untrusted value into a safe Markdown scalar."""
     text = _safe_text(value, limit) or "-"

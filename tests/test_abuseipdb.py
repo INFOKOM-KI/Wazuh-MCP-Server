@@ -7,6 +7,7 @@ the repository-wide conftest fixture also blocks non-loopback sockets.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from unittest.mock import patch
 
@@ -413,8 +414,9 @@ def harvest_patches(monkeypatch):
                 ], "sum_other_doc_count": 0}},
                 ["data.srcip.keyword"], [])
 
-    async def fake_correct(buckets, query):
-        return buckets
+    async def fake_correct(buckets, query, index_pattern=None):
+        observed = len([b for b in buckets if b.get("key") is not None])
+        return buckets, observed
 
     async def fake_role(filters, ips):
         return set(), "checked"
@@ -425,7 +427,7 @@ def harvest_patches(monkeypatch):
     monkeypatch.setattr(report_tool, "WAZUH_INDEXER_URL", "https://indexer:9200")
     monkeypatch.setattr(report_tool, "WAZUH_INDEXER_PASSWORD", "test")
     monkeypatch.setattr(report_tool, "_srcip_aggs_merged", fake_merged)
-    monkeypatch.setattr(report_tool, "_correct_srcip_counts", fake_correct)
+    monkeypatch.setattr(report_tool, "_correct_srcip_counts_with_status", fake_correct)
     monkeypatch.setattr(report_tool, "_dstip_role", fake_role)
     monkeypatch.setattr(report_tool, "check_ip", fake_check)
     monkeypatch.setattr(report_tool, "report_retry_after", lambda ip: 0)
@@ -561,6 +563,65 @@ def test_harvest_filters_private_and_low_volume(harvest_patches):
     assert "5710" in output
     final = output.split("## Final comments", 1)[1]
     assert final.count(abuseipdb.SIGNATURE) == 1
+
+
+def _report_json(harvest_patches, **overrides):
+    from mcp_server.wazuh import indexer
+
+    harvest_patches.setattr(report_tool, "_correct_srcip_counts_with_status",
+                            indexer._correct_srcip_counts_with_status)
+    params = {"from_alerts": True, "min_alerts": 1, "response_format": "json"}
+    params.update(overrides)
+    return json.loads(_run(report_tool.blueteam_abuseipdb_report(
+        AbuseIPDBReportInput(**params))))
+
+
+def test_harvest_exact_counts_full_correction(harvest_patches):
+    from mcp_server.wazuh import indexer
+
+    async def exact(query, candidates, index_pattern=None):
+        return {"8.8.8.8": 5, "8.8.4.4": 1, "192.168.1.1": 9}
+
+    harvest_patches.setattr(indexer, "_exact_srcip_counts", exact)
+    output = _report_json(harvest_patches)
+    assert output["alerts_examined_exact"] is True
+    assert output["alerts_examined"] == 15
+
+
+def test_harvest_exact_counts_partial_correction(harvest_patches):
+    from mcp_server.wazuh import indexer
+
+    async def exact(query, candidates, index_pattern=None):
+        return {ip: 1 for ip in candidates[:-1]}
+
+    harvest_patches.setattr(indexer, "_exact_srcip_counts", exact)
+    output = _report_json(harvest_patches)
+    assert output["alerts_examined_exact"] is False
+    assert output["alerts_examined"] == 11
+
+
+def test_harvest_exact_counts_failed_subresponse(harvest_patches):
+    from mcp_server.wazuh import indexer
+
+    async def msearch(bodies, index_pattern=None):
+        return [{"error": "exact count failed"} for _ in bodies]
+
+    harvest_patches.setattr(indexer, "_wazuh_indexer_msearch", msearch)
+    output = _report_json(harvest_patches)
+    assert output["alerts_examined_exact"] is False
+    assert output["alerts_examined"] == 15
+
+
+def test_harvest_exact_counts_correction_exception(harvest_patches):
+    from mcp_server.wazuh import indexer
+
+    async def exact(query, candidates, index_pattern=None):
+        raise RuntimeError("exact count failed")
+
+    harvest_patches.setattr(indexer, "_exact_srcip_counts", exact)
+    output = _report_json(harvest_patches)
+    assert output["alerts_examined_exact"] is False
+    assert output["alerts_examined"] == 15
 
 
 def test_harvest_ambiguous_destination_is_manual_review(harvest_patches):

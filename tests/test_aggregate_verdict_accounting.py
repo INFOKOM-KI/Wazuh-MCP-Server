@@ -32,9 +32,7 @@ def _md(results) -> str:
     return out
 
 
-# --------------------------------------------------------------------------
 # Verdict accounting
-# --------------------------------------------------------------------------
 
 def test_a_failed_provider_is_not_counted_clean():
     out = _md([
@@ -113,9 +111,7 @@ def test_mixed_clean_and_inconclusive_has_its_own_basis():
     assert out.verdict_basis == "mixed_clean_and_inconclusive"
 
 
-# --------------------------------------------------------------------------
 # Clipping (Gap 9)
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("length,cut", [
     (5, False),
@@ -146,9 +142,7 @@ def test_clip_never_cuts_below_the_ellipsis():
     assert agg._clip("abcdef", 1) == "\u2026"
 
 
-# --------------------------------------------------------------------------
 # VirusTotal network attributes in Markdown (Gap 6)
-# --------------------------------------------------------------------------
 
 def _render_markdown(results, monkeypatch) -> str:
     """Drive the real markdown branch of the tool with providers stubbed out."""

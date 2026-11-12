@@ -201,9 +201,7 @@ def test_malformed_block_body_is_a_failure_not_a_clean_result():
     assert result["truncated"] is False
 
 
-# --------------------------------------------------------------------------
 # Tool surface: one tool, two input shapes
-# --------------------------------------------------------------------------
 
 def test_schema_accepts_ipv6_network():
     from mcp_server.tools.abuseipdb import AbuseIPDBCheckInput

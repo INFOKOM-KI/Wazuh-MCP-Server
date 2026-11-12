@@ -4,7 +4,7 @@
 Alert enrichment tools - curated report, threat card, attack chain, beacon detect, summarize, compare
 """
 from __future__ import annotations
-import json, re, math, asyncio, os
+import json, re, math, asyncio, os, ipaddress
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Literal, Any
 from collections import Counter
@@ -18,7 +18,7 @@ from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         NETRA_MIN_INTERVAL, ARGUS_MIN_INTERVAL, SANGFOR_MIN_INTERVAL)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
 from mcp_server.core.exceptions import ThreatIntelError
-from mcp_server.core.http_client import ValidPublicIp
+from mcp_server.core.http_client import ValidPublicIp, normalize_public_ip
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call, _handle_api_error
 from mcp_server.core.validators import ValidAgentName, ValidKeyword, ValidRuleGroups
@@ -276,6 +276,499 @@ async def blueteam_lookup_domain_virustotal(params: VirusTotalDomainInput,
         return _truncate_if_needed(json.dumps(
             {"domain": params.domain, **_virustotal_fields(data)}, indent=2))
     return _truncate_if_needed(_virustotal_markdown("VirusTotal Domain", params.domain, data))
+
+
+# 15 = consent-prompt capacity; a longer list would submit indicators the operator
+# never saw. The default 4 keeps a batch under the unmeasured MCP client timeout.
+_VT_ALERT_IPS_CAP = 15
+_VT_ALERT_IPS_DEFAULT = 4
+_VT_ALERT_BUCKET_LIMIT = 200
+# Per-indicator failures keep the loop going; anything else repeats the same refusal.
+_VT_CONTINUE_KINDS = frozenset({"not_found", "bad_request", "upstream_error", "timeout"})
+_VT_VERDICT_NAMES = ("malicious", "suspicious", "no_detections", "inconclusive",
+                     "not_checked", "not_attempted")
+
+
+def _vt_detection_ratio(data: dict) -> str:
+    """Render engine counts without inventing a total for a partial report."""
+    malicious = data.get("malicious")
+    malicious = malicious if isinstance(malicious, int) else 0
+    total = data.get("total_engines")
+    percent = data.get("detection_percent")
+    if not data.get("stats_complete") or total is None:
+        return f"{malicious}/? (incomplete)"
+    return (f"{malicious}/{total} ({percent}%)" if percent is not None
+            else f"{malicious}/{total}")
+
+
+def _vt_alert_row(target: dict, data: dict | None = None, *,
+                  status: str | None = None, error_kind: str | None = None,
+                  error: str | None = None) -> dict:
+    row = {"indicator": target["indicator"],
+           "alerts": target.get("alerts"),
+           "max_level": target.get("max_level")}
+    if data is not None:
+        from mcp_server.threat_intel.virustotal import classify_report
+        risk, is_malicious, verdict = classify_report(data)
+        row.update({"status": verdict, "risk_level": risk,
+                    "is_malicious": is_malicious,
+                    "detections": _vt_detection_ratio(data),
+                    **_virustotal_fields(data)})
+    else:
+        row.update({"status": status or "not_checked", "risk_level": None,
+                    "is_malicious": None, "detections": None})
+    row["error_kind"] = error_kind
+    row["error"] = error
+    return row
+
+
+async def _vt_alert_candidates(since_iso: str, until_iso: str, min_level: int,
+                               bucket_limit: int) -> tuple[list[dict], list[str], dict, dict]:
+    """Return ranked alert source IPs, path errors, the census, and correction status."""
+    from mcp_server.wazuh.indexer import (SRCIP_CORRECTION_LIMIT,
+                                          _correct_srcip_counts_with_status,
+                                          _srcip_census_merged)
+    query = {"bool": {"must": [
+        {"range": {"@timestamp": {"gte": since_iso, "lt": until_iso,
+                                   "format": "strict_date_optional_time"}}},
+        {"range": {"rule.level": {"gte": min_level}}},
+    ]}}
+    agg = {"terms": {"field": "data.srcip", "size": bucket_limit},
+           "aggs": {"max_level": {"max": {"field": "rule.level"}}}}
+    merged, census, errors = await _srcip_census_merged(query, {"srcips": agg})
+    buckets = (merged.get("srcips") or {}).get("buckets") or []
+    buckets = [b for b in buckets if isinstance(b, dict) and b.get("key")]
+    observed = len(buckets)
+    corrected = 0
+    if buckets:
+        try:
+            buckets, corrected = await _correct_srcip_counts_with_status(
+                buckets, query)
+        except Exception:  # merged counts are lower bounds; keep them and say so
+            errors = [*errors, "exact srcip counts unavailable"]
+    correction = {"limit": SRCIP_CORRECTION_LIMIT, "observed": observed,
+                  "corrected": corrected, "counts_exact": corrected == observed}
+    candidates: list[dict] = []
+    for bucket in buckets:
+        level = bucket.get("max_level") or {}
+        candidates.append({"indicator": str(bucket.get("key")),
+                           "alerts": int(bucket.get("doc_count") or 0),
+                           "max_level": int(level.get("value") or 0)})
+    candidates.sort(key=lambda item: (-item["alerts"], -item["max_level"],
+                                      item["indicator"]))
+    return candidates, errors, census, correction
+
+
+def _vt_quota_summary() -> dict:
+    """Post-run quota view; a refusal here never changes the lookup results."""
+    from mcp_server.threat_intel import virustotal as vt
+    try:
+        state = vt._get_quota().state()
+    except Exception as exc:
+        return {"error_kind": getattr(exc, "kind", "quota_state_unavailable"),
+                "error": getattr(exc, "message", str(exc))}
+    return {key: state.get(key) for key in
+            ("budget", "spent", "remaining", "window_open", "daily_spent",
+             "daily_limit", "rate_spent", "rate_limit",
+             "cooldown_remaining_seconds")}
+
+
+def _vt_census_fields(census: dict | None) -> dict:
+    """Project the census onto response keys, or nulls for an explicit list."""
+    if census is None:
+        return {"bucket_limit": None, "census_complete": None,
+                "unseen_candidates": None, "census_reasons": [],
+                "census_paths": []}
+    complete = bool(census["complete"])
+    return {"bucket_limit": census["bucket_limit"],
+            "census_complete": complete,
+            "unseen_candidates": not complete,
+            "census_reasons": census["reasons"],
+            "census_paths": census["paths"]}
+
+
+def _vt_census_markdown(census: dict | None, observed: int) -> list[str]:
+    """Render the census verdict without claiming a total it cannot prove."""
+    if census is None:
+        return []
+    if census["complete"]:
+        count = len(census["paths"])
+        return [f"Census: complete across {count} mapped source-IP path(s)."]
+    reasons = ", ".join(census["reasons"]) or "unknown"
+    if "bucket_limit_reached" in census["reasons"]:
+        lead = (f"Census: incomplete at bucket_limit={census['bucket_limit']} "
+                f"({reasons}).")
+    else:
+        lead = f"Census: incomplete ({reasons})."
+    if observed:
+        detail = (f"At least {observed} eligible candidate(s) were observed. "
+                  "Additional candidates may exist outside the returned census.")
+    else:
+        detail = ("No eligible candidate was observed, but the census is incomplete, "
+                  "so additional candidates may exist.")
+    return [lead, detail,
+            "Increase bucket_limit or narrow the time window to investigate further."]
+
+
+def _vt_correction_fields(correction: dict | None) -> dict:
+    """Project the correction status, or nulls for an explicit list."""
+    if correction is None:
+        return {"correction_limit": None, "counts_exact": None}
+    return {"correction_limit": correction["limit"],
+            "counts_exact": bool(correction["counts_exact"])}
+
+
+def _vt_counts_markdown(correction: dict | None) -> list[str]:
+    """Render count accuracy separately from candidate coverage."""
+    if correction is None:
+        return []
+    if correction["observed"] == 0:
+        return ["Counts: no observed buckets; no count correction required."]
+    if correction["counts_exact"]:
+        return ["Counts: exact for every observed bucket."]
+    observed = correction["observed"]
+    corrected = correction["corrected"]
+    limit = correction["limit"]
+    if corrected == 0:
+        return ["Counts: exact counts unavailable; all observed bucket counts "
+                "are merged lower bounds. Any ranking is approximate."]
+    if observed > limit and corrected == limit:
+        return [f"Counts: exact for up to {limit} observed buckets; later counts "
+                "are merged lower bounds. Any ranking involving uncorrected "
+                "buckets is approximate."]
+    return [f"Counts: exact for {corrected} of {observed} observed buckets; the "
+            "rest are merged lower bounds. Any ranking involving uncorrected "
+            "buckets is approximate."]
+
+class VirusTotalAlertIpsInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+    since: str = Field(default="24h", max_length=30,
+        description="Alert window start (e.g. '24h', '7d', ISO-8601). Ignored when ips is set.")
+    until: Optional[str] = Field(default=None, max_length=30,
+        description="Alert window end. Default: now. Ignored when ips is set.")
+    min_level: int = Field(default=7, ge=1, le=16,
+        description=("Minimum Wazuh rule.level for harvested source IPs. A level floor "
+                     "filters candidates; it does not prove an IP is malicious."))
+    max_ips: int = Field(default=_VT_ALERT_IPS_DEFAULT, ge=1, le=_VT_ALERT_IPS_CAP,
+        description=("Maximum IPs to look up, after de-duplication (1-15). The ceiling "
+                     "matches the consent prompt, which shows every indicator it authorizes."))
+    bucket_limit: int = Field(default=_VT_ALERT_BUCKET_LIMIT, ge=_VT_ALERT_IPS_CAP,
+        le=1000,
+        description=("Source-IP aggregation bucket cap (15-1000, default 200). When a "
+                     "mapped path reaches this cap, or the response is partial, the "
+                     "census is reported incomplete and additional candidates may exist."))
+    ips: Optional[list[str]] = Field(default=None, min_length=1,
+        max_length=_VT_ALERT_IPS_CAP,
+        description=("Explicit public IPs to check instead of harvesting alerts. Same "
+                     "normalization and de-duplication; at most 15."))
+    acknowledge_ioc_sharing: bool = Field(default=False,
+        description=("Request host confirmation before sending IPs to VirusTotal. This "
+                     "flag is a request to prompt, not proof of human consent. Default false."))
+    response_format: Literal["markdown", "json"] = Field(
+        default="markdown", description="'markdown' (default) or 'json'.")
+
+
+@mcp.tool(
+    name="blueteam_virustotal_alert_ips",
+    annotations={"readOnlyHint": True, "destructiveHint": False,
+                 "idempotentHint": False, "openWorldHint": True},
+)
+async def blueteam_virustotal_alert_ips(params: VirusTotalAlertIpsInput,
+                                       ctx: Context | None = None) -> str:
+    """Look up public source IPs from recent Wazuh alerts in VirusTotal reports.
+
+    Harvests unique public ``srcip`` values from alerts in the requested window at
+    or above ``min_level``, ranks them by alert volume, and retrieves each existing
+    VirusTotal report. ``ips`` skips the harvest when the analyst already has the
+    list. An alert source IP is an investigation candidate, not proof of malicious
+    activity; the verdict comes only from the engines.
+
+    Args:
+        params.since: Window start, default ``"24h"``. Ignored with ``ips``.
+        params.until: Window end, default now. Ignored with ``ips``.
+        params.min_level: Alert severity floor, default 7.
+        params.max_ips: Lookup cap after de-duplication, default 4, maximum 15.
+        params.bucket_limit: Aggregation bucket cap, default 200, range 15-1000.
+            A path that reaches it, or a partial response, marks the census incomplete.
+        params.ips: Explicit public IPs instead of a harvest, at most 15.
+        params.acknowledge_ioc_sharing: Requests host confirmation; not proof of consent.
+        params.response_format: ``"markdown"`` (default) or ``"json"``.
+
+    Returns:
+        One row per selected IP with ``status`` in ``malicious``, ``suspicious``,
+        ``no_detections``, ``inconclusive``, ``not_checked``, or ``not_attempted``,
+        plus engine counts, AS metadata, and cache provenance. ``no_detections``
+        means a complete report flagged nothing; it is not proof the IP is benign.
+        ``inconclusive`` means the statistics were missing or partial. Counts for
+        candidates, duplicates, skipped, eligible, selected, truncated, queried,
+        and not-attempted stay additive. Omitted and skipped indicators are listed
+        separately, so unattempted work is never reported as checked.
+
+        ``census_complete`` is true only when every queried source-IP path returned
+        fewer buckets than ``bucket_limit`` and reported no omitted docs, count
+        error, usable metadata, timeout, early termination, or failed shard.
+        ``unseen_candidates`` is true when the census is incomplete: more
+        candidates may exist beyond the returned set, and the tool does not claim
+        a total. An error bound of ``-1`` is ``doc_count_error_unknown``; a
+        malformed value is ``metadata_invalid``; an absent value is
+        ``metadata_missing``. ``truncated`` counts
+        observed eligible IPs left out by ``max_ips``. An incomplete census cannot
+        establish how many candidate IPs exist. Raise ``bucket_limit`` or narrow
+        the window to widen it; pass ``ips=[...]`` to check known omitted IPs.
+
+        ``correction_limit`` is the number of observed buckets the exact-count
+        path covers. ``counts_exact`` is true only when every observed bucket
+        received an exact count; later buckets keep merged lower bounds and any
+        ranking involving them is approximate. Neither field changes
+        ``census_complete``. With zero observed buckets, ``counts_exact`` is true
+        and the Markdown says no correction was required.
+
+    Examples:
+        1. Top 4 source IPs from the last day at level 7 or higher:
+           ``blueteam_virustotal_alert_ips(acknowledge_ioc_sharing=True)``
+        2. Ten IPs from a 7-day window, JSON:
+           ``blueteam_virustotal_alert_ips(since="7d", min_level=10, max_ips=10,
+           response_format="json", acknowledge_ioc_sharing=True)``
+        3. An explicit list, no harvest:
+           ``blueteam_virustotal_alert_ips(ips=["103.151.95.2", "45.155.205.233"],
+           acknowledge_ioc_sharing=True)``
+        4. A wider census before selecting the top 10:
+           ``blueteam_virustotal_alert_ips(bucket_limit=1000, max_ips=10,
+           acknowledge_ioc_sharing=True)``
+
+    Permissions: read-only; the default read scope is sufficient. Wazuh is
+    queried only when harvesting; VirusTotal is only read and never written.
+
+    Rate limits: at most 15 lookups per call, one at a time, against the operator
+    budget and the configured 4/min and daily provider limits. A 15-IP batch can
+    take about 3.5 minutes; the default of 4 keeps a call under roughly one minute
+    when no report is cached. A cached report is free but still needs fresh consent.
+    A 429 sets a persistent cooldown that stops the remaining lookups.
+
+    Privacy: each listed IP leaves the host and VirusTotal adds it to its community
+    dataset. The prompt shows every indicator before anything is sent; a refusal
+    sends nothing and spends no quota. Send only indicators the organization is
+    authorized to share.
+    """
+    from mcp_server.threat_intel.virustotal import VirusTotalError, issue_consent, lookup, preflight
+
+    source = "explicit" if params.ips else "alerts"
+    harvest_errors: list[str] = []
+    census: dict | None = None
+    correction: dict | None = None
+    if params.ips:
+        since_iso, until_iso = None, None
+        candidates = [{"indicator": str(value)} for value in params.ips]
+    else:
+        since_iso, until_iso = _parse_time_window(params.since, params.until)
+        candidates, harvest_errors, census, correction = await _vt_alert_candidates(
+            since_iso, until_iso, params.min_level, params.bucket_limit)
+
+    _audit_log("blueteam_virustotal_alert_ips",
+               {"source": source, "since": since_iso or "explicit",
+                "min_level": params.min_level if params.ips is None else None,
+                "bucket_limit": params.bucket_limit if params.ips is None else None})
+
+    if not candidates:
+        if harvest_errors:
+            raise ThreatIntelError(
+                "[wazuh] source-IP harvest failed: " + "; ".join(harvest_errors)[:300])
+        empty = {"source": source,
+                 "window": ({"since": since_iso, "until": until_iso}
+                            if source == "alerts" else None),
+                 "min_level": params.min_level if source == "alerts" else None,
+                 "candidates": 0, "duplicates": 0, "skipped": 0, "eligible": 0,
+                 "selected": 0, "truncated": 0, "queried": 0,
+                 "not_attempted": 0, "verdicts": {name: 0 for name in _VT_VERDICT_NAMES},
+                 **_vt_census_fields(census),
+                 **_vt_correction_fields(correction),
+                 "skipped_indicators": [], "truncated_indicators": [],
+                 "results": []}
+        if params.response_format == "json":
+            return _truncate_if_needed(json.dumps(empty, indent=2))
+        lines = ["# VirusTotal - no source IPs", ""]
+        if source == "explicit":
+            lines.append("No IP was supplied.")
+        elif census is not None and census["complete"]:
+            lines.append("No public source IP matched the alert window.")
+        lines.extend(_vt_census_markdown(census, 0))
+        lines.extend(_vt_counts_markdown(correction))
+        lines.append("Nothing was sent to VirusTotal.")
+        return _truncate_if_needed("\n".join(lines))
+
+    eligible: list[dict] = []
+    skipped: list[dict] = []
+    seen: set[str] = set()
+    duplicates = 0
+    for candidate in candidates:
+        raw = str(candidate.get("indicator") or "")
+        try:
+            ipaddress.ip_address(raw.strip())
+        except ValueError:
+            skipped.append({"indicator": raw[:64], "reason": "invalid"})
+            continue
+        try:
+            public_ip = normalize_public_ip(raw)
+        except ValueError:
+            skipped.append({"indicator": raw[:64], "reason": "non_public"})
+            continue
+        if public_ip in seen:
+            duplicates += 1
+            continue
+        seen.add(public_ip)
+        eligible.append({**candidate, "indicator": public_ip})
+
+    selected = eligible[:params.max_ips]
+    truncated = len(eligible) - len(selected)
+    truncated_indicators = [item["indicator"] for item in eligible[len(selected):]]
+
+    if not selected:
+        # Every candidate was private, reserved, or malformed. No prompt, no transport.
+        if params.response_format == "json":
+            return _truncate_if_needed(json.dumps({
+                "source": source, "candidates": len(candidates),
+                "duplicates": duplicates, "skipped": len(skipped),
+                "eligible": 0, "selected": 0, "truncated": 0, "queried": 0,
+                "not_attempted": 0, **_vt_census_fields(census),
+                **_vt_correction_fields(correction),
+                "skipped_indicators": skipped, "results": []},
+                indent=2))
+        reasons = "; ".join(f"{item['indicator']} ({item['reason']})"
+                            for item in skipped[:10])
+        lines = ["# VirusTotal - no eligible public IPs", "",
+                 f"{len(candidates)} candidate(s), {duplicates} duplicate(s), "
+                 f"{len(skipped)} skipped: {reasons or 'none'}."]
+        lines.extend(_vt_census_markdown(census, 0))
+        lines.extend(_vt_counts_markdown(correction))
+        lines.append("Nothing was sent to VirusTotal.")
+        return _truncate_if_needed("\n".join(lines))
+
+    try:
+        preflight()
+    except VirusTotalError as exc:
+        raise ThreatIntelError(
+            f"[virustotal] {exc.kind}: {exc.message}") from exc
+
+    if not params.acknowledge_ioc_sharing:
+        raise ThreatIntelError(
+            "[virustotal] consent_required: set acknowledge_ioc_sharing=true to request host approval")
+    decision = await request_ioc_sharing_detailed(
+        ctx, consent_message("ip_addresses", [item["indicator"] for item in selected]))
+    if not decision.approved:
+        raise ThreatIntelError(
+            "[virustotal] consent_required: host approval was not granted "
+            f"[reason={decision.reason}]")
+
+    rows: list[dict] = []
+    halted: VirusTotalError | None = None
+    for target in selected:
+        if halted is not None:
+            rows.append(_vt_alert_row(target, status="not_attempted",
+                                      error_kind=halted.kind, error=halted.message))
+            continue
+        try:
+            data = await lookup("ip_addresses", target["indicator"],
+                                consent_token=issue_consent(
+                                    "ip_addresses", target["indicator"]))
+        except VirusTotalError as exc:
+            rows.append(_vt_alert_row(target, status="not_checked",
+                                      error_kind=exc.kind, error=exc.message))
+            if exc.kind not in _VT_CONTINUE_KINDS:
+                halted = exc
+            continue
+        rows.append(_vt_alert_row(target, data))
+
+    counts = Counter(str(row["status"]) for row in rows)
+    verdicts = {name: counts.get(name, 0) for name in _VT_VERDICT_NAMES}
+    summary = {
+        "source": source,
+        "window": ({"since": since_iso, "until": until_iso}
+                   if source == "alerts" else None),
+        "min_level": params.min_level if source == "alerts" else None,
+        "candidates": len(candidates),
+        "duplicates": duplicates,
+        "skipped": len(skipped),
+        "eligible": len(eligible),
+        "selected": len(selected),
+        "truncated": truncated,
+        "queried": len(rows) - verdicts["not_attempted"],
+        "not_attempted": verdicts["not_attempted"],
+        "harvest_partial": bool(harvest_errors),
+        **_vt_census_fields(census),
+        **_vt_correction_fields(correction),
+        "verdicts": verdicts,
+        "quota": _vt_quota_summary(),
+    }
+    payload = {**summary, "skipped_indicators": skipped,
+               "truncated_indicators": truncated_indicators, "results": rows}
+    if params.response_format == "json":
+        return _truncate_if_needed(json.dumps(payload, indent=2, default=str))
+
+    lines = [f"# VirusTotal - {summary['queried']}/{summary['selected']} source IPs checked", ""]
+    if source == "alerts":
+        lines.append(f"Window: `{since_iso}` to `{until_iso}` | rule level >= "
+                     f"{params.min_level} | {len(candidates)} candidate(s), "
+                     f"{summary['eligible']} eligible public IP(s)")
+    else:
+        lines.append(f"Explicit list: {len(candidates)} candidate(s), "
+                     f"{summary['eligible']} eligible public IP(s)")
+    lines.append(
+        f"Selected: {summary['selected']} | truncated: {summary['truncated']} | "
+        f"skipped: {summary['skipped']} | duplicates: {duplicates} | "
+        f"queried: {summary['queried']} | not attempted: {summary['not_attempted']}")
+    lines.extend(_vt_census_markdown(census, len(eligible)))
+    lines.extend(_vt_counts_markdown(correction))
+    lines.append(
+        "Verdicts: " + " | ".join(f"{name} {verdicts[name]}"
+                                     for name in _VT_VERDICT_NAMES))
+    if summary["harvest_partial"]:
+        lines.append("*Harvest was partial: some source-IP aggregation paths failed; "
+                     "alert counts are lower bounds.*")
+    lines.append("")
+    lines.append("| IP | Alerts | Max level | Detections | Verdict | ASN | Country | Source |")
+    lines.append("|---|---|---|---|---|---|---|---|")
+    from mcp_server.threat_intel.virustotal import markdown_text
+    for row in rows:
+        if row.get("cached") is None:
+            source_label = "-"
+        elif row.get("cached"):
+            source_label = "cache"
+        else:
+            source_label = "live API"
+        lines.append(
+            f"| `{row['indicator']}` | {row.get('alerts') if row.get('alerts') is not None else '-'} "
+            f"| {row.get('max_level') if row.get('max_level') is not None else '-'} "
+            f"| {row.get('detections') or '-'} | {row['status']} "
+            f"| {row.get('asn') if row.get('asn') is not None else '-'} "
+            f"| {markdown_text(row.get('country')) if row.get('country') else '-'} "
+            f"| {source_label} |")
+    failed = [row for row in rows if row.get("error_kind")]
+    if failed:
+        lines.append("")
+        lines.append("## Not checked / not attempted")
+        for row in failed:
+            lines.append(f"- `{row['indicator']}` - {row['status']} "
+                         f"({row['error_kind']}): {markdown_text(row.get('error'))}")
+    if truncated_indicators:
+        shown = ", ".join(f"`{ip}`" for ip in truncated_indicators[:10])
+        more = (f" (+{len(truncated_indicators) - 10} more)"
+                if len(truncated_indicators) > 10 else "")
+        lines.append("")
+        lines.append(f"## Not queried\n- {truncated} eligible IP(s) omitted by "
+                     f"max_ips={params.max_ips}: {shown}{more}. "
+                     "Re-run with `ips=[...]` to check these.")
+    if skipped:
+        shown = "; ".join(f"`{item['indicator']}` ({item['reason']})"
+                           for item in skipped[:10])
+        more = f" (+{len(skipped) - 10} more)" if len(skipped) > 10 else ""
+        lines.append("")
+        lines.append(f"## Skipped\n- {len(skipped)} non-public or invalid value(s): "
+                     f"{shown}{more}")
+    lines.append("")
+    lines.append("*An alert source IP is an investigation candidate, not proof of "
+                 "maliciousness. `no_detections` means a complete report flagged "
+                 "nothing; it is not proof the IP is benign.*")
+    return _truncate_if_needed("\n".join(lines))
 
 
 # Argus response rendering is provider-agnostic: no provider name and no field path is

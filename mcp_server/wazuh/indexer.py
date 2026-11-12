@@ -34,6 +34,9 @@ _SRCIP_FIELD_PATHS: list[str] = [
     "data.client_ip", "data.remote_ip", "data.source_ip", "data.ip", "srcip",
 ]
 
+# Exact-count correction covers this many observed buckets per call.
+SRCIP_CORRECTION_LIMIT = 200
+
 # Template-derived syscheck (FIM) leaves; tests pin this list to the fixture so
 # tools validate requested fields without duplicating hard-coded lists.
 _SYSCHECK_FIELD_PATHS: frozenset[str] = frozenset({
@@ -325,23 +328,44 @@ async def _exact_srcip_counts(query: dict, candidates: list[str],
     responses = await _wazuh_indexer_msearch(bodies, index_pattern)
     counts: Dict[str, int] = {}
     for ip, raw in zip(candidates, responses):
-        total = ((raw or {}).get("hits") or {}).get("total")
-        counts[ip] = int(total.get("value", 0)) if isinstance(total, dict) else int(total or 0)
+        if not isinstance(raw, dict) or "error" in raw:
+            continue
+        total = (raw.get("hits") or {}).get("total")
+        value = total.get("value") if isinstance(total, dict) else total
+        if isinstance(value, int) and not isinstance(value, bool):
+            counts[ip] = value
     return counts
 
 
-async def _correct_srcip_counts(buckets: list, query: dict,
-                                index_pattern: Optional[str] = None) -> list:
-    """Replace merged bucket ``doc_count`` values with exact distinct-alert counts.
-    Only the buckets returned to the caller are corrected, which bounds the batch
-    to the displayed top list.
+async def _correct_srcip_counts_with_status(buckets: list, query: dict,
+                                            index_pattern: Optional[str] = None) -> tuple[list, int]:
+    """Correct up to ``SRCIP_CORRECTION_LIMIT`` observed buckets and count the exact ones.
+
+    A bucket whose exact count is missing keeps its merged lower bound. The count
+    lets a caller report whether every observed bucket received an exact value.
     """
-    keys = [str(b.get("key")) for b in buckets if b.get("key") is not None]
-    counts = await _exact_srcip_counts(query, keys[:200], index_pattern)
+    observed = [b for b in buckets if b.get("key") is not None]
+    keys = [str(b.get("key")) for b in observed]
+    attempted = keys[:SRCIP_CORRECTION_LIMIT]
+    counts = await _exact_srcip_counts(query, attempted, index_pattern)
+    attempted_set = set(attempted)
+    corrected = 0
     for bucket in buckets:
         key = str(bucket.get("key"))
         if key in counts:
             bucket["doc_count"] = counts[key]
+            if key in attempted_set:
+                corrected += 1
+    return buckets, corrected
+
+
+async def _correct_srcip_counts(buckets: list, query: dict,
+                                index_pattern: Optional[str] = None) -> list:
+    """Replace merged bucket counts with exact counts for up to
+    ``SRCIP_CORRECTION_LIMIT`` observed buckets. Later buckets keep lower bounds.
+    """
+    buckets, _corrected = await _correct_srcip_counts_with_status(
+        buckets, query, index_pattern)
     return buckets
 
 
@@ -429,6 +453,122 @@ def _with_srcip_field(node, field_name: str):
     return node
 
 
+async def _srcip_census_merged(query: dict, aggs: dict,
+                               index_pattern: Optional[str] = None) -> tuple:
+    """Merge source-IP aggregations and report each path's completeness.
+
+    Returns ``(aggregations, census, errors)``. Every queried path gets one
+    report. A path is complete only when it returned fewer buckets than its
+    size, both count-error fields are 0, and the response shows no timeout,
+    early termination, or failed shard. Missing metadata is incomplete; this
+    function never guesses that the census ended.
+    """
+    candidates = [f"{path}.keyword" for path in _SRCIP_FIELD_PATHS]
+    caps = await _wazuh_indexer_field_caps(_SRCIP_FIELD_PATHS + candidates, index_pattern)
+    live = [name for path in _SRCIP_FIELD_PATHS for name in _agg_safe_paths(path, caps)]
+    if not live:
+        live = ["data.srcip"]
+    limit = _first_terms_size(aggs)
+    agg_name = next((name for name, spec in aggs.items()
+                     if isinstance(spec, dict) and "terms" in spec),
+                    next(iter(aggs), "srcips"))
+    raw_results = await asyncio.gather(*[
+        _wazuh_indexer_post({"size": 0, "query": query,
+                             "aggs": _with_srcip_field(aggs, name)}, index_pattern)
+        for name in live])
+    merged: dict = {}
+    reports: list[dict] = []
+    errors: list[str] = []
+    for field, raw in zip(live, raw_results):
+        report = {"field": field, "returned": 0, "limit": limit,
+                  "complete": False, "reasons": []}
+        if not isinstance(raw, dict) or "error" in raw:
+            errors.append(str((raw or {}).get("error", "unreadable response")))
+            report["reasons"] = ["path_error"]
+            reports.append(report)
+            continue
+        reasons: list[str] = []
+        if raw.get("timed_out") is True:
+            reasons.append("timed_out")
+        if raw.get("terminated_early") is True:
+            reasons.append("terminated_early")
+        shards = raw.get("_shards")
+        if not isinstance(shards, dict) or not _is_count(shards.get("failed")):
+            reasons.append("metadata_missing")
+            shards = {}
+        failed = shards.get("failed")
+        if raw.get("_partial") is True or (isinstance(failed, int) and failed > 0):
+            reasons.append("shard_failures")
+        agg = (raw.get("aggregations") or {}).get(agg_name)
+        buckets = agg.get("buckets") if isinstance(agg, dict) else None
+        if not isinstance(buckets, list):
+            reasons.append("unusable_response")
+            report["reasons"] = reasons
+            reports.append(report)
+            continue
+        report["returned"] = len(buckets)
+        sum_other = agg.get("sum_other_doc_count")
+        error_bound = agg.get("doc_count_error_upper_bound")
+        sum_other_reason = _metadata_reason(sum_other)
+        error_bound_reason = _metadata_reason(error_bound, unknown_on_minus_one=True)
+        if sum_other_reason is not None:
+            reasons.append(sum_other_reason)
+        elif sum_other > 0:
+            reasons.append("other_docs_omitted")
+        if error_bound_reason is not None:
+            reasons.append(error_bound_reason)
+        elif error_bound > 0:
+            reasons.append("doc_count_error")
+        if limit is None or len(buckets) >= limit:
+            reasons.append("bucket_limit_reached")
+        report["reasons"] = sorted(set(reasons))
+        report["complete"] = not reasons
+        reports.append(report)
+        _merge_agg_trees(merged, raw.get("aggregations") or {})
+    census = {
+        "bucket_limit": limit,
+        "paths": reports,
+        "complete": bool(reports) and all(item["complete"] for item in reports),
+        "reasons": sorted({reason for item in reports for reason in item["reasons"]}),
+    }
+    return merged, census, errors
+
+
+def _first_terms_size(aggs: dict) -> Optional[int]:
+    """Return the bucket size declared by the first terms aggregation."""
+    for spec in aggs.values():
+        if not isinstance(spec, dict):
+            continue
+        terms = spec.get("terms")
+        size = terms.get("size") if isinstance(terms, dict) else None
+        if isinstance(size, int) and not isinstance(size, bool):
+            return size
+    return None
+
+
+def _is_count(value) -> bool:
+    """True for a non-negative integer, excluding booleans."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _metadata_reason(value, *, unknown_on_minus_one: bool = False) -> str | None:
+    """Classify a non-negative aggregation count field.
+
+    None is missing, a non-integer or negative value is invalid, and -1 is
+    unknown only for the error bound, where the backend documents that marker.
+    Zero and positive integers are valid.
+    """
+    if value is None:
+        return "metadata_missing"
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "metadata_invalid"
+    if value < 0:
+        if unknown_on_minus_one and value == -1:
+            return "doc_count_error_unknown"
+        return "metadata_invalid"
+    return None
+
+
 async def _srcip_aggs_merged(query: dict, aggs: dict,
                              index_pattern: Optional[str] = None) -> tuple:
     """Run one aggregation tree per mapped source-IP path and merge the results.
@@ -439,22 +579,8 @@ async def _srcip_aggs_merged(query: dict, aggs: dict,
     Bucket ``doc_count`` values from the merge are lower bounds; callers that
     display a count must correct it with :func:`_correct_srcip_counts`.
     """
-    candidates = [f"{path}.keyword" for path in _SRCIP_FIELD_PATHS]
-    caps = await _wazuh_indexer_field_caps(_SRCIP_FIELD_PATHS + candidates, index_pattern)
-    live = [name for path in _SRCIP_FIELD_PATHS for name in _agg_safe_paths(path, caps)]
-    if not live:
-        live = ["data.srcip"]
-    raw_results = await asyncio.gather(*[
-        _wazuh_indexer_post({"size": 0, "query": query,
-                             "aggs": _with_srcip_field(aggs, name)}, index_pattern)
-        for name in live])
-    merged: dict = {}
-    errors: list[str] = []
-    for raw in raw_results:
-        if isinstance(raw, dict) and "error" not in raw:
-            _merge_agg_trees(merged, raw.get("aggregations") or {})
-        else:
-            errors.append(str((raw or {}).get("error", "unreadable response")))
+    merged, census, errors = await _srcip_census_merged(query, aggs, index_pattern)
+    live = [item["field"] for item in census["paths"]]
     return merged, live, errors
 
 

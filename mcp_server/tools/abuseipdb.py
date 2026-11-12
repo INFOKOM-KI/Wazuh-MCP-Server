@@ -33,7 +33,7 @@ from mcp_server.threat_intel.abuseipdb import (AbuseIPDBError, CATEGORY_NAMES,
                                                report_ip, report_retry_after,
                                                sanitize_comment,
                                                validate_categories)
-from mcp_server.wazuh.indexer import (_correct_srcip_counts,
+from mcp_server.wazuh.indexer import (_correct_srcip_counts_with_status,
                                       _srcip_aggs_merged,
                                       _wazuh_indexer_post)
 from mcp_server.wazuh.time_utils import _parse_time_window
@@ -471,10 +471,13 @@ async def _harvest_candidates(params: AbuseIPDBReportInput) -> tuple[list[dict],
             + "; ".join(errors[:3]))
 
     buckets = (merged.get("srcips") or {}).get("buckets") or []
-    counts_exact = True
+    observed = len([b for b in buckets if b.get("key") is not None])
+    counts_exact = observed == 0
     if buckets:
         try:
-            await _correct_srcip_counts(buckets, query)
+            buckets, corrected = await _correct_srcip_counts_with_status(
+                buckets, query)
+            counts_exact = corrected == observed
         except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError) as exc:
             counts_exact = False
             logger.warning("source-IP count correction failed: %s", exc)
@@ -1004,6 +1007,9 @@ async def blueteam_abuseipdb_report(params: AbuseIPDBReportInput) -> str:
     - ``categories="auto"`` maps Wazuh rule groups. When the attack type cannot be
       established the candidate is ``manual_review``; category 15 is never a
       fallback.
+    - ``alerts_examined_exact`` is true only when every observed bucket received
+      an exact count. A partial exact-count response leaves merged lower bounds
+      and reports false; it never becomes a zero count.
     - Harvested comments contain counts, timestamps, and numeric rule IDs only. Explicit
       reports require a comment describing the evidence; one comment covers the whole
       ``srcips`` list. ``timestamp`` is single-IP only. No raw logs, usernames, mail

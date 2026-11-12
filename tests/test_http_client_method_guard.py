@@ -132,9 +132,7 @@ def test_credential_guard_runs_before_the_shape_check(monkeypatch):
     assert called == ["get"]
 
 
-# --------------------------------------------------------------------------
 # Reservation safety on a shape rejection
-# --------------------------------------------------------------------------
 
 def test_shape_rejection_releases_the_abuseipdb_reservation(monkeypatch):
     """The guard reserves before the shape check; a raise there must not leak it."""
