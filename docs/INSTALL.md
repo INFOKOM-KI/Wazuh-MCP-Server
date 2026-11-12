@@ -194,6 +194,14 @@ Practical rules:
 - Avoid unescaped quote characters in passwords. Test that the file can be *sourced* before restarting the service.
 - Never commit `config.env`, share it in a public issue, or include secrets in logs/screenshots.
 
+Each `setup.sh` run merges the current template into `config.env`. New parameters are
+appended as commented examples, existing values are preserved, active `config.env`
+values are mirrored into `.env`, and `.env`-only keys known to the template are added
+to `config.env`. Backups are written as `config.env.bak` and `.env.bak`. A conflicting
+`.env` value is replaced by the `config.env` value and reported. Parameters no
+longer in the template are left untouched; remove them manually if the service
+rejects them. Review the merge output after an upgrade before restarting the service.
+
 Validate the shell syntax without displaying secrets:
 
 ```bash

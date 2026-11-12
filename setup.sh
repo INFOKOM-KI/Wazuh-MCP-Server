@@ -546,9 +546,11 @@ fi
 
 # Config file for environment variables
 CONFIG_FILE="$INSTALL_DIR/config.env"
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  echo "[4/7] Creating config file at $CONFIG_FILE..."
-  cat > "$CONFIG_FILE" << 'CONFIGEOF'
+
+# The template is generated on every run so an existing config.env can be
+# merged with new parameters without overwriting operator values.
+config_template() {
+  cat << 'CONFIGEOF'
 # Blue Team MCP - Environment Variables
 
 # Threat intelligence (optional)
@@ -933,11 +935,115 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 # export BLUETEAM_ALLOWED_PATHS="/var:/etc:/home:/opt:/usr"
 # export BLUETEAM_CAPTURE_DIR="/tmp"
 CONFIGEOF
+}
+
+# Merge the current template into config.env and mirror active values to .env.
+# config.env is canonical: existing values are kept, new template parameters are
+# appended as comments, and .env is rebuilt from active values.
+_merge_env_files() {  # config env template
+  local config="$1" envfile="$2" template="$3"
+  local line key value added=0 mirrored=0 conflicts=0 unknown=0
+  local -A cfg=() envmap=() union=() tpl=()
+
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Z0-9_]+)=(.*)$ ]]; then
+      cfg["${BASH_REMATCH[2]}"]="${BASH_REMATCH[3]}"
+    fi
+  done < "$config"
+
+  [[ -f "$envfile" ]] || : > "$envfile"
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Z0-9_]+)=(.*)$ ]]; then
+      envmap["${BASH_REMATCH[2]}"]="${BASH_REMATCH[3]}"
+    fi
+  done < "$envfile"
+
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^[[:space:]]*#[[:space:]]*export[[:space:]]+([A-Z0-9_]+)= ]]; then
+      tpl["${BASH_REMATCH[1]}"]=1
+    elif [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Z0-9_]+)= ]]; then
+      tpl["${BASH_REMATCH[2]}"]=1
+    fi
+  done < "$template"
+
+  cp -p "$config" "$config.bak"
+  cp -p "$envfile" "$envfile.bak"
+
+  # Active keys: config.env wins; .env-only keys are preserved.
+  for key in "${!cfg[@]}"; do
+    union["$key"]="${cfg[$key]}"
+    if [[ -n "${envmap[$key]+x}" && "${envmap[$key]}" != "${cfg[$key]}" ]]; then
+      echo "  [warn] $key differs between config.env and .env; using config.env"
+      conflicts=$((conflicts + 1))
+    fi
+  done
+  for key in "${!envmap[@]}"; do
+    if [[ -n "${cfg[$key]+x}" ]]; then
+      continue
+    fi
+    union["$key"]="${envmap[$key]}"
+    if [[ -n "${tpl[$key]:-}" ]]; then
+      printf '%s=%s\n' "$key" "${envmap[$key]}" >> "$config"
+      echo "  [info] $key was active only in .env; added to config.env"
+      added=$((added + 1))
+    else
+      unknown=$((unknown + 1))
+    fi
+  done
+
+  # New template parameters stay commented so a new default cannot change
+  # behavior without an operator decision.
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^[[:space:]]*#[[:space:]]*export[[:space:]]+([A-Z0-9_]+)= ]]; then
+      key="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^[[:space:]]*(export[[:space:]]+)?([A-Z0-9_]+)= ]]; then
+      key="${BASH_REMATCH[2]}"
+    else
+      continue
+    fi
+    if [[ -n "${cfg[$key]+x}" || -n "${envmap[$key]+x}" ]]; then
+      continue
+    fi
+    if grep -qE "^[[:space:]]*(#[[:space:]]*export[[:space:]]+|export[[:space:]]+)?${key}=" "$config"; then
+      continue
+    fi
+    printf '\n# Added by setup.sh; review before enabling.\n' >> "$config"
+    if [[ "$line" == \#* ]]; then
+      printf '%s\n' "$line" >> "$config"
+    else
+      printf '# %s\n' "$line" >> "$config"
+    fi
+    added=$((added + 1))
+  done < "$template"
+
+  # Rebuild .env: keep comments, drop active duplicates, append one sorted
+  # line per active key. A second run is byte-identical.
+  local tmp
+  tmp="$(mktemp)"
+  awk '!/^[[:space:]]*(export[[:space:]]+)?[A-Z0-9_]+=/' "$envfile" > "$tmp"
+  for key in $(printf '%s\n' "${!union[@]}" | sort); do
+    printf '%s=%s\n' "$key" "${union[$key]}" >> "$tmp"
+  done
+  mirrored="${#union[@]}"
+  cat "$tmp" > "$envfile"
+  rm -f "$tmp"
+
+  echo "[4/7] Config merge: $added new parameter(s), $mirrored active key(s) mirrored, $conflicts conflict(s), $unknown unrecognized .env key(s)."
+  echo "  Backups: $config.bak and $envfile.bak"
+}
+
+CONFIG_TEMPLATE="$(mktemp)"
+config_template > "$CONFIG_TEMPLATE"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  echo "[4/7] Creating config file at $CONFIG_FILE..."
+  cp "$CONFIG_TEMPLATE" "$CONFIG_FILE"
   chmod 644 "$CONFIG_FILE"
   echo "  Created $CONFIG_FILE - edit to add API keys and Wazuh credentials"
 else
-  echo "[4/7] Config file exists at $CONFIG_FILE (not overwritten)"
+  echo "[4/7] Config file exists at $CONFIG_FILE (merging new parameters)"
+  _merge_env_files "$CONFIG_FILE" "$ENV_FILE" "$CONFIG_TEMPLATE"
 fi
+rm -f "$CONFIG_TEMPLATE"
 
 # Sync the RERANK block into BOTH env files with effective values.
 # config.env is sourced first by the mcp-server-blueteam wrapper; .env is

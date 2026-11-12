@@ -98,6 +98,11 @@ MCP_TRANSPORT=streamable_http MCP_HOST=0.0.0.0 MCP_PORT=8001 \
   MCP_API_KEY="btm_<43-char-base64>" mcp-server-blueteam
 ```
 
+After an upgrade, re-run `sudo bash setup.sh`. It merges new template parameters into
+`config.env` as commented examples, keeps existing values, mirrors active values into
+`.env`, and writes `config.env.bak` and `.env.bak`. Review the merge output before
+restarting the service.
+
 Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
 ```json

@@ -36,6 +36,55 @@ _sync_env_key "$f" "BLUETEAM_CLUSTER_ENABLED" "false"
 cmp -s "$f" "$f.before" || { echo "FAIL sync is not idempotent"; exit 1; }
 echo "ok  sync"
 
+# Config merge: new template keys are appended as comments, existing values are
+# kept, .env mirrors the active config values, and a second run is a no-op.
+# _merge_env_files is extracted from setup.sh, never copied.
+eval "$(sed -n '/^_merge_env_files()/,/^}/p' "$SETUP")"
+TPL="$TMP/template.env"; CFG="$TMP/merge-config.env"; ENVF="$TMP/merge.env"
+cat > "$TPL" <<'EOF'
+# export A="default-a"
+# export B="default-b"
+# export C="default-c"
+# export E="default-e"
+EOF
+cat > "$CFG" <<'EOF'
+A="a=b&c|d"
+# export B="default-b"
+D="custom"
+EOF
+cat > "$ENVF" <<'EOF'
+A="stale"
+E="env-only"
+X="custom"
+EOF
+_merge_env_files "$CFG" "$ENVF" "$TPL" > "$TMP/merge.out"
+grep -q 'A differs between config.env and .env' "$TMP/merge.out" \
+  || { echo "FAIL conflict not reported"; exit 1; }
+grep -qx 'A="a=b&c|d"' "$CFG"               || { echo "FAIL merge changed A in config"; exit 1; }
+grep -qx 'A="a=b&c|d"' "$ENVF"              || { echo "FAIL .env did not mirror A"; exit 1; }
+grep -qx '# export C="default-c"' "$CFG"    || { echo "FAIL new template key not appended"; exit 1; }
+grep -qx 'E="env-only"' "$CFG"             || { echo "FAIL .env-only key not added to config"; exit 1; }
+! grep -qx 'X="custom"' "$CFG"              || { echo "FAIL unknown key leaked into config"; exit 1; }
+grep -qx 'X="custom"' "$ENVF"               || { echo "FAIL unknown key dropped from .env"; exit 1; }
+[ -f "$CFG.bak" ] && [ -f "$ENVF.bak" ]     || { echo "FAIL merge backups missing"; exit 1; }
+cp "$CFG" "$CFG.before"; cp "$ENVF" "$ENVF.before"
+_merge_env_files "$CFG" "$ENVF" "$TPL"
+cmp -s "$CFG" "$CFG.before"                  || { echo "FAIL config merge is not idempotent"; exit 1; }
+cmp -s "$ENVF" "$ENVF.before"                || { echo "FAIL env merge is not idempotent"; exit 1; }
+# The real template carries a newly added parameter into an old config.
+eval "$(sed -n '/^config_template()/,/^}/p' "$SETUP")"
+config_template > "$TMP/full-template.env"
+OLDC="$TMP/full-config.env"; OLDE="$TMP/full.env"
+printf 'BLUETEAM_VIRUSTOTAL_BUDGET="5"\n' > "$OLDC"
+: > "$OLDE"
+_merge_env_files "$OLDC" "$OLDE" "$TMP/full-template.env" > /dev/null
+grep -q '^# export BLUETEAM_VIRUSTOTAL_AUTOINIT="true"' "$OLDC" \
+  || { echo "FAIL new template parameter not appended"; exit 1; }
+grep -qx 'BLUETEAM_VIRUSTOTAL_BUDGET="5"' "$OLDE" \
+  || { echo "FAIL full template did not mirror the budget"; exit 1; }
+echo "ok  config merge"
+echo "ok  full template merge"
+
 # The real sync block, extracted from setup.sh and run against fixture env files.
 # LAYA_* are resolved by the vendor block above it, so the harness supplies them.
 CONFIG_FILE="$TMP/sync-config.env"; ENV_FILE="$TMP/sync.env"
