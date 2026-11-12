@@ -66,6 +66,27 @@ def test_autoinit_off_still_fails_closed(monkeypatch, tmp_path):
     assert not state.exists()
 
 
+def test_preflight_autoinit_creates_the_state(monkeypatch, tmp_path):
+    state = _wire(monkeypatch, tmp_path, autoinit=True)
+
+    snapshot = vt.preflight()
+
+    assert state.exists()
+    assert snapshot["budget"] == 5
+    assert snapshot["remaining"] == 5
+
+
+def test_preflight_autoinit_off_still_fails_closed(monkeypatch, tmp_path):
+    state = _wire(monkeypatch, tmp_path, autoinit=False)
+
+    with pytest.raises(vt.VirusTotalError) as err:
+        vt.preflight()
+
+    assert err.value.kind == "state_missing"
+    assert str(state) in err.value.message
+    assert not state.exists()
+
+
 def test_autoinit_never_runs_with_a_zero_budget(monkeypatch):
     from mcp_server.core.config import Config
 

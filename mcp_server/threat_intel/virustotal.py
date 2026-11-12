@@ -361,13 +361,34 @@ def classify_report(data: dict) -> tuple[str | None, bool | None, VTVerdict]:
     return "none", False, "no_detections"
 
 
+def _state_snapshot() -> dict:
+    """Return the quota state, creating a missing one only when autoinit is on."""
+    try:
+        return _get_quota().state()
+    except VirusTotalQuotaError as exc:
+        if exc.kind != "state_missing" or not VIRUSTOTAL_AUTOINIT:
+            raise VirusTotalError(exc.message, exc.kind,
+                                  exc.retry_after_seconds) from exc
+        try:
+            _get_quota().auto_initialize()
+        except VirusTotalQuotaError as init_exc:
+            raise VirusTotalError(init_exc.message, init_exc.kind,
+                                  init_exc.retry_after_seconds) from init_exc
+        from mcp_server.core.audit import _audit_log
+        try:
+            _audit_log("virustotal_quota_autoinit",
+                       {"state": str(VIRUSTOTAL_STATE)})
+        except Exception:  # audit is evidence, not a gate
+            logger.warning("virustotal_quota_autoinit not audited")
+        return _get_quota().state()
+
+
 def preflight() -> dict:
     """Return the quota snapshot, or refuse before any transport is attempted.
 
     The checks mirror the order ``lookup()`` hits them: budget, state, arm,
-    cooldown, then per-window and daily capacity. A missing or corrupt state is
-    reported, never recreated here; ``VIRUSTOTAL_AUTOINIT`` stays the only
-    opt-in that creates one, and it does so inside ``lookup()``.
+    cooldown, then per-window and daily capacity. A missing state is created
+    only when ``VIRUSTOTAL_AUTOINIT`` is on, matching ``lookup()``.
     """
     if not VIRUSTOTAL_API_KEY:
         raise VirusTotalError("VIRUSTOTAL_API_KEY is not set", "not_configured")
@@ -375,11 +396,7 @@ def preflight() -> dict:
     if int(VIRUSTOTAL_BUDGET) <= 0:
         raise VirusTotalError("VirusTotal budget is closed at 0 requests",
                               "budget_closed")
-    try:
-        snapshot = _get_quota().state()
-    except VirusTotalQuotaError as exc:
-        raise VirusTotalError(exc.message, exc.kind,
-                              exc.retry_after_seconds) from exc
+    snapshot = _state_snapshot()
     if not snapshot["window_open"]:
         raise VirusTotalError(
             "VirusTotal arm window has expired; run the rearm command",

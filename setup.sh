@@ -937,8 +937,8 @@ else
 fi
 
 # Sync the RERANK block into BOTH env files with effective values.
-# config.env is sourced by the mcp-server-blueteam wrapper; .env is what the
-# systemd unit loads via EnvironmentFile. Keeping them identical prevents the
+# config.env is sourced first by the mcp-server-blueteam wrapper; .env is
+# sourced after it and wins on conflict. Keeping them identical prevents the
 # "enabled in one file, ignored by the process" failure mode.
 _sync_env_key() {  # file key value
   local f="$1" k="$2" v="$3"
@@ -1054,6 +1054,7 @@ cat > /usr/local/bin/mcp-server-blueteam << 'EOF'
 #!/usr/bin/env bash
 # Wrapper - Claude Desktop calls this via SSH (MAESTRO-compliant)
 [[ -f /opt/blue-team-mcp/config.env ]] && source /opt/blue-team-mcp/config.env
+[[ -f /opt/blue-team-mcp/.env ]] && source /opt/blue-team-mcp/.env
 # Threat Intelligence keys
 export ABUSEIPDB_API_KEY="${ABUSEIPDB_API_KEY:-}"
 export BLUETEAM_ABUSEIPDB_REPORTING_ENABLED="${BLUETEAM_ABUSEIPDB_REPORTING_ENABLED:-false}"

@@ -176,7 +176,8 @@ sudo nano /opt/blue-team-mcp/config.env
 
 ### 6.1 Correct format
 
-This file is *sourced* by the shell wrapper, so use shell syntax without `export`:
+`config.env` is sourced first by the shell wrapper; `.env` is sourced after
+it and takes precedence. Use shell syntax without `export`:
 
 ```bash
 VARIABLE_NAME="value..."
