@@ -111,7 +111,7 @@ The script generally does the following:
 4. Attempts to run `pip-audit` if it can be installed.
 5. Sets up the reranker model unless disabled.
 6. Creates `/opt/blue-team-mcp/config.env` if the file does not already exist.
-7. Synchronizes a number of model variables to `config.env` and `/opt/blue-team-mcp/.env`.
+7. Synchronizes the model variables to `config.env` and `/opt/blue-team-mcp/.env`.
 8. Creates the `/usr/local/bin/mcp-server-blueteam` wrapper and a legacy compatibility wrapper.
 9. Attempts to enable SSH and grant capabilities to `tcpdump`.
 
@@ -566,7 +566,9 @@ export BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL="50"
 # --rate ... --daily ...  The state is 0600 SQLite and shared by server processes.
 # The CLI is a local administrative command, not an MCP tool; run it as the service user.
 # The state directory must not be group or world writable; the state file is 0600.
-# Missing, expired, corrupt, or policy-mismatched state fails closed. Use policy, rearm, migrate,
+# Missing, corrupt, or policy-mismatched state fails closed. An expired arm window is
+# renewed from the stored policy when AUTO_REARM is true (default); set it false to
+# require an operator `rearm` after every window. Use policy, rearm, migrate,
 # and prune for explicit policy changes, a new window, legacy adoption, and retention.
 # Public API use is limited to permitted noncommercial or academic work.
 # Commercial or government use requires a Private API agreement; the published terms also
@@ -575,6 +577,7 @@ export BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL="50"
 export VIRUSTOTAL_API_KEY="<key>"
 export BLUETEAM_VIRUSTOTAL_BUDGET="0"
 export BLUETEAM_VIRUSTOTAL_BUDGET_HOURS="8"
+export BLUETEAM_VIRUSTOTAL_AUTO_REARM="true"   # false = operator rearm after every window
 export BLUETEAM_VIRUSTOTAL_STATE="/var/log/blue-team-mcp/virustotal_quota.db"
 export VIRUSTOTAL_ALLOWED_HOSTS="www.virustotal.com"
 export VIRUSTOTAL_MAX_RESPONSE_BYTES="2000000"
@@ -665,7 +668,8 @@ Requirements:
 - `VIRUSTOTAL_API_KEY` must be configured; if it is not, the command reports
   `live validation not performed` and exits without a request.
 - The quota state must already exist and its policy must match the service
-  environment. The command never calls `init`, `policy`, or `rearm`.
+  environment. The command never calls `init`, `policy`, or `rearm`, and never
+  renews an expired window: a closed window surfaces as `arm_expired`.
 - The operator supplies the test addresses. Private, loopback, link-local,
   multicast, reserved, documentation, and other non-public addresses are
   rejected before transport.

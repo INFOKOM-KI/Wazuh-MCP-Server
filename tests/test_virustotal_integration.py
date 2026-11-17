@@ -74,6 +74,7 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(vt, "VIRUSTOTAL_RATE_PER_MINUTE", 4)
     monkeypatch.setattr(vt, "VIRUSTOTAL_BUDGET", 50)
     monkeypatch.setattr(vt, "VIRUSTOTAL_BUDGET_HOURS", 8.0)
+    monkeypatch.setattr(vt, "VIRUSTOTAL_AUTO_REARM", True)
     monkeypatch.setattr(vt, "VIRUSTOTAL_STATE", str(tmp_path / "virustotal.db"))
     monkeypatch.setattr(vt, "VIRUSTOTAL_ALLOWED_HOSTS", "www.virustotal.com")
     monkeypatch.setattr(vt, "VIRUSTOTAL_MAX_RESPONSE_BYTES", 2_000_000)
@@ -81,6 +82,21 @@ def _clean(monkeypatch, tmp_path):
     vt._get_quota().initialize()
     yield
     vt.reset_state()
+
+
+@pytest.mark.parametrize("auto_rearm,expected", [(True, True), (False, False)])
+def test_preflight_renews_an_expired_window_only_when_enabled(
+        monkeypatch, auto_rearm, expected):
+    monkeypatch.setattr(vt, "VIRUSTOTAL_AUTO_REARM", auto_rearm)
+    later = vt._NOW() + 9 * 3600
+    monkeypatch.setattr(vt, "_NOW", lambda: later)
+    if not expected:
+        with pytest.raises(vt.VirusTotalError) as error:
+            vt.preflight()
+        assert error.value.kind == "arm_expired"
+        assert "virustotal_quota rearm" in error.value.message
+        return
+    assert vt.preflight()["window_open"] is True
 
 
 @pytest.mark.parametrize("value,expected", [

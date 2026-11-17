@@ -152,6 +152,7 @@ class ThreatIntelConfig:
     virustotal_budget_hours: float = 8.0      # authorized arm window
     virustotal_state_path: str = "/var/log/blue-team-mcp/virustotal_quota.db"
     virustotal_autoinit: bool = False          # opt-in: create missing state at first request
+    virustotal_auto_rearm: bool = True         # renew an expired arm window from the stored policy
     virustotal_allowed_hosts: str = "www.virustotal.com"
     virustotal_max_response_bytes: int = 2_000_000
     # Netra
@@ -225,6 +226,8 @@ class ThreatIntelConfig:
                 "/var/log/blue-team-mcp/virustotal_quota.db"),
             virustotal_autoinit=_bool(
                 os.environ.get("BLUETEAM_VIRUSTOTAL_AUTOINIT", "false"), False),
+            virustotal_auto_rearm=_bool(
+                os.environ.get("BLUETEAM_VIRUSTOTAL_AUTO_REARM", "true"), True),
             virustotal_allowed_hosts=os.environ.get(
                 "VIRUSTOTAL_ALLOWED_HOSTS", "www.virustotal.com"),
             virustotal_max_response_bytes=int(os.environ.get(
@@ -1437,6 +1440,13 @@ class Config:
                     "third party. Keep dry_run=true unless an analyst approved the preview.")
         if not self.threat_intel.virustotal_api_key:
             logger.warning("VIRUSTOTAL_API_KEY not set - VirusTotal lookups disabled.")
+        else:
+            logger.info(
+                "VirusTotal budget: %d per %.1fh, auto_rearm=%s, state=%s.",
+                self.threat_intel.virustotal_budget,
+                self.threat_intel.virustotal_budget_hours,
+                self.threat_intel.virustotal_auto_rearm,
+                self.threat_intel.virustotal_state_path)
         if not self.threat_intel.rapidapi_key:
             logger.warning("RAPIDAPI_KEY not set - RapidAPI lookups (IP blacklist / IOC search / breach check) disabled.")
         else:

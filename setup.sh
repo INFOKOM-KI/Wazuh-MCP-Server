@@ -582,7 +582,9 @@ config_template() {
 # --hours ... --rate ... --daily ...  The state is 0600 SQLite and shared by server processes.
 # The CLI is a local administrative command, not an MCP tool; run it as the service user.
 # The state directory must not be group or world writable; the state file is 0600.
-# Missing, expired, corrupt, or policy-mismatched state fails closed. Use policy, rearm, migrate,
+# Missing, corrupt, or policy-mismatched state fails closed. An expired arm window is
+# renewed from the stored policy when AUTO_REARM is true (default); set it false to
+# require an operator `rearm` after every window. Use policy, rearm, migrate,
 # and prune for explicit policy changes, a new window, legacy adoption, and retention.
 # Public API defaults: 4 requests/min, 500/day. Public API use is limited to noncommercial
 # or academic work; commercial or government use requires a Private API agreement. The
@@ -591,6 +593,7 @@ config_template() {
 # export BLUETEAM_VIRUSTOTAL_BUDGET="0"
 # export BLUETEAM_VIRUSTOTAL_BUDGET_HOURS="8"
 # export BLUETEAM_VIRUSTOTAL_AUTOINIT="true"   # requires BUDGET > 0; the wrapper enables it when armed
+# export BLUETEAM_VIRUSTOTAL_AUTO_REARM="true"  # renew an expired window; false = operator rearm only
 # export BLUETEAM_VIRUSTOTAL_STATE="/var/log/blue-team-mcp/virustotal_quota.db"
 # export VIRUSTOTAL_ALLOWED_HOSTS="www.virustotal.com"
 # export VIRUSTOTAL_MAX_RESPONSE_BYTES="2000000"
@@ -1187,6 +1190,7 @@ else
     export BLUETEAM_VIRUSTOTAL_AUTOINIT="${BLUETEAM_VIRUSTOTAL_AUTOINIT:-false}"
 fi
 unset _vt_budget
+export BLUETEAM_VIRUSTOTAL_AUTO_REARM="${BLUETEAM_VIRUSTOTAL_AUTO_REARM:-true}"
 export VIRUSTOTAL_ALLOWED_HOSTS="${VIRUSTOTAL_ALLOWED_HOSTS:-www.virustotal.com}"
 export VIRUSTOTAL_MAX_RESPONSE_BYTES="${VIRUSTOTAL_MAX_RESPONSE_BYTES:-2000000}"
 export VIRUSTOTAL_CACHE_TTL="${VIRUSTOTAL_CACHE_TTL:-3600}"

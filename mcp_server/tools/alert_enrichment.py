@@ -543,7 +543,10 @@ async def blueteam_virustotal_alert_ips(params: VirusTotalAlertIpsInput,
     budget and the configured 4/min and daily provider limits. A 15-IP batch can
     take about 3.5 minutes; the default of 4 keeps a call under roughly one minute
     when no report is cached. A cached report is free but still needs fresh consent.
-    A 429 sets a persistent cooldown that stops the remaining lookups.
+    The arm window renews from the stored policy unless
+    `BLUETEAM_VIRUSTOTAL_AUTO_REARM` is false; `arm_expired` therefore means
+    renewal is disabled, not that the deployment lapsed. A 429 sets a persistent
+    cooldown that stops the remaining lookups.
 
     Privacy: each listed IP leaves the host and VirusTotal adds it to its community
     dataset. The prompt shows every indicator before anything is sent; a refusal

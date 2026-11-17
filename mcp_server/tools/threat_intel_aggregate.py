@@ -561,7 +561,10 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
     ``daily_exhausted``, ``storage_unavailable``, ``state_corrupt``,
     ``state_missing``, ``policy_mismatch``, ``state_exists``, ``config_invalid``,
     ``bad_request``, ``circuit_open``, ``plan_limit``, ``not_configured``, and
-    ``unsupported_type``; ``error`` keeps the human-readable text. Per-provider
+    ``unsupported_type``; ``error`` keeps the human-readable text. The VirusTotal
+    arm window renews from the stored policy unless `BLUETEAM_VIRUSTOTAL_AUTO_REARM`
+    is false, so ``arm_expired`` means renewal is disabled, not that the service
+    lapsed. Per-provider
     failures never block the overall aggregation. ``providers_ok``/``providers_total``
     count attempted upstream providers. A provider that is not configured, does not
     support the indicator type, is refused locally before transport, or fails its

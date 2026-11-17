@@ -18,7 +18,8 @@ from typing import Literal, TypedDict
 import httpx
 
 from mcp_server import (VIRUSTOTAL_ALLOWED_HOSTS, VIRUSTOTAL_API_KEY,
-                        VIRUSTOTAL_AUTOINIT, VIRUSTOTAL_BASE_URL,
+                        VIRUSTOTAL_AUTO_REARM, VIRUSTOTAL_AUTOINIT,
+                        VIRUSTOTAL_BASE_URL,
                         VIRUSTOTAL_BUDGET, VIRUSTOTAL_BUDGET_HOURS,
                         VIRUSTOTAL_CACHE_TTL,
                         VIRUSTOTAL_DAILY_LIMIT, VIRUSTOTAL_MAX_RESPONSE_BYTES,
@@ -31,7 +32,8 @@ from mcp_server.threat_intel.virustotal_consent import (consume_consent,
                                                         issue_consent,
                                                         reset_consent_state)
 from mcp_server.threat_intel.virustotal_quota import (VirusTotalQuota,
-                                                      VirusTotalQuotaError)
+                                                      VirusTotalQuotaError,
+                                                      rearm_command)
 
 logger = logging.getLogger("blue_team_mcp.threat_intel.virustotal")
 
@@ -186,13 +188,14 @@ def _get_quota() -> VirusTotalQuota:
     global _QUOTA, _QUOTA_SIG
     signature = (str(VIRUSTOTAL_STATE), int(VIRUSTOTAL_BUDGET),
                  float(VIRUSTOTAL_BUDGET_HOURS), int(VIRUSTOTAL_RATE_PER_MINUTE),
-                 int(VIRUSTOTAL_DAILY_LIMIT))
+                 int(VIRUSTOTAL_DAILY_LIMIT), bool(VIRUSTOTAL_AUTO_REARM))
     if _QUOTA is None or _QUOTA_SIG != signature:
         _QUOTA = VirusTotalQuota(
             VIRUSTOTAL_STATE, budget=VIRUSTOTAL_BUDGET,
             hours=VIRUSTOTAL_BUDGET_HOURS,
             rate_per_minute=VIRUSTOTAL_RATE_PER_MINUTE,
-            daily_limit=VIRUSTOTAL_DAILY_LIMIT, clock=_NOW)
+            daily_limit=VIRUSTOTAL_DAILY_LIMIT,
+            auto_rearm=VIRUSTOTAL_AUTO_REARM, clock=_NOW)
         _QUOTA_SIG = signature
     return _QUOTA
 
@@ -362,9 +365,9 @@ def classify_report(data: dict) -> tuple[str | None, bool | None, VTVerdict]:
 
 
 def _state_snapshot() -> dict:
-    """Return the quota state, creating a missing one only when autoinit is on."""
+    """Return the quota state, creating or renewing it only when opted in."""
     try:
-        return _get_quota().state()
+        snapshot = _get_quota().state()
     except VirusTotalQuotaError as exc:
         if exc.kind != "state_missing" or not VIRUSTOTAL_AUTOINIT:
             raise VirusTotalError(exc.message, exc.kind,
@@ -381,6 +384,15 @@ def _state_snapshot() -> dict:
         except Exception:  # audit is evidence, not a gate
             logger.warning("virustotal_quota_autoinit not audited")
         return _get_quota().state()
+    if not snapshot["window_open"]:
+        try:
+            renewed = _get_quota().ensure_armed()
+        except VirusTotalQuotaError as exc:
+            raise VirusTotalError(exc.message, exc.kind,
+                                  exc.retry_after_seconds) from exc
+        if renewed:
+            snapshot = _get_quota().state()
+    return snapshot
 
 
 def preflight() -> dict:
@@ -388,7 +400,8 @@ def preflight() -> dict:
 
     The checks mirror the order ``lookup()`` hits them: budget, state, arm,
     cooldown, then per-window and daily capacity. A missing state is created
-    only when ``VIRUSTOTAL_AUTOINIT`` is on, matching ``lookup()``.
+    only when ``VIRUSTOTAL_AUTOINIT`` is on, and an expired arm window is
+    renewed only when ``VIRUSTOTAL_AUTO_REARM`` is on, matching ``lookup()``.
     """
     if not VIRUSTOTAL_API_KEY:
         raise VirusTotalError("VIRUSTOTAL_API_KEY is not set", "not_configured")
@@ -399,7 +412,11 @@ def preflight() -> dict:
     snapshot = _state_snapshot()
     if not snapshot["window_open"]:
         raise VirusTotalError(
-            "VirusTotal arm window has expired; run the rearm command",
+            "VirusTotal arm window is closed; "
+            + rearm_command(snapshot["state_path"], snapshot["budget"],
+                            snapshot["window_hours"], snapshot["rate_limit"],
+                            snapshot["daily_limit"])
+            + " or set BLUETEAM_VIRUSTOTAL_AUTO_REARM=true",
             "arm_expired")
     cooldown = int(snapshot.get("cooldown_remaining_seconds") or 0)
     if cooldown > 0:

@@ -5,7 +5,7 @@ Opt-in live VirusTotal validation.
 
 This is an operator-run command, not an MCP tool and not part of test
 collection. It uses the normal lookup path, so it reserves quota exactly once
-and never creates or changes the quota policy. It prints no API key.
+and never creates, renews, or changes the quota policy. It prints no API key.
 """
 from __future__ import annotations
 
@@ -18,6 +18,9 @@ from mcp_server import VIRUSTOTAL_API_KEY
 from mcp_server.core.http_client import normalize_public_ip
 from mcp_server.threat_intel import virustotal as vt
 from mcp_server.threat_intel.virustotal import issue_consent
+
+# A checker that renewed a closed window would change the policy it validates.
+vt.VIRUSTOTAL_AUTO_REARM = False
 
 
 def _quota_snapshot() -> dict[str, Any]:

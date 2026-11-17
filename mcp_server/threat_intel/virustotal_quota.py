@@ -65,6 +65,15 @@ def _seconds_until_utc_midnight(now: float) -> int:
     return max(1, int((tomorrow - current).total_seconds()) + 1)
 
 
+def rearm_command(path: str, budget: int, hours: float, rate: int,
+                  daily: int) -> str:
+    """Return the operator command that starts a new arm window; a refusal
+    without it leaves the caller no next step."""
+    return (f"run `python -m mcp_server.threat_intel.virustotal_quota rearm "
+            f"--state {path} --budget {budget} --hours {hours:g} "
+            f"--rate {rate} --daily {daily}`")
+
+
 def _policy_summary(path: str, state: dict[str, Any], now: float) -> dict[str, Any]:
     return {
         "state": path,
@@ -83,12 +92,13 @@ class VirusTotalQuota:
 
     def __init__(self, path: str, *, budget: int, hours: float,
                  rate_per_minute: int, daily_limit: int,
-                 clock=time.time) -> None:
+                 auto_rearm: bool = False, clock=time.time) -> None:
         self._path = str(path or "")
         self._budget = int(budget)
         self._hours = float(hours)
         self._rate = int(rate_per_minute)
         self._daily = int(daily_limit)
+        self._auto_rearm = bool(auto_rearm)
         self._clock = clock
         if not self._path or not os.path.isabs(self._path):
             raise VirusTotalQuotaError(
@@ -549,9 +559,7 @@ class VirusTotalQuota:
                     "VirusTotal quota state has an invalid cooldown",
                     "state_corrupt")
             if check_arm and now - armed_at > policy["hours"] * 3600:
-                raise VirusTotalQuotaError(
-                    "VirusTotal arm window has expired; run the rearm command",
-                    "arm_expired")
+                raise self._arm_expired_error(policy)
             if check_cooldown and cooldown > now:
                 raise VirusTotalQuotaError(
                     "VirusTotal rate limit cooldown is active", "cooldown",
@@ -561,6 +569,44 @@ class VirusTotalQuota:
         except BaseException:
             conn.close()
             raise
+
+    def _arm_expired_error(self, policy: dict[str, Any]) -> VirusTotalQuotaError:
+        expires_at = datetime.fromtimestamp(
+            policy["armed_at"] + policy["hours"] * 3600,
+            timezone.utc).isoformat(timespec="seconds")
+        return VirusTotalQuotaError(
+            f"VirusTotal arm window expired at {expires_at}; "
+            + rearm_command(self._path, policy["budget"], policy["hours"],
+                            policy["rate"], policy["daily"])
+            + " or set BLUETEAM_VIRUSTOTAL_AUTO_REARM=true to renew it "
+            "from the stored policy",
+            "arm_expired")
+
+    def ensure_armed(self, now: float | None = None) -> bool:
+        """Renew an expired arm window when auto-renewal is enabled.
+
+        Returns True only when a window was started. The stored policy is
+        reused, so the request budget, rate, and daily limit are unchanged.
+        """
+        if not self._auto_rearm:
+            return False
+        current = self._now(now)
+        try:
+            conn = self._open(current)
+        except VirusTotalQuotaError as exc:
+            if exc.kind != "arm_expired":
+                raise
+            self.rearm(current)
+            from mcp_server.core.audit import _audit_log
+            try:
+                _audit_log("virustotal_quota_auto_rearm",
+                           {"state": self._path, "budget": self._budget,
+                            "hours": self._hours})
+            except Exception:  # audit is evidence, not a gate
+                logger.warning("virustotal_quota_auto_rearm not audited")
+            return True
+        conn.close()
+        return False
 
     def adopt_legacy(self, now: float | None = None) -> dict[str, Any]:
         """Adopt a schema-1 state, preserving rows and current-day accounting.
@@ -706,6 +752,7 @@ class VirusTotalQuota:
     def reserve(self, now: float | None = None) -> ReservationResult:
         """Reserve one request, or return the wait until a rate slot opens."""
         current = self._now(now)
+        self.ensure_armed(current)
         conn = self._open(current)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -715,9 +762,7 @@ class VirusTotalQuota:
                 self._prune_locked(conn, current, policy)
                 armed_at = policy["armed_at"]
                 if current - armed_at > policy["hours"] * 3600:
-                    raise VirusTotalQuotaError(
-                        "VirusTotal arm window has expired; run the rearm command",
-                        "arm_expired")
+                    raise self._arm_expired_error(policy)
                 local_spent = conn.execute(
                     "SELECT COUNT(*) FROM vt_requests "
                     "WHERE status IN ('pending','committed') AND reserved_at >= ?",

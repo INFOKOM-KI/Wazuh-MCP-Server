@@ -126,6 +126,33 @@ def test_arm_window_expiry(tmp_path):
     with pytest.raises(VirusTotalQuotaError) as error:
         quota.reserve(1000.0 + 3600.0 + 1.0)
     assert error.value.kind == "arm_expired"
+    assert "virustotal_quota rearm" in error.value.message
+    assert "BLUETEAM_VIRUSTOTAL_AUTO_REARM" in error.value.message
+
+
+def test_auto_rearm_renews_an_expired_window_and_keeps_rows(tmp_path):
+    path = tmp_path / "vt.db"
+    quota = VirusTotalQuota(str(path), budget=5, hours=8.0,
+                            rate_per_minute=4, daily_limit=500,
+                            auto_rearm=True)
+    quota.initialize(1000.0)
+    first = quota.reserve(1000.0)
+    quota.finalize(first.reservation_id, consumed=True)
+    later = 1000.0 + 9 * 3600
+    assert quota.reserve(later).reservation_id is not None
+    assert quota.state(later)["window_open"] is True
+    assert quota.state(later)["spent"] == 1
+    assert _row_counts(path) == {"committed": 1, "pending": 1}
+
+
+def test_auto_rearm_is_off_by_default(tmp_path):
+    quota = _init(tmp_path / "vt.db", hours=1.0)
+    assert quota.ensure_armed(1000.0 + 3601.0) is False
+    assert quota.state(1000.0)["armed_at"] == 1000.0
+
+
+def test_service_default_renews_the_window():
+    assert ThreatIntelConfig().virustotal_auto_rearm is True
 
 
 def test_rearm_starts_a_new_window_without_deleting_rows(tmp_path):
