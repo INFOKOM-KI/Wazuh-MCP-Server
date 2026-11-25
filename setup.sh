@@ -650,6 +650,9 @@ config_template() {
 # export CRTSH_BASE_URL="https://crt.sh"
 # export URLHAUS_BASE_URL="https://urlhaus-api.abuse.ch/v1/"
 # export HUDSONROCK_BASE_URL="https://cavalier.hudsonrock.com/api/json/v2"  # stealer-log check
+# offensive.agency needs no key. Optional tuning:
+# export OFFENSIVE_AGENCY_CACHE_TTL="21600"
+# export OFFENSIVE_AGENCY_MAX_RESPONSE_BYTES="2000000"
 
 # Caching TTLs (seconds, defaults shown)
 # export CROWDSEC_CACHE_TTL="900"
@@ -1269,6 +1272,8 @@ export BLUETEAM_FALSE_POSITIVE_KB="${BLUETEAM_FALSE_POSITIVE_KB:-/var/log/blue-t
 export BLUETEAM_CASE_STORE="${BLUETEAM_CASE_STORE:-/var/log/blue-team-mcp/cases.jsonl}"
 export BLUETEAM_CASE_MAX="${BLUETEAM_CASE_MAX:-500}"
 export HUDSONROCK_BASE_URL="${HUDSONROCK_BASE_URL:-https://cavalier.hudsonrock.com/api/json/v2}"
+export OFFENSIVE_AGENCY_CACHE_TTL="${OFFENSIVE_AGENCY_CACHE_TTL:-21600}"
+export OFFENSIVE_AGENCY_MAX_RESPONSE_BYTES="${OFFENSIVE_AGENCY_MAX_RESPONSE_BYTES:-2000000}"
 export RAPIDAPI_CACHE_TTL="${RAPIDAPI_CACHE_TTL:-604800}"
 export BLUETEAM_INDEXER_CACHE_TTL="${BLUETEAM_INDEXER_CACHE_TTL:-30}"
 export BLUETEAM_GRAPH_CACHE_TTL="${BLUETEAM_GRAPH_CACHE_TTL:-60}"
@@ -1448,7 +1453,7 @@ echo "  ThreatFox needs a free key: https://threatfox.abuse.ch/api"
 echo ""
 echo "Wrapper entry points installed:"
 echo ""
-echo "  mcp-server-blueteam    : All 169 tools (Wazuh, threat intel, host forensics,"
+echo "  mcp-server-blueteam    : All 171 tools (Wazuh, threat intel, host forensics,"
 echo "                            Sangfor blocklist, 3-Sum correlation, curated reports,"
 echo "                            CrowdSec, GreyNoise, ThreatFox)"
 echo "  mcp-server-crowdsec    : DEPRECATED, redirects to mcp-server-blueteam"

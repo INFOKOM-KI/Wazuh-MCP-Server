@@ -103,6 +103,7 @@ SECTION_CATEGORIES: dict[str, set[str]] = {
     "Threat intel": {
         "abuseipdb", "alert_enrichment", "misp", "otx_lookup",
         "threat_intel_aggregate", "urlhaus",
+        "offensive_agency",
         "provider_crowdsec", "provider_greynoise", "provider_rapidapi",
     },
     "CVE / vulnerability enrichment": {

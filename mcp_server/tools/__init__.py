@@ -79,6 +79,7 @@ def register_all_tools() -> None:
         ("webshell_check",         "webshell_check",         False),  # 1 tool - curl + signature scan
         ("otx_lookup",             "otx_lookup",             False),  # 2 tools - AlienVault OTX threat intel
         ("threat_intel_aggregate",  "threat_intel_aggregate",  False),  # 1 tool - unified multi-provider aggregation
+        ("offensive_agency",        "offensive_agency",        False),  # 2 tools - offensive.agency attacker-IOC enrichment
         ("abuseipdb",               "abuseipdb",               True),   # check + report; report is an external write
         ("misp",                   "misp",                   False),  # 1 tool - MISP IOC lookup (read-only, version agnostic restSearch)
         ("urlhaus",                "urlhaus",                False),  # 2 tools - URLhaus malware URL database

@@ -176,6 +176,10 @@ class ThreatIntelConfig:
     urlhaus_base_url: str = "https://urlhaus-api.abuse.ch/v1/"
     # HudsonRock (stealer logs)
     hudsonrock_base_url: str = "https://cavalier.hudsonrock.com/api/json/v2"
+    # offensive.agency (public tracker; no key)
+    offensive_agency_base_url: str = "https://www.offensive.agency/api/v1"
+    offensive_agency_cache_ttl: int = 21600
+    offensive_agency_max_response_bytes: int = 2_000_000
     # RapidAPI capability lookups (IP blacklist, IOC search, breach check, bulk IP intel)
     rapidapi_key: str = ""
     rapidapi_cache_ttl: int = 604800          # 7 days: the binding limit is 100/month, not staleness
@@ -247,6 +251,12 @@ class ThreatIntelConfig:
             urlhaus_cache_ttl=int(os.environ.get("URLHAUS_CACHE_TTL", "1800")),
             urlhaus_base_url=os.environ.get("URLHAUS_BASE_URL", "https://urlhaus-api.abuse.ch/v1/"),
             hudsonrock_base_url=os.environ.get("HUDSONROCK_BASE_URL", "https://cavalier.hudsonrock.com/api/json/v2"),
+            offensive_agency_base_url=os.environ.get(
+                "OFFENSIVE_AGENCY_BASE_URL", "https://www.offensive.agency/api/v1"),
+            offensive_agency_cache_ttl=int(os.environ.get(
+                "OFFENSIVE_AGENCY_CACHE_TTL", "21600")),
+            offensive_agency_max_response_bytes=int(os.environ.get(
+                "OFFENSIVE_AGENCY_MAX_RESPONSE_BYTES", "2000000")),
             rapidapi_key=os.environ.get("RAPIDAPI_KEY", ""),
             rapidapi_cache_ttl=int(os.environ.get("RAPIDAPI_CACHE_TTL", "604800")),
             rapidapi_monthly_cap=int(os.environ.get("BLUETEAM_RAPIDAPI_MONTHLY_CAP", "100")),
@@ -302,6 +312,18 @@ class ThreatIntelConfig:
                 required_path="/api/v3")
         except ValueError as exc:
             raise ConfigurationError(f"VIRUSTOTAL_BASE_URL is invalid: {exc}") from exc
+        if self.offensive_agency_cache_ttl < 0:
+            raise ConfigurationError("OFFENSIVE_AGENCY_CACHE_TTL must be >= 0")
+        if self.offensive_agency_max_response_bytes <= 0:
+            raise ConfigurationError(
+                "OFFENSIVE_AGENCY_MAX_RESPONSE_BYTES must be > 0")
+        try:
+            validate_https_base_url(
+                self.offensive_agency_base_url, "www.offensive.agency",
+                required_path="/api/v1")
+        except ValueError as exc:
+            raise ConfigurationError(
+                f"OFFENSIVE_AGENCY_BASE_URL is invalid: {exc}") from exc
 
 
 @dataclass
