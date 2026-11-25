@@ -50,7 +50,7 @@ def _tail_file(path: str, lines: int) -> str:
     p = Path(path)
     if not p.exists():
         return json.dumps({"error": f"File not found: {path}"})
-    r = _run(["tail", "-n", str(lines), path])
+    r = _run(["tail", "-n", str(lines), "--", path])
     return r["stdout"] or r["stderr"]
 
 

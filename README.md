@@ -1175,7 +1175,7 @@ Group by domain → `group_by="domain"`, per IP → `"srcip"` (default), per age
 | Fail2ban state | `blueteam_fail2ban_status`, `blueteam_fail2ban_jail_status`, `blueteam_fail2ban_unban` |
 | Process / connection / user inventory | `blueteam_list_processes`, `blueteam_list_connections`, `blueteam_list_listening_ports`, `blueteam_list_users`, `blueteam_list_cron_jobs`, `blueteam_who_is_logged_in`, `blueteam_last_logins` |
 | Failed/brute login history | `blueteam_failed_logins`, `blueteam_sudo_history` |
-| Log review | `blueteam_journalctl`, `blueteam_read_syslog`, `blueteam_read_auth_log`, `blueteam_read_web_log` |
+| Log review | `blueteam_journalctl`, `blueteam_read_syslog`, `blueteam_read_auth_log`, `blueteam_read_web_log`. `read_web_log` validates both explicit and default paths against `BLUETEAM_ALLOWED_PATHS`; `read_auth_log` and `read_syslog` use fixed paths and do not consult the allowlist |
 | Privilege / persistence | `blueteam_find_suid_files`, `blueteam_find_world_writable`, `blueteam_check_ssh_authorized_keys` |
 | Malware / integrity | `blueteam_rootkit_scan`, `blueteam_lynis_audit`, `blueteam_hash_file`, `blueteam_check_updates` |
 | System state | `blueteam_system_health`, `blueteam_check_open_firewall` |

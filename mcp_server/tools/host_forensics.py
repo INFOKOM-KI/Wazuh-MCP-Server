@@ -98,7 +98,9 @@ class WebLogInput(BaseModel):
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
 )
 async def blueteam_read_web_log(params: WebLogInput) -> str:
-    """Read nginx or Apache access/error logs. Great for spotting web attacks.
+    """Read nginx or Apache access/error logs.
+
+    Both explicit and predefined paths must pass ``BLUETEAM_ALLOWED_PATHS``.
 
     Args:
         params.server: 'nginx' or 'apache'
@@ -108,7 +110,7 @@ async def blueteam_read_web_log(params: WebLogInput) -> str:
         params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
 
     Returns:
-        str: Log params.lines
+        Log lines, filtered when ``params.grep`` is set.
     """
     _audit_log("blueteam_read_web_log", {"lines": params.lines})
     paths = {
@@ -129,6 +131,10 @@ async def blueteam_read_web_log(params: WebLogInput) -> str:
         return json.dumps({"error": f"Unknown log type '{params.log_type}'. Use 'access' or 'error'."})
 
     log_path = params.path if params.path else paths[server][params.log_type]
+    ok, err = _validate_path(log_path, ALLOWED_PATH_PREFIXES)
+    if not ok:
+        return json.dumps({"error": f"Path not allowed: {err}"})
+    log_path = str(Path(log_path).resolve())
     content = _tail_file(log_path, params.lines)
     if params.grep:
         safe_grep = _sanitize_regex(params.grep)
