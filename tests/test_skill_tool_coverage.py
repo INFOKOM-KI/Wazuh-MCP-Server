@@ -137,6 +137,7 @@ SECTION_CATEGORIES: dict[str, set[str]] = {
         "wazuh_sca", "wazuh_siem", "yara_rules",
         "provider_crowdsec", "provider_rapidapi", "provider_threatfox",
     },
+    "Research evidence": {"paper"},
 }
 
 # Tool gating shrinks the registry, which would turn every check below into a smaller

@@ -7,7 +7,7 @@
 [![Wazuh-MCP-Server MCP server](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server/badges/score.svg)](https://glama.ai/mcp/servers/INFOKOM-KI/Wazuh-MCP-Server)
 
 A defensive MCP server for Claude Desktop / any MCP client, the blue-team counterpart to
-offensive tooling. **167 tools + 4 resources** (139 when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
+offensive tooling. **169 tools + 4 resources** (149 declare read-only; 141 remain when `WAZUH_READ_ONLY=true`) across Wazuh SIEM, multi-provider threat
 intelligence, MITRE-driven 3-Sum APT correlation, attack graphing, LangGraph investigation
 workflows, local case RAG, host forensics, and opt-in HDBSCAN clustering + ATT&CK incident
 labeling. The inbound API key defaults to the read-only `wazuh:read` scope.
@@ -148,7 +148,7 @@ optional; tools degrade gracefully without them.
 | Alert clustering | `BLUETEAM_CLUSTER_ENABLED`, `BLUETEAM_CLUSTER_STORE`, `BLUETEAM_CLUSTER_STORE_MAX`, `BLUETEAM_CLUSTER_TTL`, `BLUETEAM_CLUSTER_MIN_SIZE`, `BLUETEAM_CLUSTER_MIN_SAMPLES`, `BLUETEAM_CLUSTER_ASSIGN_FACTOR` | HDBSCAN over srcip entities. Off by default; needs scikit-learn (`setup.sh BLUETEAM_INSTALL_CLUSTER=1`). `ENABLED=true` requires an absolute `STORE` path or startup raises. Store is SQLite, written `0600`, and a fit written under a different feature version is refused rather than read |
 | Incident labeling | `BLUETEAM_LAYA_ENABLED`, `BLUETEAM_LAYA_BACKEND`, `BLUETEAM_LAYA_MODEL_PATH`, `BLUETEAM_LAYA_MODEL_SHA256`, `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, `BLUETEAM_LAYA_CONFIDENCE_FLOOR`, `BLUETEAM_LAYA_TEMPERATURE`, `BLUETEAM_LAYA_MAX_LEN`, `BLUETEAM_LAYA_MAX_CONCURRENCY` | `BACKEND=onnx` (default) reuses the RAG embedder: no torch, no second model resident. `BACKEND=laya` and `BACKEND=setfit` each require `MODEL_PATH` **and** `MODEL_SHA256` or startup raises (fail-closed; `setup.sh` generates the pin, and the SetFit pin is verified before its pickled head is loaded). `FLOOR` defaults `0.6`; below it the answer is `uncertain`. `TEMPERATURE` defaults to `1.0` for `laya`/`setfit` (already-softmaxed distributions) and `0.05` for `onnx` (cosine similarities need sharpening); refit it with the floor via `scripts/calibrate_labeler.py --backend <onnx\|laya\|setfit>`. `MAX_LEN` defaults `1024` tokens and is passed through to Laya, whose encoder accepts up to `8192`; SetFit uses its trained truncation. `MAX_CONCURRENCY` defaults `1` |
 | CPU hardening | `USE_TF`, `USE_FLAX`, `TOKENIZERS_PARALLELISM`, `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS` | written unconditionally by `setup.sh` into `config.env` and `.env`. Thread caps bound the resident model pools (reranker, RAG embedder, Laya). `HF_HUB_OFFLINE` follows `BLUETEAM_RAG_ALLOW_DOWNLOAD` / `BLUETEAM_LAYA_ALLOW_DOWNLOAD`, so a hard offline switch cannot silently defeat them |
-| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools), `fail2ban` (3 tools), and `abuseipdb` (2 tools) modules at import, so the startup line reads **139 tools registered** instead of 167: `167 - 23 - 3 - 2 = 139`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. `WAZUH_DISABLED_TOOLS` removes named tools after import; for example, `WAZUH_DISABLED_TOOLS=blueteam_abuseipdb_report` keeps the read-only check tool available while hiding the report tool. Each skip is logged at INFO with the category or tool name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
+| Gating | `WAZUH_READ_ONLY`, `WAZUH_DISABLED_CATEGORIES`, `WAZUH_DISABLED_TOOLS` | skip destructive tools / tool categories. **The registered tool count changes with these.** `WAZUH_READ_ONLY=true` skips the `host_forensics` (23 tools), `fail2ban` (3 tools), and `abuseipdb` (2 tools) modules at import, so the startup line reads **141 tools registered** instead of 169 (141 is the gated registry size, not the read-only count, which is 149): `169 - 23 - 3 - 2 = 141`. Disabling a category via `WAZUH_DISABLED_CATEGORIES` subtracts that category's tools the same way. `WAZUH_DISABLED_TOOLS` removes named tools after import; for example, `WAZUH_DISABLED_TOOLS=blueteam_abuseipdb_report` keeps the read-only check tool available while hiding the report tool. Each skip is logged at INFO with the category or tool name, immediately before the count line. Nothing is hardcoded: the count comes from the live FastMCP registry after import |
 
 ---
 
@@ -461,6 +461,23 @@ from cron and the exit code is the failure signal.
 ```
 
 ---
+
+### Paper Evidence Pipeline
+
+Three tools make a manuscript's numbers reproducible. All three are local-only; none calls a
+model or compiles LaTeX.
+
+| Tool | Output |
+|---|---|
+| `blueteam_paper_evidence_pack` | hashed pack under `BLUETEAM_EXPORT_DIR/paper/<run_id>/`: tool inventory, telemetry, case summaries, alert aggregates, claims |
+| `blueteam_paper_claim_check` | resolves `{{C-001}}` tokens and bare numbers against citable claims |
+| `blueteam_export_report(format="latex")` | ACM sigconf `.tex` + `.bib`; refuses non-citable claims and degraded packs unless `allow_degraded=true` |
+
+Only claims with `citable: true` may be cited. `n` is the units behind a claim; `n_kind` is
+`population` or `sample`. A pack is `complete` only when every claim is citable.
+PaperOrchestra runs outside the server; its credentials never enter the server environment. The
+`.tex` export is a verification render; the submission is PaperOrchestra's output with a venue
+template under its own `templates/` directory.
 
 ## Security & Privacy
 
@@ -1217,7 +1234,7 @@ The scan answers only when a body was read: `verdict="UNKNOWN"` with
 | `blueteam_wazuh_get_security_events` / `blueteam_wazuh_manager_logs` / `blueteam_wazuh_get_cluster_nodes` | Security events, manager logs, cluster nodes |
 | `blueteam_metrics` | Prometheus metrics |
 | `blueteam_playbook_run` | run a named playbook workflow |
-| `blueteam_export_report` | export a report to DOCX/XLSX/PPTX (officecli) |
+| `blueteam_export_report` | export DOCX/XLSX/PPTX via officecli, or a LaTeX `.tex` + `.bib` manuscript. LaTeX mode resolves `{{C-001}}` tokens only from claims with `citable: true`; an unknown or non-citable claim fails the render with its reason. Writes files, never compiles |
 | `blueteam_stix_export` | write a STIX 2.1 bundle for a peer CSIRT (identity + TLP marking + report + indicators + `indicates` relationships). Disabled unless the operator enables egress; internal values are DROPPED, never masked |
 | `blueteam_owned_domains` / `blueteam_set_owned_domains` | view/set the runtime owned (victim) domains for `protect_victim` redaction |
 | `blueteam_yara_rule_validate(rule_source)` | compile a rule with yara-x + yaraQA-style findings (naming, short atoms, `fullword` misuse) |
@@ -1235,6 +1252,14 @@ The scan answers only when a body was read: `verdict="UNKNOWN"` with
 | `blueteam_attack_forecast(srcip, current_tactic, as_of, history_days)` | composes the behavioral tactic forecast and the source forecast in one response; the layers stay separate and the source candidates keep `attribution_status="not_established"` |
 | `blueteam_cluster_lineage(mode="lineage"\|"behavior"\|"status", match_factor, min_points, shift_z)` | read-only lineage over stored cluster fits: matches each cluster to the previous fit inside its radius, then reports size trend, novelty z, tactic L1 shift, signals and an advisory `behavior_risk`. `insufficient_data` below two fits, `insufficient_history` below the point floor; no entity keys in output |
 | `blueteam_incident_label(mode="alert"\|"text", alert, text, include_probabilities, top_k)` | label one alert or text with one of the 16 ATT&CK tactics, plus the A/B/C category derived from it. `status` is `ok` / `uncertain` / `unavailable`, and `unavailable` carries the reason |
+
+### Research evidence (paper pipeline)
+
+| Tool | What it does |
+|---|---|
+| `blueteam_paper_claim_check(draft, claims_path)` | resolve `{{C-001}}` tokens and every bare number against a pack. Only `citable: true` claims pass; an unknown or non-citable claim fails with its reason, and an unsupported number is reported with context. Structural references (Section 2.3, Table 5, Eq. 4) and identifiers (CVE, CWE, ATT&CK, rule IDs, TLS, IPv4/IPv6, AES, RSA, FIPS, HTTP, SHA) are skipped by shape; a data number in the same sentence is still checked. Existence is not checked. Read-only, local |
+| `blueteam_paper_evidence_pack(run_id, output_dir, evaluations, alert_window_minutes)` | write a hashed evidence pack under `BLUETEAM_EXPORT_DIR/paper/<run_id>`: tool inventory, telemetry, case aggregates, indexer alert aggregates over `wazuh-alerts-*` (total, severity mix, top-rule share; bucketed on rule.id and rule.level only, never on rule.groups, audit/cloud payload fields, or IPs), supplied evaluation results, plot-ready CSVs, and claim IDs in `claims.json`. Case titles, notes, IOCs, srcips, and alert payloads are never written; per-entity cells backed by fewer than 5 distinct source IPs are suppressed. Local write only, no egress. Only claims with `citable: true` may be cited; degenerate values stay as proof the pipeline ran, with the reason. `n` is the units behind a claim and `n_kind` says which: `population` for an inventory count (the surveyed set), `sample` for observed events. Alert counts require rule.level to exist, the index pattern and that filter are recorded in the pack, and `per_entity_claims` is false. Case counts are lifetime, not windowed; a sentence citing C-005 must say "lifetime cases". A case-to-alert join is temporal only, so the pack reports case verdict rates, not alert-level precision or recall. The pack is the input to the LaTeX export and the reference set for the Phase 3 claim checker |
+| Boundary | Not a SOC reporting tool. For alert volume and severity questions, use the aggregate analysis tool; the evidence pack exists to make a manuscript's numbers traceable, not to produce operational reports |
 
 ### Resources (read via MCP resource reads, not tool calls)
 

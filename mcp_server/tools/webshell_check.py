@@ -278,7 +278,7 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
             pass
         current_url = next_url
 
-    # Read and scan the final body
+    # Scan the final body, not the first response: a redirect can hide the payload.
     matches: list[dict] = []
     body_sample = ""
     body_read_error: str | None = None

@@ -191,3 +191,8 @@ capture_*.txt
 
 # Playwright generated artifacts
 /.playwright-mcp/
+
+# Paper pipeline outputs (local pack, manuscript, adapter runs)
+paper-out/
+orchestra-out/
+

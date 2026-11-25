@@ -14,7 +14,6 @@ from mcp_server.core import metrics
 
 logger = logging.getLogger("blue_team_mcp.audit")
 
-# Async audit writer
 # _audit_log is called synchronously from every tool handler (a hot path, the
 # 1 god node). Synchronous open().write() per call blocks the event loop on disk
 # I/O. Instead we enqueue onto a thread-safe queue and a single daemon writer

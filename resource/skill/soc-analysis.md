@@ -693,7 +693,7 @@ The scan answers only when a body was read: `verdict="UNKNOWN"` with
 | `blueteam_wazuh_get_security_events` / `blueteam_wazuh_manager_logs` / `blueteam_wazuh_get_cluster_nodes` | Security events, manager logs, cluster nodes |
 | `blueteam_metrics` | Prometheus metrics |
 | `blueteam_playbook_run` | run a named playbook workflow |
-| `blueteam_export_report` | export a report to DOCX/XLSX/PPTX (officecli) |
+| `blueteam_export_report` | export DOCX/XLSX/PPTX via officecli, or a LaTeX `.tex` + `.bib` manuscript. LaTeX mode resolves `{{C-001}}` tokens only from claims with `citable: true`; an unknown or non-citable claim fails the render with its reason. Writes files, never compiles |
 | `blueteam_stix_export` | write a STIX 2.1 bundle for a peer CSIRT (identity + TLP marking + report + indicators + `indicates` relationships). Disabled unless the operator enables egress; internal values are DROPPED, never masked |
 | `blueteam_owned_domains` / `blueteam_set_owned_domains` | view/set the runtime owned (victim) domains for `protect_victim` redaction |
 | `blueteam_yara_rule_validate(rule_source)` | compile a rule with yara-x + yaraQA-style findings (naming, short atoms, `fullword` misuse) |
@@ -711,6 +711,14 @@ The scan answers only when a body was read: `verdict="UNKNOWN"` with
 | `blueteam_attack_forecast(srcip, current_tactic, as_of, history_days)` | composes the behavioral tactic forecast and the source forecast in one response; the layers stay separate and the source candidates keep `attribution_status="not_established"` |
 | `blueteam_cluster_lineage(mode="lineage"\|"behavior"\|"status", match_factor, min_points, shift_z)` | read-only lineage over stored cluster fits: matches each cluster to the previous fit inside its radius, then reports size trend, novelty z, tactic L1 shift, signals and an advisory `behavior_risk`. `insufficient_data` below two fits, `insufficient_history` below the point floor; no entity keys in output |
 | `blueteam_incident_label(mode="alert"\|"text", alert, text, include_probabilities, top_k)` | label one alert or text with one of the 16 ATT&CK tactics, plus the A/B/C category derived from it. `status` is `ok` / `uncertain` / `unavailable`, and `unavailable` carries the reason |
+
+### Research evidence (paper pipeline)
+
+| Tool | What it does |
+|---|---|
+| `blueteam_paper_claim_check(draft, claims_path)` | resolve `{{C-001}}` tokens and every bare number against a pack. Only `citable: true` claims pass; an unknown or non-citable claim fails with its reason, and an unsupported number is reported with context. Structural references (Section 2.3, Table 5, Eq. 4) and identifiers (CVE, CWE, ATT&CK, rule IDs, TLS, IPv4/IPv6, AES, RSA, FIPS, HTTP, SHA) are skipped by shape; a data number in the same sentence is still checked. Existence is not checked. Read-only, local |
+| `blueteam_paper_evidence_pack(run_id, output_dir, evaluations, alert_window_minutes)` | write a hashed evidence pack under `BLUETEAM_EXPORT_DIR/paper/<run_id>`: tool inventory, telemetry, case aggregates, indexer alert aggregates over `wazuh-alerts-*` (total, severity mix, top-rule share; bucketed on rule.id and rule.level only, never on rule.groups, audit/cloud payload fields, or IPs), supplied evaluation results, plot-ready CSVs, and claim IDs in `claims.json`. Case titles, notes, IOCs, srcips, and alert payloads are never written; per-entity cells backed by fewer than 5 distinct source IPs are suppressed. Local write only, no egress. Only claims with `citable: true` may be cited; degenerate values stay as proof the pipeline ran, with the reason. `n` is the units behind a claim and `n_kind` says which: `population` for an inventory count (the surveyed set), `sample` for observed events. Alert counts require rule.level to exist, the index pattern and that filter are recorded in the pack, and `per_entity_claims` is false. Case counts are lifetime, not windowed; a sentence citing C-005 must say "lifetime cases". A case-to-alert join is temporal only, so the pack reports case verdict rates, not alert-level precision or recall. The pack is the input to the LaTeX export and the reference set for the Phase 3 claim checker |
+| Boundary | Not a SOC reporting tool. For alert volume and severity questions, use the aggregate analysis tool; the evidence pack exists to make a manuscript's numbers traceable, not to produce operational reports |
 
 ### Resources (read via MCP resource reads, not tool calls)
 

@@ -309,7 +309,6 @@ def _strip_credentials(data: Any, path: str = "") -> Any:
 from mcp_server.core.redact_layers import (_apply_email_layer, _apply_ip_layer,
     _apply_domain_layer, _apply_location_layer)
 
-# Main redaction pipeline
 def _redact_alert_data(data: Any, *, bypass: bool = False, params: Any = None,
                        policy: str | None = None, reveal_owned: bool = False,
                        reveal_identities: bool = False,
