@@ -202,5 +202,5 @@ async def otx_lookup_bulk(params: OtxBulkInput) -> str:
         else:
             mf = ", ".join(r.get("malware_families", [])[:3]) or "none"
             adv = ", ".join(r.get("adversaries", [])[:3]) or "none"
-            lines.append(f"- `{r['indicator']}` — {r['pulse_count']} pulses | malware: {mf} | adversary: {adv}")
+            lines.append(f"- `{r['indicator']}`: {r['pulse_count']} pulses | malware: {mf} | adversary: {adv}")
     return _truncate_if_needed("\n".join(lines))

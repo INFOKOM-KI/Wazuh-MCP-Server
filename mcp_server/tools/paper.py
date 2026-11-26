@@ -185,15 +185,15 @@ async def blueteam_paper_claim_check(params: ClaimCheckInput) -> str:
         return _truncate_if_needed(json.dumps(result, indent=2, ensure_ascii=False))
 
     verdict = "PASS" if result["ok"] else "FAIL"
-    lines = [f"# Claim check — {verdict}", "",
+    lines = [f"# Claim check: {verdict}", "",
              f"- Pack status: `{result['pack_status']}`",
              f"- Claims resolved: {result['claims_resolved']}",
              f"- Unsupported numbers: {len(result['unsupported_numbers'])}",
              f"- Claim errors: {len(result['errors'])}"]
     if result["errors"]:
         lines += ["", "## Claim errors"]
-        lines += [f"- `{e['claim_id']}` — {e['reason']}" for e in result["errors"]]
+        lines += [f"- `{e['claim_id']}`: {e['reason']}" for e in result["errors"]]
     if result["unsupported_numbers"]:
         lines += ["", "## Unsupported numbers"]
-        lines += [f"- `{u['number']}` — ...{u['context']}..." for u in result["unsupported_numbers"]]
+        lines += [f"- `{u['number']}`: ...{u['context']}..." for u in result["unsupported_numbers"]]
     return _truncate_if_needed("\n".join(lines))

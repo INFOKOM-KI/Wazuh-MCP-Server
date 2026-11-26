@@ -101,7 +101,7 @@ def _validate_timestamp_field(v: Optional[str]) -> Optional[str]:
     if _ISO_TS_RE.match(v) or _RELATIVE_TS_RE.match(v):
         return v
     raise ValueError(
-        f"invalid timestamp '{v}' — use ISO 8601, relative ('24h'), or date math ('now-24h')"
+        f"invalid timestamp '{v}'. Use ISO 8601, relative ('24h'), or date math ('now-24h')"
     )
 
 

@@ -197,9 +197,9 @@ async def urlhaus_lookup_bulk(params: UrlhausBulkInput) -> str:
     lines = ["# URLhaus Bulk Lookup", ""]
     for r in results:
         if "error" in r:
-            lines.append(f"- `{r['url']}` — ⚠️ {r['error']}")
+            lines.append(f"- `{r['url']}`: ⚠️ {r['error']}")
         elif r["query_status"] == "no_results":
-            lines.append(f"- `{r['url']}` — clean")
+            lines.append(f"- `{r['url']}`: clean")
         else:
-            lines.append(f"- `{r['url']}` — `{r['url_status']}` | `{r['threat']}` | {r['malware_payloads']} payloads")
+            lines.append(f"- `{r['url']}`: `{r['url_status']}` | `{r['threat']}` | {r['malware_payloads']} payloads")
     return _truncate_if_needed("\n".join(lines))

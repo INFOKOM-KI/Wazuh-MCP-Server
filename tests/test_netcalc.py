@@ -263,7 +263,7 @@ def test_reject_reason_exists_for_every_bad_shape():
 
 def test_tool_markdown_contains_the_subnet_table():
     text = _run(_body(SubnetCalcInput(cidr="192.168.0.0/24", prefix=28)))
-    assert "# 🧮 Subnet Split" in text
+    assert "# Subnet Split" in text
     assert "| 0 | `192.168.0.0/28` |" in text
     assert "**Subnets**: 16 total, 16 returned" in text
 

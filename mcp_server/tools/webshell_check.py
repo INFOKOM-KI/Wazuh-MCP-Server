@@ -335,7 +335,7 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
 
     # Markdown output
     lines = [
-        f"# 🕵️ Webshell Check - `{params.url}`",
+        f"# Webshell Check - `{params.url}`",
         "",
         f"**HTTP Status**: `{status}` | **Content-Type**: `{content_type}` | "
         f"**Size**: {size_download:,} bytes | **curl exit**: {last_result['returncode']}",
@@ -351,14 +351,14 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
         lines.append("")
 
     if v == "CONFIRMED":
-        lines.append(f"## 🔴 Verdict: CONFIRMED - Active Webshell Detected")
+        lines.append(f"## Verdict: CONFIRMED - Active Webshell Detected")
         lines.append(f"**URL auto-registered** in attacker IOC registry for unmasking protection.")
     elif v == "UNKNOWN":
-        lines.append("## ⚪ Verdict: UNKNOWN - no response body was scanned")
+        lines.append("## Verdict: UNKNOWN - no response body was scanned")
         lines.append("No body was scanned, so the endpoint has no verdict. Retry the "
                      "check or inspect the host-side filesystem.")
     elif v == "LOGIN_PAGE":
-        lines.append(f"## 🔐 Verdict: LOGIN_PAGE - Password-Protected Shell Login Detected")
+        lines.append(f"## Verdict: LOGIN_PAGE - Password-Protected Shell Login Detected")
         lines.append(f"**Classify this login page based on the HTML context below:**")
         lines.append(f"- Is this a known webshell family login (b374k, c99, WSO, etc.)?")
         lines.append(f"- Or is this a legitimate application login (WordPress, Django, custom app)?")
@@ -366,11 +366,11 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
         lines.append("")
         login_ctx = _extract_login_context(body_sample)
         if login_ctx:
-            lines.append(f"### 🔍 Login Page HTML Context\n```html\n{login_ctx}\n```")
+            lines.append(f"### Login Page HTML Context\n```html\n{login_ctx}\n```")
     elif v == "LOW_RISK":
-        lines.append(f"## 🟢 Verdict: LOW_RISK; Minor Indicators Only")
+        lines.append(f"## Verdict: LOW_RISK; Minor Indicators Only")
     else:
-        lines.append(f"## ✅ Verdict: CLEAN - No Webshell Signatures Found")
+        lines.append(f"## Verdict: CLEAN - No Webshell Signatures Found")
 
     if matches:
         lines.append("")

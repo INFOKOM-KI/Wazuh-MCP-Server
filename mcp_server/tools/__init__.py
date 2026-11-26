@@ -105,10 +105,8 @@ def register_all_tools() -> None:
         ("wazuh_sca",             "wazuh_sca",             False),  # 3 tools (SCA compliance)
         ("wazuh_rules_files",     "wazuh_rules_files",     False),  # 2 tools (rule XML)
         ("owned_domains",          "owned_domains",          False),  # 2 tools (view/set victim domains)
-        ("jarm",                   "jarm",                   False),  # 1 tool (TLS fingerprinting)
         ("case",                   "case",                   False),  # 5 tools (incident case management)
         ("domain_permute",          "domain_permute",          False),  # 1 tool (typosquatting lookalikes)
-        ("stealer_log",              "stealer_log",              False),  # 1 tool (HudsonRock stealer-log check)
         ("document_convert",        "document_convert",        False),  # 1 tool Marker PDF -> markdown/json/html/chunks
         ("markitdown_convert",      "document_convert",        False),  # 1 tool MarkItDown office/data file -> markdown
         ("pdf_extract",             "document_convert",        False),  # 1 tool pypdf PDF -> text + metadata (no torch)

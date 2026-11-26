@@ -76,7 +76,7 @@ async def blueteam_wazuh_get_rule_files(params: RuleFilesInput) -> str:
         status = f.get("status", "?")
         path = f.get("relative_dirname", "")
         full = f"{path}/{name}" if path else name
-        lines.append(f"- `{full}` — status: {status}")
+        lines.append(f"- `{full}`: {status}")
     return "\n".join(lines)
 
 
@@ -120,7 +120,7 @@ async def blueteam_wazuh_get_rule_file_content(params: RuleFileContentInput) -> 
             }, indent=2)
         # Markdown: wrap in code block
         if len(content) > 50000:
-            content = content[:50000] + "\n\n... [truncated — file exceeds 50KB]"
+            content = content[:50000] + "\n\n... [truncated, file exceeds 50KB]"
         return f"# Rule File: `{params.filename}`\n\n```xml\n{content}\n```"
     else:
         if params.response_format == "json":

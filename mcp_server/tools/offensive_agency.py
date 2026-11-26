@@ -470,7 +470,7 @@ def _host_line(host: dict[str, Any]) -> str:
     network = host.get("network") or {}
     active = host.get("active")
     state = "active" if active is True else "historical" if active is False else "unknown"
-    parts = [f"- `{host.get('ip', '')}` — {state}"]
+    parts = [f"- `{host.get('ip', '')}`: {state}"]
     if host.get("last_seen"):
         parts.append(f"last seen {host['last_seen']}")
     network_bits = [network.get("kind"), network.get("country"),
@@ -483,9 +483,9 @@ def _host_line(host: dict[str, Any]) -> str:
     agents = [a.get("name") for a in agents_block.get("items") or []
               if a.get("name")]
     if agents:
-        line += f" — agents: {', '.join(agents)}"
+        line += f", agents: {', '.join(agents)}"
     if host.get("shared_cdn"):
-        line += " — shared CDN front"
+        line += ", shared CDN front"
     return line
 
 
@@ -515,7 +515,7 @@ def _render_lookup_markdown(result: dict[str, Any]) -> str:
     lines.append("")
 
     for match in result["matches"]:
-        lines.append(f"## `{match['query_indicator']}` ({match['type']}) — "
+        lines.append(f"## `{match['query_indicator']}` ({match['type']}): "
                      f"{match['active_hosts']} active / "
                      f"{match['inactive_hosts']} historical")
         if match["shared_cdn_hosts"]:
@@ -554,7 +554,7 @@ def _render_lookup_markdown(result: dict[str, Any]) -> str:
     if result["invalid"]:
         lines.append("## Invalid or incomplete upstream result")
         for item in result["invalid"]:
-            lines.append(f"- `{item['query_indicator']}` — {item['reason']}")
+            lines.append(f"- `{item['query_indicator']}`: {item['reason']}")
         lines.append("")
 
     if result["unsupported"]:
@@ -563,7 +563,7 @@ def _render_lookup_markdown(result: dict[str, Any]) -> str:
                      "These values were not sent.")
         for item in result["unsupported"]:
             originals = ", ".join(f"`{o}`" for o in item["original_indicators"])
-            lines.append(f"- {originals} — {item['detected_type']}")
+            lines.append(f"- {originals}: {item['detected_type']}")
         if result["unsupported_next_offset"] is not None:
             lines.append(f"- ... {result['unsupported_remaining']} more; call again "
                          f"with unsupported_offset={result['unsupported_next_offset']}")
@@ -573,7 +573,7 @@ def _render_lookup_markdown(result: dict[str, Any]) -> str:
         lines.append("## Not sent (validation)")
         for item in result["rejected"]:
             originals = ", ".join(f"`{o}`" for o in item["original_indicators"])
-            lines.append(f"- {originals} — {item['reason']}")
+            lines.append(f"- {originals}: {item['reason']}")
         if result["rejected_next_offset"] is not None:
             lines.append(f"- ... {result['rejected_remaining']} more; call again "
                          f"with rejected_offset={result['rejected_next_offset']}")
@@ -598,7 +598,7 @@ def _render_lookup_markdown(result: dict[str, Any]) -> str:
 
 
 def _render_host_markdown(result: dict[str, Any]) -> str:
-    lines = [f"# offensive.agency host — `{result['ip']}`", ""]
+    lines = [f"# offensive.agency host: `{result['ip']}`", ""]
     if result["status"] == "not_found":
         lines.extend([
             "No tracker record. This is not a clean verdict.",
@@ -674,7 +674,7 @@ def _render_host_markdown(result: dict[str, Any]) -> str:
         lines.append("## Domains")
         for domain in domains["items"]:
             cdn = " (behind CDN)" if domain["behind_cdn"] else ""
-            lines.append(f"- `{domain['name']}`{cdn} — last seen "
+            lines.append(f"- `{domain['name']}`{cdn}: last seen "
                          f"{domain['last_seen'] or '-'}")
         if domains["truncated"]:
             lines.append(

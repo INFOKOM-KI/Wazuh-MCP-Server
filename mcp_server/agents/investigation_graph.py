@@ -579,7 +579,7 @@ async def report_step(state: InvestigationState) -> dict:
         out = await blueteam_export_report(ReportExportInput(
             format="docx",
             path=f"{state.get('report_dir') or default_report_dir()}/investigation_{uuid.uuid4().hex[:8]}.docx",
-            title="SOC Investigation — Blue Team MCP",
+            title="SOC Investigation (Blue Team MCP)",
             docx_sections=sections,
         ))
         payload = _as_json(out)

@@ -116,7 +116,7 @@ async def blueteam_asset_context(params: AssetContextInput) -> str:
     if asset is None:
         if params.response_format == "json":
             return json.dumps({"host": params.host, "found": False}, indent=2)
-        return f"# Asset Context — `{params.host}`\n\n_No asset found in CMDB. Add it to {_CMDB_FILE}._"
+        return f"# Asset Context: `{params.host}`\n\n_No asset found in CMDB. Add it to {_CMDB_FILE}._"
 
     if params.response_format == "json":
         return json.dumps({"host": params.host, "found": True, "asset": asset}, indent=2)

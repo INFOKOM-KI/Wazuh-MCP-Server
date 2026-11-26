@@ -129,7 +129,7 @@ async def blueteam_ai_bot_recon(params: AiBotReconInput) -> str:
         }
 
     lines = [
-        "# 🤖 AI-Agent Recon Detection",
+        "# AI-Agent Recon Detection",
         "",
         f"**Window**: `{since_iso}` -> `{until_iso}`",
         f"**AI-agent sources detected**: {len(sources)}",

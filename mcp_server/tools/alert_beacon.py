@@ -105,7 +105,7 @@ async def blueteam_beacon_detect(params: BeaconDetectInput) -> str:
     if params.srcip.strip() in _BEACON_EXCLUDE_IPS:
         return json.dumps({"srcip": params.srcip, "beacon_score": 0.0,
                            "verdict": "benign",
-                           "note": "IP in BLUETEAM_BEACON_EXCLUDE_IPS — known health-check/monitoring"},
+                           "note": "IP in BLUETEAM_BEACON_EXCLUDE_IPS, known health-check/monitoring"},
                           indent=2)
     if not WAZUH_INDEXER_URL or not WAZUH_INDEXER_PASSWORD:
         return json.dumps({
@@ -223,7 +223,7 @@ async def blueteam_beacon_detect(params: BeaconDetectInput) -> str:
     verdict_icon = {"strong_beacon": "🔴", "likely_beacon": "🟠",
                      "possible_beacon": "🟡", "no_beacon": "🟢"}
     lines = [
-        f"# Beacon Detection — `{params.srcip}`",
+        f"# Beacon Detection: `{params.srcip}`",
         "",
         f"- **Verdict**: {verdict_icon.get(verdict, '')} **{verdict.replace('_', ' ').title()}**",
         f"- **Beacon Score**: `{beacon_score:.3f}` (0.0 = random, 1.0 = perfect periodicity)",
@@ -250,7 +250,7 @@ async def blueteam_beacon_detect(params: BeaconDetectInput) -> str:
         lines.append("## Top Period Candidates")
         for secs, cnt in top_periods:
             d = f"{secs}s" if secs < 120 else f"{secs / 60:.1f}m"
-            lines.append(f"- {d} — {cnt} occurrences")
+            lines.append(f"- {d}: {cnt} occurrences")
 
     lines.append("")
     lines.append("## Gap Distribution (first 20 events)")

@@ -2,10 +2,26 @@
 # Blue Team Wazuh MCP Server Setup Script
 # Programmer : NAuliajati (csirt@tangerangkota.go.id)
 # © TangerangKota-CSIRT
-set -e
+set -eE
+
+# Any uncaught failure aborts the run and names the command, so a half-applied
+# install is never mistaken for a finished one.
+trap 'echo "[!] Setup aborted (exit $?): ${BASH_COMMAND} - install may be incomplete." >&2' ERR
 
 INSTALL_DIR="/opt/blue-team-mcp"
 SERVICE_USER="blueteam-mcp"
+
+# Relative paths below (main.py, mcp_server/, requirements.txt) resolve against the
+# clone, not the caller's cwd.
+REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_ROOT"
+
+# Preflight before any package operation: a partial clone must never reach
+# rsync --delete, which would empty the installed package tree.
+if [[ ! -d "$REPO_ROOT/mcp_server" || ! -f "$REPO_ROOT/main.py" || ! -f "$REPO_ROOT/requirements.txt" ]]; then
+  echo "[!] source tree incomplete: need mcp_server/, main.py and requirements.txt under $REPO_ROOT - nothing was changed." >&2
+  exit 1
+fi
 
 echo "=============================================="
 echo "  Blue Team Wazuh MCP Server - Setup"
@@ -19,35 +35,55 @@ fi
 
 # Install system dependencies
 echo "[1/7] Installing system packages..."
-apt-get update -qq
-apt-get install -y --no-install-recommends \
-  python3 python3-pip python3-venv \
-  tcpdump \
-  fail2ban \
-  rkhunter \
-  chkrootkit \
-  lynis \
-  net-tools \
-  iproute2 \
-  procps \
-  openssh-server \
-  2>/dev/null || true
+# rsync and the interpreter are hard requirements: the mirror and the venv cannot
+# run without them. Everything else degrades to "tool reports unavailable".
+REQUIRED_PACKAGES=(python3 python3-pip python3-venv rsync)
+OPTIONAL_PACKAGES=(tcpdump fail2ban rkhunter chkrootkit lynis net-tools iproute2 procps openssh-server)
+apt-get update -qq || {
+  echo "[!] apt-get update failed - refusing to install against stale package indexes." >&2
+  exit 1
+}
+if ! apt-get install -y --no-install-recommends "${REQUIRED_PACKAGES[@]}"; then
+  echo "[!] required packages failed to install: ${REQUIRED_PACKAGES[*]} - fix the package source and rerun." >&2
+  exit 1
+fi
+
+for required_bin in python3 rsync; do
+  command -v "$required_bin" >/dev/null 2>&1 || {
+    echo "[!] required executable missing after install: $required_bin - install it and rerun." >&2
+    exit 1
+  }
+done
+
+# One transaction per package: an unavailable optional package must not block the
+# rest of the list.
+OPTIONAL_FAILED=()
+for optional_pkg in "${OPTIONAL_PACKAGES[@]}"; do
+  apt-get install -y --no-install-recommends "$optional_pkg" || OPTIONAL_FAILED+=("$optional_pkg")
+done
+if (( ${#OPTIONAL_FAILED[@]} )); then
+  echo "[!] optional packages unavailable: ${OPTIONAL_FAILED[*]} - tools that need them report unavailable." >&2
+fi
 
 echo "[2/7] Creating install directory at $INSTALL_DIR..."
 mkdir -p "$INSTALL_DIR"
 
-# Clean stale bytecode before copying (prevents Python version mismatch issues)
-find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-find . -type f -name "*.pyc" -delete 2>/dev/null || true
-
-# Copy the server: main.py is the entry point (M14 modular refactor)
-cp main.py "$INSTALL_DIR/"
-cp -r mcp_server/ "$INSTALL_DIR/mcp_server/"
-cp requirements.txt "$INSTALL_DIR/"
+# Mirror the tree; --delete purges modules and bytecode dropped upstream.
+# Safe: nothing writes into mcp_server/ at runtime (state lives in config.env and /var/log).
+rsync -rltp --delete --delete-excluded \
+  --exclude '__pycache__' --exclude '*.pyc' \
+  mcp_server/ "$INSTALL_DIR/mcp_server/"
+rsync -rltp main.py requirements.txt "$INSTALL_DIR/"
+echo "  synced $(git rev-parse --short HEAD 2>/dev/null || echo 'unknown') -> $INSTALL_DIR"
 
 # Python venv
 echo "[3/7] Setting up Python virtual environment..."
 python3 -m venv "$INSTALL_DIR/venv"
+
+# Fail here, not on the first tool call, if the entry point or a synced module
+# does not parse. -f recompiles over a stale root __pycache__ left by main.py.
+"$INSTALL_DIR/venv/bin/python3" -m compileall -f -q \
+  "$INSTALL_DIR/main.py" "$INSTALL_DIR/mcp_server"
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
 # Optional: run pip-audit if available (MAESTRO supply chain)
@@ -558,11 +594,9 @@ config_template() {
 # export OTX_API_KEY="your_key"           # free key: https://otx.alienvault.com/api
 # export URLHAUS_API_KEY="your_key"        # optional key: https://urlhaus.abuse.ch/api/
 # export ABUSEIPDB_API_KEY="your_key"     # https://www.abuseipdb.com
-# AbuseIPDB reporting is an external write and is off by default. Keep it false for
-# read-only operation; set it true only after analyst approval and a dry-run preview.
-# RFC 1918 (10/8, 172.16/12, 192.168/16) is always excluded from reporting; this list only adds ranges.
-# This list filters from_alerts harvesting only; explicit srcips and direct calls are not filtered.
-# Premium reference: 50,000 check, 50,000 report, 5,000 check-block per day.
+# Reporting is an external write, off by default. This list only adds ranges to the
+# always-excluded RFC 1918 set; it filters from_alerts harvesting, not explicit srcips.
+# Policy: SECURITY.md §4.1f.
 # Response headers override this; the reserve keeps interactive capacity.
 # export BLUETEAM_ABUSEIPDB_REPORTING_ENABLED="false"
 # export BLUETEAM_ABUSEIPDB_EXCLUDE=""          # comma-separated IPs/CIDRs added to the harvest exclusion
@@ -575,21 +609,9 @@ config_template() {
 # export BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET="5"       # cumulative per-endpoint/per-process before the first header; headerless does not restore
 # export ABUSEIPDB_CACHE_TTL="900"
 # export VIRUSTOTAL_API_KEY="your_key"    # https://www.virustotal.com
-# VirusTotal is closed at budget 0. Normal startup never creates state. With a positive
-# budget, the wrapper enables AUTOINIT and the first request creates it; set AUTOINIT=false
-# to require the explicit init command. The operator creates it with:
-# python -m mcp_server.threat_intel.virustotal_quota init --state ... --budget ...
-# --hours ... --rate ... --daily ...  The state is 0600 SQLite and shared by server processes.
-# The CLI is a local administrative command, not an MCP tool; run it as the service user.
-# The state directory must not be group or world writable; the state file is 0600.
-# Missing, corrupt, or policy-mismatched state fails closed. An expired arm window is
-# renewed from the stored policy when AUTO_REARM is true (default); set it false to
-# require an operator `rearm` after every window. Use policy, rearm, migrate,
-# and prune for explicit policy changes, a new window, legacy adoption, and retention.
-# Public API defaults: 4 requests/min, 500/day. Public API use is limited to noncommercial
-# or academic work; commercial or government use requires a Private API agreement. The
-# published terms also prohibit business workflows that do not contribute new files. Confirm
-# the agreement before arming a SOC alert-enrichment deployment. A key alone does not prove entitlement.
+# Budget 0 means closed: startup creates no state, missing or policy-mismatched state
+# fails closed, and an expired window renews only when AUTO_REARM is true.
+# Public API terms allow noncommercial use only. Policy: SECURITY.md §4.1g.
 # export BLUETEAM_VIRUSTOTAL_BUDGET="0"
 # export BLUETEAM_VIRUSTOTAL_BUDGET_HOURS="8"
 # export BLUETEAM_VIRUSTOTAL_AUTOINIT="true"   # requires BUDGET > 0; the wrapper enables it when armed
@@ -1408,12 +1430,18 @@ done
 
 # SSH hardening reminder
 echo "[6/7] Ensuring SSH is running..."
-systemctl enable --now ssh 2>/dev/null || systemctl enable --now sshd 2>/dev/null || true
+if ! systemctl enable --now ssh 2>/dev/null && ! systemctl enable --now sshd 2>/dev/null; then
+  echo "  WARNING: could not start sshd - the SSH transport will not accept connections."
+fi
 
 # Capability grants (allow tcpdump without root)
 echo "[7/7] Granting tcpdump network capture capability..."
-setcap cap_net_raw,cap_net_admin=eip "$(which tcpdump)" 2>/dev/null || \
-  echo "  WARNING: Could not set tcpdump capabilities. Run captures as root."
+if command -v tcpdump >/dev/null 2>&1; then
+  setcap cap_net_raw,cap_net_admin=eip "$(command -v tcpdump)" 2>/dev/null || \
+    echo "  WARNING: Could not set tcpdump capabilities. Run captures as root."
+else
+  echo "  tcpdump not installed - skipping capability grant; packet capture tools report unavailable."
+fi
 
 # Restart the systemd service if one is present, so the env + model pin take
 # effect without manual steps (no-op on fresh installs without a unit).

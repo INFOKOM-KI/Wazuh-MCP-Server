@@ -297,7 +297,7 @@ async def _wazuh_domain_lookup_full_scan(
 
     if coverage != "complete":
         lines.append(
-            f"\n**Note:** Results are partial — scan hit the "
+            f"\n**Note:** Results are partial: the scan hit the "
             f"`max_scanned={params.max_scanned:,}` limit. "
             f"Increase `max_scanned` (up to 500,000) for full coverage."
         )
@@ -596,7 +596,7 @@ async def blueteam_whois_lookup(params: WhoisLookupInput) -> str:
         }, indent=2, ensure_ascii=False)
 
     lines = [
-        f"# 🌐 WHOIS Lookup - `{domain}`",
+        f"# WHOIS Lookup - `{domain}`",
         "",
         f"**Handle**: `{data.get('handle', '?')}`",
         f"**Status**: {', '.join(data.get('status', ['unknown']))}",
@@ -623,7 +623,7 @@ async def blueteam_whois_lookup(params: WhoisLookupInput) -> str:
             lines.append(f"- **{roles_str}**: {e['name']}")
         lines.append("")
 
-    lines.append("## ⚠️ Red Flags")
+    lines.append("## Red Flags")
     flags = []
     created = events.get("registration", "")
     if created:
@@ -631,13 +631,13 @@ async def blueteam_whois_lookup(params: WhoisLookupInput) -> str:
             from datetime import datetime
             age_days = (datetime.utcnow() - datetime.fromisoformat(created)).days
             if age_days < 30:
-                flags.append(f"🔴 Domain registered {age_days}d ago — very new (common in phishing)")
+                flags.append(f"🔴 Domain registered {age_days}d ago: very new (common in phishing)")
             elif age_days < 180:
-                flags.append(f"🟡 Domain registered {age_days}d ago — relatively new")
+                flags.append(f"🟡 Domain registered {age_days}d ago: relatively new")
         except Exception:
             pass
     if not nameservers:
-        flags.append("🔴 No nameservers — domain may not be resolving")
+        flags.append("🔴 No nameservers: domain may not be resolving")
     if any("serverHold" in s or "inactive" in s for s in data.get("status", [])):
         flags.append("🟡 Domain status includes hold/inactive")
     if not flags:
@@ -740,7 +740,7 @@ async def blueteam_crtsh_lookup(params: CrtshLookupInput) -> str:
         }, indent=2, ensure_ascii=False)
 
     lines = [
-        f"# 🔐 Certificate Transparency — `{domain}`",
+        f"# Certificate Transparency: `{domain}`",
         "",
         f"**Total certificates found**: {len(entries):,}",
         f"**Unique names covered**: {len(names):,}",
@@ -756,7 +756,7 @@ async def blueteam_crtsh_lookup(params: CrtshLookupInput) -> str:
         lines.append("")
 
     if siblings:
-        lines.append(f"## 🔗 Sibling Domains ({len(siblings)}) — potential attacker infrastructure")
+        lines.append(f"## Sibling Domains ({len(siblings)}): potential attacker infrastructure")
         for s in siblings[:25]:
             lines.append(f"- `{s}`")
         if len(siblings) > 25:
@@ -770,6 +770,6 @@ async def blueteam_crtsh_lookup(params: CrtshLookupInput) -> str:
         lines.append("")
 
     if not entries:
-        lines.append("✅ No certificates found — domain may not have publicly-trusted TLS certs.")
+        lines.append("✅ No certificates found: domain may not have publicly-trusted TLS certs.")
 
     return _truncate_if_needed("\n".join(lines))

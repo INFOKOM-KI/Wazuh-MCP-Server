@@ -430,7 +430,7 @@ async def blueteam_cve_score(params: CveScoreInput) -> str:
 
     c = result["components"]
     lines = [f"# CVE Risk Score - `{params.cve_id}`", ""]
-    lines.append(f"## {result['risk_label']} — {result['risk_score']}/100")
+    lines.append(f"## {result['risk_label']}: {result['risk_score']}/100")
     lines.append(f"**Urgency**: {result['urgency']}")
     lines.append("")
     lines.append("| Signal | Value |")

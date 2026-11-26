@@ -57,7 +57,7 @@ class DslQueryInput(BaseModel):
         description=(
             "OpenSearch aggregation tree as a native JSON object. "
             "Example: {\"by_agent\": {\"terms\": {\"field\": \"agent.name\", \"size\": 50}}}. "
-            "Pass this (not query_json) for all new queries — the server serializes to the "
+            "Pass this (not query_json) for all new queries. The server serializes to the "
             "wire format, eliminating the JSON-in-JSON escaping trap."
         ),
     )

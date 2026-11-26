@@ -117,7 +117,7 @@ async def blueteam_investigation_workflow(params: InvestigationWorkflowInput) ->
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(_redact_alert_data(result), indent=2, ensure_ascii=False))
 
-    lines = [f"# 🔎 Investigation Workflow — `{params.srcip or 'alert'}`", "",
+    lines = [f"# Investigation Workflow: `{params.srcip or 'alert'}`", "",
              "| Step | Status |", "|------|--------|"]
     for s in result.get("steps", []):
         status = "⚠️" if "degraded" in s or "failed" in s else "✅"

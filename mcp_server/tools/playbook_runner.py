@@ -22,7 +22,7 @@ class PlaybookRunInput(BaseModel):
     rule_id: Optional[str] = Field(default=None, max_length=16,
         description="Wazuh rule ID that fired (used for playbook selection context).")
     technique: Optional[str] = Field(default=None, max_length=20,
-        description="MITRE technique ID (e.g. T1059.001) — drives template selection.")
+        description="MITRE technique ID (e.g. T1059.001) drives template selection.")
     rule_groups: Optional[str] = Field(default=None, max_length=200,
         description="Comma-separated rule groups (e.g. 'powershell,sysmon') - drives template selection.")
     srcip: Optional[str] = Field(default=None, min_length=7, max_length=45,
@@ -102,7 +102,7 @@ async def blueteam_playbook_run(params: PlaybookRunInput) -> str:
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(_redact_alert_data(result), indent=2, ensure_ascii=False))
 
-    lines = [f"# 🎯 Playbook Run — `{result.get('template')}`", "",
+    lines = [f"# Playbook Run: `{result.get('template')}`", "",
              "| Step | Status |", "|------|--------|"]
     for s in result.get("steps", []):
         status = "⚠️" if "degraded" in s or "failed" in s else "✅"
@@ -112,7 +112,7 @@ async def blueteam_playbook_run(params: PlaybookRunInput) -> str:
                   f"- **Template**: `{result.get('template')}`",
                   f"- **Matching alerts**: {result['hunt_total_alerts']}",
                   f"- **Source IPs**: {', '.join(result.get('hunt_srcips', [])) or 'none'}",
-                  f"- **Selected**: `{result.get('selected_srcip') or '—'}`"]
+                  f"- **Selected**: `{result.get('selected_srcip') or '-'}`"]
     inv = result.get("investigation")
     if inv:
         lines += ["", "## Investigation"]

@@ -144,7 +144,7 @@ class WazuhAuthManager:
 
         self._token = raw_token
         self._expiry = time.monotonic() + self._TOKEN_TTL
-        logger.debug("JWT refreshed — expires in %ds (buffer: %ds).",
+        logger.debug("JWT refreshed, expires in %ds (buffer: %ds).",
                       self._TOKEN_TTL, self._REFRESH_BUFFER)
         return self._token
 
@@ -176,7 +176,7 @@ def init_auth_manager(
         logger.info("WazuhAuthManager initialized for %s as '%s'.", url, username)
     else:
         _auth_manager = None
-        logger.info("WazuhAuthManager NOT initialized — Manager tools will be unavailable.")
+        logger.info("WazuhAuthManager NOT initialized. Manager tools will be unavailable.")
     return _auth_manager
 
 
@@ -197,7 +197,7 @@ async def _wazuh_api_get(path: str, params: Optional[Dict[str, str]] = None) -> 
     """
     if _auth_manager is None:
         raise ConfigurationError(
-            "WazuhAuthManager not initialized — cannot call Manager API. "
+            "WazuhAuthManager not initialized. Cannot call Manager API. "
             "Set WAZUH_API_URL and WAZUH_API_PASSWORD."
         )
     return await _auth_manager.api_get(path, params)

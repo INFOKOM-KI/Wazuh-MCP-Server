@@ -677,7 +677,7 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
         if params.create_case and triggers:
             trigger_ips = [t["ip"] for t in triggers if t.get("ip")]
             case = case_store.create_case(
-                title=f"3-Sum APT — {len(triggers)} trigger(s)", srcips=trigger_ips)
+                title=f"3-Sum APT: {len(triggers)} trigger(s)", srcips=trigger_ips)
             case_store.add_iocs(case["case_id"], trigger_ips)
             stats["case_id"] = case["case_id"]
         if engine_a_warnings:
@@ -1036,7 +1036,7 @@ async def blueteam_investigate_ip(params: InvestigateIpInput) -> str:
         return json.dumps(payload, indent=2, ensure_ascii=False)
 
     lines = [
-        f"# 🔎 IP Investigation - `{srcip}`",
+        f"# IP Investigation - `{srcip}`",
         "",
         f"**Window**: `{since_iso}` → `{until_iso}`",
         f"**Total alerts**: {total:,}",

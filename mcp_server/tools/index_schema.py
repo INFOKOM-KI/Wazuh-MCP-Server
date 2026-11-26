@@ -177,14 +177,14 @@ async def blueteam_index_schema(params: IndexSchemaInput) -> str:
     lines.append("|-------|------|-----------|----------|")
     for r in results:
         if not r["exists"]:
-            lines.append(f"| `{r['field']}` | ❌ NOT FOUND | — | — |")
+            lines.append(f"| `{r['field']}` | ❌ NOT FOUND | - | - |")
         elif r.get("mixed_mapping"):
             variants = ", ".join(f"`{s}`×{n}" for s, n in sorted(r["mixed_mapping"].items()))
             note = (f"⚠️ use `{r['agg_safe_field']}`" if r.get("agg_safe_field")
                     else "⚠️ no field name spans every index")
-            lines.append(f"| `{r['field']}` | {variants} | — | {note} |")
+            lines.append(f"| `{r['field']}` | {variants} | - | {note} |")
         else:
-            kw = "✅" if r["has_keyword_subfield"] else "—"
+            kw = "✅" if r["has_keyword_subfield"] else "-"
             if r["agg_safe"]:
                 agg = "✅"
             elif r.get("fielddata"):

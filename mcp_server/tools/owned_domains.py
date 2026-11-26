@@ -54,7 +54,7 @@ async def blueteam_owned_domains(params: OwnedDomainsViewInput) -> str:
             "protect_victim_active": active,
         }, indent=2, ensure_ascii=False)
 
-    lines = ["# 🏛️ Owned Domains (victim infrastructure)", "",
+    lines = ["# Owned Domains (victim infrastructure)", "",
              f"- **Policy**: `{policy}`",
              f"- **Owned domains**: {', '.join('`' + d + '`' for d in domains) if domains else '*(none)*'}",
              f"- **protect_victim active**: {'✅ yes' if active else '❌ no'}"]

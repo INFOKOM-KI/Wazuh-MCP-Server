@@ -70,7 +70,7 @@ async def blueteam_wazuh_vulnerabilities(params: VulnerabilityInput) -> str:
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
     if params.response_format == "json":
         return json.dumps({"total": total, "aggregations": aggs}, indent=2, ensure_ascii=False)
-    lines = [f"# 🛡️ Vulnerability Scan — `{since_iso}` → `{until_iso}`", "",
+    lines = [f"# Vulnerability Scan: `{since_iso}` → `{until_iso}`", "",
              f"**Total findings**: {total:,}", ""]
     sev = aggs.get("by_severity", {}).get("buckets", [])
     if sev:
@@ -218,7 +218,7 @@ async def blueteam_wazuh_syscheck(params: SyscheckInput) -> str:
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
     if params.response_format == "json":
         return json.dumps({"total": total, "aggregations": aggs}, indent=2, ensure_ascii=False)
-    lines = [f"# 📁 FIM / Syscheck — `{since_iso}` → `{until_iso}`", "",
+    lines = [f"# FIM / Syscheck: `{since_iso}` → `{until_iso}`", "",
              f"**Total events**: {total:,}", ""]
     evt = aggs.get("by_event", {}).get("buckets", [])
     if evt:
@@ -332,7 +332,7 @@ async def blueteam_wazuh_compliance(params: ComplianceInput) -> str:
     total = raw.get("hits", {}).get("total", {}).get("value", 0)
     if params.response_format == "json":
         return json.dumps({"total": total, "aggregations": aggs_result}, indent=2, ensure_ascii=False)
-    lines = [f"# 📋 Compliance Summary - `{since_iso}` -> `{until_iso}`", "",
+    lines = [f"# Compliance Summary - `{since_iso}` -> `{until_iso}`", "",
              f"**Framework**: {params.framework}", f"**Total alerts with compliance data**: {total:,}", ""]
     for fw in frameworks:
         buckets = aggs_result.get(f"by_{fw}", {}).get("buckets", [])
@@ -433,7 +433,7 @@ async def blueteam_wazuh_geo_heatmap(params: GeoHeatmapInput) -> str:
              "unique_ips": b.get("unique_ips", {}).get("value", 0)}
             for b in buckets
         ]}, indent=2, ensure_ascii=False)
-    lines = [f"# 🗺️ Geo Heatmap - `{since_iso}` -> `{until_iso}`", "",
+    lines = [f"# Geo Heatmap - `{since_iso}` -> `{until_iso}`", "",
              f"**Total alerts with coordinates**: {total:,}", ""]
     if params.srcip:
         lines.append(f"**Source IP filter**: `{params.srcip}`")

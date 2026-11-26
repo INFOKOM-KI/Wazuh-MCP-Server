@@ -55,6 +55,7 @@ Prepare the following:
 
 - Ubuntu/Debian with Python **3.11 or newer**.
 - `sudo` privileges and internet access to retrieve the repository/packages during installation.
+- `rsync` for the source mirror. `setup.sh` installs it when missing and stops with an error when it is still absent.
 - Connectivity from the MCP Server to the Wazuh Indexer (usually TCP port `9200`).
 - Indexer account credentials that comply with your organization's policies. If available, create a service account with the minimum permissions needed to read the required indices/alerts.
 - Wazuh Manager API (usually TCP port `55000`) for features that manage or read Manager data, agents, rules, and configuration.
@@ -82,7 +83,7 @@ git status --short
 git rev-parse --short HEAD
 ```
 
-Record the installed commit to make auditing and rollback easier. Before running the installer, review `setup.sh`, especially on a production server. The installer uses `apt-get` and attempts to install `tcpdump`, `fail2ban`, `rkhunter`, `chkrootkit`, `lynis`, `net-tools`, `iproute2`, `procps`, and `openssh-server`. It also attempts to enable the SSH service and grant packet-capture capabilities to `tcpdump`. Check whether these actions comply with your host-hardening policies.
+Record the installed commit to make auditing and rollback easier. Before running the installer, review `setup.sh`, especially on a production server. The installer requires `python3`, `python3-pip`, `python3-venv` and `rsync`, and stops when those fail to install; a failed `apt-get update` also stops it rather than falling back to stale package indexes. It also attempts to install `tcpdump`, `fail2ban`, `rkhunter`, `chkrootkit`, `lynis`, `net-tools`, `iproute2`, `procps`, and `openssh-server` one package at a time, so one unavailable package does not block the rest, and reports the ones that failed: tools that depend on a missing package report `unavailable`. It also attempts to enable the SSH service and grant packet-capture capabilities to `tcpdump`. Check whether these actions comply with your host-hardening policies.
 
 ## 4. Create a service account before installation
 
@@ -1024,6 +1025,8 @@ sudo systemctl status blue-team-mcp --no-pager
 ```
 
 Do not perform blind updates on a production server. The installer copies new source code to `/opt/blue-team-mcp`, may update dependencies, and preserves the existing `config.env`; review breaking changes and perform a smoke test after updating.
+
+The installer mirrors `mcp_server/` rather than merging into it: a module deleted upstream is also deleted from `/opt/blue-team-mcp/mcp_server/`, and a file hand-edited there is overwritten or removed. Keep local changes in the git clone and rerun `setup.sh`.
 
 ## 16. Pre-production checklist
 

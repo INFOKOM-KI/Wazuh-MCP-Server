@@ -330,7 +330,7 @@ async def blueteam_wazuh_alert_summarize(params: AlertSummarizeInput) -> str:
 
     if unusual_uas:
         lines.append("")
-        lines.append("## ⚠️ Unusual User-Agents Flagged")
+        lines.append("## Unusual User-Agents Flagged")
         for ua_flag in unusual_uas:
             lines.append(f"- {ua_flag}")
 

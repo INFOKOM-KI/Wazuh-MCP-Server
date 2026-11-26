@@ -148,7 +148,7 @@ async def blueteam_baseline_profile(params: BaselineProfileInput) -> str:
 
     label = params.metric.replace("_", " ").title()
     lines = [
-        f"# 📊 Baseline Profile — {label}",
+        f"# Baseline Profile: {label}",
         "",
         f"**Window**: `{since_iso}` → `{until_iso}` ({params.granularity} buckets)",
         "",
@@ -163,7 +163,7 @@ async def blueteam_baseline_profile(params: BaselineProfileInput) -> str:
         "",
     ]
     if abs(z_current) >= 2.0:
-        lines.append(f"⚠️ Current value is **{abs(z_current):.1f}σ** from mean — investigate.")
+        lines.append(f"⚠️ Current value is **{abs(z_current):.1f}σ** from mean. Investigate.")
     else:
         lines.append("✅ Current value is within normal range.")
 
@@ -314,7 +314,7 @@ async def blueteam_calendar_heatmap(params: CalendarHeatmapInput) -> str:
         }, indent=2, ensure_ascii=False))
 
     lines = [
-        f"# 📅 Calendar Heatmap — {params.srcip or 'All IPs'}",
+        f"# Calendar Heatmap: {params.srcip or 'All IPs'}",
         "",
         f"**Window**: {params.days} days ({since_iso[:10]} → {until_iso[:10]})",
         f"**Total alerts**: {total_alerts:,}",
@@ -323,10 +323,10 @@ async def blueteam_calendar_heatmap(params: CalendarHeatmapInput) -> str:
     ]
 
     if periodic_cells:
-        lines.append("## ⚠️ Periodic Hotspots (Z ≥ 2.5)")
+        lines.append("## Periodic Hotspots (Z ≥ 2.5)")
         lines.append("")
         for d, h, c, z in periodic_cells[:8]:
-            lines.append(f"- **{d} {h:02d}:00** — {c:,} alerts ({z:+.1f}σ)")
+            lines.append(f"- **{d} {h:02d}:00**: {c:,} alerts ({z:+.1f}σ)")
         lines.append("")
 
     lines.append(f"## Day × Hour Matrix  (peak: {days_of_week[peak_day_idx]} {peak_hour:02d}:00 = {matrix[peak_day_idx][peak_hour]:,})")
@@ -455,7 +455,7 @@ async def blueteam_baseline_drift(params: BaselineDriftInput) -> str:
     baseline_counts = await _fetch_window(base_since, base_until)
     current_counts = await _fetch_window(current_since, current_until)
     if not current_counts:
-        return {"error": "Current window query returned no buckets — check Wazuh Indexer connectivity."}
+        return {"error": "Current window query returned no buckets, check Wazuh Indexer connectivity."}
 
     anomalies, stats = evaluate_baseline_drift(baseline_counts, current_counts,
                                                z_score_threshold=params.z_score_threshold)

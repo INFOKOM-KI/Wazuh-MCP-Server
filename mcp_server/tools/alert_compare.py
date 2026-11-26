@@ -289,7 +289,7 @@ class CuratedReportFilters(BaseModel):
     rule_desc_contains: Optional[str] = Field(default=None, max_length=512,
         description="Substring in rule.description, e.g. 'sensitive files'.")
     rule_firedtimes_min: Optional[int] = Field(default=None, ge=1,
-        description="Minimum rule.firedtimes (persistence signal — rule triggered at least N times).")
+        description="Minimum rule.firedtimes (persistence signal: rule triggered at least N times).")
     log_source_pattern: Optional[str] = Field(default=None, max_length=512,
         description="Wildcard on location field, e.g. '/containers/*/logs/*' to filter by log source path.")
 

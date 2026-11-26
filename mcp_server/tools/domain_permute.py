@@ -96,7 +96,7 @@ async def blueteam_domain_permute(params: DomainPermuteInput) -> str:
     if params.response_format == "json":
         return json.dumps({"domain": params.domain, "count": len(variants),
                            "variants": variants}, indent=2, ensure_ascii=False)
-    lines = [f"# 🎯 Domain Permutations — `{params.domain}`", "",
+    lines = [f"# Domain Permutations: `{params.domain}`", "",
              f"**Lookalike domains** ({len(variants)}):", ""]
     for v in variants:
         lines.append(f"- `{v}`")

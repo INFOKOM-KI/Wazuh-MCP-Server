@@ -983,7 +983,7 @@ async def netra_ip_analysis(params: NetraIpAnalysisInput) -> str:
         else:
             coverage = "complete"
         score_text = f"{score} ({level})" if score is not None and sources_ok else "not available"
-        lines = [f"# Netra — {params.ip}", "",
+        lines = [f"# Netra: {params.ip}", "",
                  f"- **Score**: {score_text}",
                  f"- **Coverage**: {coverage}",
                  f"- **Sources OK**: {', '.join(sources_ok) if sources_ok else 'none'}",
@@ -1214,7 +1214,7 @@ async def blueteam_unified_threat_score(params: UnifiedThreatScoreInput) -> str:
     if unified>=0.8: v="CRITICAL - Active threat, escalate immediately"
     elif unified>=0.5: v="HIGH - Likely malicious, investigate"
     elif unified>=0.2: v="MEDIUM - Suspicious, monitor"
-    elif parts: v="LOW — Probably benign"
+    elif parts: v="LOW (probably benign)"
     else: v="UNKNOWN - No threat intel sources available"
 
     ab_source = ({"score": round(ab_s, 2), **ab_d} if ab_d else

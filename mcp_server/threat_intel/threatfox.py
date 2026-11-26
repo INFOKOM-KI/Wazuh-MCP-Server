@@ -291,7 +291,7 @@ class ThreatFoxBulkInput(BaseModel):
         for term in v:
             term = term.strip()
             if not term or len(term) < 3 or len(term) > 256:
-                raise ValueError(f"Invalid search term: '{term[:50]}...' — must be 3-256 chars")
+                raise ValueError(f"Invalid search term: '{term[:50]}...'. Must be 3-256 chars")
             if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", term):
                 raise ValueError(f"search_term contains invalid control characters: '{term[:50]}'")
             # SSRF guard for IP-format terms

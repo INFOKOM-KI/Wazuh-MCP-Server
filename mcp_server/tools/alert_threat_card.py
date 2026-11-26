@@ -224,7 +224,7 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
         }, indent=2, ensure_ascii=False), params=params)
 
     lines = [
-        f"# 🛡️ Threat Card - `{params.srcip}`",
+        f"# Threat Card - `{params.srcip}`",
         "",
         f"**Window**: `{since_iso}` -> `{until_iso}` | **Total events**: {len(docs)}",
         "",
@@ -237,7 +237,7 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
         lines.append(f"No Wazuh alerts for `{params.srcip}` in this time window.")
         return "\n".join(lines)
 
-    lines.append("## 📊 Executive Summary")
+    lines.append("## Executive Summary")
     lines.append("")
     lines.append(f"| Field | Value |")
     lines.append(f"|-------|-------|")
@@ -251,7 +251,7 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     lines.append("")
 
     if mitre_tactics:
-        lines.append("## 🎯 MITRE ATT&CK Tactics")
+        lines.append("## MITRE ATT&CK Tactics")
         lines.append("")
         lines.append("| Tactic | 3-Sum Category |")
         lines.append("|--------|---------------|")
@@ -260,7 +260,7 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
             lines.append(f"| {t} | `{cat}` |")
         lines.append("")
 
-    lines.append("## 🔥 Rules Triggered")
+    lines.append("## Rules Triggered")
     lines.append("")
     lines.append("| Rule ID | Count | Description |")
     lines.append("|---------|-------|-------------|")
@@ -270,12 +270,12 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     lines.append("")
 
     if domains:
-        lines.append("## 🌐 Targeted Domains")
+        lines.append("## Targeted Domains")
         for d in sorted(domains):
             lines.append(f"- `{d}`")
         lines.append("")
     if urls:
-        lines.append(f"## 🔗 URLs Probed ({len(urls)} unique)")
+        lines.append(f"## URLs Probed ({len(urls)} unique)")
         for u in sorted(set(urls))[:10]:
             lines.append(f"- `{u}`")
         if len(set(urls)) > 10:
@@ -283,7 +283,7 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
         lines.append("")
 
     if crowdsec_data or greynoise_data:
-        lines.append("## 🌍 External Threat Intelligence")
+        lines.append("## External Threat Intelligence")
         lines.append("")
     if crowdsec_data:
         rep = crowdsec_data.get("reputation", "unknown")
@@ -306,12 +306,12 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     if crowdsec_data or greynoise_data:
         lines.append("")
 
-    lines.append("## 🛠️ Recommended Actions")
+    lines.append("## Recommended Actions")
     lines.append("")
 
     # Heuristic recommendations based on alert patterns
     if max_level >= 12:
-        lines.append("1. **🚨 IMMEDIATE**: Critical-severity alerts detected — initiate incident response")
+        lines.append("1. **🚨 IMMEDIATE**: Critical-severity alerts detected. Initiate incident response")
         lines.append(f"2. Block `{params.srcip}` at perimeter firewall immediately")
     elif max_level >= 10:
         lines.append(f"1. **⚠️ HIGH**: Block `{params.srcip}` at perimeter firewall")
@@ -321,14 +321,14 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
         lines.append("2. Review web/app logs for suspicious request patterns")
     else:
         lines.append(f"1. **ℹ️ LOW**: `{params.srcip}` shows low-severity activity")
-        lines.append("2. No immediate action required — continue monitoring")
+        lines.append("2. No immediate action required. Continue monitoring")
 
     if crowdsec_data and crowdsec_data.get("reputation") == "malicious":
-        lines.append("3. CrowdSec confirms malicious — escalate block priority")
+        lines.append("3. CrowdSec confirms malicious. Escalate block priority")
     if len(agents) > 1:
-        lines.append(f"4. IP targeted {len(agents)} agents — check for lateral movement")
+        lines.append(f"4. IP targeted {len(agents)} agents. Check for lateral movement")
     if len(mitre_tactics) >= 3:
-        lines.append("5. Multiple MITRE tactics observed — full compromise assessment recommended")
+        lines.append("5. Multiple MITRE tactics observed. Full compromise assessment recommended")
 
     lines.append("")
     lines.append("---")

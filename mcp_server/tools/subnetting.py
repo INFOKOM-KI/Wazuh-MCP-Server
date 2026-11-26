@@ -91,7 +91,7 @@ def _render_markdown(payload: dict) -> str:
         return f"# Subnet calculation failed\n\n**Error**: {payload.get('error')}"
 
     if payload["operation"] == "split":
-        lines = [f"# 🧮 Subnet Split - `{payload['input']}` -> /{payload['new_prefix']}", "",
+        lines = [f"# Subnet Split - `{payload['input']}` -> /{payload['new_prefix']}", "",
                  f"**Subnets**: {payload['total_subnets']:,} total, {payload['returned']:,} returned"
                  + (" (truncated - raise `max_results`)" if payload["truncated"] else ""),
                  f"**Per subnet**: {payload['addresses_per_subnet']:,} addresses, "
@@ -107,13 +107,13 @@ def _render_markdown(payload: dict) -> str:
                   "|---|---|---|---|---|---|---|---|"]
         for index, row in enumerate(payload["subnets"]):
             lines.append(f"| {index} | `{row['cidr']}` | {row['netmask']} | {row['network']} "
-                         f"| {row.get('broadcast', '—')} | {row['usable_hosts']:,} "
+                         f"| {row.get('broadcast', '-')} | {row['usable_hosts']:,} "
                          f"| {row['first_host']} | {row['last_host']} |")
         lines += ["", "_A /31 or /127 reports 2 usable hosts and a host route reports 1 "
                       "(RFC 3021 / RFC 6164); IPv6 has no broadcast column._"]
         return "\n".join(lines)
 
-    lines = ["# 🧮 CIDR Merge", "",
+    lines = ["# CIDR Merge", "",
              f"**Input**: {payload['input_count']:,} value(s), {payload['family']}",
              f"**Covering set**: {payload['total_cidrs']:,} CIDR(s) covering "
              f"{payload['covered_addresses']:,} addresses"]
@@ -124,9 +124,9 @@ def _render_markdown(payload: dict) -> str:
         lines.append(f"**Truncated**: showing {payload['returned']:,} of {payload['total_cidrs']:,} "
                      f"- raise `max_results`")
     if payload["invalid"]:
-        lines += ["", f"**Unparsed values ({len(payload['invalid'])})** — dropped from the merge, "
+        lines += ["", f"**Unparsed values ({len(payload['invalid'])})**: dropped from the merge, "
                       f"by position in the input list:"]
-        lines += [f"- input[{item['index']}] — {item['reason']}" for item in payload["invalid"]]
+        lines += [f"- input[{item['index']}]: {item['reason']}" for item in payload["invalid"]]
     lines += ["", "| # | CIDR | Netmask | Addresses |", "|---|---|---|---|"]
     for index, row in enumerate(payload["cidrs"]):
         lines.append(f"| {index} | `{row['cidr']}` | {row['netmask']} | {row['num_addresses']:,} |")

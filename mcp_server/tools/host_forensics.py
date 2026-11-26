@@ -233,7 +233,7 @@ class CaptureInput(BaseModel):
     count: int = Field(default=100, description="Number of packets to capture", ge=1, le=5000)
     filter_expr: Optional[str] = Field(default=None, max_length=200, description="BPF filter expression, e.g. 'port 80', 'host 10.0.0.5'")
     output_file: Optional[str] = Field(default=None, max_length=256, description="Optional path to save .pcap file (must be under CAPTURE_OUTPUT_DIR)")
-    bypass_redaction: bool = Field(default=False, description="When true, return raw internal IPs without RFC1918 masking. Overrides BLUETEAM_REDACT_PII for this call only — use for internal audit investigations.")
+    bypass_redaction: bool = Field(default=False, description="When true, return raw internal IPs without RFC1918 masking. Overrides BLUETEAM_REDACT_PII for this call only. Use for internal audit investigations.")
 
 
 @mcp.tool(
@@ -678,7 +678,6 @@ async def blueteam_check_ssh_authorized_keys(params: BypassRedactionInput) -> st
     return _redact_alert_data(json.dumps(result, indent=2) if result else json.dumps({"result": "No authorized_keys files found"}), bypass=params.bypass_redaction)
 
 
-# Process & cron analysis
 @mcp.tool(
     name="blueteam_list_processes",
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}

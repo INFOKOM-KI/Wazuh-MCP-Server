@@ -113,7 +113,7 @@ async def blueteam_wazuh_geo_distribution(params: GeoDistributionInput) -> str:
         }, indent=2, ensure_ascii=False)
 
     lines = [
-        f"# {'🏙️' if is_city else '🌍'} Attack Geography — `{since_iso}` → `{until_iso}`",
+        f"# Attack Geography: `{since_iso}` → `{until_iso}`",
         "",
         f"**Granularity**: {geo_label}",
         f"**Alerts with GeoIP data**: {total_with_geo:,}",
@@ -298,7 +298,7 @@ async def blueteam_wazuh_geo_concentration(params: GeoConcentrationInput) -> str
         }, indent=2, ensure_ascii=False)
 
     lines = [
-        f"# 🧭 Source Concentration - `{since_iso}` -> `{until_iso}`", "",
+        f"# Source Concentration - `{since_iso}` -> `{until_iso}`", "",
         f"**Granularity**: {geo_label} | **Min alerts**: {params.min_alerts:,} | "
         f"**Candidates fetched**: {len(buckets):,}" + (" (truncated)" if truncated else ""),
         f"**GeoIP coverage**: {resolved:,} of {total:,} alerts resolved "

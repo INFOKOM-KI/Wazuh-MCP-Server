@@ -289,7 +289,7 @@ async def blueteam_semantic_search(params: SemanticSearchInput) -> str:
         return json.dumps(payload, indent=2, ensure_ascii=False)
 
     score_col = "Semantic" if reranked else "BM25"
-    lines = [f"# 🔍 Semantic Search - `{params.query}`", "",
+    lines = [f"# Semantic Search - `{params.query}`", "",
              f"**Source**: rules | **Top {len(results)} matches**:", "",
              f"| Rule ID | {score_col} Score | Description | Groups |",
              "|---------|-----------|-------------|--------|"]
@@ -363,7 +363,7 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
         search_after = last_sort
 
     if not all_docs:
-        return _truncate_if_needed(f"# 🔍 Semantic Search — `{params.query}`\n\n**Source**: alerts | **Scanned**: 0 documents\n\n✅ No alerts found in this time window.")
+        return _truncate_if_needed(f"# Semantic Search: `{params.query}`\n\n**Source**: alerts | **Scanned**: 0 documents\n\n✅ No alerts found in this time window.")
 
     # Build ephemeral BM25 from alert text fields
     corpus: list[str] = []
@@ -437,7 +437,7 @@ async def _semantic_search_alerts(params: SemanticSearchInput) -> str:
         return json.dumps(payload, indent=2, ensure_ascii=False)
 
     score_hdr = "Sem" if reranked else "BM25"
-    lines = [f"# 🔍 Semantic Search - `{params.query}`", "",
+    lines = [f"# Semantic Search - `{params.query}`", "",
              f"**Source**: alerts | **Scanned**: {len(all_docs):,} | **Total available**: {total_val:,}",
              "", f"| # | {score_hdr} | Time | Rule | IP | Detail |",
              "|---|------|------|------|----|--------|"]

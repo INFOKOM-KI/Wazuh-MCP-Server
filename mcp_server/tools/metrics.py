@@ -64,7 +64,7 @@ async def blueteam_metrics(params: MetricsInput) -> str:
 
     calls = snap.get("tool_calls", {})
     durations = snap.get("pipeline", {}).get("duration_ms_total", {})
-    lines = ["# 📊 Server Metrics", "",
+    lines = ["# Server Metrics", "",
              f"- **Redaction gate failures**: {snap.get('redaction_gate_failures', 0)}",
              f"- **Rate-limit hits**: {snap.get('rate_limit_hits', 0)}", ""]
     if calls:

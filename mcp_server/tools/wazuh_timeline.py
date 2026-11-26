@@ -185,7 +185,7 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
 
     if not buckets:
         return (
-            "# Alert Timeline — No Data\n\n"
+            "# Alert Timeline: No Data\n\n"
             f"**Window**: {since_str} → {until_str}\n"
             f"**Bucket**: {bucket_interval}\n\n"
             "_No alerts matched the query in this time window._"
@@ -269,11 +269,11 @@ async def wazuh_alert_timeline(params: WazuhAlertTimelineInput) -> str:
     if peak:
         peak_key = peak.get("key_as_string", peak.get("key", ""))[:16]
         peak_count = peak.get("doc_count", 0)
-        lines.append(f"- **Peak**: {peak_key} — {peak_count:,} alerts")
+        lines.append(f"- **Peak**: {peak_key} ({peak_count:,} alerts)")
     if quiet:
         quiet_key = quiet.get("key_as_string", quiet.get("key", ""))[:16]
         quiet_count = quiet.get("doc_count", 0)
-        lines.append(f"- **Quietest**: {quiet_key} — {quiet_count:,} alerts")
+        lines.append(f"- **Quietest**: {quiet_key} ({quiet_count:,} alerts)")
 
     # Per severity totals
     all_low = sum(

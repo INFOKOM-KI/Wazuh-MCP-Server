@@ -108,7 +108,7 @@ async def blueteam_dependency_scan(params: DependencyScanInput) -> str:
 
     for r in results:
         ver = f"@{r['version']}" if r["version"] else ""
-        lines.append(f"## `{r['package']}{ver}` ({r['ecosystem']}) — "
+        lines.append(f"## `{r['package']}{ver}` ({r['ecosystem']}): "
                      f"{r['vuln_count']} vuln(s)")
         lines.append("")
         lines.append("| CVE | Severity | Summary |")

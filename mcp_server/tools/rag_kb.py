@@ -372,7 +372,7 @@ async def blueteam_rag_ingest(params: RagIngestInput) -> str:
             result["pdf"] = pdf_info
         return json.dumps(result, indent=2, ensure_ascii=False)
 
-    lines = [f"# 📚 RAG Ingest - `{corpus_label}`", "",
+    lines = [f"# RAG Ingest - `{corpus_label}`", "",
              f"**Chunks**: {chunks} | **Parents**: {parents} | "
              f"**Stored**: {inserted} | "
              f"**Replaced**: {deleted}",
@@ -502,7 +502,7 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
         if params.response_format == "json":
             return json.dumps({"query": params.query, "matches": [], "status": status},
                               indent=2, ensure_ascii=False)
-        return (f"# 🔎 RAG Query - `{params.query}`\n\n"
+        return (f"# RAG Query - `{params.query}`\n\n"
                 f"No matches (status: `{status}`).\n\n"
                 "- `disabled` / `unavailable: ...` -> the store or embedder is not ready.\n"
                 "- `no_corpus` -> the store is empty or this query found nothing. Run "
@@ -567,7 +567,7 @@ async def blueteam_rag_query(params: RagQueryInput) -> str:
     corpus = f"{matchable} matchable"
     if parents:
         corpus += f" + {parents} parent ({matchable + parents} stored)"
-    lines = [f"# 🔎 RAG Query - `{params.query}`", ""]
+    lines = [f"# RAG Query - `{params.query}`", ""]
     if query_text != params.query:
         lines += [f"*Normalized to `{query_text}` before retrieval.*", ""]
     lines += [f"**Candidates**: {recall} | **Returned**: {len(hits)} | "
@@ -687,7 +687,7 @@ async def blueteam_rag_fp_validate(params: RagFpValidateInput) -> str:
     if params.response_format == "json":
         return json.dumps(result, indent=2, ensure_ascii=False)
 
-    lines = [f"# ⚖️ FP Validation - `{params.srcip}`", "",
+    lines = [f"# FP Validation - `{params.srcip}`", "",
              f"**Verdict**: `{verdict}`", "",
              rationale, "",
              "## Evidence", "",

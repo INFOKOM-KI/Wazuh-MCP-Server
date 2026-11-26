@@ -86,7 +86,7 @@ async def blueteam_attack_graph(params: AttackGraphInput) -> str:
         return _truncate_if_needed(json.dumps(
             _redact_alert_data(result), indent=2, ensure_ascii=False))
 
-    lines = [f"# 🕸️ Attacker Relationship Graph", "",
+    lines = [f"# Attacker Relationship Graph", "",
              f"**Nodes**: {analysis['num_nodes']} | **Edges**: {analysis['num_edges']} | "
              f"**Components**: {analysis['num_components']}", ""]
     if analysis["top_components"]:
@@ -109,7 +109,7 @@ async def blueteam_attack_graph(params: AttackGraphInput) -> str:
     if analysis.get("suspicion_ranked"):
         lines.append("## Suspicion-Ranked Unconfirmed IOCs (PPR from confirmed attackers)")
         for r in analysis["suspicion_ranked"]:
-            nbrs = ", ".join(r.get("confirmed_neighbors", [])) or "—"
+            nbrs = ", ".join(r.get("confirmed_neighbors", [])) or "-"
             lines.append(f"- `{r['ioc']}` ({r.get('kind')}) - score {r['score']} | near: {nbrs}")
         lines.append("")
     if path:
@@ -271,7 +271,7 @@ async def blueteam_pivot_suggest(params: PivotSuggestInput) -> str:
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(_redact_alert_data(result), indent=2, ensure_ascii=False))
 
-    lines = [f"# 🧭 Pivot Suggestions - `{target}`", "",
+    lines = [f"# Pivot Suggestions - `{target}`", "",
              f"- **Kind**: {kind} | **In graph**: {'yes' if result['in_graph'] else 'no'}", ""]
     if result.get("suspicion_score") is not None:
         lines.append(f"- **Suspicion score**: {result['suspicion_score']}")
@@ -285,7 +285,7 @@ async def blueteam_pivot_suggest(params: PivotSuggestInput) -> str:
     else:
         lines.append("## Ranked Next Steps")
         for i, s in enumerate(suggestions, 1):
-            lines.append(f"{i}. **{s['action']}** `{s['target']}` ({s.get('kind')}) — "
+            lines.append(f"{i}. **{s['action']}** `{s['target']}` ({s.get('kind')}), "
                          f"{s['reason']}")
             lines.append(f"-> call `{s['tool']}`")
     return _truncate_if_needed("\n".join(lines))
@@ -354,7 +354,7 @@ async def blueteam_campaign_watch(params: CampaignWatchInput) -> str:
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(_redact_alert_data(result), indent=2, ensure_ascii=False))
 
-    lines = [f"# 📈 Campaign Watch", "",
+    lines = [f"# Campaign Watch", "",
              f"**Nodes**: {result['num_nodes']} | **Clusters**: {result['num_clusters']} | "
              f"**Baseline snapshot**: {'yes' if result['has_previous_snapshot'] else 'no (first run)'}", ""]
     if result["new_clusters"]:
@@ -363,7 +363,7 @@ async def blueteam_campaign_watch(params: CampaignWatchInput) -> str:
             lines.append(f"- **Cluster {i}** ({len(c)} nodes): {', '.join(c[:10])}")
         lines.append("")
     if result["growth"]:
-        lines.append(f"## 📈 Growing Clusters ({len(result['growth'])})")
+        lines.append(f"## Growing Clusters ({len(result['growth'])})")
         for g in result["growth"]:
             lines.append(f"- {g['previous_size']} -> {g['current_size']} nodes; added: "
                          f"{', '.join(g['added'][:10])}")

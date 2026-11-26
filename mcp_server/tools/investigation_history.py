@@ -161,7 +161,7 @@ async def blueteam_false_positive_tracker(params: FalsePositiveTrackerInput) -> 
     if params.response_format == "json":
         return json.dumps({"rule_id": params.rule_id, "false_positive_count": fp_count,
                            "ips": fp_ips_list[:50]}, indent=2)
-    return (f"# False Positive Tracker — Rule `{params.rule_id}`\n\n"
+    return (f"# False Positive Tracker: Rule `{params.rule_id}`\n\n"
             f"- **False positive verdicts**: {fp_count}\n"
             f"- **IPs flagged**: {', '.join(f'`{ip}`' for ip in fp_ips_list[:10]) if fp_ips_list else 'none'}\n"
             f"- **Window**: since {since_dt.strftime('%Y-%m-%d')}\n")
@@ -231,7 +231,7 @@ async def blueteam_investigation_summary(params: InvestigationSummaryInput) -> s
             ts = e.get("ts", "?")[:19]
             v = e.get("verdict", "?")
             notes = (e.get("notes", "") or "")[:60]
-            lines.append(f"- `[{ts}]` `{ip}` — {v}" + (f" ({notes})" if notes else ""))
+            lines.append(f"- `[{ts}]` `{ip}`: {v}" + (f" ({notes})" if notes else ""))
     return _truncate_if_needed("\n".join(lines))
 
 

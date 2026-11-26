@@ -129,7 +129,7 @@ async def blueteam_extract_iocs(params: IocExtractInput) -> str:
     if params.response_format == "json":
         return json.dumps({"total_iocs": total, **iocs}, indent=2, ensure_ascii=False)
 
-    lines = [f"# 🔍 IOC Extraction - {total} indicators found", ""]
+    lines = [f"# IOC Extraction - {total} indicators found", ""]
 
     if iocs["ips"]:
         lines.append(f"## IPs ({len(iocs['ips'])})")
@@ -243,7 +243,7 @@ async def blueteam_ioc_lifecycle(params: IocLifecycleInput) -> str:
         return _truncate_if_needed(json.dumps(
             _redact_alert_data({"count": len(hits), "iocs": hits}), indent=2, ensure_ascii=False))
 
-    lines = [f"# 🧬 IOC Lifecycle — {len(hits)} active IOCs", "",
+    lines = [f"# IOC Lifecycle: {len(hits)} active IOCs", "",
              "| Kind | IOC | Count | Last seen | Decay | Age (d) |",
              "|------|-----|-------|-----------|-------|---------|"]
     for h in hits:

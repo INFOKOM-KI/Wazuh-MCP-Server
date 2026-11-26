@@ -127,7 +127,7 @@ async def blueteam_attack_chain(params: AttackChainInput) -> str:
             "detail": f"Need at least {params.min_transitions} rule transitions.",
         }
         return json.dumps(result, indent=2) if params.response_format == "json" else (
-            f"# Attack Chain — `{params.srcip}`\n\n"
+            f"# Attack Chain: `{params.srcip}`\n\n"
             f"**Insufficient data**: {len(docs)} events (need ≥{params.min_transitions} transitions).")
 
     # Build rule sequence and transition matrix
@@ -208,7 +208,7 @@ async def blueteam_attack_chain(params: AttackChainInput) -> str:
 
     # Markdown report
     lines = [
-        f"# Attack Chain — `{params.srcip}`",
+        f"# Attack Chain: `{params.srcip}`",
         "",
         f"- **Window**: `{since_iso}` → `{until_iso}`",
         f"- **Events**: {len(docs)} → {len(compressed)} distinct rule transitions",
@@ -217,7 +217,7 @@ async def blueteam_attack_chain(params: AttackChainInput) -> str:
     ]
 
     if chain_matches:
-        lines.append("## 🎯 Matched Kill-Chain Patterns")
+        lines.append("## Matched Kill-Chain Patterns")
         lines.append("")
         for cm in chain_matches[:5]:
             conf_bar = "█" * int(cm["confidence"] * 10) + "░" * (10 - int(cm["confidence"] * 10))

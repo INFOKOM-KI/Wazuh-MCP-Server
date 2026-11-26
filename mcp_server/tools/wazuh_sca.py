@@ -76,14 +76,14 @@ async def blueteam_wazuh_get_agent_sca(params: AgentSCAInput) -> str:
             "policies": items[:params.limit],
         }, indent=2)
 
-    lines = [f"# SCA Scan Results — Agent `{params.agent_id}` ({len(items)} policies)", ""]
+    lines = [f"# SCA Scan Results: Agent `{params.agent_id}` ({len(items)} policies)", ""]
     for p in items[:30]:
         name = p.get("name", "?")
         score = p.get("score", 0)
         p_pass = p.get("pass", 0)
         p_fail = p.get("fail", 0)
         lines.append(
-            f"- **{name}** — score: {score}% "
+            f"- **{name}**, score: {score}% "
             f"(pass: {p_pass}, fail: {p_fail})"
         )
     return "\n".join(lines)
@@ -153,8 +153,8 @@ async def blueteam_wazuh_get_sca_policy_checks(params: SCAPolicyChecksInput) -> 
     passed = sum(1 for c in items if c.get("result") == "passed")
     failed = sum(1 for c in items if c.get("result") == "failed")
     lines = [
-        f"# SCA Checks — Agent `{params.agent_id}` / Policy `{params.policy_id}`",
-        f"Total: {len(items)} checks — ✅ {passed} passed, ❌ {failed} failed",
+        f"# SCA Checks: Agent `{params.agent_id}` / Policy `{params.policy_id}`",
+        f"Total: {len(items)} checks: ✅ {passed} passed, ❌ {failed} failed",
         "",
     ]
     for c in items[:30]:
@@ -207,7 +207,7 @@ async def blueteam_wazuh_list_sca_policies(params: SCAPoliciesInput) -> str:
         p_pass = p.get("pass", 0)
         p_fail = p.get("fail", 0)
         lines.append(
-            f"- `{pid}` — **{name}** — score: {score}% "
+            f"- `{pid}`: **{name}**, score: {score}% "
             f"(✅ {p_pass}, ❌ {p_fail})"
         )
     return "\n".join(lines)

@@ -29,7 +29,7 @@ MEM_ENV = {"BLUETEAM_MEM_ENABLED": "true",
 
 # The engine writes this title with an em dash (correlation.py:670); fixtures reuse
 # the exact shipped string so the title heuristic runs on the production shape.
-ENGINE_CASE_TITLE = "3-Sum APT — 2 trigger(s)"
+ENGINE_CASE_TITLE = "3-Sum APT: 2 trigger(s)"
 
 
 def _write_jsonl(path: Path, rows: list) -> Path:

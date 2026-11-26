@@ -25,7 +25,7 @@ main.py -> mcp_server/  (package)
                  ├─ correlation/   3-Sum engine (pure computation, MITRE-driven)
                  ├─ threat_intel/  CrowdSec, ThreatFox, OTX, URLhaus, GreyNoise, cve.now + shared cache
                  ├─ agents/        LangGraph investigation + playbook workflows
-                 └─ tools/         69 tool modules
+                 └─ tools/         72 tool modules
 ```
 
 Every tool call flows through a single pipeline in the `@blueteam_tool` decorator, whose three
@@ -50,22 +50,22 @@ as failures, so an outage on one upstream fails fast instead of stacking retries
 
 ### MCP protocol and shared session state
 
-- **Pinned SDK**: `mcp>=1.28.1,<1.29.0` with the bundled FastMCP. No separate
+- The pinned SDK is `mcp>=1.28.1,<1.29.0` with the bundled FastMCP. No separate
   FastMCP package is installed.
-- **Protocol revisions**: `2025-06-18`, `2025-11-25`, and any revision the SDK
+- Protocol revisions `2025-06-18`, `2025-11-25`, and any revision the SDK
   negotiates. No tool calls MCP elicitation, so a client's approval-dialog
   support and revision do not change tool behavior. VirusTotal sharing is
   authorized once through `BLUETEAM_VIRUSTOTAL_IOC_SHARING`, off by default.
-- **Why the dialog is gone**: an MCP host serves one elicitation at a time. Two
-  concurrent VirusTotal lookups raced for it and the second failed with
-  `elicitation_error`, so the per-indicator prompt was removed.
+- The per-indicator dialog was removed because an MCP host serves one
+  elicitation at a time. Two concurrent VirusTotal lookups raced for it and the
+  second failed with `elicitation_error`.
   `tests/test_virustotal_sharing_policy.py` fails the build if `elicit` or
   `elicit_form` reappears under `mcp_server/`.
-- **Transports**: `stdio` and stateful `streamable_http` (`stateless_http=false`,
+- Transports are `stdio` and stateful `streamable_http` (`stateless_http=false`,
   `json_response=false`). SSE is not exposed by `main.py`.
-- **Process model**: single-process deployment. The response cache and the
-  AbuseIPDB quota state are process-local. The VirusTotal budget is a 0600
-  SQLite file shared by server processes.
+- The process model is single-process. The response cache and the AbuseIPDB
+  quota state are process-local. The VirusTotal budget is a 0600 SQLite file
+  shared by server processes.
 
 ---
 
@@ -126,7 +126,7 @@ optional; tools degrade gracefully without them.
 | Wazuh Indexer | `WAZUH_INDEXER_URL` / `_USER` / `_PASSWORD` | OpenSearch (9200): alert/event data |
 | Wazuh Manager | `WAZUH_API_URL` / `_USER` / `_PASSWORD` | Manager API (55000): rules/agents/config |
 | TLS | `WAZUH_INDEXER_VERIFY_SSL`, `WAZUH_API_VERIFY_SSL` | default `true` |
-| Threat intel | `BLUETEAM_EXTERNAL_ENRICHMENT` (default false; gates every provider client), `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `RAPIDAPI_KEY`, `HUDSONROCK_API_KEY` | 9 providers + RapidAPI + HudsonRock; all optional. AbuseIPDB adds `ABUSEIPDB_CACHE_TTL` (900s), `BLUETEAM_ABUSEIPDB_REPORTING_ENABLED` (false), `BLUETEAM_ABUSEIPDB_EXCLUDE` (IPs/CIDRs added to harvest exclusion; RFC 1918 is always excluded), `BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL` (1s), `BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL` (50), `BLUETEAM_ABUSEIPDB_PLAN` (premium; selects /16 or standard /24 and the fallback quota table; an invalid value falls back to standard), and `BLUETEAM_ABUSEIPDB_QUOTA_RESERVE` (100; refuse before transport at the observed limit), `BLUETEAM_ABUSEIPDB_BOOTSTRAP_CONCURRENCY` (1; per-endpoint in-flight limit before the first quota header), `BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET` (5; cumulative per-endpoint, per-process requests before the first quota header; not restored by a headerless response; a local policy, not an upstream quota). VirusTotal adds `VIRUSTOTAL_CACHE_TTL` (3600s), `VIRUSTOTAL_RATE_PER_MINUTE` (4; Public API default), and `VIRUSTOTAL_DAILY_LIMIT` (500; Public API default). Its local budget is closed at 0; an operator creates the 0600 SQLite state with `python -m mcp_server.threat_intel.virustotal_quota init` using `BLUETEAM_VIRUSTOTAL_BUDGET`, `BLUETEAM_VIRUSTOTAL_BUDGET_HOURS`, `VIRUSTOTAL_RATE_PER_MINUTE`, and `VIRUSTOTAL_DAILY_LIMIT`. Normal startup only loads an existing state at `BLUETEAM_VIRUSTOTAL_STATE`; missing, corrupt, or policy-mismatched state fails closed, and an expired arm window is renewed from the stored policy when `BLUETEAM_VIRUSTOTAL_AUTO_REARM` is true (the default). Set it to false to require an operator `rearm` after every window. The `policy`, `rearm`, `migrate --confirm`, and `prune` subcommands are explicit operator actions. `VIRUSTOTAL_ALLOWED_HOSTS` defaults to `www.virustotal.com`; `VIRUSTOTAL_MAX_RESPONSE_BYTES` defaults to 2000000. Public API use is limited to permitted noncommercial or academic work; commercial or government use requires a Private API agreement. VirusTotal's published terms also prohibit business workflows that do not contribute new files; confirm the agreement before using alert enrichment. Key presence does not prove entitlement. VirusTotal adds queried IoCs to its community dataset; the curated report requires `include_virustotal=true` and defaults false. |
+| Threat intel | `BLUETEAM_EXTERNAL_ENRICHMENT` (default false; gates every provider client), `CROWDSEC_API_KEY`, `THREATFOX_API_KEY`, `OTX_API_KEY`, `URLHAUS_API_KEY`, `ABUSEIPDB_API_KEY`, `VIRUSTOTAL_API_KEY`, `NETRA_API_KEY`, `ARGUS_API_KEY`, `RAPIDAPI_KEY`, `HUDSONROCK_API_KEY` | 9 providers + RapidAPI + HudsonRock; all optional. AbuseIPDB adds `ABUSEIPDB_CACHE_TTL` (900s), `BLUETEAM_ABUSEIPDB_REPORTING_ENABLED` (false), `BLUETEAM_ABUSEIPDB_EXCLUDE` (IPs/CIDRs added to harvest exclusion; RFC 1918 is always excluded), `BLUETEAM_ABUSEIPDB_REPORT_MIN_INTERVAL` (1s), `BLUETEAM_ABUSEIPDB_REPORT_MAX_PER_CALL` (50), `BLUETEAM_ABUSEIPDB_PLAN` (premium; selects /16 or standard /24 and the fallback quota table; an invalid value falls back to standard), and `BLUETEAM_ABUSEIPDB_QUOTA_RESERVE` (100; refuse before transport at the observed limit), `BLUETEAM_ABUSEIPDB_BOOTSTRAP_CONCURRENCY` (1; per-endpoint in-flight limit before the first quota header), `BLUETEAM_ABUSEIPDB_BOOTSTRAP_BUDGET` (5; cumulative per-endpoint, per-process requests before the first quota header; not restored by a headerless response; a local policy, not an upstream quota). VirusTotal adds `VIRUSTOTAL_CACHE_TTL` (3600s), `VIRUSTOTAL_RATE_PER_MINUTE` (4; Public API default), and `VIRUSTOTAL_DAILY_LIMIT` (500; Public API default). Its local budget is closed at 0; an operator creates the 0600 SQLite state with `python -m mcp_server.threat_intel.virustotal_quota init` using `BLUETEAM_VIRUSTOTAL_BUDGET`, `BLUETEAM_VIRUSTOTAL_BUDGET_HOURS`, `VIRUSTOTAL_RATE_PER_MINUTE`, and `VIRUSTOTAL_DAILY_LIMIT`. Normal startup only loads an existing state at `BLUETEAM_VIRUSTOTAL_STATE`; missing, corrupt, or policy-mismatched state fails closed, and an expired arm window is renewed from the stored policy when `BLUETEAM_VIRUSTOTAL_AUTO_REARM` is true (the default). Set it to false to require an operator `rearm` after every window. The `policy`, `rearm`, `migrate --confirm`, and `prune` subcommands are explicit operator actions. `VIRUSTOTAL_ALLOWED_HOSTS` defaults to `www.virustotal.com`; `VIRUSTOTAL_MAX_RESPONSE_BYTES` defaults to 2000000. Public API use is noncommercial or academic only; commercial or government use needs a Private API agreement (published terms and entitlement: see the VirusTotal lookup row). VirusTotal adds queried IoCs to its community dataset; the curated report requires `include_virustotal=true` and defaults false. |
 | RapidAPI budget | `BLUETEAM_RAPIDAPI_MONTHLY_CAP`, `BLUETEAM_RAPIDAPI_BUDGET`, `BLUETEAM_RAPIDAPI_BUDGET_HOURS`, `BLUETEAM_RAPIDAPI_CACHE`, `BLUETEAM_RAPIDAPI_RAW_WHOIS`, `BLUETEAM_RAPIDAPI_MIN_INTERVAL`, `RAPIDAPI_CACHE_TTL` | one account-wide pool (default 100/month) shared by every RapidAPI product. Budget defaults to 0, so every RapidAPI call is refused until an operator arms a window. `MIN_INTERVAL` paces requests across all of them (default 0.25s; set 7.0 where the plan requires one lookup per 7s) |
 | MISP | `MISP_URL`, `MISP_API_KEY`, `MISP_VERIFYCERT`, `MISP_CACHE_TTL`, `MISP_MIN_INTERVAL`, `MISP_MAX_CONCURRENT`, `MISP_TIMEOUT` | internal sharing instance; read-only key. `MISP_URL` without `MISP_API_KEY` fails startup. `VERIFYCERT` defaults `true` and is scoped to the MISP pool only |
 | offensive.agency | `OFFENSIVE_AGENCY_BASE_URL`, `OFFENSIVE_AGENCY_CACHE_TTL`, `OFFENSIVE_AGENCY_MAX_RESPONSE_BYTES` | no key. Fixed HTTPS host; the URL must end at `/api/v1`. Cache default `21600`s; response cap `2000000` bytes. Only attacker-related IPs, CIDRs, and domains are sent |
@@ -499,7 +499,7 @@ template under its own `templates/` directory.
 - `MCP_API_KEY_SCOPES`: default `wazuh:read` (read-only). Add `wazuh:write` to enable the 19
   Wazuh write tools (`blueteam_fail2ban_unban`, `blueteam_case_*` ×3, `blueteam_set_owned_domains`,
   `blueteam_mark_investigated`, `blueteam_wazuh_export`, `blueteam_export_report`,
-  `blueteam_stix_export`, `blueteam_rag_ingest`, `blueteam_capture_traffic`,
+  `blueteam_stix_export`, `blueteam_paper_evidence_pack`, `blueteam_rag_ingest`, `blueteam_capture_traffic`,
   `blueteam_alert_cluster`, `blueteam_alert_cluster_assign`, `blueteam_tactic_forecast`,
   `blueteam_source_forecast`, `blueteam_volume_forecast`, `blueteam_yara_rule_save`, `blueteam_sigma_rule_save`).
 - `threatintel:report`: required for `blueteam_abuseipdb_report`. It is separate from
@@ -510,21 +510,21 @@ Fail-closed: no scope means read-only. The write set is derived at request time 
 FastMCP annotations (`readOnlyHint is not True` or `destructiveHint is True`), not a hardcoded
 allowlist, so a newly added write tool is scoped automatically. A tool with a dedicated scope
 override (`blueteam_abuseipdb_report`) asks for that scope instead of `wazuh:write`.
-- **Bind guard** (`main.py::_start_http_transport`): a non-loopback bind without `MCP_API_KEY`
-  raises `ConfigurationError` and refuses to start. Loopback stays auth-less only when no key is
-  configured; when a key is set it is enforced on every request.
-- **JSON depth guard** (`parse_json_body_safe`): every POST body is capped at 1 MB
-  (`MAX_BODY_BYTES`) and rejected if nesting exceeds 100 levels (`MAX_JSON_DEPTH`) *before*
-  `json.loads` runs, which blocks the stack-exhaustion DoS from deeply nested JSON-RPC payloads.
-- **Inbound rate limiter** (`SlidingWindowRateLimiter`): per-client-IP sliding-window cap
-  (`BLUETEAM_HTTP_RATE_LIMIT`, requests/min, default `0` = disabled) → `429` on excess. Distinct
-  from `BLUETEAM_RATE_LIMIT`, which gates destructive tools (fail2ban unban, tcpdump capture)
-  with a per-minute global cap.
-- **Origin validation** (`_origin_allowed`): an `Origin` header must be a loopback origin or in
-  `BLUETEAM_ALLOWED_ORIGINS` (comma-separated exact origins), else `403`. Blocks browser-based
-  DNS-rebinding / localhost-exfiltration. Requests without an `Origin` header (non-browser
-  clients) are unaffected. The middleware is always installed; rate limiting + origin validation
-  apply even on an auth-less loopback bind.
+- The bind guard (`main.py::_start_http_transport`) raises `ConfigurationError` and refuses to
+  start when a non-loopback bind has no `MCP_API_KEY`. Loopback stays auth-less only when no key
+  is configured; when a key is set it is enforced on every request.
+- The JSON depth guard (`parse_json_body_safe`) caps every POST body at 1 MB (`MAX_BODY_BYTES`)
+  and rejects nesting beyond 100 levels (`MAX_JSON_DEPTH`) *before* `json.loads` runs, which
+  blocks the stack-exhaustion DoS from deeply nested JSON-RPC payloads.
+- The inbound rate limiter (`SlidingWindowRateLimiter`) applies a per-client-IP sliding-window
+  cap (`BLUETEAM_HTTP_RATE_LIMIT`, requests/min, default `0` = disabled) and returns `429` on
+  excess. It is distinct from `BLUETEAM_RATE_LIMIT`, which gates destructive tools (fail2ban
+  unban, tcpdump capture) with a per-minute global cap.
+- Origin validation (`_origin_allowed`) requires an `Origin` header to be a loopback origin or
+  in `BLUETEAM_ALLOWED_ORIGINS` (comma-separated exact origins), else `403`. It blocks
+  browser-based DNS-rebinding and localhost-exfiltration. Requests without an `Origin` header
+  (non-browser clients) are unaffected. The middleware is always installed; rate limiting and
+  origin validation apply even on an auth-less loopback bind.
 
 ### Redaction policy
 

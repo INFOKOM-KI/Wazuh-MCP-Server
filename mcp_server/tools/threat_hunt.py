@@ -83,7 +83,7 @@ _THREAT_HUNT_TEMPLATES: dict[str, dict] = {
         },
     },
     "wmi_persistence": {
-        "description": "WMI event subscriptions — __EventFilter, __EventConsumer, CommandLineEventConsumer — classic APT persistence.",
+        "description": "WMI event subscriptions (__EventFilter, __EventConsumer, CommandLineEventConsumer), classic APT persistence.",
         "mitre": "T1546.003",
         "query": lambda since, until, agent, srcip: {
             "size": 0,
@@ -291,7 +291,7 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
         }, indent=2, ensure_ascii=False)
 
     lines = [
-        f"# 🔍 Threat Hunt - `{params.template}`",
+        f"# Threat Hunt - `{params.template}`",
         "",
         f"**MITRE**: {tmpl['mitre']}",
         f"**Description**: {tmpl['description']}",
@@ -364,6 +364,6 @@ async def blueteam_threat_hunt(params: ThreatHuntInput) -> str:
         lines.append("")
 
     if total == 0:
-        lines.append("**No matches found** — this technique was not detected in the window.")
+        lines.append("**No matches found**: this technique was not detected in the window.")
 
     return _truncate_if_needed("\n".join(lines))

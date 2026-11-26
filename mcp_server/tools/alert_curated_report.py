@@ -537,7 +537,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput,
         val = getattr(f, field_name, None)
         if val:
             filter_desc_parts.append(f"`{field_name}={val}`")
-    filter_desc = ", ".join(filter_desc_parts) if filter_desc_parts else "(none — all alerts)"
+    filter_desc = ", ".join(filter_desc_parts) if filter_desc_parts else "(none, all alerts)"
 
     if params.include_threat_intel:
         source_text = "; ".join(
@@ -545,14 +545,14 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput,
     else:
         source_text = "disabled"
     lines = [
-        f"# 🛡️ Curated Threat Report",
+        f"# Curated Threat Report",
         "",
         f"**Window**: `{since_iso}` -> `{until_iso}`",
         f"**Filters**: {filter_desc}",
         "",
         "---",
         "",
-        "## 📊 Executive Summary",
+        "## Executive Summary",
         "",
         f"| Metric | Value |",
         f"|--------|-------|",
@@ -572,7 +572,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput,
     ]
     if aggregation_truncated:
         lines += [
-            "## ⚠️ Aggregation completeness",
+            "## Aggregation completeness",
             "",
             "The terms aggregations are capped at `max_entities`; the table and counts "
             "below describe the returned buckets, not the whole window.",
@@ -591,9 +591,9 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput,
         prev_total = compare_data.get("total_alerts", 0)
         delta = total_alerts - prev_total
         delta_pct = (delta / prev_total * 100) if prev_total > 0 else float("inf")
-        arrow = "↑" if delta > 0 else "↓" if delta < 0 else "—"
+        arrow = "↑" if delta > 0 else "↓" if delta < 0 else "-"
         lines.append("")
-        lines.append("## 📈 Comparison vs Previous Period")
+        lines.append("## Comparison vs Previous Period")
         lines.append("")
         lines.append("| Metric | Current | Previous | Δ |")
         lines.append("|--------|---------|----------|---|")
@@ -697,24 +697,24 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput,
                     f"| {vt_data.get('http_status') or '-'} |")
     if rule_buckets:
         lines.append("")
-        lines.append("## 🔥 Top Rules")
+        lines.append("## Top Rules")
         for b in rule_buckets:
-            lines.append(f"- `{b['key']}` — {b['doc_count']:,} alerts")
+            lines.append(f"- `{b['key']}`: {b['doc_count']:,} alerts")
 
     if domain_buckets:
         lines.append("")
-        lines.append("## 🌐 Top Targeted Domains")
+        lines.append("## Top Targeted Domains")
         for b in domain_buckets[:10]:
-            lines.append(f"- `{b['key']}` — {b['doc_count']:,} alerts")
+            lines.append(f"- `{b['key']}`: {b['doc_count']:,} alerts")
 
     if agent_buckets:
         lines.append("")
-        lines.append("## 🖥️ Most Targeted Agents")
+        lines.append("## Most Targeted Agents")
         for b in agent_buckets[:10]:
-            lines.append(f"- `{b['key']}` — {b['doc_count']:,} alerts")
+            lines.append(f"- `{b['key']}`: {b['doc_count']:,} alerts")
 
     lines.append("")
-    lines.append("## 🛠️ Recommended Actions")
+    lines.append("## Recommended Actions")
 
     high_entities = [b for b in entity_buckets if int(b.get("max_level", {}).get("value", 0)) >= 10]
     if high_entities:
@@ -743,7 +743,7 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput,
 
         if deep_ips:
             lines.append("")
-            lines.append("## 🔬 Deep Investigation (Auto-Chained)")
+            lines.append("## Deep Investigation (Auto-Chained)")
             lines.append("")
             lines.append(f"*{len(deep_ips)} qualifying IPs (max_level≥10 or CrowdSec=malicious)*")
             lines.append("")

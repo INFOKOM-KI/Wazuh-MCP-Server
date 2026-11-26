@@ -183,7 +183,7 @@ class StixAnalyzeInput(BaseModel):
     campaign_name: Optional[str] = Field(default=None, max_length=100,
         description="Campaign name or fragment to look up.")
     indicator: Optional[str] = Field(default=None, max_length=200,
-        description="Free-text indicator (IP, domain, malware name) — matches actor/TTP by name overlap.")
+        description="Free-text indicator (IP, domain, malware name) matches actor/TTP by name overlap.")
     include_actors: bool = Field(default=True, description="Return matched intrusion-sets.")
     include_ttp: bool = Field(default=True, description="Return matched attack-patterns (techniques).")
     include_campaigns: bool = Field(default=True, description="Return matched campaigns.")
@@ -250,7 +250,7 @@ async def blueteam_stix_analyze(params: StixAnalyzeInput) -> str:
                 matched.append(o)
 
     if not matched:
-        return _truncate_if_needed(f"# STIX/ATT&CK — no match\n\nNo object matched the query. "
+        return _truncate_if_needed(f"# STIX/ATT&CK: no match\n\nNo object matched the query. "
                                    f"Try a technique ID (T1059), actor name, or campaign name.")
 
     # Traverse relationships
@@ -304,7 +304,7 @@ async def blueteam_stix_analyze(params: StixAnalyzeInput) -> str:
             **results,
         }, indent=2, ensure_ascii=False)
 
-    lines = [f"# 🕵️ STIX/ATT&CK Correlation", "",
+    lines = [f"# STIX/ATT&CK Correlation", "",
              f"**Query**: {json.dumps(params.model_dump(exclude={'response_format'}))}", ""]
     if matched:
         lines.append("## Matched")
@@ -317,7 +317,7 @@ async def blueteam_stix_analyze(params: StixAnalyzeInput) -> str:
         if items:
             lines.append(f"## {icon} {label} ({len(items)})")
             for it in items:
-                extra = f" — {it.get('desc','')}" if it.get('desc') else ""
+                extra = f", {it.get('desc','')}" if it.get('desc') else ""
                 lines.append(f"- **{it.get('name')}** (`{it.get('mitre_id','')}`){extra}")
             lines.append("")
     if not any(results.values()):
@@ -502,7 +502,7 @@ async def blueteam_stix_killchain(params: StixKillchainInput) -> str:
         if params.response_format == "json":
             return _truncate_if_needed(json.dumps(payload, indent=2, ensure_ascii=False))
         return _truncate_if_needed(
-            f"# ⛓️ STIX Kill Chain — `{srcip}`\n\n**Alerts**: {total:,} | "
+            f"# STIX Kill Chain: `{srcip}`\n\n**Alerts**: {total:,} | "
             f"**Indexer query failed**: {fetch_error}\n\n"
             f"The kill chain was not built because the alert query failed.")
 
@@ -515,7 +515,7 @@ async def blueteam_stix_killchain(params: StixKillchainInput) -> str:
                 "note": "No rule.mitre.id values in this srcip's alerts for the window; "
                         "the kill chain was skipped, not failed."}), indent=2, ensure_ascii=False))
         return _truncate_if_needed(
-            f"# ⛓️ STIX Kill Chain — `{srcip}`\n\n**Alerts**: {total:,} | **MITRE techniques observed**: 0\n\n"
+            f"# STIX Kill Chain: `{srcip}`\n\n**Alerts**: {total:,} | **MITRE techniques observed**: 0\n\n"
             f"No `rule.mitre.id` values in this srcip's alerts for the window. "
             f"Check that rule.mitre is populated on production alerts before trusting kill-chain output.")
 
@@ -528,11 +528,11 @@ async def blueteam_stix_killchain(params: StixKillchainInput) -> str:
             "srcip": srcip, "window": {"since": since_iso, "until": until_iso},
             "total_alerts": total, "status": "ok", **chain}), indent=2, ensure_ascii=False))
 
-    lines = [f"# ⛓️ STIX Kill Chain — `{srcip}`", "",
+    lines = [f"# STIX Kill Chain: `{srcip}`", "",
              f"**Alerts**: {total:,} | **Tactics observed**: {len(chain['tactics_seen'])} | "
              f"**Techniques**: {len(chain['techniques'])}", ""]
     for c in chain["techniques"]:
-        lines.append(f"## {c['tactic'].title()} — `{c['mitre_id']}` — {c['name']}")
+        lines.append(f"## {c['tactic'].title()}: `{c['mitre_id']}` ({c['name']})")
         if c["actors"]:
             lines.append(f"  🦠 Actors: {', '.join(a['name'] for a in c['actors'])}")
         if c["campaigns"]:
@@ -692,7 +692,7 @@ async def blueteam_cve_attack_mapping(params: CveAttackMappingInput) -> str:
         lines.append("## Techniques")
         for t in techs:
             tactics = ", ".join(t.get("tactics", [])) or "?"
-            lines.append(f"- **{t['technique_id']}** — {t['name']} (`{tactics}`)")
+            lines.append(f"- **{t['technique_id']}**: {t['name']} (`{tactics}`)")
     if groups:
         lines.append("")
         lines.append("## Threat groups")

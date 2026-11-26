@@ -118,16 +118,16 @@ async def blueteam_case_get(params: CaseGetInput) -> str:
         return json.dumps({"error": f"Case '{params.case_id}' not found."}, indent=2)
     if params.response_format == "json":
         return _truncate_if_needed(json.dumps(_redact_alert_data(case), indent=2, ensure_ascii=False))
-    lines = [f"# 🗂️ Case — `{case['case_id']}`", "", f"**Title**: {case['title']}",
+    lines = [f"# Case: `{case['case_id']}`", "", f"**Title**: {case['title']}",
              f"**Created**: {case['created_at']}", f"**Updated**: {case['updated_at']}",
-             f"**SrcIPs**: {', '.join('`' + i + '`' for i in case.get('srcips', [])) or '—'}",
-             f"**IOCs**: {', '.join('`' + i + '`' for i in case.get('iocs', [])) or '—'}", ""]
+             f"**SrcIPs**: {', '.join('`' + i + '`' for i in case.get('srcips', [])) or '-'}",
+             f"**IOCs**: {', '.join('`' + i + '`' for i in case.get('iocs', [])) or '-'}", ""]
     if case.get("notes"):
         lines += ["## Notes", case["notes"], ""]
     if case.get("verdicts"):
         lines.append("## Verdicts")
         for v in case["verdicts"]:
-            lines.append(f"- `{v['srcip']}` — **{v['verdict']}**" +
+            lines.append(f"- `{v['srcip']}`: **{v['verdict']}**" +
                          (f" ({v['notes']})" if v.get("notes") else ""))
         lines.append("")
     timeline = case_store.case_timeline(case["case_id"])
@@ -160,7 +160,7 @@ async def blueteam_case_list(params: CaseListInput) -> str:
         return _truncate_if_needed(json.dumps(
             _redact_alert_data([{k: c[k] for k in ("case_id", "title", "created_at", "srcips", "iocs")
                                  if k in c} for c in cases]), indent=2, ensure_ascii=False))
-    lines = ["# 🗂️ Cases", ""]
+    lines = ["# Cases", ""]
     if not cases:
         lines.append("*No cases yet.*")
     for c in cases[:50]:

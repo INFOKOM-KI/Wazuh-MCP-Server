@@ -624,7 +624,7 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
         return _truncate_if_needed(json.dumps(output.model_dump(), indent=2, default=str))
 
     # Markdown
-    lines = [f"# Threat Intel Aggregate — `{params.indicator}`", "",
+    lines = [f"# Threat Intel Aggregate: `{params.indicator}`", "",
              f"**Type**: `{ind_type}` | **Aggregated Risk**: **{output.aggregated_risk_level or 'unknown'}** "
              f"| **Malicious votes**: {output.consensus_malicious}/{len([r for r in results if r.error is None])}",
              f"**Provider coverage**: {output.providers_ok}/{output.providers_total} attempted providers answered",
@@ -632,7 +632,7 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
              "|----------|------|-------|-----------|---------------------|"]
     for r in results:
         if r.error:
-            lines.append(f"| `{r.provider}` | — | — | — | "
+            lines.append(f"| `{r.provider}` | - | - | - | "
                          f"⚠️ {_clip(r.error, 40)} |")
         else:
             mf = ", ".join(r.malware_families[:2]) or ""
@@ -656,14 +656,14 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
     lines.append("### Verdict accounting")
     lines.append("")
     lines.append(
-        f"- **Aggregated risk**: `{output.aggregated_risk_level or 'unknown'}` — the highest "
-        f"risk any single provider reported, not a vote."
+        f"- **Aggregated risk**: `{output.aggregated_risk_level or 'unknown'}` (the highest "
+        f"risk any single provider reported, not a vote)."
     )
     lines.append(
         f"- **Providers**: {output.providers_configured} configured, "
         f"{output.providers_total} queried, {output.providers_ok} answered, "
         f"{output.providers_failed} failed, {output.providers_skipped} skipped "
-        f"(never sent — not part of the queried count)")
+        f"(never sent, not part of the queried count)")
     lines.append(
         f"- **Verdicts**: {output.verdicts_malicious} malicious, "
         f"{output.verdicts_clean} clean, {output.verdicts_inconclusive} inconclusive")
@@ -709,7 +709,7 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
 
     if output.errors:
         lines.append("")
-        lines.append("### ⚠️ Failed or skipped providers")
+        lines.append("### Failed or skipped providers")
         for e in output.errors:
             lines.append(f"- {e}")
 
@@ -717,15 +717,15 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
     all_techniques = sorted({t for r in results if not r.error for t in r.attack_techniques})
     if all_techniques:
         lines.append("")
-        lines.append(f"### 🎯 MITRE ATT&CK Techniques ({len(all_techniques)})")
+        lines.append(f"### MITRE ATT&CK Techniques ({len(all_techniques)})")
         lines.append(" | ".join(f"`{t}`" for t in all_techniques[:20]))
 
     # OTX pulses (campaign context)
     pulses = [p for r in results if not r.error for p in r.pulses]
     if pulses:
         lines.append("")
-        lines.append(f"### 🕵️ Campaign Pulses ({len(pulses)})")
+        lines.append(f"### Campaign Pulses ({len(pulses)})")
         for p in pulses[:5]:
-            lines.append(f"- **{p.get('name','?')}** — {p.get('author','?')}")
+            lines.append(f"- **{p.get('name','?')}**: {p.get('author','?')}")
 
     return _truncate_if_needed("\n".join(lines))

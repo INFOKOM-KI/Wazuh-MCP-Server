@@ -110,7 +110,7 @@ async def blueteam_cve_advisory(params: CveAdvisoryInput) -> str:
         if rh.get("cwe"):
             lines.append(f"CWE: {rh['cwe']}")
         for a in rh.get("advisories", []):
-            lines.append(f"- {a['advisory']} — {a['package']} ({a['product_name']})")
+            lines.append(f"- {a['advisory']}: {a['package']} ({a['product_name']})")
         affected = [s for s in rh.get("package_states", [])
                     if s.get("state") and s["state"].lower() not in
                     ("not affected", "will not fix")]
@@ -135,7 +135,7 @@ async def blueteam_cve_advisory(params: CveAdvisoryInput) -> str:
             lines.append("")
             lines.append(ub["description"])
         for n in ub.get("notices", []):
-            lines.append(f"- {n['id']} — {n['title']}")
+            lines.append(f"- {n['id']}: {n['title']}")
     else:
         lines.append("_No advisory._")
     lines.append("")
