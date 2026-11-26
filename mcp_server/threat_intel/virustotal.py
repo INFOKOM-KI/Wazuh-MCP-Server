@@ -28,9 +28,9 @@ from mcp_server.core.http_client import (CircuitOpenError, ResponseTooLargeError
                                          _api_call, normalize_public_ip)
 from mcp_server.core.url_policy import validate_https_base_url
 from mcp_server.threat_intel._cache import cache_delete_prefix, cache_get, cache_set
-from mcp_server.threat_intel.virustotal_consent import (consume_consent,
-                                                        issue_consent,
-                                                        reset_consent_state)
+from mcp_server.core.attacker_registry import operator_ioc_evidence
+from mcp_server.threat_intel.virustotal_consent import (authorize_attacker_scope,
+                                                        authorize_ioc_sharing)
 from mcp_server.threat_intel.virustotal_quota import (VirusTotalQuota,
                                                       VirusTotalQuotaError,
                                                       rearm_command)
@@ -57,8 +57,8 @@ _SEMAPHORE_LOOP = None
 
 VirusTotalErrorKind = Literal[
     "rate_limited", "cooldown", "not_configured", "unsupported_type",
-    "consent_required",
-    "upstream_error", "timeout", "auth_error", "not_found", "bad_request",
+    "consent_required", "not_attacker_ioc", "provenance_unchecked", "disabled",
+    "excluded_infrastructure", "upstream_error", "timeout", "auth_error", "not_found", "bad_request",
     "circuit_open", "budget_closed", "not_armed", "arm_expired",
     "budget_exhausted", "daily_exhausted", "storage_unavailable",
     "state_corrupt", "state_missing", "policy_mismatch", "state_exists",
@@ -507,14 +507,23 @@ def _error_from_exception(exc: Exception) -> VirusTotalError:
 
 
 async def lookup(kind: str, indicator: str, *,
-                 consent_token: str | None = None) -> VirusTotalSuccess:
+                 operator_attested: bool = False) -> VirusTotalSuccess:
     """Return a normalized VirusTotal report, using the shared cache and limits.
 
-    ``consent_token`` is a single-use, indicator-bound approval issued only after
-    the MCP host or the live-validator operator approves sharing. It is consumed
-    before the cache lookup, so a cached report also requires fresh consent and
-    never triggers a new API request.
+    ``authorize_ioc_sharing`` and ``authorize_attacker_scope`` run before the
+    cache lookup, so sharing off returns ``consent_required`` and an IOC with no
+    Wazuh provenance returns ``not_attacker_ioc``. A non-public address returns
+    ``bad_request``. None of the three sends a request or spends quota.
+
+    ``operator_attested`` is the CLI's separate path: it accepts only an
+    ``operator_cli`` entry whose evidence records the human attestation, never a
+    Wazuh attribution. The automated tools never pass it.
     """
+    from mcp_server.core.external_egress import ExternalEgressDisabled, egress_check
+    try:
+        egress_check()
+    except ExternalEgressDisabled as exc:
+        raise VirusTotalError(str(exc), "disabled") from exc
     if kind not in KINDS:
         raise VirusTotalError(f"unsupported VirusTotal kind '{kind}'", "unsupported_type")
     try:
@@ -522,7 +531,19 @@ async def lookup(kind: str, indicator: str, *,
     except ValueError as exc:
         raise VirusTotalError(str(exc), "bad_request") from exc
 
-    consume_consent(consent_token, kind, value)
+    authorize_ioc_sharing(kind, value)
+    if operator_attested:
+        evidence = operator_ioc_evidence(value)
+        if evidence is None:
+            raise VirusTotalError(
+                "an operator-attested lookup needs a recorded attestation for "
+                "this exact indicator", "not_attacker_ioc")
+        from mcp_server.core.audit import _audit_log
+        _audit_log("virustotal_operator_lookup", {"indicator": value},
+                   detail={"source": "operator_cli",
+                           "tool": evidence.get("tool", "")})
+    else:
+        authorize_attacker_scope(value)
     base_url = _base_url()
     cache_key = f"{kind}:{value}"
     cached = cache_get("virustotal", cache_key)
@@ -613,5 +634,4 @@ def reset_state() -> None:
     _QUOTA_SIG = None
     _SEMAPHORE = None
     _SEMAPHORE_LOOP = None
-    reset_consent_state()
     cache_delete_prefix("virustotal", "")

@@ -48,6 +48,8 @@ async def _urlhaus_payload_request(file_hash: str) -> dict[str, Any]:
 
 async def _urlhaus_post(endpoint: str, body: dict) -> dict[str, Any]:
     """Shared POST helper for URLhaus endpoints (url/ and payload/)."""
+    from mcp_server.core.external_egress import egress_check
+    egress_check()
     cache_key = f"{endpoint}:{json.dumps(body, sort_keys=True)}"
     cached = cache_get("urlhaus", cache_key)
     if cached is not None:

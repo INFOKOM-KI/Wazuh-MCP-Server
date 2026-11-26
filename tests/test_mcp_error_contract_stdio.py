@@ -25,7 +25,10 @@ def _server_params() -> StdioServerParameters:
         "PYTHONPATH": ROOT,
         "PYTHONUNBUFFERED": "1",
     })
-    # Forces the missing-credential failure path: no network needed.
+    # Forces the missing-credential failure path: no network needed. External
+    # egress is enabled so the switch does not answer first; this test is about
+    # the error contract, not the egress policy.
+    env["BLUETEAM_EXTERNAL_ENRICHMENT"] = "true"
     env.pop("RAPIDAPI_KEY", None)
     return StdioServerParameters(command=sys.executable, args=["main.py"], cwd=ROOT, env=env)
 

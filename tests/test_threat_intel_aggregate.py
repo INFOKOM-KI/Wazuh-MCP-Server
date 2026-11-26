@@ -128,12 +128,9 @@ def test_virustotal_provider_routes_indicator_types(tmp_path):
         vt.reset_state()
         vt._get_quota().initialize()
         for indicator, ind_type, segment in cases:
-            token_kind = {"IPv4": "ip_addresses", "IPv6": "ip_addresses",
-                          "domain": "domains", "file": "files"}[ind_type]
-            result = asyncio.run(agg._virustotal_provider(
-                indicator, ind_type,
-                vt.issue_consent(token_kind,
-                                 vt._normalize(token_kind, indicator))))
+            from mcp_server.core.attacker_registry import register_attacker_ioc
+            register_attacker_ioc(indicator, source="wazuh_alerts", evidence={"decision": "accepted", "via": "wazuh_alerts", "alert_id": "test-alert", "rule_id": "100200", "rule_level": 12, "groups": ["attack"], "matched_field": "data.srcip", "signal": "attack_group"})
+            result = asyncio.run(agg._virustotal_provider(indicator, ind_type))
             assert result.error is None, result.error
             assert seen[-1].endswith(f"/{segment}/{indicator}"), seen[-1]
             assert result.risk_level == "medium"  # 6/70 = 8%: a detection, not low risk
@@ -144,6 +141,95 @@ def test_virustotal_provider_routes_indicator_types(tmp_path):
             assert result.detail["analysis_stats"]["malicious"] == 6
             assert result.detail["community_reputation"] == 12
             assert result.detail["any_detection"] is True
+
+
+def _silence_other_providers(monkeypatch):
+    from mcp_server.tools import threat_intel_aggregate as agg
+
+    def stub(name):
+        async def provider(*args, **kwargs):
+            return agg.TIProviderResult(provider=name, indicator="140.82.0.86",
+                                        indicator_type="IPv4", is_malicious=None)
+        return provider
+
+    for name in ("_crowdsec_provider", "_threatfox_provider", "_otx_provider",
+                 "_greynoise_provider", "_abuseipdb_provider"):
+        monkeypatch.setattr(agg, name, stub(name.strip("_")))
+
+
+def test_aggregate_refuses_vt_for_an_ioc_without_wazuh_provenance(monkeypatch):
+    import asyncio
+    import json
+    from mcp_server.tools import ioc_provenance
+    from mcp_server.tools import threat_intel_aggregate as agg
+
+    async def no_evidence(kind, indicator):
+        return None, "no attacker-side alert field matched in now-7d"
+
+    _silence_other_providers(monkeypatch)
+    monkeypatch.setattr(ioc_provenance, "ensure_attacker_provenance", no_evidence)
+    monkeypatch.setattr(agg, "VIRUSTOTAL_API_KEY", "test-key")
+
+    output = asyncio.run(agg.blueteam_threat_intel_aggregate(
+        agg.ThreatIntelAggregateInput(indicator="140.82.0.86",
+                                      response_format="json")))
+    result = next(r for r in json.loads(output)["results"]
+                  if r["provider"] == "virustotal")
+
+    assert result["error_kind"] == "not_attacker_ioc"
+    assert result["is_malicious"] is None
+
+
+def test_aggregate_records_indexer_provenance_before_vt(monkeypatch):
+    import asyncio
+    from mcp_server.core.attacker_registry import attacker_ioc_source
+    from mcp_server.tools import ioc_provenance
+    from mcp_server.tools import threat_intel_aggregate as agg
+
+    async def alert_evidence(kind, indicator):
+        from mcp_server.core.attacker_registry import register_attacker_ioc
+        register_attacker_ioc(indicator, source="wazuh_alerts")
+        return "wazuh_alerts", "3 matching alert(s) in now-7d"
+
+    async def fake_provider(indicator, ind_type, *args, **kwargs):
+        return agg.TIProviderResult(provider="virustotal", indicator=indicator,
+                                    indicator_type=ind_type, is_malicious=False,
+                                    risk_level="none")
+
+    _silence_other_providers(monkeypatch)
+    monkeypatch.setattr(ioc_provenance, "ensure_attacker_provenance", alert_evidence)
+    monkeypatch.setattr(agg, "_virustotal_provider", fake_provider)
+    monkeypatch.setattr(agg, "VIRUSTOTAL_API_KEY", "test-key")
+
+    asyncio.run(agg.blueteam_threat_intel_aggregate(
+        agg.ThreatIntelAggregateInput(indicator="140.82.0.86",
+                                      response_format="json")))
+
+    assert attacker_ioc_source("140.82.0.86") == "wazuh_alerts"
+
+
+def test_aggregate_sharing_off_skips_provenance_and_vt(monkeypatch):
+    import asyncio
+    import json
+    from mcp_server.threat_intel import virustotal_consent as policy
+    from mcp_server.tools import ioc_provenance
+    from mcp_server.tools import threat_intel_aggregate as agg
+
+    async def forbidden(kind, indicator):
+        raise AssertionError("sharing is off; no provenance query is needed")
+
+    _silence_other_providers(monkeypatch)
+    monkeypatch.setattr(ioc_provenance, "ensure_attacker_provenance", forbidden)
+    monkeypatch.setattr(policy, "VIRUSTOTAL_IOC_SHARING", False)
+    monkeypatch.setattr(agg, "VIRUSTOTAL_API_KEY", "test-key")
+
+    output = asyncio.run(agg.blueteam_threat_intel_aggregate(
+        agg.ThreatIntelAggregateInput(indicator="140.82.0.86",
+                                      response_format="json")))
+    result = next(r for r in json.loads(output)["results"]
+                  if r["provider"] == "virustotal")
+
+    assert result["error_kind"] == "consent_required"
 
 
 def test_virustotal_provider_without_key_reports_not_configured():
@@ -160,28 +246,31 @@ def test_virustotal_provider_without_key_reports_not_configured():
     assert result.error_kind == "not_configured"
 
 
-def test_virustotal_provider_reports_host_refusal_not_missing_acknowledgement():
+def test_virustotal_provider_reports_sharing_disabled(monkeypatch):
     import asyncio
     from unittest.mock import patch
+    from mcp_server.threat_intel import virustotal_consent as policy
     from mcp_server.tools import threat_intel_aggregate as agg
 
-    with patch.object(agg, "VIRUSTOTAL_API_KEY", "test-key"):
-        result = asyncio.run(agg._virustotal_provider(
-            "140.82.0.86", "IPv4", None, agg.VT_HOST_REFUSAL))
+    with patch.object(agg, "VIRUSTOTAL_API_KEY", "test-key"), \
+            patch.object(policy, "VIRUSTOTAL_IOC_SHARING", False):
+        result = asyncio.run(agg._virustotal_provider("140.82.0.86", "IPv4"))
 
     assert result.error_kind == "consent_required"
-    assert result.error == agg.VT_HOST_REFUSAL
-    assert "acknowledgement is required" not in result.error
+    assert "BLUETEAM_VIRUSTOTAL_IOC_SHARING" in result.error
 
 
-def test_aggregate_surfaces_host_refusal_instead_of_blaming_the_caller(monkeypatch):
+def test_aggregate_runs_virustotal_without_a_host_prompt(monkeypatch):
     import asyncio
     from mcp_server.tools import threat_intel_aggregate as agg
 
-    from mcp_server.threat_intel.virustotal_consent import ConsentDecision
+    calls = []
 
-    async def decline(ctx, message):
-        return ConsentDecision(False, "user_declined")
+    async def vt_provider(indicator, ind_type, *args, **kwargs):
+        calls.append(indicator)
+        return agg.TIProviderResult(provider="virustotal", indicator=indicator,
+                                    indicator_type=ind_type, is_malicious=False,
+                                    risk_level="none")
 
     def stub(name):
         async def provider(*args, **kwargs):
@@ -191,17 +280,16 @@ def test_aggregate_surfaces_host_refusal_instead_of_blaming_the_caller(monkeypat
     for name in ("_crowdsec_provider", "_threatfox_provider", "_otx_provider",
                  "_greynoise_provider", "_abuseipdb_provider"):
         monkeypatch.setattr(agg, name, stub(name.strip("_")))
-    monkeypatch.setattr(agg, "request_ioc_sharing_detailed", decline)
+    monkeypatch.setattr(agg, "_virustotal_provider", vt_provider)
     monkeypatch.setattr(agg, "VIRUSTOTAL_API_KEY", "test-key")
 
     output = asyncio.run(agg.blueteam_threat_intel_aggregate(
         agg.ThreatIntelAggregateInput(
-            indicator="140.82.0.86", acknowledge_ioc_sharing=True,
-            response_format="json"),
+            indicator="140.82.0.86", response_format="json"),
         None))
 
-    assert "host approval was not granted" in output
-    assert "acknowledgement is required" not in output
+    assert calls == ["140.82.0.86"]
+    assert "consent_required" not in output
 
 
 def _http_status_error(status: int):
@@ -209,6 +297,34 @@ def _http_status_error(status: int):
     req = httpx.Request("GET", "https://upstream.example/api")
     return httpx.HTTPStatusError(f"status {status}", request=req,
                                  response=httpx.Response(status, request=req))
+
+
+def test_disabled_enrichment_makes_no_provider_request(monkeypatch):
+    import asyncio
+    import json
+    from mcp_server.tools import threat_intel_aggregate as agg
+
+    calls = []
+
+    async def forbidden(*args, **kwargs):
+        calls.append(1)
+        raise AssertionError("a disabled provider must not reach the network")
+
+    from mcp_server.core import external_egress
+    monkeypatch.setattr(external_egress, "EXTERNAL_ENRICHMENT_ENABLED", False)
+    monkeypatch.setattr(agg, "_api_call", forbidden)
+    for name in ("CROWDSEC_API_KEY_ENV", "OTX_API_KEY_ENV", "THREATFOX_API_KEY_ENV"):
+        monkeypatch.setenv(getattr(agg, name), "test-key")
+    monkeypatch.setattr(agg, "VIRUSTOTAL_API_KEY", "test-key")
+
+    output = asyncio.run(agg.blueteam_threat_intel_aggregate(
+        agg.ThreatIntelAggregateInput(indicator="8.8.8.8",
+                                      response_format="json")))
+    data = json.loads(output)
+
+    assert {row["error_kind"] for row in data["results"]} == {"disabled"}
+    assert calls == []
+    assert data["providers_total"] == 0
 
 
 def test_classifier_maps_every_error_kind():

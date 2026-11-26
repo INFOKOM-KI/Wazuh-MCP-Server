@@ -45,6 +45,36 @@ _BLOCKED_NETWORK_ATTEMPTS: list[str] = []
 
 
 @pytest.fixture(autouse=True)
+def _external_egress_on(monkeypatch):
+    """Provider tests run with the switch on; it defaults to off in production."""
+    from mcp_server.core import external_egress
+
+    monkeypatch.setattr(external_egress, "EXTERNAL_ENRICHMENT_ENABLED", True)
+
+
+@pytest.fixture(autouse=True)
+def _vt_sharing_on(monkeypatch):
+    """Provider-path tests run with sharing on; the switch is opt-in in production.
+
+    A test that asserts the off behavior patches ``VIRUSTOTAL_IOC_SHARING`` to
+    False itself, which runs after this fixture.
+    """
+    from mcp_server.threat_intel import virustotal_consent as policy
+
+    monkeypatch.setattr(policy, "VIRUSTOTAL_IOC_SHARING", True)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_attacker_registry():
+    """The registry is process-global; a leftover entry would authorize a lookup."""
+    from mcp_server.core.attacker_registry import clear_attacker_registry
+
+    clear_attacker_registry()
+    yield
+    clear_attacker_registry()
+
+
+@pytest.fixture(autouse=True)
 def _offline_wazuh_indexer(monkeypatch):
     """Make an unmocked Indexer call fail locally, never by DNS resolution.
     Tests that need a response replace ``_wazuh_indexer_post`` or ``_api_call``.
@@ -175,35 +205,3 @@ def config_singleton():
     return Config.from_env()
 
 
-class ConsentContext:
-    """Minimal FastMCP Context stand-in for tool-level consent tests.
-
-    Exposes `session.elicit_form`, the path production code uses to keep the
-    raw form content: an empty form must stay distinguishable from approve=false.
-    """
-
-    def __init__(self, approve: bool = True, action: str | None = None,
-                 content=None) -> None:
-        from types import SimpleNamespace
-
-        self.approve = approve
-        self.action = action or ("accept" if approve else "decline")
-        self.content = content
-        self.messages: list[str] = []
-        self.session = SimpleNamespace(elicit_form=self._elicit_form,
-                                       client_params=None)
-        self._ns = SimpleNamespace
-
-    async def _elicit_form(self, message, requestedSchema, related_request_id=None):
-        self.messages.append(message)
-        content = self.content if self.content is not None else (
-            {"approve": self.approve} if self.action == "accept" else None)
-        return self._ns(action=self.action, content=content)
-
-    async def elicit(self, message, schema):
-        return await self._elicit_form(message, None)
-
-
-@pytest.fixture
-def consent_approval():
-    return ConsentContext(approve=True)

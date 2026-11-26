@@ -84,6 +84,11 @@ async def stealer_log_check(params: StealerLogInput) -> str:
     2. *JSON output*:
        ``stealer_log_check(email="user@example.com", response_format="json")``
     """
+    from mcp_server.core.external_egress import ExternalEgressDisabled, egress_check
+    try:
+        egress_check()
+    except ExternalEgressDisabled as exc:
+        return json.dumps({"error": str(exc), "error_kind": "disabled"})
     api_key = os.environ.get(HUDSONROCK_API_KEY_ENV, "")
     if api_key:
         # Full API - requires key, different auth header

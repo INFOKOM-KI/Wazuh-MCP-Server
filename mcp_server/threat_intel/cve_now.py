@@ -160,6 +160,8 @@ async def _rpc(tool: str, arguments: dict, *, ttl: float) -> dict:
         CveNowError: the server reported any other error, or returned no JSON.
         httpx.HTTPStatusError, httpx.TimeoutException, CircuitOpenError: transport.
     """
+    from mcp_server.core.external_egress import egress_check
+    egress_check()
     key = f"{tool}:{json.dumps(arguments, sort_keys=True, default=str)}"
     cached = cache_get("cve_now", key)
     if cached is not None:

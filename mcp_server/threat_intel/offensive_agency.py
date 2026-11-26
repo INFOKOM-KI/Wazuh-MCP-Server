@@ -395,6 +395,8 @@ def _require_envelope(payload: dict[str, Any], context: str) -> None:
 
 async def lookup(queries: list[str]) -> dict[str, Any]:
     """POST one normalized IOC batch. Caller decides what is sent."""
+    from mcp_server.core.external_egress import egress_check
+    egress_check()
     if not queries:
         return {}
     key = _cache_key("lookup", queries)

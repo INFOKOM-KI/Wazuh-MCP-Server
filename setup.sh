@@ -594,6 +594,9 @@ config_template() {
 # export BLUETEAM_VIRUSTOTAL_BUDGET_HOURS="8"
 # export BLUETEAM_VIRUSTOTAL_AUTOINIT="true"   # requires BUDGET > 0; the wrapper enables it when armed
 # export BLUETEAM_VIRUSTOTAL_AUTO_REARM="true"  # renew an expired window; false = operator rearm only
+# export BLUETEAM_VIRUSTOTAL_IOC_SHARING="false" # opt-in: true sends verified attacker IOCs to VirusTotal
+# export BLUETEAM_EXTERNAL_ENRICHMENT="false"    # opt-in: true allows outbound provider lookups
+# export BLUETEAM_VIRUSTOTAL_ATTRIBUTION_EXCLUDE=""  # IPs/CIDRs never sent to VirusTotal (CDN, WAF, NAT)
 # export BLUETEAM_VIRUSTOTAL_STATE="/var/log/blue-team-mcp/virustotal_quota.db"
 # export VIRUSTOTAL_ALLOWED_HOSTS="www.virustotal.com"
 # export VIRUSTOTAL_MAX_RESPONSE_BYTES="2000000"
@@ -1194,6 +1197,9 @@ else
 fi
 unset _vt_budget
 export BLUETEAM_VIRUSTOTAL_AUTO_REARM="${BLUETEAM_VIRUSTOTAL_AUTO_REARM:-true}"
+export BLUETEAM_VIRUSTOTAL_IOC_SHARING="${BLUETEAM_VIRUSTOTAL_IOC_SHARING:-false}"
+export BLUETEAM_EXTERNAL_ENRICHMENT="${BLUETEAM_EXTERNAL_ENRICHMENT:-false}"
+export BLUETEAM_VIRUSTOTAL_ATTRIBUTION_EXCLUDE="${BLUETEAM_VIRUSTOTAL_ATTRIBUTION_EXCLUDE:-}"
 export VIRUSTOTAL_ALLOWED_HOSTS="${VIRUSTOTAL_ALLOWED_HOSTS:-www.virustotal.com}"
 export VIRUSTOTAL_MAX_RESPONSE_BYTES="${VIRUSTOTAL_MAX_RESPONSE_BYTES:-2000000}"
 export VIRUSTOTAL_CACHE_TTL="${VIRUSTOTAL_CACHE_TTL:-3600}"

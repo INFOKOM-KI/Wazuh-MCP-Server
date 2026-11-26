@@ -25,6 +25,8 @@ def _get_crowdsec_api_key() -> str:
 
 
 async def _crowdsec_request(path: str) -> dict[str, Any]:
+    from mcp_server.core.external_egress import egress_check
+    egress_check()
     cached = cache_get("crowdsec", path)
     if cached is not None:
         return cached

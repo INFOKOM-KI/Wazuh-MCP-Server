@@ -24,12 +24,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mcp.server.fastmcp import Context
 from mcp_server import (mcp, CROWDSEC_API_KEY_ENV, OTX_API_KEY_ENV,
                         THREATFOX_API_KEY_ENV, VIRUSTOTAL_API_KEY)
+from mcp_server.core.external_egress import egress_enabled
 from mcp_server.core.http_client import (_api_call, _classify_api_error,
                                          normalize_public_ip)
-from mcp_server.threat_intel.virustotal import (classify_report, issue_consent,
-                                                normalize_domain, normalize_hash)
-from mcp_server.threat_intel.virustotal_consent import (consent_message,
-                                                        request_ioc_sharing_detailed)
+from mcp_server.threat_intel.virustotal import classify_report
 from mcp_server.core.audit import _audit_log, _truncate_if_needed
 from mcp_server.threat_intel.greynoise import _NO_DATA_MESSAGE, _greynoise_lookup
 from mcp_server.threat_intel.otx import (_classify_indicator, _normalize_adversary,
@@ -45,20 +43,19 @@ ErrorKind = Literal[
     "rate_limited", "cooldown", "not_configured", "unsupported_type",
     "upstream_error", "timeout", "auth_error", "not_found", "bad_request",
     "circuit_open", "plan_limit", "budget_closed", "not_armed", "arm_expired",
-    "consent_required",
-    "budget_exhausted", "daily_exhausted", "storage_unavailable",
+    "consent_required", "not_attacker_ioc", "provenance_unchecked", "disabled",
+    "excluded_infrastructure", "budget_exhausted", "daily_exhausted", "storage_unavailable",
     "state_corrupt", "state_missing", "policy_mismatch", "state_exists",
     "config_invalid",
 ]
 _ERROR_KINDS = frozenset(get_args(ErrorKind))
-VT_HOST_REFUSAL = (
-    "host approval was not granted; the client must support MCP elicitation on "
-    "protocol 2025-06-18 or 2025-11-25, and the operator must approve the prompt")
+_VT_KIND_BY_TYPE = {"IPv4": "ip_addresses", "IPv6": "ip_addresses",
+                    "domain": "domains", "file": "files"}
 _LOCAL_REFUSAL_KINDS = frozenset({
     "not_configured", "unsupported_type", "bad_request", "circuit_open",
     "plan_limit", "budget_closed", "not_armed", "arm_expired", "consent_required",
-    "budget_exhausted",
-    "daily_exhausted", "storage_unavailable", "state_corrupt", "state_missing",
+    "not_attacker_ioc", "provenance_unchecked", "disabled",
+    "excluded_infrastructure", "budget_exhausted", "daily_exhausted", "storage_unavailable", "state_corrupt", "state_missing",
     "policy_mismatch", "state_exists", "config_invalid", "cooldown",
 })
 
@@ -122,12 +119,6 @@ class ThreatIntelAggregateInput(BaseModel):
         description="IOC to analyze: IP address, domain, or file hash (MD5/SHA1/SHA256).",
     )
     response_format: Literal["markdown", "json"] = Field(default="markdown")
-    acknowledge_ioc_sharing: bool = Field(
-        default=False,
-        description=("Request host confirmation before querying VirusTotal. This flag is a "
-                     "request to prompt, not proof of human consent; the MCP host must return "
-                     "an explicit approval. Default false."),
-    )
 
     @field_validator("indicator")
     @classmethod
@@ -144,7 +135,22 @@ class ThreatIntelAggregateInput(BaseModel):
 
 
 # Provider adapters (each returns TIProviderResult, never raises)
+def _enrichment_disabled(provider: str, indicator: str,
+                         ind_type: str) -> TIProviderResult | None:
+    """Return the local refusal when the operator disabled external enrichment."""
+    if egress_enabled():
+        return None
+    return TIProviderResult(provider=provider, indicator=indicator,
+                            indicator_type=ind_type,
+                            error="external enrichment is disabled "
+                                  "(BLUETEAM_EXTERNAL_ENRICHMENT=false)",
+                            error_kind="disabled")
+
+
 async def _crowdsec_provider(indicator: str, ind_type: str) -> TIProviderResult:
+    blocked = _enrichment_disabled("crowdsec", indicator, ind_type)
+    if blocked:
+        return blocked
     configured = bool(os.environ.get(CROWDSEC_API_KEY_ENV))
     if ind_type != "IPv4" or not configured:
         return TIProviderResult(provider="crowdsec", indicator=indicator,
@@ -174,6 +180,9 @@ async def _crowdsec_provider(indicator: str, ind_type: str) -> TIProviderResult:
 
 
 async def _threatfox_provider(indicator: str, ind_type: str) -> TIProviderResult:
+    blocked = _enrichment_disabled("threatfox", indicator, ind_type)
+    if blocked:
+        return blocked
     configured = bool(os.environ.get(THREATFOX_API_KEY_ENV))
     if not configured:
         return TIProviderResult(provider="threatfox", indicator=indicator,
@@ -217,6 +226,9 @@ async def _threatfox_provider(indicator: str, ind_type: str) -> TIProviderResult
 
 
 async def _otx_provider(indicator: str, ind_type: str) -> TIProviderResult:
+    blocked = _enrichment_disabled("otx", indicator, ind_type)
+    if blocked:
+        return blocked
     configured = bool(os.environ.get(OTX_API_KEY_ENV))
     if not configured:
         return TIProviderResult(provider="otx", indicator=indicator,
@@ -286,6 +298,9 @@ async def _otx_provider(indicator: str, ind_type: str) -> TIProviderResult:
 
 
 async def _greynoise_provider(indicator: str, ind_type: str) -> TIProviderResult:
+    blocked = _enrichment_disabled("greynoise", indicator, ind_type)
+    if blocked:
+        return blocked
     if ind_type != "IPv4":
         return TIProviderResult(provider="greynoise", indicator=indicator,
                                 indicator_type=ind_type, error="unsupported type",
@@ -319,6 +334,9 @@ async def _greynoise_provider(indicator: str, ind_type: str) -> TIProviderResult
 
 
 async def _abuseipdb_provider(indicator: str, ind_type: str) -> TIProviderResult:
+    blocked = _enrichment_disabled("abuseipdb", indicator, ind_type)
+    if blocked:
+        return blocked
     # /check accepts IPv4 and IPv6 alike; only the value differs.
     if ind_type not in ("IPv4", "IPv6"):
         return TIProviderResult(provider="abuseipdb", indicator=indicator,
@@ -346,7 +364,6 @@ async def _abuseipdb_provider(indicator: str, ind_type: str) -> TIProviderResult
 
 
 async def _virustotal_provider(indicator: str, ind_type: str,
-                               consent_token: str | None = None,
                                denied_reason: str | None = None,
                                denial_kind: str | None = None) -> TIProviderResult:
     """Map a VirusTotal report onto one provider result.
@@ -358,25 +375,22 @@ async def _virustotal_provider(indicator: str, ind_type: str,
     or downgrades the verdict. Community reputation stays in `detail` and does
     not feed either field.
     """
-    vt_types = {"file": "files", "domain": "domains",
-                "IPv4": "ip_addresses", "IPv6": "ip_addresses"}
+    blocked = _enrichment_disabled("virustotal", indicator, ind_type)
+    if blocked:
+        return blocked
     configured = bool(VIRUSTOTAL_API_KEY)
-    if ind_type not in vt_types or not configured:
+    if ind_type not in _VT_KIND_BY_TYPE or not configured:
         return TIProviderResult(provider="virustotal", indicator=indicator,
                                 indicator_type=ind_type,
                                 error="not configured" if not configured else "unsupported type",
                                 error_kind="not_configured" if not configured else "unsupported_type")
-    # The host was asked and declined; lookup() would blame the caller instead.
-    if consent_token is None and denied_reason:
+    if denied_reason:
         return TIProviderResult(provider="virustotal", indicator=indicator,
                                 indicator_type=ind_type, error=denied_reason,
-                                error_kind="consent_required",
-                                detail=({"consent_reason": denial_kind}
-                                        if denial_kind else {}))
+                                error_kind=denial_kind)
     from mcp_server.threat_intel.virustotal import VirusTotalError, lookup
     try:
-        data = await lookup(vt_types[ind_type], indicator,
-                            consent_token=consent_token)
+        data = await lookup(_VT_KIND_BY_TYPE[ind_type], indicator)
         mal = data["malicious"]
         complete = bool(data.get("stats_complete", False))
         total = data.get("total_engines")
@@ -384,6 +398,8 @@ async def _virustotal_provider(indicator: str, ind_type: str,
         # One engine flagging the IP is a detection, not a low-risk neighbour.
         # An incomplete or suspicious-only report is never a clean verdict.
         risk, is_malicious, verdict = classify_report(data)
+        from mcp_server.tools.ioc_provenance import attribution_summary
+        attribution = attribution_summary(indicator)
         return TIProviderResult(
             provider="virustotal", indicator=indicator, indicator_type=ind_type,
             risk_level=risk, reputation_score=score if complete else None,
@@ -412,6 +428,7 @@ async def _virustotal_provider(indicator: str, ind_type: str,
                 "cache_age_seconds": data.get("cache_age_seconds"),
                 "cache_ttl_seconds": data.get("cache_ttl_seconds"),
                 "cache_expired": data.get("cache_expired"),
+                **({"attribution": attribution} if attribution else {}),
             },
         )
     except VirusTotalError as e:
@@ -504,16 +521,6 @@ def _malicious_mark(is_malicious: bool | None) -> str:
     return "✅" if is_malicious else "❌"
 
 
-def _vt_consent_target(ind_type: str, indicator: str) -> tuple[str, str] | None:
-    if ind_type in ("IPv4", "IPv6"):
-        return "ip_addresses", normalize_public_ip(indicator)
-    if ind_type == "domain":
-        return "domains", normalize_domain(indicator)
-    if ind_type == "file":
-        return "files", normalize_hash(indicator)
-    return None
-
-
 # MCP Tool
 @mcp.tool(
     name="blueteam_threat_intel_aggregate",
@@ -534,24 +541,37 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
     **Worked Examples**
 
     1. *Full aggregation for a suspicious IP*:
-       ``blueteam_threat_intel_aggregate(indicator="140.82.0.86", acknowledge_ioc_sharing=true)``
+       ``blueteam_threat_intel_aggregate(indicator="140.82.0.86")``
 
     2. *Aggregate a domain*:
-       ``blueteam_threat_intel_aggregate(indicator="evil-c2.example.com", acknowledge_ioc_sharing=true)``
+       ``blueteam_threat_intel_aggregate(indicator="evil-c2.example.com")``
 
     3. *Aggregate a file hash*:
-       ``blueteam_threat_intel_aggregate(indicator="<sha256>", acknowledge_ioc_sharing=true)``
+       ``blueteam_threat_intel_aggregate(indicator="<sha256>")``
 
-    VirusTotal is queried only when ``acknowledge_ioc_sharing=true`` requests
-    host confirmation and the MCP host returns an explicit approval. The boolean
-    alone is not consent. Queried indicators are added to VirusTotal's community
-    dataset. Without host approval, VT returns ``consent_required`` with the
-    refusal reason as a ``[reason=...]`` token plus ``detail.consent_reason``
-    (``context_missing``, ``unsupported_protocol``,
-    ``elicitation_capability_missing``, ``elicitation_error``,
-    ``approval_not_given``, ``empty_content``, ``approval_field_missing``,
-    ``user_declined``, ``user_cancelled``, ``invalid_approval_response``), and no
-    request or quota reservation is made.
+    Every provider call is gated by ``BLUETEAM_EXTERNAL_ENRICHMENT`` (default
+    true); ``false`` returns ``error_kind="disabled"`` and sends nothing.
+    VirusTotal runs only when ``VIRUSTOTAL_API_KEY`` is set and an
+    administrator has enabled ``BLUETEAM_VIRUSTOTAL_IOC_SHARING`` (off by
+    default). There is no per-indicator dialog, so parallel tool calls never
+    contend for one. Queried indicators are added to VirusTotal's community
+    dataset; the call is the operator's decision to share.
+
+    Supported types and provenance:
+
+    * Public IPv4/IPv6. Wazuh must show the address as an alert source, not a
+      destination, at level 7 or higher, outside a noise group, and at level 10,
+      with a MITRE technique, or in an attack group. A private, loopback,
+      link-local, CGNAT, ULA, reserved, or unspecified address returns
+      ``bad_request``; an unverified public address returns
+      ``not_attacker_ioc``; an unreachable Indexer returns
+      ``provenance_unchecked``. None of them sends a request or spends quota.
+    * Domains, only with an analyst verdict or a trusted tool finding;
+      ``data.domain`` on a web alert is usually the monitored host.
+    * File hashes, only with an existing trusted finding. The Wazuh schema has no
+      verified attacker-side hash field.
+
+    With sharing off, VT returns ``consent_required``.
 
     **Error Handling**: Providers without API keys are skipped and reported in
     ``errors[]``. Each result also carries ``error_kind`` for JSON consumers. Upstream
@@ -573,25 +593,19 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
     _audit_log("blueteam_threat_intel_aggregate", {"indicator": params.indicator})
     ind_type = _classify_indicator(params.indicator)
 
-    vt_token = None
+    # VirusTotal accepts only an attacker IOC that Wazuh alert data contains.
+    # The registry gate inside lookup() repeats this check before transport.
     vt_denial: str | None = None
     vt_denial_kind: str | None = None
-    if params.acknowledge_ioc_sharing and VIRUSTOTAL_API_KEY:
-        try:
-            consent_target = _vt_consent_target(ind_type, params.indicator)
-        except ValueError:
-            consent_target = None
-        if consent_target is None:
-            vt_denial = "no VirusTotal consent target for this indicator type"
-        else:
-            vt_kind, vt_value = consent_target
-            decision = await request_ioc_sharing_detailed(
-                ctx, consent_message(vt_kind, vt_value))
-            if decision.approved:
-                vt_token = issue_consent(vt_kind, vt_value)
-            else:
-                vt_denial = f"{VT_HOST_REFUSAL} [reason={decision.reason}]"
-                vt_denial_kind = decision.reason
+    vt_kind = _VT_KIND_BY_TYPE.get(ind_type)
+    from mcp_server.threat_intel.virustotal_consent import ioc_sharing_enabled
+    if egress_enabled() and VIRUSTOTAL_API_KEY and vt_kind and ioc_sharing_enabled():
+        from mcp_server.tools.ioc_provenance import (ensure_attacker_provenance,
+                                                     provenance_refusal)
+        source, detail = await ensure_attacker_provenance(vt_kind,
+                                                          params.indicator)
+        if source is None:
+            vt_denial_kind, vt_denial = provenance_refusal(detail)
 
     # Query all applicable providers concurrently
     tasks = [
@@ -600,7 +614,7 @@ async def blueteam_threat_intel_aggregate(params: ThreatIntelAggregateInput,
         _otx_provider(params.indicator, ind_type),
         _greynoise_provider(params.indicator, ind_type),
         _abuseipdb_provider(params.indicator, ind_type),
-        _virustotal_provider(params.indicator, ind_type, vt_token, vt_denial,
+        _virustotal_provider(params.indicator, ind_type, vt_denial,
                              vt_denial_kind),
     ]
     results: list[TIProviderResult] = await asyncio.gather(*tasks)

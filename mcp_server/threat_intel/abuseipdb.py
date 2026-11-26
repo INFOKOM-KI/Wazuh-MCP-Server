@@ -871,6 +871,9 @@ async def _api_call(method: str, url: str, *, client_name: str | None = None,
 async def _request(method: str, path: str, *, limiter, max_retries: int = 1,
                    params: dict | None = None, data: dict | None = None):
     # Last egress boundary: before key lookup, rate limiting, or any HTTP call.
+    if not is_report_request(method, path):
+        from mcp_server.core.external_egress import egress_check
+        egress_check()
     if is_report_request(method, path):
         try:
             data = _report_egress_payload(data)

@@ -61,6 +61,7 @@ config.env
 # and vendor verdicts, and the atomic-rewrite temp file lands beside it.
 rapidapi_state.jsonl*
 *.jsonl.tmp
+*.jsonl.lock
 
 # VirusTotal quota state (BLUETEAM_VIRUSTOTAL_STATE). Holds the authorized policy,
 # arm window, request counts and cooldown. No API key, but it is runtime state and

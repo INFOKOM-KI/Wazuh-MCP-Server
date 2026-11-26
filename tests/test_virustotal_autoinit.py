@@ -39,14 +39,15 @@ def _wire(monkeypatch, tmp_path, autoinit):
     monkeypatch.setattr(vt, "VIRUSTOTAL_API_KEY", "test-key")
     monkeypatch.setattr(vt, "_api_call", fake_api_call)
     vt.reset_state()
+    from mcp_server.core.attacker_registry import register_attacker_ioc
+    register_attacker_ioc("1.1.1.1", source="wazuh_alerts", evidence={"decision": "accepted", "via": "wazuh_alerts", "alert_id": "test-alert", "rule_id": "100200", "rule_level": 12, "groups": ["attack"], "matched_field": "data.srcip", "signal": "attack_group"})
     return state
 
 
 def test_autoinit_creates_the_state_on_the_first_request(monkeypatch, tmp_path):
     state = _wire(monkeypatch, tmp_path, autoinit=True)
-    token = vt.issue_consent("ip_addresses", "1.1.1.1")
 
-    result = asyncio.run(vt.lookup("ip_addresses", "1.1.1.1", consent_token=token))
+    result = asyncio.run(vt.lookup("ip_addresses", "1.1.1.1"))
 
     assert result["malicious"] == 0
     assert state.exists()
@@ -56,10 +57,9 @@ def test_autoinit_creates_the_state_on_the_first_request(monkeypatch, tmp_path):
 
 def test_autoinit_off_still_fails_closed(monkeypatch, tmp_path):
     state = _wire(monkeypatch, tmp_path, autoinit=False)
-    token = vt.issue_consent("ip_addresses", "1.1.1.1")
 
     with pytest.raises(vt.VirusTotalError) as err:
-        asyncio.run(vt.lookup("ip_addresses", "1.1.1.1", consent_token=token))
+        asyncio.run(vt.lookup("ip_addresses", "1.1.1.1"))
 
     assert err.value.kind == "state_missing"
     assert str(state) in err.value.message
@@ -104,7 +104,6 @@ def test_failed_autoinit_is_a_provider_error_not_a_crash(monkeypatch, tmp_path):
     from mcp_server.threat_intel import virustotal_quota as quota_mod
 
     _wire(monkeypatch, tmp_path, autoinit=True)
-    token = vt.issue_consent("ip_addresses", "1.1.1.1")
 
     def broken_init(self):
         raise quota_mod.VirusTotalQuotaError(
@@ -114,7 +113,7 @@ def test_failed_autoinit_is_a_provider_error_not_a_crash(monkeypatch, tmp_path):
     monkeypatch.setattr(quota_mod.VirusTotalQuota, "auto_initialize", broken_init)
 
     with pytest.raises(vt.VirusTotalError) as err:
-        asyncio.run(vt.lookup("ip_addresses", "1.1.1.1", consent_token=token))
+        asyncio.run(vt.lookup("ip_addresses", "1.1.1.1"))
     assert err.value.kind == "storage_unavailable"
 
 
@@ -254,8 +253,7 @@ def test_audit_failure_does_not_block_a_valid_request(monkeypatch, tmp_path):
         raise RuntimeError("audit sink down")
 
     monkeypatch.setattr(audit, "_audit_log", broken)
-    token = vt.issue_consent("ip_addresses", "1.1.1.1")
-    result = asyncio.run(vt.lookup("ip_addresses", "1.1.1.1", consent_token=token))
+    result = asyncio.run(vt.lookup("ip_addresses", "1.1.1.1"))
     assert result["malicious"] == 0
 
 
@@ -266,13 +264,13 @@ def test_autoinit_audit_payload_names_only_the_state(monkeypatch, tmp_path):
     seen = []
     monkeypatch.setattr(audit, "_audit_log",
                         lambda name, payload, *a, **k: seen.append((name, payload)))
-    token = vt.issue_consent("ip_addresses", "1.1.1.1")
-    asyncio.run(vt.lookup("ip_addresses", "1.1.1.1", consent_token=token))
+    asyncio.run(vt.lookup("ip_addresses", "1.1.1.1"))
     assert seen == [("virustotal_quota_autoinit",
                      {"state": str(tmp_path / "vt.db")})]
 
 
-def test_no_consent_means_no_initialization_and_no_request(monkeypatch, tmp_path):
+def test_sharing_off_means_no_initialization_and_no_request(monkeypatch, tmp_path):
+    from mcp_server.threat_intel import virustotal_consent as policy
     sent = []
 
     async def forbidden(*args, **kwargs):
@@ -281,6 +279,7 @@ def test_no_consent_means_no_initialization_and_no_request(monkeypatch, tmp_path
 
     _wire(monkeypatch, tmp_path, autoinit=True)
     monkeypatch.setattr(vt, "_api_call", forbidden)
+    monkeypatch.setattr(policy, "VIRUSTOTAL_IOC_SHARING", False)
 
     with pytest.raises(vt.VirusTotalError) as err:
         asyncio.run(vt.lookup("ip_addresses", "1.1.1.1"))

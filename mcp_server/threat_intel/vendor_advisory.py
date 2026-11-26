@@ -212,6 +212,8 @@ async def _fetch_ubuntu(cve_id: str) -> dict:
 
 
 async def get_vendor_advisory(cve_id: str) -> dict:
+    from mcp_server.core.external_egress import egress_check
+    egress_check()
     """Fetch MSRC + Red Hat + Ubuntu advisories concurrently. Each vendor is a
     dict (empty dict when that vendor does not track the CVE)."""
     msrc, redhat, ubuntu = await asyncio.gather(

@@ -61,7 +61,11 @@ async def blueteam_mark_investigated(params: MarkInvestigatedInput) -> str:
     """
     _audit_log("blueteam_mark_investigated", {"srcip": params.srcip, "verdict": params.verdict})
     if params.verdict == "true_positive":
-        register_attacker_ioc(params.srcip, source="verdict")  # confirmed attacker - keep IOC unmasked
+        register_attacker_ioc(  # confirmed attacker - keep IOC unmasked
+            params.srcip, source="verdict",
+            evidence={"decision": "accepted", "via": "verdict",
+                      "verdict": params.verdict,
+                      "case_id": params.case_id or ""})
     if params.verdict == "false_positive":
         register_false_positive(params.srcip, source="verdict", reason=params.notes)  # auto-suppress in 3-Sum
     if params.case_id:

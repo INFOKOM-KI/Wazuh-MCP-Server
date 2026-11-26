@@ -10,6 +10,7 @@ All defaults are production-safe: localhost bind, TLS on, redaction on.
 from __future__ import annotations
 import os
 import re
+import ipaddress
 import math
 import logging
 from dataclasses import dataclass, field
@@ -153,6 +154,9 @@ class ThreatIntelConfig:
     virustotal_state_path: str = "/var/log/blue-team-mcp/virustotal_quota.db"
     virustotal_autoinit: bool = False          # opt-in: create missing state at first request
     virustotal_auto_rearm: bool = True         # renew an expired arm window from the stored policy
+    virustotal_ioc_sharing: bool = False       # opt-in: allow verified attacker IOCs to leave
+    external_enrichment_enabled: bool = False  # opt-in: allow any outbound provider lookup
+    virustotal_attribution_exclude: str = ""  # comma-separated IPs/CIDRs never sent to VT
     virustotal_allowed_hosts: str = "www.virustotal.com"
     virustotal_max_response_bytes: int = 2_000_000
     # Netra
@@ -232,6 +236,12 @@ class ThreatIntelConfig:
                 os.environ.get("BLUETEAM_VIRUSTOTAL_AUTOINIT", "false"), False),
             virustotal_auto_rearm=_bool(
                 os.environ.get("BLUETEAM_VIRUSTOTAL_AUTO_REARM", "true"), True),
+            virustotal_ioc_sharing=_bool(
+                os.environ.get("BLUETEAM_VIRUSTOTAL_IOC_SHARING", "false"), False),
+            external_enrichment_enabled=_bool(
+                os.environ.get("BLUETEAM_EXTERNAL_ENRICHMENT", "false"), False),
+            virustotal_attribution_exclude=os.environ.get(
+                "BLUETEAM_VIRUSTOTAL_ATTRIBUTION_EXCLUDE", ""),
             virustotal_allowed_hosts=os.environ.get(
                 "VIRUSTOTAL_ALLOWED_HOSTS", "www.virustotal.com"),
             virustotal_max_response_bytes=int(os.environ.get(
@@ -306,6 +316,16 @@ class ThreatIntelConfig:
             raise ConfigurationError("BLUETEAM_VIRUSTOTAL_STATE must be an absolute path")
         if self.virustotal_max_response_bytes <= 0:
             raise ConfigurationError("VIRUSTOTAL_MAX_RESPONSE_BYTES must be > 0")
+        for token in (self.virustotal_attribution_exclude or "").split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                ipaddress.ip_network(token, strict=False)
+            except ValueError as exc:
+                raise ConfigurationError(
+                    "BLUETEAM_VIRUSTOTAL_ATTRIBUTION_EXCLUDE must be a comma-separated "
+                    f"list of IPs or CIDRs; {token!r} is invalid ({exc})") from exc
         try:
             validate_https_base_url(
                 self.virustotal_base_url, self.virustotal_allowed_hosts,
@@ -1464,10 +1484,11 @@ class Config:
             logger.warning("VIRUSTOTAL_API_KEY not set - VirusTotal lookups disabled.")
         else:
             logger.info(
-                "VirusTotal budget: %d per %.1fh, auto_rearm=%s, state=%s.",
+                "VirusTotal budget: %d per %.1fh, auto_rearm=%s, ioc_sharing=%s, state=%s.",
                 self.threat_intel.virustotal_budget,
                 self.threat_intel.virustotal_budget_hours,
                 self.threat_intel.virustotal_auto_rearm,
+                self.threat_intel.virustotal_ioc_sharing,
                 self.threat_intel.virustotal_state_path)
         if not self.threat_intel.rapidapi_key:
             logger.warning("RAPIDAPI_KEY not set - RapidAPI lookups (IP blacklist / IOC search / breach check) disabled.")

@@ -26,9 +26,6 @@ from mcp_server.wazuh.indexer import _wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 from mcp_server.threat_intel._cache import get_limiter
-from mcp_server.threat_intel.virustotal import issue_consent
-from mcp_server.threat_intel.virustotal_consent import (consent_message,
-                                                        request_ioc_sharing_detailed)
 
 # Per-provider outbound lookup spacing (Netra/Argus 30s, Sangfor 5s).
 # max_concurrent=1 serializes requests so min_interval is strictly enforced.
@@ -100,11 +97,6 @@ class VirusTotalHashInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=False, extra="forbid")
     hash: str = Field(..., max_length=64, description="File hash (MD5/SHA1/SHA256)")
     response_format: str = Field(default="markdown", description="'markdown' or 'json'")
-    acknowledge_ioc_sharing: bool = Field(
-        default=False,
-        description=("Request host confirmation before sending the hash to VirusTotal. "
-                     "This flag is a request to prompt, not proof of human consent. Default false."),
-    )
 
     @field_validator("hash")
     @classmethod
@@ -125,7 +117,6 @@ async def blueteam_lookup_hash_virustotal(params: VirusTotalHashInput,
     Args:
         params.hash: MD5, SHA-1, or SHA-256 hexadecimal digest.
         params.response_format: 'markdown' (default) or 'json'.
-        params.acknowledge_ioc_sharing: requests host confirmation; it is not proof of consent.
 
     Returns:
         Engine counts, detection percentage, community reputation, and available
@@ -137,11 +128,10 @@ async def blueteam_lookup_hash_virustotal(params: VirusTotalHashInput,
 
     Examples:
         1. SHA-256 in Markdown:
-           ``blueteam_lookup_hash_virustotal(hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-           acknowledge_ioc_sharing=True)``
+           ``blueteam_lookup_hash_virustotal(hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")``
         2. MD5 in JSON:
            ``blueteam_lookup_hash_virustotal(hash="44d88612fea8a8f36de82e1278abb02f",
-           response_format="json", acknowledge_ioc_sharing=True)``
+           response_format="json")``
         3. Malformed or path-like value:
            ``blueteam_lookup_hash_virustotal(hash="../../domains/example.com")``
            returns a validation error before any request.
@@ -157,26 +147,29 @@ async def blueteam_lookup_hash_virustotal(params: VirusTotalHashInput,
     processes; the TTL cache is process-local and does not survive a restart.
 
     Privacy: the hash leaves the host and VirusTotal adds the queried indicator
-    to its community dataset. Send only indicators the organization is authorized
-    to share and set ``acknowledge_ioc_sharing=true``.
+    to its community dataset. Sharing is standing operator consent
+    (``BLUETEAM_VIRUSTOTAL_IOC_SHARING``, off by default, enabled by an
+    administrator); there is no per-call dialog, so a parallel call cannot
+    contend for one. Provenance: a hash has no verified attacker-side field in
+    the Wazuh schema, so the tool refuses with ``not_attacker_ioc`` unless an
+    analyst verdict or a trusted tool recorded it first. Send only indicators
+    the organization is authorized to share.
     """
     _audit_log("blueteam_lookup_hash_virustotal", {"hash": params.hash})
     from mcp_server import VIRUSTOTAL_API_KEY
     if not VIRUSTOTAL_API_KEY:
         raise ThreatIntelError("[virustotal] not_configured: VIRUSTOTAL_API_KEY is not set")
     from mcp_server.threat_intel.virustotal import VirusTotalError, lookup
-    if not params.acknowledge_ioc_sharing:
-        raise ThreatIntelError(
-            "[virustotal] consent_required: set acknowledge_ioc_sharing=true to request host approval")
-    decision = await request_ioc_sharing_detailed(
-        ctx, consent_message("files", params.hash))
-    if not decision.approved:
-        raise ThreatIntelError(
-            "[virustotal] consent_required: host approval was not granted "
-            f"[reason={decision.reason}]")
+    from mcp_server.threat_intel.virustotal_consent import ioc_sharing_enabled
+    from mcp_server.tools.ioc_provenance import (ensure_attacker_provenance,
+                                                 provenance_refusal)
+    if ioc_sharing_enabled():
+        verified, detail = await ensure_attacker_provenance("files", params.hash)
+        if verified is None:
+            kind, message = provenance_refusal(detail)
+            raise ThreatIntelError(f"[virustotal] {kind}: {message}")
     try:
-        data = await lookup("files", params.hash,
-                            consent_token=issue_consent("files", params.hash))
+        data = await lookup("files", params.hash)
     except VirusTotalError as e:
         raise ThreatIntelError(f"[virustotal] {e.kind}: {e.message}") from e
     if params.response_format == "json":
@@ -189,11 +182,6 @@ class VirusTotalDomainInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=False, extra="forbid")
     domain: str = Field(..., max_length=253, description="Domain name")
     response_format: str = Field(default="markdown", description="'markdown' or 'json'")
-    acknowledge_ioc_sharing: bool = Field(
-        default=False,
-        description=("Request host confirmation before sending the domain to VirusTotal. "
-                     "This flag is a request to prompt, not proof of human consent. Default false."),
-    )
 
     @field_validator("domain")
     @classmethod
@@ -216,7 +204,6 @@ async def blueteam_lookup_domain_virustotal(params: VirusTotalDomainInput,
             lowercase ASCII; schemes, paths, queries, fragments, userinfo, ports,
             whitespace, and path traversal are rejected.
         params.response_format: 'markdown' (default) or 'json'.
-        params.acknowledge_ioc_sharing: requests host confirmation; it is not proof of consent.
 
     Returns:
         Engine counts, detection percentage, community reputation, and available
@@ -228,11 +215,10 @@ async def blueteam_lookup_domain_virustotal(params: VirusTotalDomainInput,
 
     Examples:
         1. Apex domain in Markdown:
-           ``blueteam_lookup_domain_virustotal(domain="example.com",
-           acknowledge_ioc_sharing=True)``
+           ``blueteam_lookup_domain_virustotal(domain="example.com")``
         2. Subdomain in JSON:
            ``blueteam_lookup_domain_virustotal(domain="login.example.com",
-           response_format="json", acknowledge_ioc_sharing=True)``
+           response_format="json")``
         3. Internationalized domain:
            ``blueteam_lookup_domain_virustotal(domain="münich.example")``
            is sent as its IDNA form.
@@ -250,26 +236,29 @@ async def blueteam_lookup_domain_virustotal(params: VirusTotalDomainInput,
     processes; the TTL cache is process-local and does not survive a restart.
 
     Privacy: the domain leaves the host and VirusTotal adds the queried indicator
-    to its community dataset. Send only indicators the organization is authorized
-    to share and set ``acknowledge_ioc_sharing=true``.
+    to its community dataset. Sharing is standing operator consent
+    (``BLUETEAM_VIRUSTOTAL_IOC_SHARING``, off by default, enabled by an
+    administrator); there is no per-call dialog, so a parallel call cannot
+    contend for one. Provenance: ``data.domain`` on a web alert is usually the
+    monitored host, so a domain needs an analyst verdict or a trusted tool
+    finding; otherwise the tool returns ``not_attacker_ioc``. A domain listed in
+    ``BLUETEAM_OWNED_DOMAINS`` is always refused.
     """
     _audit_log("blueteam_lookup_domain_virustotal", {"domain": params.domain})
     from mcp_server import VIRUSTOTAL_API_KEY
     if not VIRUSTOTAL_API_KEY:
         raise ThreatIntelError("[virustotal] not_configured: VIRUSTOTAL_API_KEY is not set")
     from mcp_server.threat_intel.virustotal import VirusTotalError, lookup
-    if not params.acknowledge_ioc_sharing:
-        raise ThreatIntelError(
-            "[virustotal] consent_required: set acknowledge_ioc_sharing=true to request host approval")
-    decision = await request_ioc_sharing_detailed(
-        ctx, consent_message("domains", params.domain))
-    if not decision.approved:
-        raise ThreatIntelError(
-            "[virustotal] consent_required: host approval was not granted "
-            f"[reason={decision.reason}]")
+    from mcp_server.threat_intel.virustotal_consent import ioc_sharing_enabled
+    from mcp_server.tools.ioc_provenance import (ensure_attacker_provenance,
+                                                 provenance_refusal)
+    if ioc_sharing_enabled():
+        verified, detail = await ensure_attacker_provenance("domains", params.domain)
+        if verified is None:
+            kind, message = provenance_refusal(detail)
+            raise ThreatIntelError(f"[virustotal] {kind}: {message}")
     try:
-        data = await lookup("domains", params.domain,
-                            consent_token=issue_consent("domains", params.domain))
+        data = await lookup("domains", params.domain)
     except VirusTotalError as e:
         raise ThreatIntelError(f"[virustotal] {e.kind}: {e.message}") from e
     if params.response_format == "json":
@@ -278,13 +267,14 @@ async def blueteam_lookup_domain_virustotal(params: VirusTotalDomainInput,
     return _truncate_if_needed(_virustotal_markdown("VirusTotal Domain", params.domain, data))
 
 
-# 15 = consent-prompt capacity; a longer list would submit indicators the operator
-# never saw. The default 4 keeps a batch under the unmeasured MCP client timeout.
+# 15 = a 4/min provider budget for ~4 minutes, which keeps a cold batch inside a
+# typical MCP client timeout. The default 4 keeps it under one minute.
 _VT_ALERT_IPS_CAP = 15
 _VT_ALERT_IPS_DEFAULT = 4
 _VT_ALERT_BUCKET_LIMIT = 200
 # Per-indicator failures keep the loop going; anything else repeats the same refusal.
-_VT_CONTINUE_KINDS = frozenset({"not_found", "bad_request", "upstream_error", "timeout"})
+_VT_CONTINUE_KINDS = frozenset({"not_found", "bad_request", "upstream_error", "timeout",
+                                "not_attacker_ioc", "provenance_unchecked"})
 _VT_VERDICT_NAMES = ("malicious", "suspicious", "no_detections", "inconclusive",
                      "not_checked", "not_attempted")
 
@@ -309,11 +299,15 @@ def _vt_alert_row(target: dict, data: dict | None = None, *,
            "max_level": target.get("max_level")}
     if data is not None:
         from mcp_server.threat_intel.virustotal import classify_report
+        from mcp_server.tools.ioc_provenance import attribution_summary
         risk, is_malicious, verdict = classify_report(data)
         row.update({"status": verdict, "risk_level": risk,
                     "is_malicious": is_malicious,
                     "detections": _vt_detection_ratio(data),
                     **_virustotal_fields(data)})
+        attribution = attribution_summary(target["indicator"])
+        if attribution:
+            row["attribution"] = attribution
     else:
         row.update({"status": status or "not_checked", "risk_level": None,
                     "is_malicious": None, "detections": None})
@@ -451,7 +445,8 @@ class VirusTotalAlertIpsInput(BaseModel):
                      "filters candidates; it does not prove an IP is malicious."))
     max_ips: int = Field(default=_VT_ALERT_IPS_DEFAULT, ge=1, le=_VT_ALERT_IPS_CAP,
         description=("Maximum IPs to look up, after de-duplication (1-15). The ceiling "
-                     "matches the consent prompt, which shows every indicator it authorizes."))
+                     "keeps one call inside the 4/min provider budget and a typical "
+                     "client timeout."))
     bucket_limit: int = Field(default=_VT_ALERT_BUCKET_LIMIT, ge=_VT_ALERT_IPS_CAP,
         le=1000,
         description=("Source-IP aggregation bucket cap (15-1000, default 200). When a "
@@ -461,9 +456,6 @@ class VirusTotalAlertIpsInput(BaseModel):
         max_length=_VT_ALERT_IPS_CAP,
         description=("Explicit public IPs to check instead of harvesting alerts. Same "
                      "normalization and de-duplication; at most 15."))
-    acknowledge_ioc_sharing: bool = Field(default=False,
-        description=("Request host confirmation before sending IPs to VirusTotal. This "
-                     "flag is a request to prompt, not proof of human consent. Default false."))
     response_format: Literal["markdown", "json"] = Field(
         default="markdown", description="'markdown' (default) or 'json'.")
 
@@ -491,7 +483,6 @@ async def blueteam_virustotal_alert_ips(params: VirusTotalAlertIpsInput,
         params.bucket_limit: Aggregation bucket cap, default 200, range 15-1000.
             A path that reaches it, or a partial response, marks the census incomplete.
         params.ips: Explicit public IPs instead of a harvest, at most 15.
-        params.acknowledge_ioc_sharing: Requests host confirmation; not proof of consent.
         params.response_format: ``"markdown"`` (default) or ``"json"``.
 
     Returns:
@@ -525,16 +516,14 @@ async def blueteam_virustotal_alert_ips(params: VirusTotalAlertIpsInput,
 
     Examples:
         1. Top 4 source IPs from the last day at level 7 or higher:
-           ``blueteam_virustotal_alert_ips(acknowledge_ioc_sharing=True)``
+           ``blueteam_virustotal_alert_ips()``
         2. Ten IPs from a 7-day window, JSON:
            ``blueteam_virustotal_alert_ips(since="7d", min_level=10, max_ips=10,
-           response_format="json", acknowledge_ioc_sharing=True)``
+           response_format="json")``
         3. An explicit list, no harvest:
-           ``blueteam_virustotal_alert_ips(ips=["103.151.95.2", "45.155.205.233"],
-           acknowledge_ioc_sharing=True)``
+           ``blueteam_virustotal_alert_ips(ips=["103.151.95.2", "45.155.205.233"])``
         4. A wider census before selecting the top 10:
-           ``blueteam_virustotal_alert_ips(bucket_limit=1000, max_ips=10,
-           acknowledge_ioc_sharing=True)``
+           ``blueteam_virustotal_alert_ips(bucket_limit=1000, max_ips=10)``
 
     Permissions: read-only; the default read scope is sufficient. Wazuh is
     queried only when harvesting; VirusTotal is only read and never written.
@@ -542,18 +531,22 @@ async def blueteam_virustotal_alert_ips(params: VirusTotalAlertIpsInput,
     Rate limits: at most 15 lookups per call, one at a time, against the operator
     budget and the configured 4/min and daily provider limits. A 15-IP batch can
     take about 3.5 minutes; the default of 4 keeps a call under roughly one minute
-    when no report is cached. A cached report is free but still needs fresh consent.
+    when no report is cached. A cached report does not need a new approval.
     The arm window renews from the stored policy unless
     `BLUETEAM_VIRUSTOTAL_AUTO_REARM` is false; `arm_expired` therefore means
     renewal is disabled, not that the deployment lapsed. A 429 sets a persistent
     cooldown that stops the remaining lookups.
 
     Privacy: each listed IP leaves the host and VirusTotal adds it to its community
-    dataset. The prompt shows every indicator before anything is sent; a refusal
-    sends nothing and spends no quota. Send only indicators the organization is
-    authorized to share.
+    dataset. Only public source IPs are eligible; private addresses are filtered
+    before the lookup. Sharing is standing operator consent
+    (``BLUETEAM_VIRUSTOTAL_IOC_SHARING``, off by default) with no per-call dialog.
+    Provenance: every selected IP is re-checked against its alert semantics
+    (source direction, level 7 or higher, no noise group, and level 10, a MITRE
+    technique, or an attack group) in the same window; an IP without that
+    evidence is reported ``not_checked`` with ``not_attacker_ioc``.
     """
-    from mcp_server.threat_intel.virustotal import VirusTotalError, issue_consent, lookup, preflight
+    from mcp_server.threat_intel.virustotal import VirusTotalError, lookup, preflight
 
     source = "explicit" if params.ips else "alerts"
     harvest_errors: list[str] = []
@@ -652,15 +645,9 @@ async def blueteam_virustotal_alert_ips(params: VirusTotalAlertIpsInput,
         raise ThreatIntelError(
             f"[virustotal] {exc.kind}: {exc.message}") from exc
 
-    if not params.acknowledge_ioc_sharing:
-        raise ThreatIntelError(
-            "[virustotal] consent_required: set acknowledge_ioc_sharing=true to request host approval")
-    decision = await request_ioc_sharing_detailed(
-        ctx, consent_message("ip_addresses", [item["indicator"] for item in selected]))
-    if not decision.approved:
-        raise ThreatIntelError(
-            "[virustotal] consent_required: host approval was not granted "
-            f"[reason={decision.reason}]")
+    from mcp_server.threat_intel.virustotal_consent import ioc_sharing_enabled
+    from mcp_server.tools.ioc_provenance import (ensure_attacker_provenance,
+                                                 provenance_refusal)
 
     rows: list[dict] = []
     halted: VirusTotalError | None = None
@@ -669,10 +656,20 @@ async def blueteam_virustotal_alert_ips(params: VirusTotalAlertIpsInput,
             rows.append(_vt_alert_row(target, status="not_attempted",
                                       error_kind=halted.kind, error=halted.message))
             continue
+        if ioc_sharing_enabled():
+            # The harvest criterion is not attribution: a srcip can be a
+            # partner's probe or a blocked scanner. Every IP is re-checked
+            # against its alert semantics in the same window.
+            verified, detail = await ensure_attacker_provenance(
+                "ip_addresses", target["indicator"],
+                since=since_iso if source == "alerts" else None)
+            if verified is None:
+                kind, message = provenance_refusal(detail)
+                rows.append(_vt_alert_row(target, status="not_checked",
+                                          error_kind=kind, error=message))
+                continue
         try:
-            data = await lookup("ip_addresses", target["indicator"],
-                                consent_token=issue_consent(
-                                    "ip_addresses", target["indicator"]))
+            data = await lookup("ip_addresses", target["indicator"])
         except VirusTotalError as exc:
             rows.append(_vt_alert_row(target, status="not_checked",
                                       error_kind=exc.kind, error=exc.message))
@@ -900,6 +897,11 @@ async def argus_ip_lookup(params: ArgusIpLookupInput) -> str:
         params.ip: Public IP to query
         params.response_format: 'markdown' (summarised, dynamic) or 'json' (verbatim)
     """
+    from mcp_server.core.external_egress import ExternalEgressDisabled, egress_check
+    try:
+        egress_check()
+    except ExternalEgressDisabled as exc:
+        return json.dumps({"error": str(exc), "error_kind": "disabled"})
     _audit_log("argus_ip_lookup", {"ip": params.ip})
     from mcp_server import ARGUS_API_KEY_ENV, ARGUS_VERIFY_SSL, ARGUS_BASE_URL
     api_key = os.environ.get(ARGUS_API_KEY_ENV, "")
@@ -945,6 +947,11 @@ async def netra_ip_analysis(params: NetraIpAnalysisInput) -> str:
         params.response_format: 'markdown' or 'json'
         params.bypass_redaction: When true, skip PII/credential redaction for audit investigations.
     """
+    from mcp_server.core.external_egress import ExternalEgressDisabled, egress_check
+    try:
+        egress_check()
+    except ExternalEgressDisabled as exc:
+        return json.dumps({"error": str(exc), "error_kind": "disabled"})
     _audit_log("netra_ip_analysis", {"ip": params.ip})
     from mcp_server import NETRA_API_KEY_ENV, NETRA_VERIFY_SSL, NETRA_BASE_URL
     api_key = os.environ.get(NETRA_API_KEY_ENV, "")

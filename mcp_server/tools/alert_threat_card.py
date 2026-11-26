@@ -147,6 +147,9 @@ async def blueteam_threat_card(params: ThreatCardInput) -> str:
     async def _fetch_greynoise():
         if not params.include_threat_intel:
             return None
+        from mcp_server.core.external_egress import egress_enabled
+        if not egress_enabled():
+            return {"error": "external enrichment is disabled"}
         try:
             headers = {"accept": "application/json", "User-Agent": "blue-team-mcp/1.0.0"}
             resp = await _api_call("get", f"{GREYNOISE_COMMUNITY_BASE_URL}/{params.srcip}", headers=headers)

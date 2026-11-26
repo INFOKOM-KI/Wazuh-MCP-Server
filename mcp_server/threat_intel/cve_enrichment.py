@@ -250,6 +250,8 @@ async def _search_nuclei(cve_id: str) -> list[dict]:
 
 
 async def search_poc(cve_id: str) -> dict:
+    from mcp_server.core.external_egress import egress_check
+    egress_check()
     """Aggregate public-PoC availability across GitHub + Nuclei templates."""
     github, nuclei = await asyncio.gather(
         _search_github_pocs(cve_id), _search_nuclei(cve_id)

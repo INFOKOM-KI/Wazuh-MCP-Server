@@ -18,23 +18,36 @@ This guide explains how to install **INFOKOM-KI Wazuh MCP Server** on Ubuntu/Deb
 
 The examples below use **Streamable HTTP bound only to `127.0.0.1:8000`**, with the service running as a non-root system user. A reverse proxy or VPN can be used when the client runs on another machine. If you only need SSH/stdio, see Section 12.
 
-### 1.1 MCP protocol and VirusTotal consent
+### 1.1 MCP protocol and VirusTotal sharing
 
-The server pins `mcp>=1.28.1,<1.29.0` and uses its bundled FastMCP. The installed
-SDK supports protocol revisions up to `2025-11-25`; direct `Context.elicit` is
-valid for `2025-06-18` and `2025-11-25`.
+The server pins `mcp>=1.28.1,<1.29.0` and uses its bundled FastMCP. Any protocol
+revision the SDK negotiates works, because no tool calls MCP elicitation. A
+client's approval-dialog support therefore does not change tool behavior.
 
-- `2024-11-05` and `2025-03-26` predate elicitation. VirusTotal consent fails
-  closed with `consent_required`; no prompt and no request are made.
-- `2026-07-28` Multi Round-Trip Requests are not supported by this SDK. A client
-  that requests `2026-07-28` receives `2025-11-25` and must use the negotiated
-  legacy revision. The current SDK has no `Resolve(Elicit)`; the gate refuses
-  native `2026-07-28` before prompting.
+- VirusTotal sharing is authorized once through
+  `BLUETEAM_VIRUSTOTAL_IOC_SHARING` (default `false`). When unset, every lookup returns
+  `consent_required` before cache, quota, and transport.
+- The per-indicator dialog was removed because an MCP host serves one
+  elicitation at a time: two concurrent lookups raced for it and the second
+  failed with `elicitation_error`. `tests/test_virustotal_sharing_policy.py`
+  fails the build if `elicit` or `elicit_form` reappears under `mcp_server/`.
+- Only public indicators are sent. RFC 1918, loopback, link-local, CGNAT, ULA,
+  reserved, and unspecified addresses return `bad_request` before cache and quota.
+- `BLUETEAM_EXTERNAL_ENRICHMENT=false` (default) stops every provider client before
+  a DNS lookup: standalone tools, aggregate, curated report, and the provider
+  helpers, including GreyNoise Community, which needs no key. An API key alone
+  never authorizes transmission. See `SECURITY.md` §4.1h for the endpoint list.
+- Only indicators with Wazuh provenance are sent: `engine_a`, `verdict`,
+  `webshell_check`, or `wazuh_alerts`, together with the evidence keys those
+  procedures record. For an IP the aggregate and standalone tools
+  read the alert semantics: source direction, level 7 or higher, no noise group,
+  and level 10, a MITRE technique, or an attack group. A domain needs an analyst
+  verdict or a trusted tool finding; a file hash has no verified attacker-side
+  alert field. Missing evidence returns `not_attacker_ioc`; an unreachable Indexer
+  returns `provenance_unchecked`. Keep `BLUETEAM_ATTACKER_REGISTRY` set so the
+  evidence survives a restart.
 - `stdio` and stateful `streamable_http` are supported. Do not set
-  `stateless_http=true`, and do not run multiple HTTP workers for consent-bearing
-  calls: consent tokens are process-local and single-use.
-- The server does not accept client-supplied `requestState` for consent. Each
-  retry performs a fresh host prompt.
+  `stateless_http=true` unless the client also holds no session state.
 
 ## 2. Prerequisites
 
@@ -578,6 +591,9 @@ export VIRUSTOTAL_API_KEY="<key>"
 export BLUETEAM_VIRUSTOTAL_BUDGET="0"
 export BLUETEAM_VIRUSTOTAL_BUDGET_HOURS="8"
 export BLUETEAM_VIRUSTOTAL_AUTO_REARM="true"   # false = operator rearm after every window
+export BLUETEAM_VIRUSTOTAL_IOC_SHARING="false"  # opt-in: true sends verified attacker IOCs to VirusTotal
+export BLUETEAM_EXTERNAL_ENRICHMENT="false"     # opt-in: true allows outbound provider lookups
+export BLUETEAM_VIRUSTOTAL_ATTRIBUTION_EXCLUDE=""  # IPs/CIDRs never sent to VirusTotal
 export BLUETEAM_VIRUSTOTAL_STATE="/var/log/blue-team-mcp/virustotal_quota.db"
 export VIRUSTOTAL_ALLOWED_HOSTS="www.virustotal.com"
 export VIRUSTOTAL_MAX_RESPONSE_BYTES="2000000"
@@ -660,7 +676,7 @@ remain in force.
 # This may consume one reserved IPv4 request and one IPv6 request; cache hits consume none.
 python -m mcp_server.threat_intel.virustotal_live \
   --ip <PUBLIC_TEST_IPV4> --ipv6 <PUBLIC_TEST_IPV6> \
-  --confirm-live --acknowledge-ioc-sharing
+  --confirm-live --attacker-ioc
 ```
 
 Requirements:
@@ -673,19 +689,23 @@ Requirements:
 - The operator supplies the test addresses. Private, loopback, link-local,
   multicast, reserved, documentation, and other non-public addresses are
   rejected before transport.
-- `--confirm-live` and `--acknowledge-ioc-sharing` are both mandatory. Without
-  them, no lookup is attempted. The same consent policy applies to the MCP
-  paths: the aggregate, the batch alert-IP tool, and the standalone domain/hash
-  tools require `acknowledge_ioc_sharing=true`; the curated report requires
-  `include_virustotal=true`. Missing consent returns `consent_required` before
-  cache and quota. The batch tool reports `census_complete` and
-  `unseen_candidates`; an incomplete census is not a total, and raising
-  `bucket_limit` or narrowing the window widens the census. It also reports
-  `correction_limit` and `counts_exact`; exact counts cover up to 200 observed
-  buckets, and an incomplete correction is never described as exact. Cached
-  results also require consent. The MCP host is asked through `Context.elicit`;
-  a client that auto-answers can still assert approval, so the server cannot
-  independently prove a human saw the prompt.
+- `--confirm-live` is mandatory. Without it, no lookup is attempted.
+- `--attacker-ioc` is mandatory too. It records a human attestation in the
+  separate `operator_cli` class, writes its own audit entry, and never satisfies
+  the automated Wazuh provenance gate. Without it the command reports
+  `attacker_ioc_attestation_required` and sends nothing. The MCP
+  paths share one policy: `BLUETEAM_VIRUSTOTAL_IOC_SHARING` (default false) covers
+  the aggregate, the batch alert-IP tool, and the standalone domain/hash tools;
+  the curated report also needs `include_virustotal=true`. Sharing off returns
+  `consent_required` before cache, quota, and transport, and a non-public
+  address returns `bad_request` at the same point. There is no per-indicator
+  dialog: an MCP host serves one approval prompt at a time, so concurrent
+  lookups collided and the second failed with `elicitation_error`. The batch tool
+  reports `census_complete` and `unseen_candidates`; an incomplete census is not
+  a total, and raising `bucket_limit` or narrowing the window widens the census.
+  It also reports `correction_limit` and `counts_exact`; exact counts cover up to
+  200 observed buckets, and an incomplete correction is never described as exact.
+  A cached result needs no new approval.
 - VirusTotal documents that queried IoCs are scanned and added to its dataset,
   where they become accessible to the community. Do not query confidential
   organizational indicators. A public address is not automatically

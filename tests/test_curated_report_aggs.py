@@ -185,7 +185,7 @@ def test_private_srcip_is_skipped_before_any_provider_call(monkeypatch):
     assert "provider called for a private address" not in out
 
 
-def test_public_srcip_virustotal_fields_are_in_json(monkeypatch, consent_approval):
+def test_public_srcip_virustotal_fields_are_in_json(monkeypatch):
     posted = []
 
     async def _mapping(index_pattern=None):
@@ -231,7 +231,11 @@ def test_public_srcip_virustotal_fields_are_in_json(monkeypatch, consent_approva
     monkeypatch.setattr(report, "_wazuh_indexer_post", _post)
     monkeypatch.setattr(report, "VIRUSTOTAL_API_KEY", "test-key")
     monkeypatch.setattr(report, "ABUSEIPDB_API_KEY", "")
+    async def verified(kind, value, *, since=None):
+        return "wazuh_alerts", "attacker-side evidence: test"
+
     monkeypatch.setattr(report, "lookup", fake_lookup)
+    monkeypatch.setattr(report, "ensure_attacker_provenance", verified)
     monkeypatch.setattr(report, "_crowdsec_request", forbidden)
     monkeypatch.setattr(report, "_api_call", forbidden)
     monkeypatch.delenv(report.CROWDSEC_API_KEY_ENV, raising=False)
@@ -239,7 +243,7 @@ def test_public_srcip_virustotal_fields_are_in_json(monkeypatch, consent_approva
 
     out = _run(_tool()(report.CuratedThreatReportInput(
         group_by="srcip", include_threat_intel=True, include_virustotal=True,
-        investigation_depth="summary", response_format="json"), ctx=consent_approval))
+        investigation_depth="summary", response_format="json")))
     data = json.loads(out)
     attacker = next(a for a in data["attackers"] if a["ip"] == "1.1.1.1")
     vt = attacker["threat_intel"]["virustotal"]
@@ -255,31 +259,55 @@ def test_public_srcip_virustotal_fields_are_in_json(monkeypatch, consent_approva
 
     markdown = _run(_tool()(report.CuratedThreatReportInput(
         group_by="srcip", include_threat_intel=True, include_virustotal=True,
-        investigation_depth="summary", response_format="markdown"), ctx=consent_approval))
+        investigation_depth="summary", response_format="markdown")))
     assert "VT:1/92 (1%) (rep 117)" in markdown
     assert "SKIP:" not in markdown
     assert "VirusTotal:configured" in markdown
     assert "## VirusTotal retrieval" in markdown
     assert "| `1.1.1.1` | live API |" in markdown
 
+    verified_ips = []
+
+    async def verified(kind, value, *, since=None):
+        verified_ips.append(value)
+        return "wazuh_alerts", "attacker-side evidence: test"
+
+    monkeypatch.setattr(report, "ensure_attacker_provenance", verified)
     calls_before = len(calls)
     opt_out = _run(_tool()(report.CuratedThreatReportInput(
         group_by="srcip", include_threat_intel=True, include_virustotal=False,
-        investigation_depth="summary", response_format="json"), ctx=consent_approval))
+        investigation_depth="summary", response_format="json")))
     assert len(calls) == calls_before
+    assert verified_ips == []
     assert json.loads(opt_out)["threat_intel_sources"]["VirusTotal"] == "not_requested"
     assert "virustotal" not in json.loads(opt_out)["attackers"][0]["threat_intel"]
 
+    from mcp_server.threat_intel.virustotal import VirusTotalError
+
     calls_before = len(calls)
-    consent_approval.approve = False
-    consent_approval.action = "decline"
-    declined = _run(_tool()(report.CuratedThreatReportInput(
+    from mcp_server.core import external_egress
+    monkeypatch.setattr(external_egress, "EXTERNAL_ENRICHMENT_ENABLED", False)
+    disabled = _run(_tool()(report.CuratedThreatReportInput(
         group_by="srcip", include_threat_intel=True, include_virustotal=True,
-        investigation_depth="summary", response_format="json"), ctx=consent_approval))
-    declined_data = json.loads(declined)
+        investigation_depth="summary", response_format="json")))
+    disabled_data = json.loads(disabled)
     assert len(calls) == calls_before
-    assert declined_data["threat_intel_sources"]["VirusTotal"] == "consent_required"
-    assert declined_data["attackers"][0]["threat_intel"]["virustotal"]["error"] == "consent_required"
+    assert verified_ips == []
+    assert disabled_data["threat_intel_sources"]["VirusTotal"] == "disabled"
+    assert "virustotal" not in disabled_data["attackers"][0]["threat_intel"]
+    monkeypatch.setattr(external_egress, "EXTERNAL_ENRICHMENT_ENABLED", True)
+
+
+    async def refused_lookup(kind, value):
+        raise VirusTotalError("sharing is off", "consent_required")
+
+    monkeypatch.setattr(report, "lookup", refused_lookup)
+    refused = _run(_tool()(report.CuratedThreatReportInput(
+        group_by="srcip", include_threat_intel=True, include_virustotal=True,
+        investigation_depth="summary", response_format="json")))
+    refused_data = json.loads(refused)
+    assert len(calls) == calls_before
+    assert refused_data["attackers"][0]["threat_intel"]["virustotal"]["error"] == "consent_required"
 
 
 def test_private_srcip_skips_the_crowdsec_prefilter(monkeypatch):
@@ -329,7 +357,7 @@ def test_non_public_skip_reason_names_the_general_policy(value):
     assert reason == "non-public or non-global IP address"
 
 
-def test_multiple_srcip_buckets_are_enriched_once(monkeypatch, consent_approval):
+def test_multiple_srcip_buckets_are_enriched_once(monkeypatch):
     calls = []
     keys = ("1.1.1.1", "8.8.8.8")
 
@@ -381,7 +409,11 @@ def test_multiple_srcip_buckets_are_enriched_once(monkeypatch, consent_approval)
     monkeypatch.setattr(report, "_wazuh_indexer_post", _post)
     monkeypatch.setattr(report, "VIRUSTOTAL_API_KEY", "test-key")
     monkeypatch.setattr(report, "ABUSEIPDB_API_KEY", "")
+    async def verified(kind, value, *, since=None):
+        return "wazuh_alerts", "attacker-side evidence: test"
+
     monkeypatch.setattr(report, "lookup", fake_lookup)
+    monkeypatch.setattr(report, "ensure_attacker_provenance", verified)
     monkeypatch.setattr(report, "_crowdsec_request", forbidden)
     monkeypatch.setattr(report, "_api_call", forbidden)
     monkeypatch.delenv(report.CROWDSEC_API_KEY_ENV, raising=False)
@@ -389,7 +421,7 @@ def test_multiple_srcip_buckets_are_enriched_once(monkeypatch, consent_approval)
 
     out = _run(_tool()(report.CuratedThreatReportInput(
         group_by="srcip", include_threat_intel=True, include_virustotal=True,
-        investigation_depth="summary", response_format="json"), ctx=consent_approval))
+        investigation_depth="summary", response_format="json")))
     data = json.loads(out)
     assert [a["ip"] for a in data["attackers"]] == list(keys)
     assert calls == [("ip_addresses", "1.1.1.1"), ("ip_addresses", "8.8.8.8")]

@@ -546,6 +546,11 @@ async def blueteam_whois_lookup(params: WhoisLookupInput) -> str:
        ``blueteam_whois_lookup(domain="evil-c2.net", response_format="json")``
     """
     _audit_log("blueteam_whois_lookup", {"domain": params.domain})
+    from mcp_server.core.external_egress import ExternalEgressDisabled, egress_check
+    try:
+        egress_check()
+    except ExternalEgressDisabled as exc:
+        return json.dumps({"error": str(exc), "error_kind": "disabled"})
     domain = params.domain.strip().lower().rstrip(".")
 
     try:
@@ -688,6 +693,11 @@ async def blueteam_crtsh_lookup(params: CrtshLookupInput) -> str:
        ``blueteam_crtsh_lookup(domain="malware-drop.xyz")``: check sibling names
     """
     _audit_log("blueteam_crtsh_lookup", {"domain": params.domain})
+    from mcp_server.core.external_egress import ExternalEgressDisabled, egress_check
+    try:
+        egress_check()
+    except ExternalEgressDisabled as exc:
+        return json.dumps({"error": str(exc), "error_kind": "disabled"})
     domain = params.domain.strip().lower().rstrip(".")
 
     try:

@@ -104,6 +104,8 @@ async def _rapidapi_request(method: str, host: str, path: str,
     ``max_retries=0``: a retry spends a second of 100 monthly requests on an upstream
     fault we did not cause, and buys nothing a single attempt would not.
     """
+    from mcp_server.core.external_egress import egress_check
+    egress_check()
     # Credentials first: a missing key is a configuration fault that arming a budget
     # cannot fix, so reporting "budget closed" ahead of it points at the wrong problem.
     headers = _rapidapi_headers(host)

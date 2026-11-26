@@ -238,7 +238,8 @@ async def wazuh_compromised_emails_analysis(params: WazuhCompromisedEmailsAnalys
 
     # Netra enrichment for top IPs (max 10)
     netra_results: dict[str, dict] = {}
-    if params.enrich_with_netra:
+    from mcp_server.core.external_egress import egress_enabled
+    if params.enrich_with_netra and egress_enabled():
         enrich_count = min(len(top_ips), 10)
         netra_key = os.environ.get(NETRA_API_KEY_ENV, "")
         for ip, _ in top_ips[:enrich_count]:

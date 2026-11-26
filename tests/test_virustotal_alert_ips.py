@@ -77,20 +77,13 @@ def _vt_state(monkeypatch, tmp_path):
     vt.reset_state()
 
 
-def _consent(monkeypatch, approved=True, reason="approved"):
-    seen: list[str] = []
-
-    async def fake(ctx, message):
-        seen.append(message)
-        return SimpleNamespace(approved=approved, reason=reason)
-
-    monkeypatch.setattr(ae, "request_ioc_sharing_detailed", fake)
-    return seen
-
-
 def _tool(ips, *, max_ips=None, approve=True, ctx=None, fmt="json"):
+    # Explicit addresses must already be Wazuh attacker IOCs; the harvest path
+    # records its own evidence.
+    from mcp_server.core.attacker_registry import register_attacker_ips
+    register_attacker_ips(list(ips), source="wazuh_alerts", evidence={"decision": "accepted", "via": "wazuh_alerts", "alert_id": "test-alert", "rule_id": "100200", "rule_level": 12, "groups": ["attack"], "matched_field": "data.srcip", "signal": "attack_group"})
     params = ae.VirusTotalAlertIpsInput(
-        ips=ips, acknowledge_ioc_sharing=True, response_format=fmt,
+        ips=ips, response_format=fmt,
         **({"max_ips": max_ips} if max_ips is not None else {}))
     return _run(ae.blueteam_virustotal_alert_ips(
         params, ctx=ctx or SimpleNamespace()))
@@ -116,12 +109,12 @@ def test_classify_report_matches_the_aggregate_provider(monkeypatch, malicious,
                                                         complete):
     payload = _report(malicious=malicious, complete=complete)
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         return payload
 
     monkeypatch.setattr(agg, "VIRUSTOTAL_API_KEY", "test-key")
     monkeypatch.setattr(vt, "lookup", fake_lookup)
-    result = _run(agg._virustotal_provider("8.8.8.8", "IPv4", "token"))
+    result = _run(agg._virustotal_provider("8.8.8.8", "IPv4"))
     risk, is_malicious, verdict = vt.classify_report(payload)
     assert (result.risk_level, result.is_malicious,
             result.detail["vt_verdict"]) == (risk, is_malicious, verdict)
@@ -130,13 +123,11 @@ def test_classify_report_matches_the_aggregate_provider(monkeypatch, malicious,
 # Explicit input path
 
 
-def test_explicit_ips_use_one_prompt_and_one_token_per_ip(monkeypatch):
-    seen = _consent(monkeypatch)
-    calls: list[tuple[str, str, str]] = []
+def test_explicit_ips_use_one_lookup_per_ip_without_a_prompt(monkeypatch):
+    calls: list[tuple[str, str]] = []
 
-    async def fake_lookup(kind, indicator, consent_token=None):
-        vt.consume_consent(consent_token, kind, indicator)
-        calls.append((kind, indicator, consent_token))
+    async def fake_lookup(kind, indicator):
+        calls.append((kind, indicator))
         if indicator == "8.8.8.8":
             return _report(malicious=2)
         return _report()
@@ -144,85 +135,136 @@ def test_explicit_ips_use_one_prompt_and_one_token_per_ip(monkeypatch):
     monkeypatch.setattr(vt, "lookup", fake_lookup)
     output = json.loads(_tool(["8.8.8.8", "1.1.1.1"]))
 
-    assert len(seen) == 1
-    assert "8.8.8.8" in seen[0] and "1.1.1.1" in seen[0]
-    assert calls == [("ip_addresses", "8.8.8.8", calls[0][2]),
-                     ("ip_addresses", "1.1.1.1", calls[1][2])]
-    assert calls[0][2] != calls[1][2]
+    assert calls == [("ip_addresses", "8.8.8.8"), ("ip_addresses", "1.1.1.1")]
     assert [row["status"] for row in output["results"]] == ["malicious", "no_detections"]
     assert output["selected"] == 2 and output["queried"] == 2
     assert output["truncated"] == 0 and output["skipped"] == 0
 
 
-def test_consent_refusal_sends_nothing_and_spends_no_quota(monkeypatch):
-    seen = _consent(monkeypatch, approved=False, reason="user_declined")
+def test_sharing_off_refuses_before_transport_and_spends_no_quota(monkeypatch):
+    from mcp_server.threat_intel import virustotal_consent as policy
 
-    async def forbidden(kind, indicator, consent_token=None):
-        pytest.fail("transport must not run after a consent refusal")
+    monkeypatch.setattr(policy, "VIRUSTOTAL_IOC_SHARING", False)
+    output = json.loads(_tool(["8.8.8.8"]))
 
-    monkeypatch.setattr(vt, "lookup", forbidden)
-    with pytest.raises(ThreatIntelError) as err:
-        _tool(["8.8.8.8", "1.1.1.1"])
-
-    assert "consent_required" in str(err.value)
-    assert "[reason=user_declined]" in str(err.value)
-    assert len(seen) == 1
+    assert output["results"][0]["status"] == "not_checked"
+    assert output["results"][0]["error_kind"] == "consent_required"
     assert vt._get_quota().state()["spent"] == 0
 
 
+def test_explicit_ip_without_wazuh_provenance_is_refused(monkeypatch):
+    from mcp_server.tools import ioc_provenance
+
+    params = ae.VirusTotalAlertIpsInput(ips=["8.8.4.4"], response_format="json")
+
+    async def no_hits(body, index_pattern=None):
+        return {"hits": {"total": {"value": 0, "relation": "eq"}}}
+
+    async def forbidden(kind, indicator):
+        pytest.fail("an IOC with no Wazuh provenance must not reach transport")
+
+    monkeypatch.setattr(ioc_provenance, "_wazuh_indexer_post", no_hits)
+    monkeypatch.setattr(vt, "lookup", forbidden)
+    output = json.loads(_run(ae.blueteam_virustotal_alert_ips(
+        params, ctx=SimpleNamespace())))
+
+    assert output["results"][0]["status"] == "not_checked"
+    assert output["results"][0]["error_kind"] == "not_attacker_ioc"
+    assert vt._get_quota().state()["spent"] == 0
+
+
+def test_explicit_ip_reports_an_unreachable_indexer(monkeypatch):
+    params = ae.VirusTotalAlertIpsInput(ips=["8.8.4.4"], response_format="json")
+
+    async def forbidden(kind, indicator):
+        pytest.fail("an unverified IOC must not reach transport")
+
+    monkeypatch.setattr(vt, "lookup", forbidden)
+    output = json.loads(_run(ae.blueteam_virustotal_alert_ips(
+        params, ctx=SimpleNamespace())))
+
+    assert output["results"][0]["error_kind"] == "provenance_unchecked"
+    assert vt._get_quota().state()["spent"] == 0
+
+
+def test_harvest_verifies_each_selected_ip(monkeypatch):
+    from mcp_server.tools import ioc_provenance
+    from mcp_server.wazuh import indexer
+
+    verified = []
+
+    async def fake_caps(fields, index_pattern=None):
+        return {"data.srcip": "keyword"}
+
+    async def fake_post(body, index_pattern=None):
+        return _harvest_buckets()
+
+    async def fake_exact(query, candidates, index_pattern=None):
+        return {ip: 1 for ip in candidates}
+
+    async def evidence(kind, value, *, since=None):
+        verified.append(value)
+        return "wazuh_alerts", "attacker-side evidence: test"
+
+    async def fake_lookup(kind, indicator):
+        return _report()
+
+    monkeypatch.setattr(indexer, "_wazuh_indexer_field_caps", fake_caps)
+    monkeypatch.setattr(indexer, "_wazuh_indexer_post", fake_post)
+    monkeypatch.setattr(indexer, "_exact_srcip_counts", fake_exact)
+    monkeypatch.setattr(ioc_provenance, "ensure_attacker_provenance", evidence)
+    monkeypatch.setattr(vt, "lookup", fake_lookup)
+
+    params = ae.VirusTotalAlertIpsInput(since="24h", max_ips=2,
+                                        response_format="json")
+    _run(ae.blueteam_virustotal_alert_ips(params, ctx=SimpleNamespace()))
+
+    # 10.0.0.5 is private and filtered before provenance.
+    assert verified == ["8.8.8.8", "1.1.1.1"]
+
+
 def test_missing_api_key_skips_the_prompt(monkeypatch):
-    seen = _consent(monkeypatch)
     monkeypatch.setattr(vt, "VIRUSTOTAL_API_KEY", "")
     with pytest.raises(ThreatIntelError) as err:
         _tool(["8.8.8.8"])
     assert "not_configured" in str(err.value)
-    assert seen == []
 
 
 def test_invalid_base_url_skips_the_prompt(monkeypatch):
-    seen = _consent(monkeypatch)
     monkeypatch.setattr(vt, "VIRUSTOTAL_BASE_URL", "http://127.0.0.1:8080/api/v3")
     with pytest.raises(ThreatIntelError) as err:
         _tool(["8.8.8.8"])
     assert "not_configured" in str(err.value)
-    assert seen == []
 
 
 def test_missing_quota_state_skips_the_prompt(monkeypatch, tmp_path):
-    seen = _consent(monkeypatch)
     vt.reset_state()
     monkeypatch.setattr(vt, "VIRUSTOTAL_STATE", str(tmp_path / "absent.db"))
     with pytest.raises(ThreatIntelError) as err:
         _tool(["8.8.8.8"])
     assert "state_missing" in str(err.value)
-    assert seen == []
 
 
 def test_closed_budget_skips_the_prompt(monkeypatch):
-    seen = _consent(monkeypatch)
     monkeypatch.setattr(vt, "VIRUSTOTAL_BUDGET", 0)
     with pytest.raises(ThreatIntelError) as err:
         _tool(["8.8.8.8"])
     assert "budget_closed" in str(err.value)
-    assert seen == []
 
 
 def test_cooldown_skips_the_prompt(monkeypatch):
-    seen = _consent(monkeypatch)
     vt._get_quota().set_cooldown(60)
     with pytest.raises(ThreatIntelError) as err:
         _tool(["8.8.8.8"])
     assert "cooldown" in str(err.value)
-    assert seen == []
 
 
 def test_spent_budget_skips_the_prompt(monkeypatch, tmp_path):
-    seen = _consent(monkeypatch)
     monkeypatch.setattr(vt, "VIRUSTOTAL_BUDGET", 1)
     monkeypatch.setattr(vt, "VIRUSTOTAL_STATE", str(tmp_path / "small.db"))
     vt.reset_state()
 
-    async def forbidden(kind, indicator, consent_token=None):
+    async def forbidden(kind, indicator):
         pytest.fail("transport must not run when the budget is spent")
 
     monkeypatch.setattr(vt, "lookup", forbidden)
@@ -233,11 +275,9 @@ def test_spent_budget_skips_the_prompt(monkeypatch, tmp_path):
     with pytest.raises(ThreatIntelError) as err:
         _tool(["8.8.8.8"])
     assert "budget_exhausted" in str(err.value)
-    assert seen == []
 
 
 def test_daily_limit_skips_the_prompt(monkeypatch, tmp_path):
-    seen = _consent(monkeypatch)
     monkeypatch.setattr(vt, "VIRUSTOTAL_DAILY_LIMIT", 1)
     monkeypatch.setattr(vt, "VIRUSTOTAL_STATE", str(tmp_path / "daily.db"))
     vt.reset_state()
@@ -248,14 +288,12 @@ def test_daily_limit_skips_the_prompt(monkeypatch, tmp_path):
     with pytest.raises(ThreatIntelError) as err:
         _tool(["8.8.8.8"])
     assert "daily_exhausted" in str(err.value)
-    assert seen == []
 
 
 def test_explicit_input_normalizes_and_skips_before_the_limit(monkeypatch):
-    _consent(monkeypatch)
     calls: list[str] = []
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         calls.append(indicator)
         return _report()
 
@@ -276,10 +314,9 @@ def test_explicit_input_normalizes_and_skips_before_the_limit(monkeypatch):
 
 
 def test_duplicates_are_removed_before_the_limit(monkeypatch):
-    _consent(monkeypatch)
     calls: list[str] = []
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         calls.append(indicator)
         return _report()
 
@@ -299,9 +336,8 @@ def test_duplicates_are_removed_before_the_limit(monkeypatch):
 
 
 def test_truncation_counts_eligible_unique_public_ips(monkeypatch):
-    _consent(monkeypatch)
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         return _report()
 
     monkeypatch.setattr(vt, "lookup", fake_lookup)
@@ -317,15 +353,13 @@ def test_truncation_counts_eligible_unique_public_ips(monkeypatch):
 
 def test_more_than_fifteen_explicit_ips_is_rejected():
     with pytest.raises(ValidationError):
-        ae.VirusTotalAlertIpsInput(ips=[f"8.8.8.{i}" for i in range(1, 17)],
-                                   acknowledge_ioc_sharing=True)
+        ae.VirusTotalAlertIpsInput(ips=[f"8.8.8.{i}" for i in range(1, 17)])
 
 
 def test_global_blocker_marks_the_rest_not_attempted(monkeypatch):
-    _consent(monkeypatch)
     calls: list[str] = []
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         calls.append(indicator)
         if indicator == "1.1.1.1":
             raise vt.VirusTotalError("bad key", "auth_error", http_status=401)
@@ -344,10 +378,9 @@ def test_global_blocker_marks_the_rest_not_attempted(monkeypatch):
 
 
 def test_per_indicator_failure_does_not_stop_the_batch(monkeypatch):
-    _consent(monkeypatch)
     calls: list[str] = []
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         calls.append(indicator)
         if indicator == "8.8.8.8":
             raise vt.VirusTotalError("no report", "not_found", http_status=404)
@@ -363,9 +396,8 @@ def test_per_indicator_failure_does_not_stop_the_batch(monkeypatch):
 
 
 def test_incomplete_stats_stay_inconclusive(monkeypatch):
-    _consent(monkeypatch)
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         return _report(malicious=3, complete=False)
 
     monkeypatch.setattr(vt, "lookup", fake_lookup)
@@ -378,9 +410,8 @@ def test_incomplete_stats_stay_inconclusive(monkeypatch):
 
 
 def test_markdown_states_the_candidate_caveat(monkeypatch):
-    _consent(monkeypatch)
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         return _report()
 
     monkeypatch.setattr(vt, "lookup", fake_lookup)
@@ -390,33 +421,7 @@ def test_markdown_states_the_candidate_caveat(monkeypatch):
     assert "| IP | Alerts | Max level |" in output
 
 
-# Consent token properties used by the batch
-
-
-def test_consent_token_is_bound_to_one_indicator():
-    token = vt.issue_consent("ip_addresses", "8.8.8.8")
-    with pytest.raises(vt.VirusTotalError) as err:
-        vt.consume_consent(token, "ip_addresses", "1.1.1.1")
-    assert err.value.kind == "consent_required"
-    # A mismatch consumes the token as well, so it cannot be retried.
-    with pytest.raises(vt.VirusTotalError):
-        vt.consume_consent(token, "ip_addresses", "8.8.8.8")
-
-
-def test_consent_token_cannot_be_reused():
-    token = vt.issue_consent("ip_addresses", "8.8.8.8")
-    vt.consume_consent(token, "ip_addresses", "8.8.8.8")
-    with pytest.raises(vt.VirusTotalError) as err:
-        vt.consume_consent(token, "ip_addresses", "8.8.8.8")
-    assert err.value.kind == "consent_required"
-
-
-def test_consent_token_expires():
-    token = vt.issue_consent("ip_addresses", "8.8.8.8", ttl=0.0)
-    time.sleep(0.01)
-    with pytest.raises(vt.VirusTotalError) as err:
-        vt.consume_consent(token, "ip_addresses", "8.8.8.8")
-    assert err.value.kind == "consent_required"
+# Sharing policy
 
 
 # Harvest path
@@ -436,7 +441,6 @@ def _harvest_buckets():
 
 def test_harvest_queries_the_level_and_time_window(monkeypatch):
     from mcp_server.wazuh import indexer
-    _consent(monkeypatch)
     posted: list[dict] = []
 
     async def fake_caps(fields, index_pattern=None):
@@ -453,12 +457,12 @@ def test_harvest_queries_the_level_and_time_window(monkeypatch):
     monkeypatch.setattr(indexer, "_wazuh_indexer_post", fake_post)
     monkeypatch.setattr(indexer, "_exact_srcip_counts", fake_exact)
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         return _report()
 
     monkeypatch.setattr(vt, "lookup", fake_lookup)
     params = ae.VirusTotalAlertIpsInput(
-        since="24h", min_level=9, max_ips=2, acknowledge_ioc_sharing=True,
+        since="24h", min_level=9, max_ips=2,
         response_format="json")
     output = json.loads(_run(ae.blueteam_virustotal_alert_ips(
         params, ctx=SimpleNamespace())))
@@ -476,7 +480,6 @@ def test_harvest_queries_the_level_and_time_window(monkeypatch):
 
 def test_empty_harvest_sends_nothing(monkeypatch):
     from mcp_server.wazuh import indexer
-    seen = _consent(monkeypatch)
 
     async def fake_caps(fields, index_pattern=None):
         return {"data.srcip": "keyword"}
@@ -490,15 +493,13 @@ def test_empty_harvest_sends_nothing(monkeypatch):
     monkeypatch.setattr(indexer, "_wazuh_indexer_field_caps", fake_caps)
     monkeypatch.setattr(indexer, "_wazuh_indexer_post", fake_post)
 
-    params = ae.VirusTotalAlertIpsInput(acknowledge_ioc_sharing=True)
+    params = ae.VirusTotalAlertIpsInput()
     output = _run(ae.blueteam_virustotal_alert_ips(params, ctx=SimpleNamespace()))
     assert "nothing was sent to virustotal" in output.lower()
-    assert seen == []
 
 
 def test_harvest_failure_is_not_reported_as_no_matches(monkeypatch):
     from mcp_server.wazuh import indexer
-    _consent(monkeypatch)
 
     async def fake_caps(fields, index_pattern=None):
         return {}
@@ -509,7 +510,7 @@ def test_harvest_failure_is_not_reported_as_no_matches(monkeypatch):
     monkeypatch.setattr(indexer, "_wazuh_indexer_field_caps", fake_caps)
     monkeypatch.setattr(indexer, "_wazuh_indexer_post", fake_post)
 
-    params = ae.VirusTotalAlertIpsInput(acknowledge_ioc_sharing=True)
+    params = ae.VirusTotalAlertIpsInput()
     with pytest.raises(ThreatIntelError) as err:
         _run(ae.blueteam_virustotal_alert_ips(params, ctx=SimpleNamespace()))
     assert "harvest failed" in str(err.value)
@@ -518,7 +519,6 @@ def test_harvest_failure_is_not_reported_as_no_matches(monkeypatch):
 
 def test_partial_harvest_is_flagged(monkeypatch):
     from mcp_server.wazuh import indexer
-    _consent(monkeypatch)
 
     async def fake_census(query, aggs, index_pattern=None):
         return ({"srcips": {"buckets": [
@@ -532,15 +532,14 @@ def test_partial_harvest_is_flagged(monkeypatch):
     async def fake_exact(query, candidates, index_pattern=None):
         return {"8.8.8.8": 5}
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         return _report()
 
     monkeypatch.setattr(indexer, "_srcip_census_merged", fake_census)
     monkeypatch.setattr(indexer, "_exact_srcip_counts", fake_exact)
     monkeypatch.setattr(vt, "lookup", fake_lookup)
 
-    params = ae.VirusTotalAlertIpsInput(acknowledge_ioc_sharing=True,
-                                        response_format="json")
+    params = ae.VirusTotalAlertIpsInput(response_format="json")
     output = json.loads(_run(ae.blueteam_virustotal_alert_ips(
         params, ctx=SimpleNamespace())))
     assert output["harvest_partial"] is True
@@ -585,7 +584,6 @@ def _census_raw(buckets, *, sum_other=0, error_bound=0, failed=0,
 def _census_harvest(monkeypatch, response, *, bucket_limit=200, max_ips=1,
                     caps=None, fmt="json", exact=None):
     from mcp_server.wazuh import indexer
-    _consent(monkeypatch)
 
     async def fake_caps(fields, index_pattern=None):
         return caps if caps is not None else {"data.srcip": "keyword"}
@@ -598,7 +596,7 @@ def _census_harvest(monkeypatch, response, *, bucket_limit=200, max_ips=1,
             return exact(candidates)
         return {str(ip): 1 for ip in candidates}
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         return _report()
 
     monkeypatch.setattr(indexer, "_wazuh_indexer_field_caps", fake_caps)
@@ -607,7 +605,7 @@ def _census_harvest(monkeypatch, response, *, bucket_limit=200, max_ips=1,
     monkeypatch.setattr(vt, "lookup", fake_lookup)
     params = ae.VirusTotalAlertIpsInput(
         bucket_limit=bucket_limit, max_ips=max_ips,
-        acknowledge_ioc_sharing=True, response_format=fmt)
+        response_format=fmt)
     result = _run(ae.blueteam_virustotal_alert_ips(params, ctx=SimpleNamespace()))
     return json.loads(result) if fmt == "json" else result
 
@@ -816,12 +814,11 @@ def test_markdown_reports_a_complete_census(monkeypatch):
 
 def test_explicit_ips_have_no_census(monkeypatch):
     from mcp_server.wazuh import indexer
-    _consent(monkeypatch)
 
     async def forbidden(*args, **kwargs):
         pytest.fail("the Indexer must not be called for an explicit list")
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         return _report()
 
     monkeypatch.setattr(indexer, "_wazuh_indexer_field_caps", forbidden)
@@ -939,7 +936,6 @@ def test_partial_correction_keeps_the_merged_count(monkeypatch):
 
 def test_exact_count_error_keeps_the_merged_count(monkeypatch):
     from mcp_server.wazuh import indexer
-    _consent(monkeypatch)
 
     async def fake_caps(fields, index_pattern=None):
         return {"data.srcip": "keyword"}
@@ -951,7 +947,7 @@ def test_exact_count_error_keeps_the_merged_count(monkeypatch):
     async def fake_msearch(bodies, index_pattern=None):
         return [{"error": "exact count failed"} for _ in bodies]
 
-    async def fake_lookup(kind, indicator, consent_token=None):
+    async def fake_lookup(kind, indicator):
         return _report()
 
     monkeypatch.setattr(indexer, "_wazuh_indexer_field_caps", fake_caps)
@@ -959,7 +955,7 @@ def test_exact_count_error_keeps_the_merged_count(monkeypatch):
     monkeypatch.setattr(indexer, "_wazuh_indexer_msearch", fake_msearch)
     monkeypatch.setattr(vt, "lookup", fake_lookup)
     params = ae.VirusTotalAlertIpsInput(
-        max_ips=1, acknowledge_ioc_sharing=True, response_format="json")
+        max_ips=1, response_format="json")
     output = json.loads(_run(ae.blueteam_virustotal_alert_ips(
         params, ctx=SimpleNamespace())))
     assert output["counts_exact"] is False

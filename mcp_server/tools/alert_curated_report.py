@@ -16,6 +16,7 @@ from mcp_server import (mcp, WAZUH_INDEXER_URL, WAZUH_INDEXER_PASSWORD,
                         ABUSEIPDB_API_KEY, VIRUSTOTAL_API_KEY,
                         GREYNOISE_COMMUNITY_BASE_URL, ARGUS_BASE_URL, ARGUS_MIN_INTERVAL, ARGUS_VERIFY_SSL)
 from mcp_server.core.audit import _audit_log, _truncate_if_needed, _escape_md_table
+from mcp_server.core.external_egress import egress_enabled
 from mcp_server.core.http_client import ValidPublicIp, normalize_public_ip
 from mcp_server.core.redact import _redact_alert_data
 from mcp_server.core.http_client import _api_call
@@ -26,9 +27,10 @@ from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _WAZUH_INDEX_PATTERNS
 from mcp_server.wazuh.time_utils import _parse_time_window, _duration_minutes
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
 from mcp_server.threat_intel._cache import get_limiter
-from mcp_server.threat_intel.virustotal import VirusTotalError, issue_consent, lookup
-from mcp_server.threat_intel.virustotal_consent import (consent_message,
-                                                        request_ioc_sharing)
+from mcp_server.threat_intel.virustotal import VirusTotalError, lookup
+from mcp_server.threat_intel.virustotal_consent import ioc_sharing_enabled
+from mcp_server.tools.ioc_provenance import (ensure_attacker_provenance,
+                                             provenance_refusal)
 from mcp_server.tools.alert_compare import (CuratedReportFilters, _build_curated_query,
                                             _filter_field_bases, _DEDUP_PATTERNS)
 
@@ -52,10 +54,10 @@ class CuratedThreatReportInput(BaseModel):
     include_threat_intel: bool = Field(default=True)
     include_virustotal: bool = Field(
         default=False,
-        description=("Request host confirmation before querying VirusTotal for source IPs. "
-                     "Default false because VirusTotal adds queried IoCs to its community dataset. "
-                     "This flag is a request to prompt, not proof of human consent. Requires "
-                     "include_threat_intel and VIRUSTOTAL_API_KEY."),
+        description=("Query VirusTotal for source IPs. Default false because VirusTotal "
+                     "adds queried IoCs to its community dataset. Requires "
+                     "include_threat_intel, VIRUSTOTAL_API_KEY, and "
+                     "BLUETEAM_VIRUSTOTAL_IOC_SHARING."),
     )
     max_entities: int = Field(default=50, ge=10, le=100)
     group_by: Literal["srcip", "domain", "rule.id", "agent"] = Field(default="srcip")
@@ -357,23 +359,9 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput,
 
     # 2: Concurrent threat intel enrichment
     threat_data: dict[str, dict] = {}
-    vt_consent_required = False
-    if params.include_threat_intel and entity_buckets and params.group_by == "srcip":
+    if (egress_enabled() and params.include_threat_intel
+            and entity_buckets and params.group_by == "srcip"):
         top_ips = [b["key"] for b in entity_buckets[:min(params.max_entities, 15)]]
-
-        vt_approved: set[str] = set()
-        if VIRUSTOTAL_API_KEY and params.include_virustotal:
-            vt_targets: list[str] = []
-            for ip in top_ips:
-                public_ip, _ = _enrichment_target(ip)
-                if public_ip is not None and public_ip not in vt_targets:
-                    vt_targets.append(public_ip)
-            if vt_targets:
-                if await request_ioc_sharing(
-                        ctx, consent_message("ip_addresses", vt_targets)):
-                    vt_approved = set(vt_targets)
-                else:
-                    vt_consent_required = True
 
         async def _enrich_ip(ip: str) -> tuple[str, dict]:
             public_ip, skip_reason = _enrichment_target(ip)
@@ -423,68 +411,73 @@ async def blueteam_curated_threat_report(params: CuratedThreatReportInput,
                 except AbuseIPDBError as exc:
                     result["abuseipdb"] = {"error": exc.kind, "detail": exc.message}
             # VirusTotal
-            if VIRUSTOTAL_API_KEY and params.include_virustotal:
-                if public_ip not in vt_approved:
+            if (VIRUSTOTAL_API_KEY and params.include_virustotal
+                    and ioc_sharing_enabled()):
+                # A srcip bucket is a candidate, not attribution: the same
+                # address can be a partner's probe. Verify the alert semantics.
+                verified, detail = await ensure_attacker_provenance(
+                    "ip_addresses", public_ip, since=since_iso)
+                if verified is None:
+                    kind_name, message = provenance_refusal(detail)
+                    result["virustotal"] = {"error": kind_name, "detail": message}
+                    return ip, result
+                try:
+                    data = await lookup("ip_addresses", public_ip)
                     result["virustotal"] = {
-                        "error": "consent_required",
-                        "detail": "host approval was not granted for this report",
+                        "malicious": data.get("malicious"),
+                        "suspicious": data.get("suspicious"),
+                        "harmless": data.get("harmless"),
+                        "undetected": data.get("undetected"),
+                        "timeout": data.get("timeout"),
+                        "total_engines": data.get("total_engines"),
+                        "detection_percent": data.get("detection_percent"),
+                        "any_detection": data.get("any_detection"),
+                        "stats_complete": data.get("stats_complete"),
+                        "missing_stats": data.get("missing_stats"),
+                        "community_reputation": data.get("community_reputation"),
+                        "as_owner": data.get("as_owner"),
+                        "asn": data.get("asn"),
+                        "network": data.get("network"),
+                        "country": data.get("country"),
+                        "total_votes": data.get("total_votes"),
+                        "tags": data.get("tags"),
+                        "last_analysis_date": data.get("last_analysis_date"),
+                        "http_status": data.get("http_status"),
+                        "cached": data.get("cached", False),
+                        "retrieved_at": data.get("retrieved_at"),
+                        "cache_age_seconds": data.get("cache_age_seconds"),
+                        "cache_ttl_seconds": data.get("cache_ttl_seconds"),
+                        "cache_expired": data.get("cache_expired"),
                     }
-                else:
-                    try:
-                        data = await lookup(
-                            "ip_addresses", public_ip,
-                            consent_token=issue_consent("ip_addresses", public_ip))
-                        result["virustotal"] = {
-                            "malicious": data.get("malicious"),
-                            "suspicious": data.get("suspicious"),
-                            "harmless": data.get("harmless"),
-                            "undetected": data.get("undetected"),
-                            "timeout": data.get("timeout"),
-                            "total_engines": data.get("total_engines"),
-                            "detection_percent": data.get("detection_percent"),
-                            "any_detection": data.get("any_detection"),
-                            "stats_complete": data.get("stats_complete"),
-                            "missing_stats": data.get("missing_stats"),
-                            "community_reputation": data.get("community_reputation"),
-                            "as_owner": data.get("as_owner"),
-                            "asn": data.get("asn"),
-                            "network": data.get("network"),
-                            "country": data.get("country"),
-                            "total_votes": data.get("total_votes"),
-                            "tags": data.get("tags"),
-                            "last_analysis_date": data.get("last_analysis_date"),
-                            "http_status": data.get("http_status"),
-                            "cached": data.get("cached", False),
-                            "retrieved_at": data.get("retrieved_at"),
-                            "cache_age_seconds": data.get("cache_age_seconds"),
-                            "cache_ttl_seconds": data.get("cache_ttl_seconds"),
-                            "cache_expired": data.get("cache_expired"),
-                        }
-                    except VirusTotalError as exc:
-                        result["virustotal"] = {"error": exc.kind, "detail": exc.message}
-                        if exc.retry_after_seconds is not None:
-                            result["virustotal"]["retry_after_seconds"] = exc.retry_after_seconds
-                        if exc.http_status is not None:
-                            result["virustotal"]["http_status"] = exc.http_status
-                    except Exception:
-                        result["virustotal"] = {"error": "lookup_failed"}
+                except VirusTotalError as exc:
+                    result["virustotal"] = {"error": exc.kind, "detail": exc.message}
+                    if exc.retry_after_seconds is not None:
+                        result["virustotal"]["retry_after_seconds"] = exc.retry_after_seconds
+                    if exc.http_status is not None:
+                        result["virustotal"]["http_status"] = exc.http_status
+                except Exception:
+                    result["virustotal"] = {"error": "lookup_failed"}
             return (ip, result)
 
         enrich_results = await asyncio.gather(*[_enrich_ip(ip) for ip in top_ips])
         threat_data = dict(enrich_results)
 
     threat_intel_sources = {
-        "CrowdSec": ("configured" if os.environ.get(CROWDSEC_API_KEY_ENV)
+        "CrowdSec": ("disabled" if not egress_enabled()
+                     else "configured" if os.environ.get(CROWDSEC_API_KEY_ENV)
                      else "not_configured"),
-        "Argus": ("configured" if os.environ.get(ARGUS_API_KEY_ENV)
+        "Argus": ("disabled" if not egress_enabled()
+                  else "configured" if os.environ.get(ARGUS_API_KEY_ENV)
                   else "not_configured"),
-        "AbuseIPDB": ("configured" if ABUSEIPDB_API_KEY else "not_configured"),
+        "AbuseIPDB": ("disabled" if not egress_enabled()
+                      else "configured" if ABUSEIPDB_API_KEY else "not_configured"),
         "VirusTotal": (
-            "not_configured" if not VIRUSTOTAL_API_KEY
+            "disabled" if not egress_enabled()
+            else "not_configured" if not VIRUSTOTAL_API_KEY
+            else "sharing_disabled" if not ioc_sharing_enabled()
             else "not_requested"
             if not (params.include_threat_intel and params.include_virustotal
                     and params.group_by == "srcip" and entity_buckets)
-            else "consent_required" if vt_consent_required
             else "configured"),
     }
 

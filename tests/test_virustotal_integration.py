@@ -26,21 +26,22 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _from_wazuh(*values: str) -> None:
+    """Record the test indicator as Wazuh-derived; VirusTotal requires it."""
+    from mcp_server.core.attacker_registry import register_attacker_ioc
+
+    for value in values:
+        register_attacker_ioc(value, source="wazuh_alerts", evidence={"decision": "accepted", "via": "wazuh_alerts", "alert_id": "test-alert", "rule_id": "100200", "rule_level": 12, "groups": ["attack"], "matched_field": "data.srcip", "signal": "attack_group"})
+
+
 def _lookup(kind: str, value: str):
-    return vt.lookup(kind, value,
-                     consent_token=vt.issue_consent(kind, vt._normalize(kind, value)))
+    _from_wazuh(value)
+    return vt.lookup(kind, value)
 
 
-def _provider(indicator: str, ind_type: str, acknowledge: bool = True):
-    kind = {"IPv4": "ip_addresses", "IPv6": "ip_addresses",
-            "domain": "domains", "file": "files"}.get(ind_type)
-    token = None
-    if acknowledge and kind:
-        try:
-            token = vt.issue_consent(kind, vt._normalize(kind, indicator))
-        except ValueError:
-            token = None
-    return _run(agg._virustotal_provider(indicator, ind_type, token))
+def _provider(indicator: str, ind_type: str):
+    _from_wazuh(indicator)
+    return _run(agg._virustotal_provider(indicator, ind_type))
 
 
 class _Response:
@@ -324,16 +325,16 @@ def test_provider_rejects_private_ip_before_transport():
     assert calls == []
 
 
-def test_hash_and_domain_tools_use_the_shared_client(monkeypatch, consent_approval):
+def test_hash_and_domain_tools_use_the_shared_client(monkeypatch):
     import json
 
     import mcp_server
     from mcp_server.tools import alert_enrichment as enrich
 
+    _from_wazuh("example.com", "a" * 64)
     calls = []
 
-    async def fake_lookup(kind, value, **kwargs):
-        assert kwargs.get("consent_token")
+    async def fake_lookup(kind, value):
         calls.append((kind, value))
         return {
             "malicious": 0, "suspicious": 0, "harmless": 10,
@@ -355,11 +356,11 @@ def test_hash_and_domain_tools_use_the_shared_client(monkeypatch, consent_approv
                           enrich.blueteam_lookup_domain_virustotal)
 
     hash_out = json.loads(_run(hash_tool(enrich.VirusTotalHashInput(
-        hash="a" * 64, response_format="json", acknowledge_ioc_sharing=True),
-        ctx=consent_approval)))
+        hash="a" * 64, response_format="json"),
+        )))
     domain_out = json.loads(_run(domain_tool(enrich.VirusTotalDomainInput(
-        domain="example.com", response_format="json", acknowledge_ioc_sharing=True),
-        ctx=consent_approval)))
+        domain="example.com", response_format="json"),
+        )))
 
     assert calls == [("files", "a" * 64), ("domains", "example.com")]
     assert hash_out["total_engines"] == 12
@@ -812,7 +813,7 @@ def _not_configured(provider):
     return _provider
 
 
-def test_aggregate_tool_returns_structured_result_on_default_budget(monkeypatch, consent_approval):
+def test_aggregate_tool_returns_structured_result_on_default_budget(monkeypatch):
     import json
     from mcp_server.tools.threat_intel_aggregate import ThreatIntelAggregateInput
 
@@ -826,24 +827,20 @@ def test_aggregate_tool_returns_structured_result_on_default_budget(monkeypatch,
         monkeypatch.setattr(agg, name, _not_configured(provider))
     monkeypatch.setattr(vt, "VIRUSTOTAL_BUDGET", 0)
     vt.reset_state()
+    _from_wazuh("8.8.8.8")
 
     tool = getattr(agg.blueteam_threat_intel_aggregate, "__wrapped__",
                    agg.blueteam_threat_intel_aggregate)
     output = _run(tool(ThreatIntelAggregateInput(
         indicator="8.8.8.8", response_format="json",
-        acknowledge_ioc_sharing=True), ctx=consent_approval))
+        )))
     data = json.loads(output)
     virustotal = next(r for r in data["results"] if r["provider"] == "virustotal")
     assert virustotal["error_kind"] == "budget_closed"
     assert data["providers_total"] == 0
 
-    opt_out = _run(tool(ThreatIntelAggregateInput(
-        indicator="8.8.8.8", response_format="json",
-        acknowledge_ioc_sharing=False), ctx=consent_approval))
-    refused = json.loads(opt_out)
-    virustotal = next(r for r in refused["results"] if r["provider"] == "virustotal")
-    assert virustotal["error_kind"] == "consent_required"
-    assert refused["providers_total"] == 0
+    assert virustotal["error_kind"] == "budget_closed"
+    assert data["providers_total"] == 0
 
 
 @pytest.mark.parametrize("kind", [
@@ -996,7 +993,7 @@ def test_markdown_includes_retrieval_timestamp():
     assert "Cache expired**: no" in output
 
 
-def test_aggregate_markdown_includes_vt_retrieval(monkeypatch, consent_approval):
+def test_aggregate_markdown_includes_vt_retrieval(monkeypatch):
     from mcp_server.tools.threat_intel_aggregate import ThreatIntelAggregateInput
 
     async def vt_provider(indicator, ind_type, *args, **kwargs):
@@ -1025,7 +1022,7 @@ def test_aggregate_markdown_includes_vt_retrieval(monkeypatch, consent_approval)
                    agg.blueteam_threat_intel_aggregate)
     output = _run(tool(ThreatIntelAggregateInput(
         indicator="8.8.8.8", response_format="markdown",
-        acknowledge_ioc_sharing=True), ctx=consent_approval))
+        )))
 
     assert "### VirusTotal retrieval" in output
     assert "cache, retrieved 2026-11-08T00:00:00+00:00" in output
@@ -1033,13 +1030,16 @@ def test_aggregate_markdown_includes_vt_retrieval(monkeypatch, consent_approval)
     assert "analysis 2023-11-14T22:13:20Z" in output
 
 
-def test_direct_lookup_requires_consent_before_cache_or_quota(monkeypatch):
+def test_direct_lookup_refuses_before_cache_or_quota_when_sharing_is_off(monkeypatch):
+    from mcp_server.threat_intel import virustotal_consent as policy
+
     calls = []
 
     async def fake_api_call(*args, **kwargs):
         calls.append(1)
         return _Response(_payload(_stats(harmless=1)))
 
+    monkeypatch.setattr(policy, "VIRUSTOTAL_IOC_SHARING", False)
     monkeypatch.setattr(vt, "_api_call", fake_api_call)
     with pytest.raises(vt.VirusTotalError) as error:
         _run(vt.lookup("ip_addresses", "8.8.8.8"))
@@ -1050,22 +1050,25 @@ def test_direct_lookup_requires_consent_before_cache_or_quota(monkeypatch):
     assert vt.cache_get("virustotal", "ip_addresses:8.8.8.8") is None
 
 
-def test_aggregate_without_consent_makes_no_request(monkeypatch):
+def test_aggregate_skips_virustotal_when_sharing_is_off(monkeypatch):
+    from mcp_server.threat_intel import virustotal_consent as policy
+
     calls = []
 
     async def fake_api_call(*args, **kwargs):
         calls.append(1)
         return _Response(_payload(_stats(harmless=1)))
 
+    monkeypatch.setattr(policy, "VIRUSTOTAL_IOC_SHARING", False)
     monkeypatch.setattr(vt, "_api_call", fake_api_call)
-    result = _provider("8.8.8.8", "IPv4", False)
+    result = _provider("8.8.8.8", "IPv4")
 
     assert result.error_kind == "consent_required"
     assert calls == []
     assert vt._get_quota().state()["spent"] == 0
 
 
-def test_aggregate_with_consent_uses_quota(monkeypatch):
+def test_aggregate_lookup_uses_quota(monkeypatch):
     calls = []
 
     async def fake_api_call(*args, **kwargs):
@@ -1080,7 +1083,7 @@ def test_aggregate_with_consent_uses_quota(monkeypatch):
     assert vt._get_quota().state()["spent"] == 1
 
 
-def test_cached_result_still_requires_consent(monkeypatch):
+def test_cached_result_needs_quota_only_once(monkeypatch):
     calls = []
 
     async def fake_api_call(*args, **kwargs):
@@ -1089,154 +1092,49 @@ def test_cached_result_still_requires_consent(monkeypatch):
 
     monkeypatch.setattr(vt, "_api_call", fake_api_call)
     _run(_lookup("ip_addresses", "8.8.8.8"))
-    with pytest.raises(vt.VirusTotalError) as error:
-        _run(vt.lookup("ip_addresses", "8.8.8.8"))
+    cached = _run(_lookup("ip_addresses", "8.8.8.8"))
 
-    assert error.value.kind == "consent_required"
+    assert cached["cached"] is True
     assert len(calls) == 1
     assert vt._get_quota().state()["spent"] == 1
 
 
-def test_standalone_domain_and_hash_require_consent(monkeypatch):
+def test_standalone_tool_reports_sharing_off(monkeypatch):
+    import mcp_server
     from mcp_server.core.exceptions import ThreatIntelError
+    from mcp_server.threat_intel import virustotal_consent as policy
     from mcp_server.tools import alert_enrichment as enrich
 
-    import mcp_server
     monkeypatch.setattr(mcp_server, "VIRUSTOTAL_API_KEY", "test-key")
+    monkeypatch.setattr(policy, "VIRUSTOTAL_IOC_SHARING", False)
 
-    async def forbidden(*args, **kwargs):
-        pytest.fail("transport called")
-
-    monkeypatch.setattr(vt, "_api_call", forbidden)
-    with pytest.raises(ThreatIntelError) as domain_error:
+    with pytest.raises(ThreatIntelError) as err:
         _run(enrich.blueteam_lookup_domain_virustotal(
             enrich.VirusTotalDomainInput(domain="example.com")))
-    with pytest.raises(ThreatIntelError) as hash_error:
-        _run(enrich.blueteam_lookup_hash_virustotal(
-            enrich.VirusTotalHashInput(hash="a" * 64)))
 
-    assert "consent_required" in str(domain_error.value)
-    assert "consent_required" in str(hash_error.value)
-    assert vt._get_quota().state()["spent"] == 0
+    assert "consent_required" in str(err.value)
 
 
-def test_standalone_domain_with_consent_uses_quota(monkeypatch, consent_approval):
+def test_standalone_domain_and_hash_tools_query_without_a_prompt(monkeypatch):
+    import mcp_server
     from mcp_server.tools import alert_enrichment as enrich
 
+    _from_wazuh("example.com", "a" * 64)
     calls = []
 
     async def fake_api_call(*args, **kwargs):
         calls.append(1)
         return _Response(_payload(_stats(harmless=1)))
 
-    import mcp_server
     monkeypatch.setattr(mcp_server, "VIRUSTOTAL_API_KEY", "test-key")
     monkeypatch.setattr(vt, "_api_call", fake_api_call)
-    output = _run(enrich.blueteam_lookup_domain_virustotal(
-        enrich.VirusTotalDomainInput(domain="example.com",
-                                     acknowledge_ioc_sharing=True,
-                                     response_format="json"),
-        ctx=consent_approval))
+    _run(enrich.blueteam_lookup_domain_virustotal(
+        enrich.VirusTotalDomainInput(domain="example.com", response_format="json")))
+    _run(enrich.blueteam_lookup_hash_virustotal(
+        enrich.VirusTotalHashInput(hash="a" * 64, response_format="json")))
 
-    assert "total_engines" in output
-    assert calls == [1]
-    assert vt._get_quota().state()["spent"] == 1
-
-
-def test_consent_token_is_bound_to_one_indicator(monkeypatch):
-    token = vt.issue_consent("ip_addresses", "1.1.1.1")
-    async def forbidden(*args, **kwargs):
-        pytest.fail("transport called")
-
-    monkeypatch.setattr(vt, "_api_call", forbidden)
-    with pytest.raises(vt.VirusTotalError) as error:
-        _run(vt.lookup("ip_addresses", "8.8.8.8", consent_token=token))
-    assert error.value.kind == "consent_required"
-    assert vt._get_quota().state()["spent"] == 0
-
-
-def test_consent_token_expires(monkeypatch):
-    token = vt.issue_consent("ip_addresses", "8.8.8.8", ttl=-1)
-    async def forbidden(*args, **kwargs):
-        pytest.fail("transport called")
-
-    monkeypatch.setattr(vt, "_api_call", forbidden)
-    with pytest.raises(vt.VirusTotalError) as error:
-        _run(vt.lookup("ip_addresses", "8.8.8.8", consent_token=token))
-    assert error.value.kind == "consent_required"
-    assert vt._get_quota().state()["spent"] == 0
-
-
-def test_consent_token_is_single_use(monkeypatch):
-    calls = []
-
-    async def fake_api_call(*args, **kwargs):
-        calls.append(1)
-        return _Response(_payload(_stats(harmless=1)))
-
-    monkeypatch.setattr(vt, "_api_call", fake_api_call)
-    token = vt.issue_consent("ip_addresses", "8.8.8.8")
-    _run(vt.lookup("ip_addresses", "8.8.8.8", consent_token=token))
-    with pytest.raises(vt.VirusTotalError) as error:
-        _run(vt.lookup("ip_addresses", "8.8.8.8", consent_token=token))
-    assert error.value.kind == "consent_required"
-    assert len(calls) == 1
-    assert vt._get_quota().state()["spent"] == 1
-
-
-def test_aggregate_host_decline_makes_no_request(monkeypatch, consent_approval):
-    import json
-    from mcp_server.tools.threat_intel_aggregate import ThreatIntelAggregateInput
-
-    consent_approval.approve = False
-    consent_approval.action = "decline"
-    calls = []
-
-    async def forbidden(*args, **kwargs):
-        calls.append(1)
-        pytest.fail("transport called")
-
-    for name, provider in (
-        ("_crowdsec_provider", "crowdsec"),
-        ("_threatfox_provider", "threatfox"),
-        ("_otx_provider", "otx"),
-        ("_greynoise_provider", "greynoise"),
-        ("_abuseipdb_provider", "abuseipdb"),
-    ):
-        monkeypatch.setattr(agg, name, _not_configured(provider))
-    monkeypatch.setattr(vt, "_api_call", forbidden)
-    tool = getattr(agg.blueteam_threat_intel_aggregate, "__wrapped__",
-                   agg.blueteam_threat_intel_aggregate)
-    output = _run(tool(ThreatIntelAggregateInput(
-        indicator="8.8.8.8", response_format="json",
-        acknowledge_ioc_sharing=True), ctx=consent_approval))
-    data = json.loads(output)
-    virustotal = next(r for r in data["results"] if r["provider"] == "virustotal")
-    assert virustotal["error_kind"] == "consent_required"
-    assert calls == []
-    assert vt._get_quota().state()["spent"] == 0
-
-
-def test_standalone_host_decline_makes_no_request(monkeypatch, consent_approval):
-    import mcp_server
-    from mcp_server.core.exceptions import ThreatIntelError
-    from mcp_server.tools import alert_enrichment as enrich
-
-    consent_approval.approve = False
-    consent_approval.action = "decline"
-    monkeypatch.setattr(mcp_server, "VIRUSTOTAL_API_KEY", "test-key")
-
-    async def forbidden(*args, **kwargs):
-        pytest.fail("transport called")
-
-    monkeypatch.setattr(vt, "_api_call", forbidden)
-    with pytest.raises(ThreatIntelError) as error:
-        _run(enrich.blueteam_lookup_hash_virustotal(
-            enrich.VirusTotalHashInput(hash="a" * 64,
-                                       acknowledge_ioc_sharing=True),
-            ctx=consent_approval))
-    assert "consent_required" in str(error.value)
-    assert vt._get_quota().state()["spent"] == 0
+    assert calls == [1, 1]
+    assert vt._get_quota().state()["spent"] == 2
 
 
 def test_vt_tools_inject_mcp_context_and_do_not_expose_it():
@@ -1260,17 +1158,3 @@ def test_domain_lookup_rejects_an_ip_literal():
 
     with pytest.raises(pydantic.ValidationError):
         enrich.VirusTotalDomainInput(domain="103.151.95.2")
-
-
-def test_acknowledgement_without_a_host_names_the_refusal_reason(monkeypatch):
-    from mcp_server.core.exceptions import ThreatIntelError
-    from mcp_server.tools import alert_enrichment as enrich
-
-    import mcp_server
-    monkeypatch.setattr(mcp_server, "VIRUSTOTAL_API_KEY", "test-key")
-
-    with pytest.raises(ThreatIntelError) as err:
-        _run(enrich.blueteam_lookup_domain_virustotal(
-            enrich.VirusTotalDomainInput(domain="example.com",
-                                         acknowledge_ioc_sharing=True)))
-    assert "[reason=context_missing]" in str(err.value)

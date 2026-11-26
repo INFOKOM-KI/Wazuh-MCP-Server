@@ -15,7 +15,7 @@ from mcp_server.core.attacker_registry import register_attacker_ioc
 from mcp_server.core.http_client import _host_pins, _allowed_internal_domains
 from mcp_server.core.subprocess import _run_async
 
-# Webshell signature patterns - community-maintained, extend as needed.
+# Webshell signatures: (regex, family label, weight). Add new patterns here.
 _SIGNATURES: list[tuple[str, str, str]] = [
     # (regex pattern, shell family, weight)
     (r"b374k", "b374k PHP shell", "high"),
@@ -313,7 +313,10 @@ async def blueteam_check_webshell(params: WebshellCheckInput) -> str:
 
     # Auto-register confirmed webshell URL as attacker IOC
     if v == "CONFIRMED":
-        register_attacker_ioc(params.url, source="webshell_check")
+        register_attacker_ioc(
+            params.url, source="webshell_check",
+            evidence={"decision": "accepted", "via": "webshell_check",
+                      "status": status})
 
     if params.response_format == "json":
         return json.dumps({

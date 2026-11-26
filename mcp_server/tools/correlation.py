@@ -20,7 +20,8 @@ from mcp_server.wazuh.indexer import (_wazuh_indexer_post, _wazuh_indexer_msearc
                                       _KEYWORD_SEARCH_FIELDS, _SRCIP_FIELD_PATHS)
 from mcp_server.wazuh.time_utils import _parse_time_window
 from mcp_server.threat_intel.crowdsec import _crowdsec_request
-from mcp_server.core.attacker_registry import register_attacker_ips
+from mcp_server.core.attacker_registry import (register_attacker_ioc,
+                                               register_attacker_ips)
 from mcp_server.core.ioc_store import record_iocs
 from mcp_server.tools.investigation_history import _read_history
 from mcp_server.correlation.three_sum_core import (evaluate_engine_a, evaluate_engine_b, format_evaluation_dict,
@@ -662,7 +663,16 @@ async def three_sum_correlation(params: ThreeSumCorrelationInput) -> str:
             cat_c_weight=params.cat_c_weight,
         )
         stats["vuln_boost"] = vuln_boost  # transparency: CVE-derived category signal
-        register_attacker_ips([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
+        for trigger in triggers:
+            if not trigger.get("ip"):
+                continue
+            categories = sum(1 for key in ("score_a", "score_b", "score_c")
+                             if trigger.get(key))
+            register_attacker_ioc(
+                trigger["ip"], source="engine_a",
+                evidence={"decision": "accepted", "via": "engine_a",
+                          "categories": categories,
+                          "total": trigger.get("total")})
         record_iocs([t["ip"] for t in triggers if t.get("ip")], source="engine_a")
         if params.create_case and triggers:
             trigger_ips = [t["ip"] for t in triggers if t.get("ip")]

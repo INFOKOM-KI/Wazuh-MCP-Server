@@ -154,8 +154,10 @@ def test_virustotal_missing_data_is_error(monkeypatch, tmp_path):
     monkeypatch.setattr(vt, "VIRUSTOTAL_BUDGET", 50)
     monkeypatch.setattr(vt, "VIRUSTOTAL_STATE", str(tmp_path / "vt.db"))
     vt._get_quota().initialize()
+    from mcp_server.core.attacker_registry import register_attacker_ioc
+    register_attacker_ioc("140.82.0.86", source="wazuh_alerts", evidence={"decision": "accepted", "via": "wazuh_alerts", "alert_id": "test-alert", "rule_id": "100200", "rule_level": 12, "groups": ["attack"], "matched_field": "data.srcip", "signal": "attack_group"})
     with patch.object(vt, "_api_call", fake_api_call):
-        result = _run(agg._virustotal_provider("140.82.0.86", "IPv4", vt.issue_consent("ip_addresses", "140.82.0.86")))
+        result = _run(agg._virustotal_provider("140.82.0.86", "IPv4"))
 
     assert result.error is not None
     assert result.error_kind == "upstream_error"
@@ -286,8 +288,10 @@ def test_virustotal_without_stats_is_malformed(monkeypatch, tmp_path):
     monkeypatch.setattr(vt, "VIRUSTOTAL_BUDGET", 50)
     monkeypatch.setattr(vt, "VIRUSTOTAL_STATE", str(tmp_path / "vt.db"))
     vt._get_quota().initialize()
+    from mcp_server.core.attacker_registry import register_attacker_ioc
+    register_attacker_ioc("140.82.0.86", source="wazuh_alerts", evidence={"decision": "accepted", "via": "wazuh_alerts", "alert_id": "test-alert", "rule_id": "100200", "rule_level": 12, "groups": ["attack"], "matched_field": "data.srcip", "signal": "attack_group"})
     with patch.object(vt, "_api_call", fake_api_call):
-        result = _run(agg._virustotal_provider("140.82.0.86", "IPv4", vt.issue_consent("ip_addresses", "140.82.0.86")))
+        result = _run(agg._virustotal_provider("140.82.0.86", "IPv4"))
 
     assert result.error is not None
     assert result.risk_level is None

@@ -70,6 +70,8 @@ def _get_otx_api_key() -> str:
 
 async def _otx_request(indicator: str, section: str = "general") -> dict[str, Any]:
     """Query the OTX API with TTL caching + rate limiting."""
+    from mcp_server.core.external_egress import egress_check
+    egress_check()
     ind_type = _classify_indicator(indicator)
     if not ind_type:
         return {"error": f"Unrecognized indicator type for '{indicator}'. "

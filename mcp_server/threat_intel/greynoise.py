@@ -33,6 +33,8 @@ async def _greynoise_lookup(ip: str) -> dict:
     Errors are not cached. ``_api_call`` does not retry a 429 without a usable
     ``Retry-After``, so this layer adds no blind retries.
     """
+    from mcp_server.core.external_egress import egress_check
+    egress_check()
     cached = cache_get("greynoise", ip)
     if cached is not None:
         return cached

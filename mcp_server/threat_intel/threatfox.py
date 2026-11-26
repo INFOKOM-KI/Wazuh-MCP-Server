@@ -45,6 +45,8 @@ def _get_threatfox_api_key() -> str:
 
 
 async def _threatfox_request(search_term: str, exact_match: bool = False) -> dict[str, Any]:
+    from mcp_server.core.external_egress import egress_check
+    egress_check()
     """Query the ThreatFox API with TTL caching.
 
     Args:

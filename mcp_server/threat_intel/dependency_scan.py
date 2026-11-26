@@ -251,6 +251,8 @@ async def _query_package(pkg: dict) -> list[dict]:
 
 
 async def scan_dependencies_bulk(packages: list[dict]) -> list[dict]:
+    from mcp_server.core.external_egress import egress_check
+    egress_check()
     """Query OSV /v1/query for a list of packages (concurrent fan-out).
     Returns only packages with known vulnerabilities, each with its top-5 vulns
     sorted highest-severity first. Per-package HTTP failures degrade to empty;
